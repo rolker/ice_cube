@@ -1,0 +1,8 @@
+# Copy to config.toml, which is not tracked by git, and edit for your setup.
+# Command-line arguments take priority over these values.
+
+[paths]
+# Directory holding your survey data
+data_dir = "data"
+# Where generated figures and results are written
+output_dir = "output"
