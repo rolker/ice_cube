@@ -1,0 +1,13 @@
+Leaflet 1.9.4, https://leafletjs.com
+Copyright (c) 2010-2023, Volodymyr Agafonkin; (c) 2010-2011, CloudMade.
+BSD 2-Clause License; the full text is in LICENSE in this folder.
+
+Files are unmodified copies of dist/leaflet.js and dist/leaflet.css, downloaded from
+https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/ and checked byte for byte against
+the npm package leaflet@1.9.4 (tarball integrity verified). Marker images are not
+included: the page draws circle markers only.
+
+leaflet.js   sha512-BwHfrr4c9kmRkLw6iXFdzcdWV/PGkVgiIyIWLLlTSXzWQzxuSg4DiQUCpauz/EWjgk5TYQqX/kvn9pG1NpYfqg==
+             sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=
+leaflet.css  sha512-Zcn6bjR/8RZbLEpLIeOwNtzREBAJnUKESxces60Mpoj+2okopSAcSUIUOseddDm0cxnGQzxIR7vJgsLZbdLE3w==
+             sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=

@@ -1,0 +1,93 @@
+// Checks of the page's track merging. Run by tests.test_app, or: node tests/track_test.js
+// Synthetic offsets only.
+"use strict";
+const assert = require("assert");
+const path = require("path");
+const {mergeTrack, clockJumped} = require(path.join(__dirname, "..", "gnss_base", "static",
+  "track.js"));
+
+const REF = {lat: 0, lon: 0, height_m: 0};
+
+function response(fields) {
+  return Object.assign({window_s: 7200, max_points: 7200, reference: REF,
+    reference_offset: [0, 0, 0], cursor: "h:1", full: true, outliers_dropped: 0,
+    oldest_age_s: null, points: []}, fields);
+}
+
+const checks = {
+  "concatenates when full is false"() {
+    let {kept} = mergeTrack(null, response({cursor: "h:2", oldest_age_s: 2,
+      points: [[2, 0.01, 0, 0, 4], [1, 0.02, 0, 0, 4]]}), 1000);
+    let track;
+    ({kept, track} = mergeTrack(kept, response({cursor: "h:3", full: false, oldest_age_s: 12,
+      points: [[1, 0.03, 0, 0, 4]]}), 1010));
+    assert.deepStrictEqual(track.points.map(p => p[0]), [12, 11, 1]);
+    assert.deepStrictEqual(track.points.map(p => p[1]), [0.01, 0.02, 0.03]);
+    assert.strictEqual(kept.cursor, "h:3");
+  },
+
+  "resets when full is true"() {
+    let {kept} = mergeTrack(null, response({points: [[2, 0.01, 0, 0, 4], [1, 0.02, 0, 0, 4]]}),
+      1000);
+    let track;
+    ({kept, track} = mergeTrack(kept, response({cursor: "g:1", oldest_age_s: 1,
+      points: [[1, 0.5, 0, 0, 5]]}), 1010));
+    assert.deepStrictEqual(track.points, [[1, 0.5, 0, 0, 5]]);
+    assert.strictEqual(kept.cursor, "g:1");
+    ({kept, track} = mergeTrack(kept, response({reference: null, reference_offset: null,
+      cursor: null}), 1020));
+    assert.strictEqual(kept, null);
+    assert.deepStrictEqual(track.points, []);
+  },
+
+  "prunes to the window and the point limit"() {
+    let {kept} = mergeTrack(null, response({window_s: 100, max_points: 3,
+      points: [[90, 1, 0, 0, 4], [50, 2, 0, 0, 4], [10, 3, 0, 0, 4]]}), 1000);
+    const {track} = mergeTrack(kept, response({window_s: 100, max_points: 3, full: false,
+      points: [[5, 4, 0, 0, 4]]}), 1020);
+    // The first point is now 110 s old, outside the 100 s window.
+    assert.deepStrictEqual(track.points.map(p => p[1]), [2, 3, 4]);
+    const {track: limited} = mergeTrack(kept, response({window_s: 100, max_points: 3,
+      full: false, points: [[1, 4, 0, 0, 4], [0, 5, 0, 0, 4]]}), 1001);
+    assert.deepStrictEqual(limited.points.map(p => p[1]), [3, 4, 5]);
+  },
+
+  "drops kept points older than the app's oldest"() {
+    // The page clock stood still for an hour while the computer slept: by its own
+    // clock nothing is old, but the app has dropped the first two points meanwhile.
+    let {kept} = mergeTrack(null, response({points: [[30, 1, 0, 0, 4], [20, 2, 0, 0, 4],
+      [10, 3, 0, 0, 4]]}), 1000);
+    const {track} = mergeTrack(kept, response({full: false, oldest_age_s: 10,
+      points: [[1, 4, 0, 0, 4]]}), 1000);
+    assert.deepStrictEqual(track.points.map(p => p[1]), [3, 4]);
+  },
+
+  "re-bases kept points when reference_offset changes"() {
+    let {kept} = mergeTrack(null, response({reference_offset: [0.01, 0, 0],
+      points: [[2, 0, 0.02, 0, 4], [1, 0.02, 0, -0.01, 4]]}), 1000);
+    const {track} = mergeTrack(kept, response({reference_offset: [0.02, 0.01, 0.005],
+      full: false, points: [[1, 0, 0, 0, 4]]}), 1001);
+    // From the fixed origin: (0.01, 0.02, 0), (0.03, 0, -0.01), (0.02, 0.01, 0.005).
+    assert.deepStrictEqual(track.points.map(p => p.slice(1, 4)),
+      [[-0.01, 0.01, -0.005], [0.01, -0.01, -0.015], [0, 0, 0]]);
+  },
+
+  "notices a clock jump"() {
+    assert.strictEqual(clockJumped(null, 1e6, 500), false);
+    assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 + 10000, 10500), false);
+    assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 + 3600e3, 10500), true);
+    assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 - 6000, 600), true);
+  },
+};
+
+let failed = 0;
+for (const [name, check] of Object.entries(checks)) {
+  try {
+    check();
+    console.log("ok", name);
+  } catch (error) {
+    failed++;
+    console.log("FAIL", name, error.message);
+  }
+}
+process.exit(failed ? 1 : 0);

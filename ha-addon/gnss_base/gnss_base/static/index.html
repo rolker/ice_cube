@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GNSS Base</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="track.js"></script>
+<style>
+:root{--bg:#f6f7f8;--card:#fff;--text:#1c2024;--muted:#60676f;--line:#dfe3e7;--good:#16794a;--warn:#a15c00;--bad:#b3261e;--accent:#2a78d6;--age-old:#b7d3f6;--age-new:#0d366b}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2125;--text:#eceff1;--muted:#9aa3ab;--line:#30363c;--good:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--accent:#6da7ec;--age-old:#184f95;--age-new:#cde2fb}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}
+main{max-width:980px;margin:auto;padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+header{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:20px;margin:0}
+h2{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
+.wide{grid-column:1/-1;overflow-x:auto}
+.big{font-size:24px;font-weight:600}
+dl{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;margin:8px 0 0}
+dt{color:var(--muted)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-weight:500;text-align:right}th:first-child,td:first-child{text-align:left}
+th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
+.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.note{color:var(--muted);font-size:13px}
+pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px}
+.row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+button{font:inherit;font-size:13px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 10px;cursor:pointer}
+#map{height:320px;border-radius:6px;margin-top:4px}
+.leaflet-container{background:var(--bg)}
+#mapnote{margin:6px 0 0}
+#scatter{display:block;width:100%;max-width:440px;aspect-ratio:1;margin:8px auto 0}
+#up{display:block;width:100%;height:110px;margin-top:10px}
+.legend{text-align:center;margin-top:4px}
+.ramp{display:inline-block;width:70px;height:8px;border-radius:4px;vertical-align:middle;margin:0 6px;background:linear-gradient(90deg,var(--age-old),var(--age-new))}
+dl.posd{grid-template-columns:auto 1fr auto 1fr}
+@media (max-width:560px){dl.posd{grid-template-columns:auto 1fr}}
+</style>
+</head>
+<body>
+<main>
+<header><h1>GNSS Base</h1><span id="link" class="note">Connecting…</span></header>
+<section><h2>Position fix</h2><div id="fix" class="big">—</div><dl id="fixd"></dl></section>
+<section><h2>Data</h2><div id="rate" class="big">—</div><dl id="data"></dl></section>
+<section><h2>Storage</h2><div id="free" class="big">—</div><dl id="disk"></dl></section>
+<section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl></section>
+<section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
+<div id="map" role="img" aria-label="Map of the current position"></div>
+<p id="mapnote" class="note">Waiting for a position fix</p>
+<dl id="posd" class="posd"></dl></section>
+<section class="wide"><h2>Drift around the median position</h2>
+<div id="drifttxt" class="note">No positions yet</div>
+<canvas id="scatter" role="img" aria-label="East and north offsets from the median position, coloured by age"></canvas>
+<div class="note legend">older<span class="ramp"></span>newer · <span id="hover">Point at a dot for details</span></div>
+<canvas id="up" role="img" aria-label="Up offset from the median height over time"></canvas></section>
+<section class="wide"><h2>Signals</h2><table id="sig"></table></section>
+<section><h2>RTCM messages</h2><table id="rtcm"></table></section>
+<section><h2>NMEA messages</h2><table id="nmea"></table></section>
+<section class="wide"><h2>Log files</h2><table id="files"></table></section>
+<section class="wide"><h2>Receiver messages</h2><pre id="msgs" class="note">None yet</pre></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??"—").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const size=b=>{if(b==null)return"—";const u=["B","kB","MB","GB"];let i=0;while(b>=1024&&i<3){b/=1024;i++}return b.toFixed(i?1:0)+" "+u[i]};
+const dl=(id,rows)=>$(id).innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+const table=(id,head,rows,empty)=>$(id).innerHTML=rows.length?`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join(""):`<tr><td class="note">${esc(empty)}</td></tr>`;
+const css=name=>getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const metres=v=>v==null?null:Math.abs(v)<1?(v*100).toFixed(1)+" cm":v.toFixed(3)+" m";
+const span=v=>{const a=Math.abs(v),s=a>=1?+v.toFixed(2)+" m":a>=0.01?+(v*100).toFixed(1)+" cm":+(v*1000).toFixed(1)+" mm";return s.replace("-","−")};
+const duration=s=>s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h";
+const hsigma=f=>f.lat_sigma_m==null||f.lon_sigma_m==null?null:Math.hypot(f.lat_sigma_m,f.lon_sigma_m);
+
+// Same local tangent plane approximation as the app (WGS84 radii at the reference).
+function frame(ref){
+  const e2=(2-1/298.257223563)/298.257223563, s=Math.sin(ref.lat*Math.PI/180), w=Math.sqrt(1-e2*s*s), k=Math.PI/180*6378137;
+  const north=k*(1-e2)/(w*w*w), east=k/w*Math.cos(ref.lat*Math.PI/180);
+  return (e,n)=>[ref.lat+n/north,ref.lon+(east?e/east:0)];
+}
+
+// ---- map: works without tiles, and without Leaflet at all ----
+let map=null,here=null,ring=null,trail=null,fitted=false,follow=true,lastFix=null,dim=false;
+let fixNote="Waiting for a position fix",tileNote="";
+function note(text){$("mapnote").textContent=text}
+function showNote(){if(map)note(fixNote||tileNote)}
+function mapStyle(){
+  if(!map)return;
+  const accent=css("--accent"),text=css("--card");
+  here.setStyle({color:text,fillColor:dim?css("--muted"):accent,fillOpacity:dim?0.5:1});ring.setStyle({color:accent,fillColor:accent});trail.setStyle({color:accent});
+}
+try{
+  if(typeof L==="undefined")throw new Error("no Leaflet");
+  map=L.map("map",{maxZoom:22,zoomSnap:0.5});
+  // OSM requires a Referer on browser tile requests; Home Assistant pages may set
+  // no-referrer, so ask for the origin to be sent on tile requests only.
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxNativeZoom:19,maxZoom:22,
+    referrerPolicy:"strict-origin-when-cross-origin",
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'})
+    .on("tileerror",()=>{tileNote="Map tiles could not be loaded, perhaps offline. Position and drift still update.";showNote()})
+    .on("tileload",()=>{tileNote="";showNote()})
+    .addTo(map);
+  trail=L.polyline([],{weight:2,opacity:0.35,interactive:false}).addTo(map);
+  ring=L.circle([0,0],{radius:0,weight:1,opacity:0.6,fillOpacity:0.12,interactive:false});
+  here=L.circleMarker([0,0],{radius:6,weight:2,fillOpacity:1,interactive:false});
+  map.on("dragstart",()=>{follow=false});
+  mapStyle();
+}catch(e){map=null;note("The map is unavailable. Position and drift still update.")}
+$("centre").onclick=()=>{follow=true;if(map&&lastFix)map.setView(lastFix,Math.max(map.getZoom(),18))};
+// A lost or stale fix greys the dot at the last known position and hides the ring.
+function updateMap(f,stale){
+  const lost=f.lat==null||f.lon==null||!(f.quality>0);
+  if(!lost)lastFix=[f.lat,f.lon];
+  fixNote=!lastFix?"Waiting for a position fix":lost?"No position fix now. The grey dot is the last known position.":
+    stale?`The position fix is stale (${f.age_s} s old). The grey dot is the last known position.`:"";
+  if(!map)return;
+  if(lastFix&&!fitted){map.setView(lastFix,19);here.addTo(map);fitted=true}
+  if(dim!==(lost||stale)){dim=lost||stale;mapStyle()}
+  if(fitted&&!dim){
+    here.setLatLng(lastFix);ring.setLatLng(lastFix);ring.setRadius(hsigma(f)||0);
+    if(!map.hasLayer(ring))ring.addTo(map);
+    if(follow&&!map.getBounds().contains(lastFix))map.panTo(lastFix);
+  }else if(map.hasLayer(ring))ring.remove();
+  showNote();
+}
+
+// ---- drift plots: plain canvas ----
+let track=null,dots=[];
+function hex(c){c=c.replace("#","");return[0,2,4].map(i=>parseInt(c.substr(i,2),16))}
+function mix(a,b,t){return"rgb("+a.map((v,i)=>Math.round(v+(b[i]-v)*t)).join(",")+")"}
+function nice(v){const p=Math.pow(10,Math.floor(Math.log10(v))),m=v/p;return(m<=1?1:m<=2?2:m<=2.5?2.5:m<=5?5:10)*p}
+function prep(cv,h){
+  const w=cv.clientWidth,ratio=window.devicePixelRatio||1;h=h||w;
+  cv.width=Math.round(w*ratio);cv.height=Math.round(h*ratio);
+  const c=cv.getContext("2d");c.setTransform(ratio,0,0,ratio,0,0);c.clearRect(0,0,w,h);
+  c.font="11px system-ui,sans-serif";c.lineWidth=1;return[c,w,h];
+}
+function drawDrift(){
+  const pts=track&&track.points||[];
+  const muted=css("--muted"),line=css("--line"),text=css("--text"),old=hex(css("--age-old")),young=hex(css("--age-new"));
+  const oldest=pts.length?pts[0][0]:0,colour=age=>mix(old,young,oldest>0?1-age/oldest:1);
+  const dropped=track&&track.outliers_dropped?` ${track.outliers_dropped} isolated fixes more than 1 km away were left out.`:"";
+  $("drifttxt").textContent=(pts.length?`${pts.length} positions over the last ${duration(oldest)} (one per second, up to ${duration(track.window_s)}). Offsets are from the median position.`:"No positions yet.")+dropped;
+  if(!pts.length)$("hover").textContent="Point at a dot for details";
+  // East/north scatter: square, centred on the reference, at least ±5 cm.
+  let [c,w]=prep($("scatter"));
+  const pad=30,size=w-2*pad,mid=w/2;
+  let half=0.05;for(const p of pts)half=Math.max(half,Math.abs(p[1]),Math.abs(p[2]));
+  const step=nice(half/2);half=2*step;const k=size/2/half;
+  c.strokeStyle=line;c.fillStyle=muted;c.textAlign="center";c.textBaseline="top";
+  for(let i=-2;i<=2;i++){
+    const x=mid+i*step*k;
+    c.beginPath();c.moveTo(x,pad);c.lineTo(x,w-pad);c.moveTo(pad,x);c.lineTo(w-pad,x);c.stroke();
+    if(i)c.fillText(span(i*step),x,w-pad+4);
+  }
+  c.textAlign="right";c.textBaseline="middle";
+  for(let i=-2;i<=2;i++)if(i)c.fillText(span(i*step),pad+22,mid-i*step*k-7);
+  c.textAlign="left";c.textBaseline="top";c.fillText("N ↑",mid+4,pad-16);c.textAlign="right";c.fillText("E →",w-pad,w-pad+16);
+  dots=[];
+  for(const p of pts){
+    const x=mid+p[1]*k,y=mid-p[2]*k;dots.push([x,y,p]);
+    c.fillStyle=colour(p[0]);c.beginPath();c.arc(x,y,2,0,7);c.fill();
+  }
+  if(pts.length){const [x,y]=dots[dots.length-1];c.strokeStyle=text;c.lineWidth=2;c.beginPath();c.arc(x,y,5,0,7);c.stroke()}
+  if(!pts.length){c.fillStyle=muted;c.textAlign="center";c.fillText("No positions yet",mid,mid-20)}
+  // Up over time, same age colours, at least ±5 cm.
+  [c,w]=prep($("up"),110);
+  const h=110,left=48,top=8,bottom=h-18,window_s=Math.max(oldest,60);
+  let uh=0.05;for(const p of pts)uh=Math.max(uh,Math.abs(p[3]));
+  const ustep=nice(uh);const ky=(bottom-top)/2/ustep,ymid=(top+bottom)/2;
+  const tx=age=>left+(1-age/window_s)*(w-left-6);
+  c.strokeStyle=line;c.beginPath();
+  for(const y of[top,ymid,bottom]){c.moveTo(left,y);c.lineTo(w-6,y)}c.stroke();
+  c.fillStyle=muted;c.textAlign="right";c.textBaseline="middle";
+  c.fillText("+"+span(ustep),left-4,top+4);c.fillText("Up 0",left-4,ymid);c.fillText("−"+span(ustep),left-4,bottom-4);
+  c.textBaseline="top";c.fillText("now",w-6,bottom+4);c.textAlign="left";c.fillText("−"+duration(window_s),left,bottom+4);
+  for(const p of pts){c.fillStyle=colour(p[0]);c.fillRect(tx(p[0])-1,ymid-p[3]*ky-1,2,2)}
+}
+function pick(ev){
+  const r=$("scatter").getBoundingClientRect(),x=ev.clientX-r.left,y=ev.clientY-r.top;
+  let best=null,d=144;
+  for(const [px,py,p] of dots){const q=(px-x)**2+(py-y)**2;if(q<d){d=q;best=p}}
+  $("hover").textContent=best?`${duration(best[0])} ago: E ${span(best[1])}, N ${span(best[2])}, U ${span(best[3])}`:"Point at a dot for details";
+}
+$("scatter").addEventListener("pointermove",pick);
+$("scatter").addEventListener("pointerdown",pick);
+function drawTrail(){
+  if(!map)return;
+  if(!track||!track.reference||!track.points.length){trail.setLatLngs([]);return}
+  const toLatLon=frame(track.reference);
+  trail.setLatLngs(track.points.map(p=>toLatLon(p[1],p[2])));
+}
+window.addEventListener("resize",drawDrift);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{drawDrift();mapStyle()});
+
+function render(s){
+  const live=s.connected&&s.data_age_s!=null&&s.data_age_s<5;
+  $("link").className=live?"good":"bad";
+  $("link").textContent=live?"Receiving":(s.last_error||"No data from receiver");
+  const f=s.fix||{};
+  const stale=f.age_s!=null&&f.age_s>5;
+  $("fix").textContent=(f.name||"—")+(stale?" (stale)":"");
+  $("fix").className="big "+(stale?"bad":f.quality>0&&f.quality!==6?"good":"warn");
+  dl("fixd",[["Satellites used",f.satellites],["HDOP",f.hdop],["UTC",f.utc],["Age",f.age_s==null?null:f.age_s+" s"],["Antenna",s.antenna||null]]);
+  dl("posd",[["Latitude",f.lat==null?null:f.lat.toFixed(9)+"°"],["σ latitude",metres(f.lat_sigma_m)],
+    ["Longitude",f.lon==null?null:f.lon.toFixed(9)+"°"],["σ longitude",metres(f.lon_sigma_m)],
+    ["Ellipsoidal height",f.height_m==null?null:f.height_m.toFixed(3)+" m"],["σ height",metres(f.height_sigma_m)]]);
+  updateMap(f,stale);
+  $("rate").textContent=size(s.bytes_per_s)+"/s";
+  dl("data",[["Received",size(s.total_bytes)],["Unreadable bytes",s.parser.unknown_bytes],["Bad checksums",s.parser.bad_frames],["Dropped, app overloaded",size(s.parser.queue_dropped_bytes)],["Uptime",Math.round(s.uptime_s/60)+" min"]]);
+  const d=s.storage;
+  $("free").textContent=size(d.free_bytes)+" free";
+  $("free").className="big "+(d.paused||d.last_error?"bad":"");
+  dl("disk",[["Logging",d.paused?"Paused, disk limit":(d.last_error||"On")],["Today",size(d.bytes_today)],["Not logged",size(d.dropped_bytes)],["All logs",size(d.stored_bytes)],["Compressed per day",size(d.compressed_bytes_per_day)],["Days until limit",d.days_until_limit]]);
+  const v=s.survey_in||{};
+  $("svin").textContent=(v.state||"Not reported")+(v.age_s>5?" (stale)":"");
+  dl("svind",[["Observations",v.observations==null?null:`${v.observations} of ${v.target}`],["Mean accuracy",v.accuracy_m==null?null:v.accuracy_m+" m"]]);
+  table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median]),"No signal data yet");
+  table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
+  table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");
+  table("files",["File","Size"],d.files.map(x=>[x.file,size(x.bytes)]),"No logs yet");
+  $("msgs").textContent=s.messages.length?s.messages.join("\n"):"None yet";
+}
+async function tick(){
+  try{const r=await fetch("api/status",{cache:"no-store"});if(!r.ok)throw new Error(r.status);render(await r.json())}
+  catch(e){$("link").className="bad";$("link").textContent="Lost contact with the app"}
+  setTimeout(tick,1000)}
+// The page keeps its own copy of the history (mergeTrack in track.js): after the
+// first load it asks only for points after `cursor`, unless the clocks show that
+// the computer slept or the clock was set.
+let kept=null,lastPoll=null;
+async function trackTick(){
+  try{
+    const wall=Date.now(),mono=performance.now();
+    if(clockJumped(lastPoll,wall,mono))kept=null;
+    lastPoll={wall,mono};
+    const url="api/track"+(kept&&kept.cursor?"?since="+encodeURIComponent(kept.cursor):"");
+    const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error(r.status);
+    ({kept,track}=mergeTrack(kept,await r.json(),performance.now()/1000));drawDrift();drawTrail()}
+  catch(e){}
+  setTimeout(trackTick,track&&track.points.length?10000:3000)}
+drawDrift();
+tick();
+trackTick();
+</script>
+</body>
+</html>
