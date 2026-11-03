@@ -1,0 +1,5 @@
+# Only gnss_base/ is copied into the image (see Dockerfile); keep caches and tests out
+# of the build context too.
+**/__pycache__
+**/*.pyc
+tests

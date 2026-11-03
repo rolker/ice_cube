@@ -34,6 +34,8 @@ button{font:inherit;font-size:13px;color:var(--text);background:var(--bg);border
 #mapnote{margin:6px 0 0}
 .key{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin:0 4px 0 10px}
 .key.fix{background:var(--accent)}.key.base{border:2px solid var(--warn);width:12px;height:12px}
+.key.rover{border-radius:0;width:9px;height:9px;transform:rotate(45deg);background:var(--good)}
+.rover{background:var(--good);border:2px solid var(--card);transform:rotate(45deg)}.rover.stale{background:var(--muted)}
 dl.stale{opacity:.5}
 #scatter{display:block;width:100%;max-width:440px;aspect-ratio:1;margin:8px auto 0}
 #up{display:block;width:100%;height:110px;margin-top:10px}
@@ -64,11 +66,14 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
 <section><h2>Data</h2><div id="rate" class="big">—</div><dl id="data"></dl></section>
 <section><h2>Storage</h2><div id="free" class="big">—</div><dl id="disk"></dl></section>
+<section><h2>NTRIP caster (local network)</h2><div id="caster" class="big">—</div><dl id="casterd"></dl>
+<table id="clients"></table></section>
+<section><h2>Upload (RTK2go)</h2><div id="upload" class="big">—</div><dl id="uploadd"></dl></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl></section>
 <section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
 <p id="mapnote" class="note">Waiting for a position fix</p>
-<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005)</div>
+<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005) <span class="key rover"></span>Rover on the caster (its GGA)</div>
 <dl id="posd" class="posd"></dl></section>
 <section class="wide"><h2>Drift around the median position</h2>
 <div id="drifttxt" class="note">No positions yet</div>
@@ -265,6 +270,51 @@ function drawTrail(){
 window.addEventListener("resize",drawDrift);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{drawDrift();mapStyle()});
 
+// The two outputs: the local caster and the upload. No password ever reaches the page:
+// the app sends only whether one is set.
+const UPLOAD_STATES={off:"Off",connecting:"Connecting",connected:"Connected",waiting:"Waiting to retry","waiting for RTCM":"Waiting for RTCM","stopped for today":"Stopped for today",stopped:"Stopped"};
+// Rovers on the caster that send GGA with a fix: a diamond each, grey once their GGA is
+// older than ROVER_STALE_S (roverPoints in track.js). Only on this Ingress page.
+const roverMarks=new Map();
+function updateRovers(clients){
+  if(!map)return;
+  const pts=roverPoints(clients),keep=new Set();
+  for(const r of pts){
+    keep.add(r.key);
+    const icon=L.divIcon({className:"rover"+(r.stale?" stale":""),iconSize:[10,10]});
+    let m=roverMarks.get(r.key);
+    if(!m){m=L.marker([r.lat,r.lon],{keyboard:false,icon}).bindTooltip("");roverMarks.set(r.key,m);m.addTo(map)}
+    m.setLatLng([r.lat,r.lon]);
+    if(m.options.icon.options.className!==icon.options.className)m.setIcon(icon);
+    m.setTooltipContent(esc(`Rover ${r.address}: GGA quality ${r.quality??"?"}, ${r.age_s} s ago`));
+  }
+  for(const [k,m] of roverMarks)if(!keep.has(k)){m.remove();roverMarks.delete(k)}
+}
+const logNote=c=>c.log_error||[c.log_suppressed?`${c.log_suppressed} lines held back (rate limit)`:"",c.log_dropped?`${c.log_dropped} dropped`:"",
+  c.log_skipped_low_disk?`${c.log_skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
+function renderOutputs(s){
+  const c=s.caster||{},u=s.upload||{},clients=c.clients||[],age=c.last_rtcm_age_s;
+  $("caster").textContent=!c.enabled?"Off":c.error?"Not running":clients.length+(clients.length===1?" client":" clients");
+  $("caster").className="big "+(c.error?"bad":c.enabled&&(age==null||age>10)?"warn":"");
+  dl("casterd",[["Status",c.error||(!c.enabled?"Off (caster_enabled)":c.listening?"Listening":"Not listening")],["Port in the container",c.port],
+    ["Mountpoint",c.mountpoint],["Login",c.login?"user and password":"none: any login works"],
+    ["Last RTCM",age==null?"none yet":age>10?`${age} s ago: no corrections now`:`${age} s ago`],
+    ["Connections since start",c.connections],["Refused, failed logins",`${c.refused??0}, ${c.auth_failures??0}`],["Connection log",logNote(c)]]);
+  // "Sent to us" is amber when a client sends anything but GGA (the first lines of it
+  // are in caster.jsonl).
+  const sent=clients.map(x=>sentText(x.sent));
+  table("clients",["Address","Agent","Connected","Sent","Skipped","Rover GGA","Sent to us"],clients.map((x,i)=>[x.address,x.agent||null,duration(x.connected_s),size(x.bytes_sent),x.frames_skipped,
+    x.gga_age_s==null?null:`quality ${x.gga_quality??"?"}, ${x.gga_age_s} s ago`,sent[i].text]),"No clients");
+  if(clients.length)sent.forEach((t,i)=>{$("clients").rows[i+1].lastChild.className=t.warn?"warn":""});
+  updateRovers(clients);
+  $("upload").textContent=UPLOAD_STATES[u.state]||u.state||"—";
+  $("upload").className="big "+(u.alert?"bad":u.state==="connected"?"good":"");
+  dl("uploadd",[["Caster",u.host==null?null:`${u.host}:${u.port}`],["Mountpoint",u.mountpoint||"not set"],["Password",u.password_set?"set":"not set"],["Style",u.style],
+    ["Connected for",u.connected_s==null?null:duration(u.connected_s)],["Retry in",u.retry_in_s==null?null:duration(u.retry_in_s)],
+    ["Why",u.reason||null],["Last error",u.last_error||null],["Sent, this connection",size(u.bytes_sent)],["Sent today (UTC)",size(u.bytes_today)],
+    ["Frames skipped",u.frames_skipped],["Attempts today",u.attempts_today],
+    ["Refusals, ban replies since the last accepted connection",`${u.refusals??0}, ${u.bans??0}`],["State file",u.state_error||null]]);
+}
 function render(s){
   const live=s.connected&&s.data_age_s!=null&&s.data_age_s<5;
   $("link").className=live?"good":"bad";
@@ -303,6 +353,7 @@ function render(s){
   dl("svind",[["Valid flag",v.valid],["Observations (Obs)",v.observations],["Target (CfgDur)",v.target],["Mean accuracy",v.accuracy_m==null?null:v.accuracy_m+" m"]]);
   table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz","Source"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median,x.source]),"No signal data yet");
   table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
+  renderOutputs(s);
   if(typeof renderReceiver==="function")renderReceiver(s);
   table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
   table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");

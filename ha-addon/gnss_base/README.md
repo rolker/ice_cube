@@ -4,7 +4,7 @@ Runs a GNSS base receiver from a Home Assistant box. Home Assistant calls add-on
 "apps" from 2026.2 on.
 
 Written for a Quectel LG290P (for example on a SparkFun breakout, read through one port
-of its USB serial bridge). It does not serve corrections yet.
+of its USB serial bridge).
 
 - Reads the receiver and splits its stream into checked RTCM3 and NMEA messages
 - Saves every byte to a daily file, and compresses finished days
@@ -14,6 +14,9 @@ of its USB serial bridge). It does not serve corrections yet.
   against a receiver profile; guides you through setting it up as a base; and decodes
   RTCM (1005/1006 and MSM), so the page still works in base mode, when the receiver
   stops sending NMEA
+- **Stage 3a (0.4.0):** serves the receiver's RTCM corrections to rovers on your network
+  (a small NTRIP caster), and can upload them to an NTRIP caster such as RTK2go, so a
+  rover on cellular data can use them too
 
 ## Status page
 
@@ -168,7 +171,7 @@ The profile sets:
 | setting | value |
 |---|---|
 | Receiver mode (PQTMCFGRCVRMODE) | 2, base station. Needs a save and a restart. |
-| PQTMCFGRTCM | MSM4, no elevation mask, ephemerides output when updated. MSM7 is a commented alternative. |
+| PQTMCFGRTCM | MSM4, no elevation mask, ephemerides when updated and every 60 s (EPH_Mode 2, EPH_Interval 60). MSM7 is a commented alternative. |
 | RTCM3-1005 | every fix |
 | MSM 107X, 108X, 109X, 112X (GPS, GLONASS, Galileo, BeiDou) | every fix, offset 0 |
 | RTCM3-1230, 1019, 1020, 1042, 1046 | rate 1 (the only rate the specification allows) |
@@ -220,7 +223,203 @@ PQTMSAVEPAR and a restart after Set commands, so restart the receiver after appl
    coordinates out of public repositories.
 7. Once the receiver sends 1005, the base position appears on the page.
 
+## Corrections out (stage 3a)
+
+The receiver's RTCM goes to two outputs, which share one filter, so a rover gets the same
+stream from either:
+
+- **RTCM only**: NMEA and PQTM sentences never leave the app, and only whole frames whose
+  CRC checked out are sent.
+- **1005/1006 and 1033** (base position, receiver and antenna names) at most once every
+  10 s; the first one goes to a new rover at once. The receiver still sends 1005 every
+  second into the raw log and the page.
+- Everything else as it comes: MSM4 and 1230 every second, ephemerides when they change
+  and every 60 s (with the profile's EPH_Mode 2).
+
+Nothing from the network can reach the receiver: the caster and the upload never get
+the command or serial code, and anything a rover or caster sends is read and dropped.
+Commands still come only from the page, through Home Assistant.
+
+### Local NTRIP caster
+
+An NTRIP v1 caster on port 2101, for a rover on your network, for example SW Maps on a
+phone feeding a SparkFun RTK Express over Bluetooth. In SW Maps (or another NTRIP
+client):
+
+| field | value |
+|---|---|
+| Host | the Home Assistant machine's IP address on your network |
+| Port | 2101 (or the host port you set in the app's Network section) |
+| Mountpoint | `caster_mountpoint`, default `BASE`; asking for the list of mountpoints also works |
+| User, password | anything, or none, unless you set `caster_password` |
+| NTRIP version | 1 (version 2 is planned) |
+
+- **Login**: off by default, so any login or none is accepted. Set `caster_password`
+  (and optionally `caster_user`) to require one; a wrong or missing login gets
+  `401 Unauthorized`, and 5 failures from one address in a minute lock it out for 60 s.
+  Without a password anyone on your network can read the corrections, which include the
+  base position. Do not forward port 2101 on your router.
+- **One address for everyone?** Home Assistant normally passes the rover's own address
+  through to the app. If Docker's userland proxy is in the path instead (some setups,
+  and connections to the host's own address), every LAN client arrives from one internal
+  address. Then the login lockout, the limit on unfinished requests and the connection
+  log's rate limits apply to all rovers together: one rover with a wrong password could
+  lock the others out for a minute. The lockout is kept short (60 s) for that reason.
+  The client table shows the address the app sees.
+- **Sourcetable**: `GET /` or an unknown mountpoint returns the sourcetable, one `STR`
+  line for the mountpoint with latitude and longitude 0.00 (the stream's 1005 has the
+  real position).
+- **Clients**: at most `caster_max_clients` at once (more get `503`). If a rover cannot
+  keep up, frames for it are skipped and counted once 32 kB are waiting, and it is
+  dropped if nothing drains for 30 s. Other rovers and the raw log are unaffected. One
+  address may have at most 4 requests still unfinished (20 in all), so a client that
+  sends its request very slowly cannot keep a rover elsewhere out.
+- **What rovers send**: counted and then dropped; it never reaches the receiver. The
+  **Sent to us** column shows it, for example `GGA 1 Hz`, or `GGA 1 Hz + 3 other
+  (GPRMC, ...)` in amber when anything but GGA arrives. The first 5 lines that are not
+  GGA, per connection, go to `caster.jsonl` (escaped, at most 200 characters), and the
+  disconnect line sums up what came. Before a line is logged, NMEA or not (binary too),
+  every number that could be a coordinate is replaced by `-`: any number followed by a
+  `N`, `S`, `E` or `W` field (NMEA latitude and longitude), and any decimal number with
+  4 or more digits after the point (decimal degrees, as in `$PQTMPVT` or `lat=48.1173`),
+  5 or more before it (ECEF metres) or 7 or more in all, or with an exponent. This
+  blanks some harmless numbers too, such as times with decimals. A position written
+  some other way (say, as whole micro-degrees) is not recognised. A rover's GGA lines
+  are never logged; its latest GGA position shows on the map as a green diamond (grey
+  once its GGA is over 10 s old), kept in memory for the page only.
+- **Port in use**: if host port 2101 is taken, Home Assistant cannot start the app at
+  all. Change the host port in the app's Network section (the container side stays 2101),
+  or turn it off there to run without the caster.
+- If you prefer RTKLIB, `str2str -in ntrip://:@<ip>:2101/BASE -out file://test.rtcm3` is
+  an independent client to check the stream with.
+
+### Upload to RTK2go
+
+Off until both `upload_mountpoint` and `upload_password` are set. The app then connects
+to `upload_host:upload_port` (default `rtk2go.com:2101`) as an NTRIP server: it sends
+`SOURCE <password> /<mountpoint>` (NTRIP rev1, as RTKLIB and most RTK2go bases do), and
+after `ICY 200 OK` writes the filtered RTCM. Rovers then connect to RTK2go as clients.
+
+1. Reserve a mountpoint on rtk2go.com. The reservation fixes the style; this app speaks
+   **rev1** (`upload_style: rev1`). If you choose rev2, the app refuses to upload and
+   says so: rev2 is planned.
+2. Fill in `upload_mountpoint` and `upload_password` and restart the app.
+3. The **Upload (RTK2go)** card shows the state, bytes sent and any refusal.
+
+How it keeps to RTK2go's rules:
+
+- **Only while RTCM flows**: it connects only if the receiver sent RTCM in the last 3 s,
+  closes the connection if no RTCM has gone out 5 s after the caster's OK, and
+  disconnects once if none arrives from the receiver for 8 s, then waits for it to
+  return. SNIP drops a source that sends nothing for about 10 s, and repeated
+  connect-then-nothing is a ban reason.
+- **One connection**: never more than one upload connection, and the old one is closed
+  before a new one opens.
+- **Backoff**: retries no sooner than 60 s after the previous attempt, doubling to 30 min
+  (with up to 10% added), reset after 30 min connected. `ERROR - Bad Password` or
+  `Mount Point Taken or Invalid` (perhaps another source still holds it), or an HTTP 401:
+  30 min, red on the page. After 3 refusals without an accepted connection in between
+  (other failures between them do not reset the count) the upload **stops** and the card
+  says what to check (mountpoint and password against the reservation, and that no
+  other base still sends to it). A reply that looks like a ban (HTTP `403` or `429`, an
+  HTML page, or the words "banned" or "blocked"): 4 h, and it stops after 2 without an
+  accepted connection in between.
+  Saving changed upload options starts again (after at least 60 s since the last try);
+  restarting with the same options allows one more try once the wait is over. At most
+  100 attempts per UTC day. A bare `OK` reply (some rev1 casters other than SNIP) is
+  accepted like `ICY 200 OK`.
+- **Restarts keep the waits**: the next allowed attempt, the refusal and ban counts, and
+  the day's attempts and bytes are kept in `upload-state.json` in the app's private
+  `/data` folder (not the share), saved after each attempt and, while connected, every
+  5 min or 10 MB. A restart within a wait still waits, and a restart after the day's
+  400 MB stays stopped until midnight UTC; a changed password, mountpoint, host, port or
+  style drops a refusal's wait but not a ban's, which is about the IP address. If the
+  clock is behind the last attempt in the file (not yet synced after a boot), only the
+  60 s gap is kept. A file that cannot be read or holds anything unexpected (such as
+  `NaN`) is ignored with a warning, and the first attempt still waits 60 s. The file
+  holds a salted hash of the settings, never the password.
+- **Data**: RTCM only, 1005 every 10 s. If a minute averages over 30 kbit/s (RTK2go's
+  limit is 35; a base sends about 12) the upload stops for 30 min; at 400 MB in a UTC day
+  (RTK2go's limit is 500) it stops until midnight UTC. A stalled upload (64 kB waiting for
+  60 s) is closed and retried with the backoff.
+- **Password**: from the options only (there is no command-line flag for it). It is
+  written to the connection and nowhere else: not to the app log, `caster.jsonl`, the
+  command log, the page or `api/status` (which say only whether one is set). Replies that
+  echo it have it replaced by `***`. NTRIP rev1 sends it in clear text, as RTK2go's port
+  2101 has no encryption; it only protects the mountpoint from being taken.
+- Never test against RTK2go: its rules do not allow it. The tests use a fake caster on
+  localhost.
+
+RTK2go shows the mountpoint's position (rounded) on its public map and sourcetable, and
+anyone can read the full 1005 from the stream. It also sees your IP address.
+
+### Connection log
+
+`<log_dir>/caster.jsonl`, one JSON object a line: `utc`, `event` (`connect`,
+`disconnect`, `auth_failed`, `refused`, `sourcetable`, `rover_sent`, `suppressed`;
+`upload_connect`, `upload_disconnect`, `upload_error`), `address`, `user_agent`,
+`ntrip_version`, `user` (on connect and disconnect only; a failed login logs just the
+address), `bytes_sent`, `frames_skipped`, `duration_s`, `reason`, what the client sent
+(`bytes_received`, `gga`, `gga_hz`, `nmea_other`, `other`, `types`) on disconnect, the
+sample lines (`n`, `kind`, `type`, `text`, `shortened`) on `rover_sent`, and for the
+upload `host`, `port`, `mountpoint`, `kind` and the caster's `reply`. Passwords and rover
+GGA lines are never logged, and the `rover_sent` samples have coordinate-like numbers
+blanked as described above.
+
+So that a busy or hostile network cannot fill the disk:
+
+- each address gets at most 10 sourcetable, refused and failed-login lines a minute, and
+  30 lines of any kind; all addresses together 200. The rest are counted, and one
+  `suppressed` line per address (`count`, `events`) follows when the minute ends;
+- at 10 MB the file is renamed `caster.jsonl.1` (older ones move to `.2`, `.3`; the
+  oldest is deleted), so it never takes more than about 40 MB;
+- nothing is written while free space is below `min_free_gb`, like the raw log;
+- lines are written by a background task, never on the path that reads and logs the
+  receiver; if the disk is slow and 2000 lines are waiting, more are dropped and counted.
+
+The caster card shows any lines held back, dropped or not written.
+
 ## Changes
+
+**0.4.0**
+
+- New local NTRIP caster (v1) on port 2101, login optional and off by default, with a
+  card on the page listing its clients.
+- New upload to an NTRIP caster such as RTK2go (rev1 SOURCE), off until a mountpoint and
+  password are set, with backoff and rate guards that follow RTK2go's rules, and a card
+  on the page.
+- Both send RTCM only, with 1005/1006/1033 thinned to every 10 s.
+- New connection log `caster.jsonl`, rate-limited per address, rotated at 10 MB
+  (3 kept), not written below the free space floor, and written off the serial path.
+- The caster counts what each client sends (GGA, other NMEA by type, anything else),
+  logs the first 5 non-GGA lines per connection with coordinates blanked, and sums it up
+  on disconnect. The client table has a **Sent to us** column (amber for anything but
+  GGA), and rovers that send GGA with a fix show on the map as diamonds.
+- The caster allows 4 unfinished requests per address (20 in all), forgets failed
+  logins after the minute, and no longer logs the user name typed in a failed login.
+- The upload stops after 3 refusals or 2 ban-like replies without an accepted
+  connection in between, until the options
+  change or the app restarts, keeps its waits and counts across restarts in
+  `/data/upload-state.json`, connects only if RTCM arrived in the last 3 s, closes if
+  nothing was sent 5 s after the OK, disconnects after 8 s without RTCM, recognises
+  ban replies more precisely and accepts a bare `OK`.
+- Every logged rover line, NMEA or not, has coordinate-like numbers blanked (NMEA
+  latitude and longitude, decimal degrees, ECEF metres); an IPv4 address seen as
+  `::ffff:a.b.c.d` counts as that IPv4 address for the per-address limits, lockout and
+  log.
+- The upload state is saved every 5 min or 10 MB while connected; a restart after the
+  day's 400 MB waits for midnight UTC; a state file with `NaN`, infinities or anything
+  else unexpected is ignored with a warning (the first attempt still waits 60 s); a
+  clock behind the last attempt keeps only the 60 s gap.
+- On shutdown, the connection log waits at most 5 s for the disk, and its writer task
+  ends even if the app fails to start.
+- New option check: `upload_mountpoint` may hold only letters, digits, `_`, `.` and `-`.
+- The profile sets `PQTMCFGRTCM` EPH_Mode 2 with EPH_Interval 60: ephemerides also every
+  60 s, about 40 B/s more, so a rover has all orbits within a minute. A receiver set up
+  with 0.3 shows this row as **differ**; apply it, save and restart, then check that
+  1019/1020/1042/1046 now arrive about once a minute per satellite in the RTCM table.
+- New options, see below.
+
 
 **0.3.2**
 
@@ -296,6 +495,22 @@ start manually for now.
 | baud | 460800 | Receiver baud rate |
 | log_dir | /share/gnss_base | Where logs go |
 | min_free_gb | 10 | Logging pauses when free disk falls below this, and resumes when space returns |
+| caster_enabled | true | Run the local NTRIP caster |
+| caster_mountpoint | BASE | Its mountpoint: 1 to 32 letters, digits or `_` |
+| caster_user | empty | With a password: the user name it requires (empty: any user) |
+| caster_password | empty | Empty: no login needed. Set: rovers must log in |
+| caster_max_clients | 4 | Rovers at once (1 to 16) |
+| upload_host | rtk2go.com | NTRIP caster to upload to |
+| upload_port | 2101 | Its port |
+| upload_mountpoint | empty | Your reserved mountpoint. Empty: no upload |
+| upload_password | empty | The mountpoint's password. Empty: no upload |
+| upload_style | rev1 | NTRIP style of the reservation. Only rev1 works so far |
+
+Command-line arguments override options (`--device`, `--baud`, `--caster-mountpoint`,
+`--upload-host`, ...; `--no-caster`, and `--caster-host`/`--caster-port` for where the
+caster listens). Passwords can be set only in the options. `--data-dir` sets where the
+upload keeps `upload-state.json` (default: the options file's folder, `/data` in Home
+Assistant).
 
 ## Logs
 
@@ -310,8 +525,11 @@ Home Assistant backups that include `/share` will include them too.
 
 From this folder, with `aiohttp` and `pyserial` installed (Python 3.11 or later):
 
-    python -m unittest tests.test_app
+    python -m unittest tests.test_app tests.test_outputs
 
-The page's track merging is tested under Node (`tests/track_test.js`), which the suite
+`tests.test_outputs` covers the hub, the filter, the caster and the upload, against a fake
+caster on localhost; nothing connects outside the machine. If RTKLIB's `str2str` is on
+the path (or named by the `STR2STR` environment variable), it is used as an independent
+NTRIP client of the caster. The page's track merging is tested under Node (`tests/track_test.js`), which the suite
 runs if `node` is installed and skips otherwise. Tests use synthetic positions only, and
 a simulated receiver on a pseudo-terminal.

@@ -66,4 +66,40 @@ function distanceM(a, b) {
   return Math.hypot((b[0] - a[0]) * k, dLon * k * Math.cos((a[0] + b[0]) / 2 * Math.PI / 180));
 }
 
-if (typeof module !== "undefined") module.exports = {mergeTrack, clockJumped, baseCentring};
+// What a caster client sent us, for the clients table: {text, warn}. `sent` is the
+// app's per-client summary (gga, gga_hz, nmea_other, other, types). Anything other than
+// GGA is worth a look (warn), since a rover normally sends GGA only, or nothing.
+function sentText(sent) {
+  if (!sent) return {text: null, warn: false};
+  const count = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
+  const gga = count(sent.gga), nmea = count(sent.nmea_other), other = count(sent.other);
+  if (!gga && !nmea && !other) return {text: "nothing", warn: false};
+  const rate = sent.gga_hz == null ? NaN : Number(sent.gga_hz);
+  const hz = Number.isFinite(rate) ? ` ${+rate.toFixed(1)} Hz` : "";
+  const parts = gga ? [`GGA${hz || (gga === 1 ? " (1)" : ` (${gga})`)}`] : [];
+  if (nmea + other) {
+    const names = Object.keys(sent.types || {}).slice(0, 3);
+    if (other) names.push("non-NMEA");
+    parts.push(`${nmea + other} other` + (names.length ? ` (${names.join(", ")})` : ""));
+  }
+  return {text: parts.join(" + "), warn: nmea + other > 0};
+}
+
+// The rovers to draw on the map: caster clients whose latest GGA has a position.
+// Returns [{key, lat, lon, quality, age_s, stale, address}]; stale after `maxAge` s.
+const ROVER_STALE_S = 10;
+function roverPoints(clients, maxAge = ROVER_STALE_S) {
+  const out = [], seen = {};
+  for (const c of clients || []) {
+    const p = c.position;
+    if (!p || typeof p.lat !== "number" || typeof p.lon !== "number") continue;
+    const n = seen[c.address] = (seen[c.address] || 0) + 1;
+    out.push({key: `${c.address}#${n}`, lat: p.lat, lon: p.lon, quality: p.quality,
+      age_s: p.age_s, stale: p.age_s == null || p.age_s > maxAge, address: c.address});
+  }
+  return out;
+}
+
+if (typeof module !== "undefined") {
+  module.exports = {mergeTrack, clockJumped, baseCentring, sentText, roverPoints};
+}

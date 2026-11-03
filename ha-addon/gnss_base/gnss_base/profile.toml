@@ -33,12 +33,16 @@ first, restart, then check the profile again."""
 label = "RTCM: MSM type, elevation mask, ephemeris output"
 command = "PQTMCFGRTCM"
 # MSM_Type, MSM_Mode (always 0), MSM_ElevThd (-90 = no limit), two reserved fields
-# (defaults 07 and 06), EPH_Mode (1 = output when updated), EPH_Interval (used only
-# with EPH_Mode 2).
-value = [4, 0, -90.0, "07", "06", 1, 0]
+# (defaults 07 and 06), EPH_Mode (2 = output when updated and every EPH_Interval
+# seconds; 1 = only when updated), EPH_Interval (0-7200 s, used only with EPH_Mode 2).
+# Every 60 s, so a rover or a restarted solver has all orbits within a minute instead
+# of waiting up to 2 h for the next GPS update: about 40 B/s more.
+value = [4, 0, -90.0, "07", "06", 2, 60]
 # For MSM7 later, which carries finer measurements and extended CNR:
-# value = [7, 0, -90.0, "07", "06", 1, 0]
-note = "MSM4. MSM7 is a commented alternative in the profile file."
+# value = [7, 0, -90.0, "07", "06", 2, 60]
+note = """MSM4; ephemerides when updated and every 60 s (EPH_Mode 2). The specification \
+does not say how this interacts with the message rates: after applying, count the \
+1019/1020/1042/1046 messages per minute on the page. MSM7 is a commented alternative."""
 
 # Message output rates. Rate N means once every N fixes; base mode runs at 1 Hz.
 # `offset` is the MSM time offset (0 to rate - 1); `version` is the PQTM message version.

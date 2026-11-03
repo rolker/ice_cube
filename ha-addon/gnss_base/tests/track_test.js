@@ -3,8 +3,8 @@
 "use strict";
 const assert = require("assert");
 const path = require("path");
-const {mergeTrack, clockJumped, baseCentring} = require(path.join(__dirname, "..", "gnss_base", "static",
-  "track.js"));
+const {mergeTrack, clockJumped, baseCentring, sentText, roverPoints} = require(
+  path.join(__dirname, "..", "gnss_base", "static", "track.js"));
 
 const REF = {lat: 0, lon: 0, height_m: 0};
 
@@ -114,6 +114,41 @@ const checks = {
     assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 + 10000, 10500), false);
     assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 + 3600e3, 10500), true);
     assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 - 6000, 600), true);
+  },
+
+  "says what a rover sent, amber for anything but GGA"() {
+    assert.deepStrictEqual(sentText(null), {text: null, warn: false});
+    assert.deepStrictEqual(sentText({gga: 0, nmea_other: 0, other: 0}),
+      {text: "nothing", warn: false});
+    assert.deepStrictEqual(sentText({gga: 60, gga_hz: 1.0, nmea_other: 0, other: 0, types: {}}),
+      {text: "GGA 1 Hz", warn: false});
+    assert.deepStrictEqual(sentText({gga: 1, gga_hz: null, nmea_other: 0, other: 0}),
+      {text: "GGA (1)", warn: false});
+    assert.deepStrictEqual(sentText({gga: 10, gga_hz: 0.2, nmea_other: 2, other: 1,
+      types: {GPRMC: 1, GNGSA: 1}}), {text: "GGA 0.2 Hz + 3 other (GPRMC, GNGSA, non-NMEA)",
+      warn: true});
+    assert.deepStrictEqual(sentText({gga: 0, nmea_other: 0, other: 4, types: {}}),
+      {text: "4 other (non-NMEA)", warn: true});
+    // A rate that is not a number (an old or odd status) is left out, never thrown on.
+    for (const hz of ["1.0", "x", {}, [], true, NaN, Infinity]) {
+      const out = sentText({gga: 5, gga_hz: hz, nmea_other: 0, other: 0});
+      assert.ok(/^GGA( [0-9.]+ Hz| \(5\))$/.test(out.text), `${String(hz)}: ${out.text}`);
+    }
+    assert.deepStrictEqual(sentText({gga: 5, gga_hz: "2.04"}), {text: "GGA 2 Hz", warn: false});
+    assert.deepStrictEqual(sentText({gga: "x", nmea_other: -1, other: null}),
+      {text: "nothing", warn: false});
+  },
+
+  "rovers on the map: only clients with a position, stale after 10 s"() {
+    const pts = roverPoints([
+      {address: "192.0.2.1", position: {lat: 1.5, lon: 2.5, quality: 4, age_s: 1}},
+      {address: "192.0.2.1", position: {lat: 1.6, lon: 2.6, quality: 1, age_s: 12}},
+      {address: "192.0.2.2", position: null},
+      {address: "192.0.2.3"},
+    ]);
+    assert.deepStrictEqual(pts.map(p => [p.key, p.stale]),
+      [["192.0.2.1#1", false], ["192.0.2.1#2", true]]);
+    assert.deepStrictEqual(roverPoints(undefined), []);
   },
 };
 

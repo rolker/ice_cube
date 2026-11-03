@@ -778,7 +778,7 @@ class Page(unittest.TestCase):
         result = subprocess.run(["node", str(ROOT / "tests" / "track_test.js")],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 8,
+        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 10,
                          result.stdout)
 
     def test_receiver_script_is_served_and_uses_relative_urls(self):
@@ -1382,7 +1382,7 @@ def simulated_reply(body):
     fixed = {"PQTMVERNO": f"PQTMVERNO,{FIRMWARE},2024/04/30,10:53:07",
              "PQTMCFGUART,R": "PQTMCFGUART,OK,1,460800,8,0,1,0",
              "PQTMCFGRCVRMODE,R": "PQTMCFGRCVRMODE,OK,2",
-             "PQTMCFGRTCM,R": "PQTMCFGRTCM,OK,4,0,-90.0,07,06,1,0"}
+             "PQTMCFGRTCM,R": "PQTMCFGRTCM,OK,4,0,-90.0,07,06,2,60"}
     if body == "PQTMLSTMSG":
         return ["PQTMLSTMSG,OK,1,1,GGA,1", "PQTMLSTMSG,OK,1,1,RTCM3-107X,1,0", "PQTMLSTMSG,OK,End"]
     if body in fixed:
@@ -1507,6 +1507,12 @@ def msm_frame(number, cells, multiple=False):
     for width in after:
         fill(width, c)
     return bits.frame()
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
 def run_async(coroutine_function):
@@ -2193,7 +2199,8 @@ class Profiles(unittest.TestCase):
         self.assertEqual((mode.query, mode.set, mode.restart),
                          ("PQTMCFGRCVRMODE,R", "PQTMCFGRCVRMODE,W,2", True))
         rtcm_item = by_label["RTCM: MSM type, elevation mask, ephemeris output"]
-        self.assertEqual(rtcm_item.set, "PQTMCFGRTCM,W,4,0,-90.0,07,06,1,0")
+        # Ephemerides when updated and every 60 s (EPH_Mode 2, EPH_Interval 60), 0.4.0
+        self.assertEqual(rtcm_item.set, "PQTMCFGRTCM,W,4,0,-90.0,07,06,2,60")
         msm = by_label["RTCM3-107X"]
         self.assertEqual((msm.query, msm.set), ("PQTMCFGMSGRATE,R,1,1,RTCM3-107X",
                                                 "PQTMCFGMSGRATE,W,1,1,RTCM3-107X,1,0"))
@@ -3521,9 +3528,11 @@ class EndToEnd(unittest.TestCase):
         options = directory / "options.json"
         options.write_text(json.dumps({"device": os.ttyname(slave), "baud": 460800,
                                        "log_dir": str(directory / "logs"), "min_free_gb": 0}))
+        caster_port = free_port()
         process = subprocess.Popen(
             [sys.executable, "-m", "gnss_base", "--options", str(options), "--host", "127.0.0.1",
-             "--port", str(port), "--allow-any-client", "--by-id-dir", str(by_id)],
+             "--port", str(port), "--allow-any-client", "--by-id-dir", str(by_id),
+             "--caster-host", "127.0.0.1", "--caster-port", str(caster_port)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         receiver = SimulatedReceiver(master)
         base = f"http://127.0.0.1:{port}"
@@ -3560,6 +3569,18 @@ class EndToEnd(unittest.TestCase):
             done = post_json(base + "/api/command/confirm", {"id": staged["pending"]})
             again = post_json(base + "/api/command/confirm", {"id": staged["pending"]})
             query = post_json(base + "/api/command", {"command": "PQTMCFGRTCM,R"})
+            # 0.4.0: a rover on the caster gets the RTCM; what it sends, even command
+            # sentences, never reaches the receiver.
+            with socket.create_connection(("127.0.0.1", caster_port), timeout=5) as rover:
+                rover.sendall(b"GET /BASE HTTP/1.0\r\nUser-Agent: NTRIP test\r\n\r\n")
+                rover.sendall(nmea("PQTMCFGRCVRMODE,W,1") + nmea("PQTMRESTOREPAR") + GGA)
+                caster_bytes = b""
+                deadline = time.time() + 10
+                while rtcm(1005) not in caster_bytes and time.time() < deadline:
+                    receiver.send(stream)
+                    with contextlib.suppress(socket.timeout):
+                        rover.settimeout(0.5)
+                        caster_bytes += rover.recv(4096)
             history = get("/api/commands")["entries"]
             status = get("/api/status")
             receiver.send(stream)
@@ -3591,11 +3612,20 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(done["outcome"], "ok")
         self.assertEqual(done["results"][0]["replies"], ["$PQTMCFGRCVRMODE,OK"])
         self.assertIn("expired", again["error"])
-        self.assertEqual(query["result"]["replies"], ["$PQTMCFGRTCM,OK,4,0,-90.0,07,06,1,0"])
+        self.assertEqual(query["result"]["replies"], ["$PQTMCFGRTCM,OK,4,0,-90.0,07,06,2,60"])
         heard = receiver.heard
         self.assertEqual(heard.count("PQTMCFGRCVRMODE,W,2"), 1)
         self.assertNotIn("PQTMRESTOREPAR", heard)
         self.assertEqual(receiver.bad_lines, [])
+        self.assertTrue(caster_bytes.startswith(b"ICY 200 OK\r\n"), caster_bytes[:40])
+        self.assertIn(rtcm(1005), caster_bytes)
+        self.assertNotIn(b"$G", caster_bytes, "no NMEA to rovers")
+        self.assertNotIn("PQTMCFGRCVRMODE,W,1", heard)
+        self.assertEqual(status["caster"]["mountpoint"], "BASE")
+        self.assertEqual(status["upload"]["state"], "off")
+        caster_log = [json.loads(line) for line in
+                      (directory / "logs" / "caster.jsonl").read_text().splitlines()]
+        self.assertIn("connect", [e["event"] for e in caster_log])
         for body in heard:
             self.assertTrue(prepare(body).kind == "query" or body == "PQTMCFGRCVRMODE,W,2", body)
         # Every sentence sent is in the command log, and the refusal too.
@@ -3634,7 +3664,8 @@ class EndToEnd(unittest.TestCase):
                                        "min_free_gb": 0}))
         process = subprocess.Popen(
             [sys.executable, "-m", "gnss_base", "--options", str(options), "--host", "127.0.0.1",
-             "--port", str(port), "--allow-any-client", "--by-id-dir", str(by_id)],
+             "--port", str(port), "--allow-any-client", "--by-id-dir", str(by_id),
+             "--caster-host", "127.0.0.1", "--caster-port", str(free_port())],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         def wait_for(condition):

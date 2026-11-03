@@ -1,5 +1,5 @@
 name: GNSS Base Station
-version: "0.3.2"
+version: "0.4.0"
 slug: gnss_base
 description: Logs a GNSS base receiver, shows its status, and configures it as a base with confirmed commands.
 arch:
@@ -16,14 +16,38 @@ panel_title: GNSS Base
 map:
   - type: share
     read_only: false
+ports:
+  2101/tcp: 2101
+ports_description:
+  2101/tcp: NTRIP caster for rovers on your network (do not forward it on your router)
 options:
   device_match: USB_Dual_Serial
   baud: 460800
   log_dir: /share/gnss_base
   min_free_gb: 10
+  caster_enabled: true
+  caster_mountpoint: BASE
+  caster_user: ""
+  caster_password: ""
+  caster_max_clients: 4
+  upload_host: rtk2go.com
+  upload_port: 2101
+  upload_mountpoint: ""
+  upload_password: ""
+  upload_style: rev1
 schema:
   device: device(subsystem=tty)
   device_match: str
   baud: int
   log_dir: str
   min_free_gb: float
+  caster_enabled: bool
+  caster_mountpoint: match(^[A-Za-z0-9_]{1,32}$)
+  caster_user: str
+  caster_password: password
+  caster_max_clients: int(1,16)
+  upload_host: str
+  upload_port: port
+  upload_mountpoint: match(^[A-Za-z0-9_.-]{0,64}$)
+  upload_password: password
+  upload_style: list(rev1|rev2)
