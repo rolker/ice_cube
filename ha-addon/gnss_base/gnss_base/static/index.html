@@ -32,6 +32,9 @@ button{font:inherit;font-size:13px;color:var(--text);background:var(--bg);border
 #map{height:320px;border-radius:6px;margin-top:4px}
 .leaflet-container{background:var(--bg)}
 #mapnote{margin:6px 0 0}
+.key{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin:0 4px 0 10px}
+.key.fix{background:var(--accent)}.key.base{border:2px solid var(--warn);width:12px;height:12px}
+dl.stale{opacity:.5}
 #scatter{display:block;width:100%;max-width:440px;aspect-ratio:1;margin:8px auto 0}
 #up{display:block;width:100%;height:110px;margin-top:10px}
 .legend{text-align:center;margin-top:4px}
@@ -57,15 +60,16 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <body>
 <main>
 <header><h1>GNSS Base</h1><span id="link" class="note">Connecting…</span></header>
-<section><h2>Position fix</h2><div id="fix" class="big">—</div><dl id="fixd"></dl></section>
+<section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
+<h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
 <section><h2>Data</h2><div id="rate" class="big">—</div><dl id="data"></dl></section>
 <section><h2>Storage</h2><div id="free" class="big">—</div><dl id="disk"></dl></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl></section>
 <section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
 <p id="mapnote" class="note">Waiting for a position fix</p>
-<dl id="posd" class="posd"></dl>
-<h3>Base position (RTCM 1005)</h3><dl id="based" class="posd"></dl></section>
+<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005)</div>
+<dl id="posd" class="posd"></dl></section>
 <section class="wide"><h2>Drift around the median position</h2>
 <div id="drifttxt" class="note">No positions yet</div>
 <canvas id="scatter" role="img" aria-label="East and north offsets from the median position, coloured by age"></canvas>
@@ -125,7 +129,7 @@ function frame(ref){
 }
 
 // ---- map: works without tiles, and without Leaflet at all ----
-let map=null,here=null,ring=null,trail=null,baseMark=null,fitted=false,follow=true,lastFix=null,dim=false,basePos=null;
+let map=null,here=null,ring=null,trail=null,baseMark=null,fitted=false,follow=true,lastFix=null,dim=false,basePos=null,baseStale=false,baseCentredOn=null;
 let fixNote="Waiting for a position fix",tileNote="";
 function note(text){$("mapnote").textContent=text}
 function showNote(){if(map)note(fixNote||tileNote)}
@@ -133,7 +137,7 @@ function mapStyle(){
   if(!map)return;
   const accent=css("--accent"),text=css("--card");
   here.setStyle({color:text,fillColor:dim?css("--muted"):accent,fillOpacity:dim?0.5:1});ring.setStyle({color:accent,fillColor:accent});trail.setStyle({color:accent});
-  baseMark.setStyle({color:css("--warn")});
+  baseMark.setStyle(baseStale?{color:css("--muted"),dashArray:"3 4"}:{color:css("--warn"),dashArray:null});
 }
 try{
   if(typeof L==="undefined")throw new Error("no Leaflet");
@@ -153,17 +157,32 @@ try{
   map.on("dragstart",()=>{follow=false});
   mapStyle();
 }catch(e){map=null;note("The map is unavailable. Position and drift still update.")}
-$("centre").onclick=()=>{follow=true;const p=lastFix||basePos;if(map&&p)map.setView(p,Math.max(map.getZoom(),18))};
+// Centre on the current fix; with no current measured fix, on the base position.
+$("centre").onclick=()=>{follow=true;const p=(!dim&&lastFix)||basePos||lastFix;if(map&&p)map.setView(p,Math.max(map.getZoom(),18))};
 // A lost or stale fix greys the dot at the last known position and hides the ring.
-// The base position from RTCM 1005 is a hollow ring, separate from any GGA fix.
-function updateMap(f,stale,b){
-  const lost=f.lat==null||f.lon==null||!(f.quality>0);
+// Only measured fixes count: GGA quality 7 (manual input, the fixed base position
+// repeated) is not drawn as a fix. The base position from RTCM 1005 is a hollow ring,
+// separate from any GGA fix, dashed and grey once stale. `reason` is the app's
+// no_measured_reason (why there is no measured position now), or null.
+function updateMap(f,stale,b,reason){
+  const lost=f.lat==null||f.lon==null||!f.measured;
   if(!lost)lastFix=[f.lat,f.lon];
   basePos=b&&b.lat!=null?[b.lat,b.lon]:null;
-  const baseText=basePos?" The hollow ring is the base position from RTCM 1005.":"";
-  fixNote=!lastFix?(basePos?"No GGA fix (a receiver in base mode sends no NMEA)."+baseText:"Waiting for a position fix"):lost?"No position fix now. The grey dot is the last known position."+baseText:
+  if(baseStale!==!!(basePos&&b.stale)){baseStale=!!(basePos&&b.stale);mapStyle()}
+  const baseText=!basePos?"":baseStale?` The dashed ring is the last base position from RTCM 1005, now stale (${b.age_s} s old).`:" The hollow ring is the base position from RTCM 1005.";
+  // Say what the app reports, not a guess: NMEA may still be arriving in base mode.
+  const why=reason||(f.quality===7?"GGA reports the fixed base position (quality 7), not a measured one.":!f.name?"No GGA position received.":"No measured GGA fix.");
+  fixNote=!lastFix?(basePos?why+baseText:f.quality===7||reason?why:"Waiting for a position fix"):lost?(reason||"No measured position fix now.")+" The grey dot is the last known position."+baseText:
     stale?`The position fix is stale (${f.age_s} s old). The grey dot is the last known position.`+baseText:(basePos?baseText.trim():"");
-  if(map&&basePos){baseMark.setLatLng(basePos);if(!map.hasLayer(baseMark))baseMark.addTo(map);if(!fitted&&!lastFix){map.setView(basePos,19);fitted=true}}
+  if(map&&basePos){
+    baseMark.setLatLng(basePos);if(!map.hasLayer(baseMark))baseMark.addTo(map);
+    // With no current measured fix (none, lost or stale, as after a switch from rover to
+    // base mode), bring a fresh base into view once, and again only if it moves
+    // materially (baseCentring in track.js), so manual panning is not undone every second.
+    const c=baseCentring(baseCentredOn,baseStale?null:basePos,!lost&&!stale);baseCentredOn=c.centredOn;
+    if(!fitted&&!lastFix||c.centre&&!fitted){map.setView(basePos,19);fitted=true}
+    else if(c.centre&&!map.getBounds().contains(basePos))map.panTo(basePos);
+  }
   else if(map&&map.hasLayer(baseMark))baseMark.remove();
   if(!map)return;
   if(lastFix&&!map.hasLayer(here)){if(!fitted)map.setView(lastFix,19);here.addTo(map);fitted=true}
@@ -192,7 +211,8 @@ function drawDrift(){
   const muted=css("--muted"),line=css("--line"),text=css("--text"),old=hex(css("--age-old")),young=hex(css("--age-new"));
   const oldest=pts.length?pts[0][0]:0,colour=age=>mix(old,young,oldest>0?1-age/oldest:1);
   const dropped=track&&track.outliers_dropped?` ${track.outliers_dropped} isolated fixes more than 1 km away were left out.`:"";
-  $("drifttxt").textContent=(pts.length?`${pts.length} positions over the last ${duration(oldest)} (one per second, up to ${duration(track.window_s)}). Offsets are from the median position.`:"No positions yet.")+dropped;
+  const why=track&&track.no_measured_reason;
+  $("drifttxt").textContent=(pts.length?`${pts.length} positions over the last ${duration(oldest)} (one per second, up to ${duration(track.window_s)}). Offsets are from the median position.`+(why?" No new ones now. "+why:""):why||"No positions yet.")+dropped;
   if(!pts.length)$("hover").textContent="Point at a dot for details";
   // East/north scatter: square, centred on the reference, at least ±5 cm.
   let [c,w]=prep($("scatter"));
@@ -214,7 +234,7 @@ function drawDrift(){
     c.fillStyle=colour(p[0]);c.beginPath();c.arc(x,y,2,0,7);c.fill();
   }
   if(pts.length){const [x,y]=dots[dots.length-1];c.strokeStyle=text;c.lineWidth=2;c.beginPath();c.arc(x,y,5,0,7);c.stroke()}
-  if(!pts.length){c.fillStyle=muted;c.textAlign="center";c.fillText("No positions yet",mid,mid-20)}
+  if(!pts.length){c.fillStyle=muted;c.textAlign="center";c.fillText(why?"No measured position":"No positions yet",mid,mid-20)}
   // Up over time, same age colours, at least ±5 cm.
   [c,w]=prep($("up"),110);
   const h=110,left=48,top=8,bottom=h-18,window_s=Math.max(oldest,60);
@@ -251,17 +271,24 @@ function render(s){
   $("link").textContent=live?"Receiving":(s.last_error||"No data from receiver");
   const f=s.fix||{};
   const stale=f.age_s!=null&&f.age_s>5;
-  $("fix").textContent=(f.name||"—")+(stale?" (stale)":"");
-  $("fix").className="big "+(stale?"bad":f.quality>0&&f.quality!==6?"good":"warn");
+  const b=s.base_position||{},fixed=f.quality===7;
+  // Quality 7 is the fixed base position repeated, not a measurement: never green.
+  $("fix").textContent=(fixed?"Fixed position, not measured":f.name||(b.lat!=null?"No measured fix":"—"))+(stale?" (stale)":"");
+  $("fix").className="big "+(stale?"bad":f.measured&&f.quality!==6?"good":f.name||b.lat!=null?"warn":"");
+  const fixNoteText=fixed?"GGA quality 7 (manual input): the receiver repeats its configured base position. It is not plotted as drift.":!f.name&&b.lat!=null?"No GGA received. The base position from RTCM 1005 is below.":"";
+  $("fixnote").textContent=fixNoteText;$("fixnote").hidden=!fixNoteText;
   dl("fixd",[["Satellites used",f.satellites],["HDOP",f.hdop],["UTC",f.utc],["Age",f.age_s==null?null:f.age_s+" s"],["Antenna",s.antenna||null]]);
   dl("posd",[["Latitude",f.lat==null?null:f.lat.toFixed(9)+"°"],["σ latitude",metres(f.lat_sigma_m)],
     ["Longitude",f.lon==null?null:f.lon.toFixed(9)+"°"],["σ longitude",metres(f.lon_sigma_m)],
     ["Ellipsoidal height",f.height_m==null?null:f.height_m.toFixed(3)+" m"],["σ height",metres(f.height_sigma_m)]]);
-  const b=s.base_position||{};
-  dl("based",b.lat==null?[["Status","None received"]]:[["Latitude",b.lat.toFixed(9)+"°"],["Station ID",b.station_id],
-    ["Longitude",b.lon.toFixed(9)+"°"],["Message",b.message],["Ellipsoidal height",b.height_m.toFixed(3)+" m"],["Age",b.age_s+" s"],
-    ["ECEF X, Y, Z",b.ecef.map(v=>v.toFixed(4)).join(", ")+" m"],["Antenna height",b.antenna_height_m==null?null:b.antenna_height_m.toFixed(4)+" m"]]);
-  updateMap(f,stale,s.base_position);
+  // Stale once no 1005/1006 has arrived for 10 s, or 3 times their recent interval if
+  // longer, up to 120 s (the app decides: base_position.stale).
+  $("basestale").textContent=b.lat!=null&&b.stale?"(stale)":"";
+  $("based").className=b.lat!=null&&b.stale?"stale":"";
+  dl("based",b.lat==null?[["Status","None received"]]:[["Latitude",b.lat.toFixed(9)+"°"],["Longitude",b.lon.toFixed(9)+"°"],
+    ["Ellipsoidal height",b.height_m.toFixed(3)+" m"],["ECEF X",b.ecef[0].toFixed(4)+" m"],["ECEF Y",b.ecef[1].toFixed(4)+" m"],["ECEF Z",b.ecef[2].toFixed(4)+" m"],
+    ["Station ID",b.station_id],["Message",b.message],["Antenna height",b.antenna_height_m==null?null:b.antenna_height_m.toFixed(4)+" m"],["Age",b.age_s+" s"+(b.stale?" (stale)":"")]]);
+  updateMap(f,stale,s.base_position,s.no_measured_reason||null);
   $("rate").textContent=size(s.bytes_per_s)+"/s";
   dl("data",[["Received",size(s.total_bytes)],["Unreadable bytes",s.parser.unknown_bytes],["Bad checksums",s.parser.bad_frames],["Dropped, app overloaded",size(s.parser.queue_dropped_bytes)],["Uptime",Math.round(s.uptime_s/60)+" min"]]);
   const d=s.storage;

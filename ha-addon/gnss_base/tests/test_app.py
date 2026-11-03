@@ -39,8 +39,10 @@ from gnss_base.commands import (CommandLog, CommandRunner, PendingStore, PortClo
 from gnss_base.frames import FrameParser, crc24q, nmea_checksum, rtcm_type
 from gnss_base.rawlog import GB, RawLog, compress, utc_day
 from gnss_base.receiver import ChunkQueue, SerialReader
-from gnss_base.status import (RECENTRE_SAMPLES, TRACK_POINTS, TRACK_WINDOW_S, LocalFrame,
-                              Status, parse_coordinate)
+from gnss_base.status import (BASE_STALE_MAX_S, BASE_STALE_S, NO_MEASURED_BASE_MODE,
+                              NO_MEASURED_FIXED, NO_MEASURED_NO_FIX, RECENT_S, RECENTRE_SAMPLES,
+                              TRACK_POINTS, TRACK_WINDOW_S,
+                              LocalFrame, Status, parse_coordinate)
 from gnss_base.web import STATIC, create_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -580,7 +582,7 @@ class Api(unittest.TestCase):
         track = json.loads(body)
         self.assertEqual(set(track), {"window_s", "max_points", "fields", "reference",
                                       "reference_offset", "cursor", "full", "outliers_dropped",
-                                      "oldest_age_s", "points"})
+                                      "oldest_age_s", "points", "no_measured_reason"})
         self.assertEqual(track["reference"], {"lat": 0.0, "lon": 0.0, "height_m": 0.0})
         self.assertEqual(track["points"], [[3.0, 0.0, 0.0, 0.0, 1], [2.0, 0.0, 0.0, 0.0, 1],
                                            [1.0, 0.0, 0.0, 0.0, 1]])
@@ -776,7 +778,7 @@ class Page(unittest.TestCase):
         result = subprocess.run(["node", str(ROOT / "tests" / "track_test.js")],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 6,
+        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 8,
                          result.stdout)
 
     def test_receiver_script_is_served_and_uses_relative_urls(self):
@@ -2394,6 +2396,180 @@ class RtcmStatus(unittest.TestCase):
             self.feed(status, nmea(f"PQTMSVINSTATUS,1,1000,1,,01,20,300,{bad},0.5"))
             self.assertIsNone(status.snapshot()["survey_mean"], bad)
             strict_json(json.dumps(status.snapshot(), allow_nan=False))
+
+
+class BasePosition032(unittest.TestCase):
+    """0.3.2: the base position from 1005 is shown with its age and goes stale; GGA of
+    quality 7 (the fixed position repeated) is shown but is not drift; the drift plot says
+    why there is no measured position. Synthetic positions on the equator only."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.status = Status(clock=self.clock)
+
+    def feed(self, data):
+        for kind, payload in FrameParser().feed(data):
+            self.status.add_frame(kind, payload)
+
+    def test_base_position_has_ecef_and_station_and_goes_stale(self):
+        x, y, z = rtcmdec.llh_to_ecef(0.0, 1.0, 25.0)
+        self.feed(arp_frame(x, y, z, station=12))
+        base = self.status.snapshot()["base_position"]
+        self.assertEqual((base["lat"], base["lon"], base["height_m"], base["station_id"]),
+                         (0.0, 1.0, 25.0, 12))
+        self.assertEqual(base["ecef"], [round(v, 4) for v in (x, y, z)])
+        self.assertEqual((base["age_s"], base["stale"]), (0.0, False))
+        self.clock.now += BASE_STALE_S
+        self.assertFalse(self.status.snapshot()["base_position"]["stale"])
+        self.clock.now += 0.5
+        base = self.status.snapshot()["base_position"]
+        self.assertEqual((base["age_s"], base["stale"]), (BASE_STALE_S + 0.5, True))
+        self.assertEqual(base["lat"], 0.0, "a stale base position is still shown")
+        self.feed(arp_frame(x, y, z, station=12))
+        self.assertFalse(self.status.snapshot()["base_position"]["stale"])
+        strict_json(json.dumps(self.status.snapshot(), allow_nan=False))
+
+    def test_no_base_position_is_empty(self):
+        self.assertEqual(self.status.snapshot()["base_position"], {})
+
+    def test_quality_7_is_shown_but_not_kept_in_the_history(self):
+        for _ in range(5):
+            self.feed(gga(0.001, 0.002, quality=7, altitude=5.0))
+            self.clock.now += 1
+        fix = self.status.snapshot()["fix"]
+        self.assertEqual((fix["quality"], fix["measured"], fix["lat"], fix["height_m"]),
+                         (7, False, 0.001, 5.0))
+        self.assertEqual(fix["name"], "Manual input (fixed position)")
+        track = self.status.track()
+        self.assertEqual((track["points"], track["reference"]), ([], None))
+        self.assertEqual(track["no_measured_reason"], NO_MEASURED_FIXED)
+        # Measured fixes are kept, and a fixed position far away between them is
+        # neither stored nor held back as an outlier.
+        self.feed(gga(0.0, 0.0, quality=4))
+        self.clock.now += 1
+        for _ in range(RECENTRE_SAMPLES + 5):
+            self.feed(gga(0.1, 0.1, quality=7))
+            self.clock.now += 1
+        self.feed(gga(0.0, 0.0, quality=4))
+        track = self.status.track()
+        self.assertEqual([p[4] for p in track["points"]], [4, 4])
+        self.assertEqual((track["outliers_dropped"], self.status._far), (0, []))
+
+    def test_only_measured_qualities_are_kept(self):
+        for quality in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+            self.feed(gga(0.001, 0.001, quality=quality))
+            self.assertEqual(self.status.snapshot()["fix"]["measured"], quality in range(1, 7),
+                             quality)
+            self.clock.now += 1
+        self.assertEqual([p[4] for p in self.status.track()["points"]], [1, 2, 3, 4, 5, 6])
+
+    def test_drift_reason(self):
+        self.assertIsNone(self.status.track()["no_measured_reason"], "nothing received yet")
+        self.feed(rtcm(1074))  # MSM alone is not base mode: a rover can send it
+        self.assertIsNone(self.status.track()["no_measured_reason"])
+        self.feed(rtcm(1005))  # base mode: 1005, no GGA
+        self.assertEqual(self.status.track()["no_measured_reason"], NO_MEASURED_BASE_MODE)
+        self.assertIn("base mode", NO_MEASURED_BASE_MODE)
+        self.feed(gga(0.0, 0.0, quality=7))
+        self.assertEqual(self.status.track()["no_measured_reason"], NO_MEASURED_FIXED)
+        self.feed(gga(0.0, 0.0, quality=1))  # a measured fix: no reason, even with RTCM
+        track = self.status.track()
+        self.assertIsNone(track["no_measured_reason"])
+        self.assertEqual(len(track["points"]), 1)
+        self.clock.now += RECENT_S + 1  # all quiet: nothing says why
+        self.assertIsNone(self.status.track()["no_measured_reason"])
+        self.feed(rtcm(1005))  # the old measured fix is still kept, and the reason shown
+        track = self.status.track()
+        self.assertEqual((len(track["points"]), track["no_measured_reason"]),
+                         (1, NO_MEASURED_BASE_MODE))
+        strict_json(json.dumps(track, allow_nan=False))
+
+    def test_rover_losing_fix_with_msm_is_no_fix_not_base_mode(self):
+        self.feed(gga(0.001, 0.001, quality=4))
+        self.assertIsNone(self.status.no_measured_reason())
+        self.clock.now += 1
+        self.feed(gga(0.0, 0.0, quality=0) + rtcm(1077))
+        self.assertEqual(self.status.no_measured_reason(), NO_MEASURED_NO_FIX)
+        snap = self.status.snapshot()
+        self.assertEqual(snap["no_measured_reason"], NO_MEASURED_NO_FIX)
+        self.assertNotIn("base mode", snap["no_measured_reason"])
+        self.feed(rtcm(1005))  # now a base position arrives too: base mode
+        self.assertEqual(self.status.no_measured_reason(), NO_MEASURED_BASE_MODE)
+
+    def test_measured_only_if_the_position_was_accepted(self):
+        good = gga(0.001, 0.001, quality=4)
+        bad_lat = nmea("GNGGA,120000.00,00x0.0000,N,00000.0600,E,4,32,0.39,0.0,M,0.0,M,,")
+        bad_height = gga(0.001, 0.001, quality=4, altitude=200_000.0)
+        bad_separation = nmea("GNGGA,120000.00,0000.0600,N,00000.0600,E,1,32,0.39,"
+                              "0.0,M,abc,M,,")
+        for quality, sentence in ((4, bad_lat), (4, bad_height), (1, bad_separation)):
+            with self.subTest(sentence=sentence):
+                status = Status(clock=self.clock)
+                for kind, payload in FrameParser().feed(good):
+                    status.add_frame(kind, payload)
+                self.clock.now += 1
+                for kind, payload in FrameParser().feed(sentence):
+                    status.add_frame(kind, payload)
+                fix = status.snapshot()["fix"]
+                self.assertEqual((fix["quality"], fix["measured"], fix["lat"]),
+                                 (quality, False, None))
+                self.assertEqual(status.no_measured_reason(), NO_MEASURED_NO_FIX)
+                self.assertEqual(len(status.track()["points"]), 1, "only the good fix")
+
+    def test_stale_threshold_follows_the_1005_rate(self):
+        x, y, z = rtcmdec.llh_to_ecef(0.0, 1.0, 25.0)
+        frame = arp_frame(x, y, z) + arp_frame(x, y, z, antenna_height=1.5)
+        # 1 Hz, 1005 and 1006 together: one epoch per second, so 10 s as before.
+        for _ in range(6):
+            self.feed(frame)
+            self.clock.now += 1
+        self.assertEqual(self.status.base_stale_s(), BASE_STALE_S)
+        self.clock.now += BASE_STALE_S - 0.5
+        self.assertTrue(self.status.snapshot()["base_position"]["stale"])
+        # Every 30 s: stale only after 90 s without one.
+        slow = Status(clock=self.clock)
+        for _ in range(4):
+            for kind, payload in FrameParser().feed(arp_frame(x, y, z)):
+                slow.add_frame(kind, payload)
+            self.clock.now += 30
+        base = slow.snapshot()["base_position"]
+        self.assertEqual((base["age_s"], base["stale"], base["stale_after_s"]),
+                         (30.0, False, 90.0))
+        self.assertEqual(slow.no_measured_reason(), NO_MEASURED_BASE_MODE,
+                         "still base mode between 30 s messages")
+        self.clock.now += 59
+        self.assertFalse(slow.snapshot()["base_position"]["stale"])
+        self.clock.now += 2
+        self.assertTrue(slow.snapshot()["base_position"]["stale"])
+        self.assertIsNone(slow.no_measured_reason())
+        # Every 5 minutes: capped.
+        rare = Status(clock=self.clock)
+        for _ in range(3):
+            for kind, payload in FrameParser().feed(arp_frame(x, y, z)):
+                rare.add_frame(kind, payload)
+            self.clock.now += 300
+        self.assertEqual(rare.base_stale_s(), BASE_STALE_MAX_S)
+
+    def test_page_shows_base_block_in_fix_panel_and_drift_reason(self):
+        html = (STATIC / "index.html").read_text()
+        fix_panel = html[html.index("<h2>Position fix</h2>"):]
+        fix_panel = fix_panel[:fix_panel.index("</section>")]
+        self.assertIn('Base position (RTCM 1005) <span id="basestale"', fix_panel)
+        self.assertIn('<dl id="based">', fix_panel)
+        self.assertEqual(html.count('id="based"'), 1)
+        self.assertIn("Fixed position, not measured", html)
+        self.assertIn("track.no_measured_reason", html)
+        self.assertNotIn("sends no NMEA", html, "NMEA may be arriving in base mode")
+        self.assertIn("updateMap(f,stale,s.base_position,s.no_measured_reason", html)
+        self.assertIn("baseCentring(baseCentredOn,", html,
+                      "the map recentres on the base after a switch to base mode")
+        self.assertIn("!f.measured", html, "quality 7 is not drawn as a measured fix")
+        self.assertIn('class="key base"', html, "the map has a legend for the base ring")
+        # Values reach innerHTML only through dl/table, which escape them.
+        for template in re.findall(r"innerHTML\s*=([^;]+)", html):
+            for value in re.findall(r"\$\{([^}]*)\}", template):
+                self.assertTrue(value.startswith(("esc(", "head.map(h=>`<th>${esc(",
+                                                  "r.map(c=>`<td>${esc(")), value)
 
 
 class ApiCommands(TempDir):

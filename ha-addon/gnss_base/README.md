@@ -22,16 +22,37 @@ Besides the receiver, data, storage, signal and message status, the page shows:
 - **Position**: latitude, longitude and ellipsoidal height (GGA altitude plus geoid
   separation; an empty separation counts as 0), with the receiver's own 1-sigma
   estimates from GST when it sends them. An altitude, separation or height beyond
-  ±100 km is taken as corrupt, and that fix has no position.
+  ±100 km is taken as corrupt, and that fix has no position. GGA quality 7 (manual
+  input) is what a receiver in fixed base mode reports if GGA is turned on: its
+  configured position repeated, not a measurement. The fix panel says "Fixed position,
+  not measured", and that position is neither drawn as a fix on the map nor kept for
+  the drift plot.
+- **Base position (RTCM 1005)**, in the fix panel: the antenna reference point from the
+  latest 1005 or 1006, as latitude, longitude and ellipsoidal height (WGS84, converted
+  from ECEF), the ECEF X, Y and Z, the station ID, the antenna height (1006 only) and
+  its age. It is marked stale, and greyed, when no 1005/1006 has arrived for more than
+  10 s, or for 3 times their recent interval if that is longer (at most 120 s), so a
+  receiver sending 1005 every 30 s is not stale between messages. In base mode the
+  receiver may send no NMEA, so this is the position the page shows.
 - **Map**: the current position as a dot, a circle sized to the horizontal 1-sigma
   (from GST), and a faint trail of recent positions. The map fits itself once, on the
   first fix; after you drag it, it stays put until you press **Centre map**. When the
   fix is lost or more than 5 s old, the dot turns grey at the last known position, the
-  circle is hidden and a note under the map says so.
+  circle is hidden and a note under the map says so. The base position from RTCM 1005
+  is a hollow orange ring (dashed and grey when stale), with a legend under the map.
+  With no current measured fix (none, lost or stale, as after switching from rover to
+  base mode), the map centres once on a fresh base position, and again only if it moves
+  more than 5 m, so it does not undo your panning; **Centre map** also centres on it.
 - **Drift**: east/north offsets of the last 2 hours (one fix per second, at most 7,200)
   around their median position, coloured by age, with an up-versus-time strip below.
-  Scales adjust to the data with a minimum of ±5 cm. Only fixes with quality above 0 are
-  kept.
+  Scales adjust to the data with a minimum of ±5 cm. Only measured fixes are kept: GGA
+  quality 1 to 6. Quality 0 (no fix), 7 (manual input, the fixed base position) and 8
+  (simulator) are not, so the plot never shows a constant as if it were drift. When there
+  is no measured position, the plot and the map note say why: the receiver is in base
+  mode (a recent 1005/1006, no measured GGA), it reports only its fixed position (GGA
+  quality 7), or its GGA has no usable fix. Other RTCM, such as MSM from a rover, does not
+  count as base mode. A fix counts as measured only if its position was accepted, not by
+  quality alone. A live position computed from the observations is planned.
 
 Offsets use a local tangent plane at a reference: latitude and longitude differences
 are scaled by the WGS84 radii, and up is the difference in ellipsoidal height. That is
@@ -44,7 +65,8 @@ history starts again there; otherwise they are dropped as outliers and counted
 system's monotonic clock, so a step in the wall clock does not disturb the history.
 
 The JSON behind the page is `api/status` (current state) and `api/track` (the reference
-position and `[age_s, e, n, u, quality]` for each kept fix, oldest first). `api/track`
+position and `[age_s, e, n, u, quality]` for each kept fix, oldest first, and
+`no_measured_reason`, a sentence or null, also in `api/status`). `api/track`
 also returns a `cursor`; `api/track?since=<cursor>` returns only the fixes after it, with
 `full` false. If the cursor is not from the current history (the app restarted or the
 receiver moved, or the cursor is malformed), all fixes are returned with `full` true.
@@ -161,8 +183,10 @@ PQTMSAVEPAR and a restart after Set commands, so restart the receiver after appl
 ### RTCM on the page
 
 - **1005/1006**: the antenna reference point, converted from ECEF to WGS84 latitude,
-  longitude and ellipsoidal height, is shown as "Base position (RTCM 1005)" under the
-  position, and on the map as a hollow ring, separate from any GGA fix.
+  longitude and ellipsoidal height, is shown as "Base position (RTCM 1005)" in the fix
+  panel, and on the map as a hollow ring, separate from any GGA fix. In `api/status` it
+  is `base_position`, with `age_s`, `stale` and `stale_after_s` (the age at which it is
+  stale: 10 s, or 3 times the recent 1005/1006 interval if longer, at most 120 s).
 - **MSM1 to MSM7** for GPS, GLONASS, Galileo, QZSS, BeiDou and NavIC: the satellite,
   signal and cell masks give the satellites per constellation; MSM4 to MSM7 also give
   each cell's CNR (1 dB-Hz steps in MSM4/5, 1/16 dB-Hz in MSM6/7). The Signals table uses
@@ -197,6 +221,31 @@ PQTMSAVEPAR and a restart after Set commands, so restart the receiver after appl
 7. Once the receiver sends 1005, the base position appears on the page.
 
 ## Changes
+
+**0.3.2**
+
+- The base position from the latest RTCM 1005/1006 is shown in the fix panel: latitude,
+  longitude, ellipsoidal height, ECEF, station ID and age, marked stale after 10 s
+  without one. It moved there from under the map.
+- The map has a legend for the GGA fix and the base position ring; the ring is dashed
+  and grey when stale. With no measured fix, **Centre map** centres on the base.
+- GGA quality 7 (manual input: the fixed base position repeated) is labelled "Fixed
+  position, not measured" and is no longer drawn as a fix or kept for the drift plot;
+  nor are quality 0 and 8 (simulator). Qualities 1 to 6 are kept as before. GGA quality
+  names now include 3 (PPS), 7 and 8.
+- When there is no measured position, the drift plot says why instead of staying blank.
+  `api/track` has a new `no_measured_reason` field.
+- After a switch from rover to base mode, the map centres on the base position once
+  (and again if it moves more than 5 m), instead of staying on the last rover fix.
+- Base mode is recognised from a recent 1005/1006 only. A rover sending MSM with GGA
+  quality 0 is reported as having no usable fix, not as being in base mode.
+- A GGA of quality 1 to 6 counts as measured only if its position was accepted: a
+  malformed coordinate or rejected height makes it unmeasured everywhere.
+- The map note gives the app's reason for having no measured position, instead of
+  saying that a receiver in base mode sends no NMEA while NMEA is arriving.
+  `api/status` has `no_measured_reason` too.
+- The base position goes stale after 10 s, or 3 times the recent interval between
+  1005/1006 messages if longer, at most 120 s (`base_position.stale_after_s`).
 
 **0.3.1**
 

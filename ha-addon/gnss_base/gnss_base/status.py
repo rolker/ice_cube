@@ -11,14 +11,32 @@ from collections import Counter, deque
 from .frames import rtcm_type
 from .rtcm import decode_1005, decode_msm, ecef_to_llh, signal_name
 
-FIX_NAMES = {0: "No fix", 1: "Standalone", 2: "Differential", 4: "RTK fixed",
-             5: "RTK float", 6: "Dead reckoning"}
+FIX_NAMES = {0: "No fix", 1: "Standalone", 2: "Differential", 3: "PPS", 4: "RTK fixed",
+             5: "RTK float", 6: "Dead reckoning", 7: "Manual input (fixed position)",
+             8: "Simulator"}
+# GGA qualities that are measured positions. 7 (manual input) is what a receiver in
+# fixed base mode reports: its configured position repeated, not a measurement, so it
+# is shown but kept out of the history; so are 0 (no fix) and 8 (simulator).
+MEASURED_QUALITIES = frozenset({1, 2, 3, 4, 5, 6})
 CONSTELLATIONS = {"GP": "GPS", "GL": "GLONASS", "GA": "Galileo", "GB": "BeiDou",
                   "GQ": "QZSS", "GI": "NavIC"}
 # PQTMSVINSTATUS <Valid>: 0 also when PQTMCFGSVIN mode is 0, or a new setting has not
 # taken effect yet (this firmware applies it only after a restart).
 SVIN_STATES = {0: "Not running", 1: "In progress", 2: "Finished (valid)"}
 SIGNAL_EXPIRY_S = 10
+BASE_STALE_S = 10          # a base position (1005/1006) older than this is stale,
+BASE_STALE_FACTOR = 3      # or than this many times the recent interval between them,
+BASE_STALE_MAX_S = 120     # but never more than this
+BASE_INTERVALS = 5         # recent 1005/1006 intervals kept; their median is the interval
+BASE_SAME_EPOCH_S = 0.5    # a 1005 and a 1006 closer than this are one epoch, not an interval
+RECENT_S = 10              # GGA or RTCM this recent tells why there is no measured position
+NO_MEASURED_BASE_MODE = ("No measured position: the receiver is in base mode. "
+                         "A live position from the observations is planned.")
+NO_MEASURED_NO_FIX = ("No measured position: the latest GGA has no usable position fix "
+                      "(no fix, or a position that was rejected).")
+NO_MEASURED_FIXED = ("No measured position: the receiver reports its fixed base position "
+                     "(GGA quality 7, manual input), which is not measured, so it is not "
+                     "plotted. A live position from the observations is planned.")
 RATE_WINDOW_S = 10
 GST_EXPIRY_S = 5           # sigmas older than this are not shown with the fix
 TRACK_WINDOW_S = 2 * 3600  # position history: one sample per second for 2 hours
@@ -114,6 +132,7 @@ class Status:
         self._msm_last = {}        # system -> (message number, seen)
         self.base = {}             # from 1005/1006
         self._base_time = None
+        self._base_arrivals = deque(maxlen=BASE_INTERVALS + 1)  # 1005/1006 epochs
         self._survey_mean = None   # (x, y, z) from PQTMSVINSTATUS, or None
         self.rtcm_decode_errors = 0
         self._rate = deque()
@@ -149,6 +168,8 @@ class Status:
             number = rtcm_type(payload)
             self.rtcm_counts[number] += 1
             self.rtcm_last[number] = self._clock()
+            if number in (1005, 1006):
+                self._note_base_arrival(self.rtcm_last[number])
             try:
                 if number in (1005, 1006):
                     self._on_1005(decode_1005(payload))
@@ -187,10 +208,13 @@ class Status:
                     abs(value) <= MAX_HEIGHT_M for value in (altitude, separation, height)):
                 height = None
                 lat = lon = None
+        # Measured only if the position itself was accepted, not by quality alone.
+        measured = quality in MEASURED_QUALITIES and height is not None
         self.fix = {
             "utc": fields[1],
             "quality": quality,
             "name": FIX_NAMES.get(quality, "Unknown"),
+            "measured": measured,
             "satellites": _number(fields[7], int),
             "hdop": _number(fields[8]),
             "lat": None if lat is None else round(lat, 9),
@@ -198,7 +222,7 @@ class Status:
             "height_m": None if height is None else round(height, 4),
         }
         self._fix_time = self._clock()
-        if height is not None:
+        if measured:
             self._add_track(self._fix_time, lat, lon, height, quality)
 
     def _on_gst(self, _name, fields):
@@ -298,6 +322,7 @@ class Status:
                   "fields": ["age_s", "e", "n", "u", "quality"],
                   "reference": None, "reference_offset": None, "cursor": None, "full": True,
                   "outliers_dropped": self.outliers_dropped, "oldest_age_s": None, "points": []}
+        result["no_measured_reason"] = self.no_measured_reason(now)
         if not self._track:
             return result
         mid = [statistics.median(sample[axis] for sample in self._track) for axis in (2, 3, 4)]
@@ -327,6 +352,44 @@ class Status:
         if not all(math.isfinite(value) for point in result["points"] for value in point[1:4]):
             return empty
         return result
+
+    def no_measured_reason(self, now=None):
+        """Why there is no measured position now, for the drift plot and the map, or
+        None if there is one or nothing says why: a recent GGA of quality 7 (fixed base
+        position); a recent 1005/1006 (base mode, which may send no GGA) with no recent
+        measured GGA; or a recent GGA without an accepted measured position (no fix).
+        Other RTCM, such as MSM from a rover, does not mean base mode."""
+        now = self._clock() if now is None else now
+        fix_recent = self._fix_time is not None and now - self._fix_time <= RECENT_S
+        if fix_recent:
+            if self.fix.get("measured"):
+                return None
+            if self.fix.get("quality") == 7:
+                return NO_MEASURED_FIXED
+        base_seen = max((self.rtcm_last[n] for n in (1005, 1006) if n in self.rtcm_last),
+                        default=None)
+        if base_seen is not None and now - base_seen <= max(RECENT_S, self.base_stale_s()):
+            return NO_MEASURED_BASE_MODE
+        if fix_recent:
+            return NO_MEASURED_NO_FIX
+        return None
+
+    def _note_base_arrival(self, now):
+        if self._base_arrivals and now - self._base_arrivals[-1] < BASE_SAME_EPOCH_S:
+            return  # the 1006 (or 1005) of an epoch already counted
+        self._base_arrivals.append(now)
+
+    def base_stale_s(self):
+        """Age at which the base position is stale: BASE_STALE_S, or BASE_STALE_FACTOR
+        times the median recent interval between 1005/1006 epochs if that is longer, so
+        a receiver sending them every 30 s is not stale between messages, capped at
+        BASE_STALE_MAX_S."""
+        times = list(self._base_arrivals)
+        intervals = [b - a for a, b in zip(times, times[1:])]
+        if not intervals:
+            return BASE_STALE_S
+        return min(max(BASE_STALE_S, BASE_STALE_FACTOR * statistics.median(intervals)),
+                   BASE_STALE_MAX_S)
 
     def _on_1005(self, message):
         x, y, z = message["ecef"]
@@ -476,7 +539,11 @@ class Status:
                 zip(("lat", "lon", "height_m"),
                     (round(v, r) for v, r in zip(ecef_to_llh(*self._survey_mean), (9, 9, 4)))),
                 ecef=[round(v, 4) for v in self._survey_mean]),
-            "base_position": aged(self.base, self._base_time),
+            "base_position": dict(aged(self.base, self._base_time),
+                                  stale=now - self._base_time > self.base_stale_s(),
+                                  stale_after_s=round(self.base_stale_s(), 1))
+            if self.base else {},
+            "no_measured_reason": self.no_measured_reason(now),
             "msm": self.msm_summary(),
             "rtcm_decode_errors": self.rtcm_decode_errors,
             "antenna": self.antenna,

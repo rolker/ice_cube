@@ -3,7 +3,7 @@
 "use strict";
 const assert = require("assert");
 const path = require("path");
-const {mergeTrack, clockJumped} = require(path.join(__dirname, "..", "gnss_base", "static",
+const {mergeTrack, clockJumped, baseCentring} = require(path.join(__dirname, "..", "gnss_base", "static",
   "track.js"));
 
 const REF = {lat: 0, lon: 0, height_m: 0};
@@ -70,6 +70,43 @@ const checks = {
     // From the fixed origin: (0.01, 0.02, 0), (0.03, 0, -0.01), (0.02, 0.01, 0.005).
     assert.deepStrictEqual(track.points.map(p => p.slice(1, 4)),
       [[-0.01, 0.01, -0.005], [0.01, -0.01, -0.015], [0, 0, 0]]);
+  },
+
+  "passes no_measured_reason through, with or without points"() {
+    const reason = "No measured position: the receiver is in base mode.";
+    const {track: empty} = mergeTrack(null, response({reference: null, reference_offset: null,
+      cursor: null, no_measured_reason: reason}), 1000);
+    assert.strictEqual(empty.no_measured_reason, reason);
+    const {track: kept} = mergeTrack(null, response({no_measured_reason: reason,
+      points: [[1, 0.01, 0, 0, 4]]}), 1000);
+    assert.strictEqual(kept.no_measured_reason, reason);
+    const {track: older} = mergeTrack(null, response({points: [[1, 0.01, 0, 0, 4]]}), 1000);
+    assert.strictEqual(older.no_measured_reason, null, "an older app sends no reason");
+  },
+
+  "centres on the base once after a switch from rover to base mode"() {
+    const base = [0.001, 0.002];
+    // A rover with a measured fix: never centre on the base.
+    let state = baseCentring(null, base, true);
+    assert.deepStrictEqual(state, {centre: false, centredOn: null});
+    // The fix goes stale (switched to base mode): centre once ...
+    state = baseCentring(state.centredOn, base, false);
+    assert.deepStrictEqual(state, {centre: true, centredOn: base});
+    // ... and not on every refresh, even if the user pans away.
+    state = baseCentring(state.centredOn, [0.001, 0.002], false);
+    assert.strictEqual(state.centre, false);
+    // A stale base (null here) neither centres nor forgets where it last centred.
+    state = baseCentring(state.centredOn, null, false);
+    assert.deepStrictEqual(state, {centre: false, centredOn: base});
+    // A move of about 1 m is not material; about 11 m is.
+    state = baseCentring(state.centredOn, [0.00101, 0.002], false);
+    assert.strictEqual(state.centre, false);
+    state = baseCentring(state.centredOn, [0.0011, 0.002], false);
+    assert.deepStrictEqual(state, {centre: true, centredOn: [0.0011, 0.002]});
+    // Back to a measured fix, then base mode again: centre again.
+    state = baseCentring(state.centredOn, [0.0011, 0.002], true);
+    assert.strictEqual(state.centredOn, null);
+    assert.strictEqual(baseCentring(state.centredOn, [0.0011, 0.002], false).centre, true);
   },
 
   "notices a clock jump"() {

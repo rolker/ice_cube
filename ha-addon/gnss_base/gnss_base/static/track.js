@@ -11,11 +11,13 @@ const OLDEST_SLACK_S = 0.5;  // ages are rounded to 0.1 s
 
 // Merge one api/track response `t` into `kept` (null at first) at page time `now`
 // in seconds. Returns the new kept state and the track to draw, whose points are
-// [age_s, e, n, u, quality] offsets from the current reference.
+// [age_s, e, n, u, quality] offsets from the current reference. `no_measured_reason`
+// (why there is no measured position now, or null) is passed through.
 function mergeTrack(kept, t, now) {
   if (!t.reference || !t.points.length && t.full) {
     return {kept: null, track: {window_s: t.window_s, reference: null,
-      outliers_dropped: t.outliers_dropped, points: []}};
+      outliers_dropped: t.outliers_dropped, no_measured_reason: t.no_measured_reason ?? null,
+      points: []}};
   }
   const o = t.reference_offset;
   const add = t.points.map(p => [now - p[0], p[1] + o[0], p[2] + o[1], p[3] + o[2], p[4]]);
@@ -30,6 +32,7 @@ function mergeTrack(kept, t, now) {
   const r = v => Math.round(v * 1e4) / 1e4;
   return {kept: {cursor: t.cursor, points: pts},
     track: {window_s: t.window_s, reference: t.reference, outliers_dropped: t.outliers_dropped,
+      no_measured_reason: t.no_measured_reason ?? null,
       points: pts.map(p => [Math.round((now - p[0]) * 10) / 10, r(p[1] - o[0]), r(p[2] - o[1]),
         r(p[3] - o[2]), p[4]])}};
 }
@@ -41,4 +44,26 @@ function clockJumped(last, wall, mono) {
   return last != null && Math.abs((wall - last.wall) - (mono - last.mono)) > CLOCK_JUMP_MS;
 }
 
-if (typeof module !== "undefined") module.exports = {mergeTrack, clockJumped};
+// Whether the map should centre on the base position now, so a switch from rover to
+// base mode brings the base into view once, without fighting the user's panning on
+// every refresh. `centredOn` is the base [lat, lon] the map last centred on (null at
+// first), `base` the current, fresh base position or null, and `measuredNow` whether a
+// current measured fix is shown (then the map follows that instead). Centres again only
+// if the base moves more than BASE_MOVED_M. Returns {centre, centredOn}.
+const BASE_MOVED_M = 5;
+function baseCentring(centredOn, base, measuredNow) {
+  if (measuredNow) return {centre: false, centredOn: null};  // next switch centres again
+  if (!base || centredOn && distanceM(centredOn, base) <= BASE_MOVED_M) {
+    return {centre: false, centredOn};
+  }
+  return {centre: true, centredOn: base};
+}
+
+// Approximate distance in metres between two nearby [lat, lon] points.
+function distanceM(a, b) {
+  const k = Math.PI / 180 * 6371000;
+  const dLon = ((b[1] - a[1] + 540) % 360) - 180;
+  return Math.hypot((b[0] - a[0]) * k, dLon * k * Math.cos((a[0] + b[0]) / 2 * Math.PI / 180));
+}
+
+if (typeof module !== "undefined") module.exports = {mergeTrack, clockJumped, baseCentring};
