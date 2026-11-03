@@ -15,6 +15,9 @@ FIX_NAMES = {0: "No fix", 1: "Standalone", 2: "Differential", 4: "RTK fixed",
              5: "RTK float", 6: "Dead reckoning"}
 CONSTELLATIONS = {"GP": "GPS", "GL": "GLONASS", "GA": "Galileo", "GB": "BeiDou",
                   "GQ": "QZSS", "GI": "NavIC"}
+# PQTMSVINSTATUS <Valid>: 0 also when PQTMCFGSVIN mode is 0, or a new setting has not
+# taken effect yet (this firmware applies it only after a restart).
+SVIN_STATES = {0: "Not running", 1: "In progress", 2: "Finished (valid)"}
 SIGNAL_EXPIRY_S = 10
 RATE_WINDOW_S = 10
 GST_EXPIRY_S = 5           # sigmas older than this are not shown with the fix
@@ -360,14 +363,15 @@ class Status:
     def _on_pqtmsvinstatus(self, _name, fields):
         if len(fields) < 7:
             return
-        state = {0: "Off", 1: "In progress", 2: "Valid"}.get(_number(fields[3], int), "Unknown")
+        valid = _number(fields[3], int)
+        state = SVIN_STATES.get(valid, "Unknown")
         mean = tuple(_number(v) for v in fields[8:11]) if len(fields) > 10 else ()
         # A mean of zeros means none yet; one far from the Earth is corrupt.
         plausible = (len(mean) == 3 and None not in mean and any(mean)
                      and all(abs(v) <= MAX_ECEF_M for v in mean))
         self._survey_mean = mean if plausible else None
         self.survey_in = {
-            "state": state,
+            "state": state, "valid": valid,
             "observations": _number(fields[6], int),
             "target": _number(fields[7], int) if len(fields) > 7 else None,
             "accuracy_m": _number(fields[11]) if len(fields) > 11 else None,
@@ -384,11 +388,13 @@ class Status:
         self._on_txt(name, fields)
 
     def survey_mean(self):
-        """The latest survey-in mean: ECEF, state and age, or None."""
+        """The latest survey-in mean: ECEF, state, progress and age, or None."""
         if not self.survey_in:
             return None
-        return {"ecef": self._survey_mean, "state": self.survey_in["state"],
-                "age_s": self._clock() - self._survey_time}
+        survey = self.survey_in
+        return {"ecef": self._survey_mean, "state": survey["state"], "valid": survey["valid"],
+                "observations": survey["observations"], "target": survey["target"],
+                "accuracy_m": survey["accuracy_m"], "age_s": self._clock() - self._survey_time}
 
     def _prune_msm(self, now):
         for key in [k for k, v in self._msm_cells.items() if now - v[2] > SIGNAL_EXPIRY_S]:

@@ -24,7 +24,7 @@ dt{color:var(--muted)}dd{margin:0;text-align:right;font-variant-numeric:tabular-
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 th{color:var(--muted);font-weight:500;text-align:right}th:first-child,td:first-child{text-align:left}
 th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
-.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}table.stale{opacity:.5}
 .note{color:var(--muted);font-size:13px}
 pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px}
 .row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
@@ -81,10 +81,10 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <li><b>Read the firmware version.</b> Sends <code>$PQTMVERNO*58</code> at once (read-only). <button id="s-fw" type="button">Read</button></li>
 <li><b>Check the receiver profile</b> with read-only queries; then apply the differences if you choose. <button id="s-check" type="button">Check</button></li>
 <li><b>Switch to base mode:</b> <code>PQTMCFGRCVRMODE,W,2</code>, save, then restart with <code>PQTMSRR</code>. The receiver restarts and stops sending NMEA. <button id="s-base" type="button">Prepare…</button></li>
-<li><b>Start a survey-in</b> of <input id="s-count" type="number" min="1" max="86400" step="1" value="300" aria-label="Survey-in fixes"> fixes, with no accuracy limit, then save. <button id="s-svin" type="button">Prepare…</button>
+<li><b>Start a survey-in</b> of <input id="s-count" type="number" min="1" max="86400" step="1" value="300" aria-label="Survey-in fixes"> fixes, with no accuracy limit, save, then restart with <code>PQTMSRR</code>: this firmware starts a survey-in only after a restart. <button id="s-svin" type="button">Prepare…</button>
 <div id="s-progress" class="note"></div></li>
-<li><b>Set a fixed base position</b>, then save.
-<div class="inline"><select id="s-src" aria-label="Position source"><option value="survey">from the survey-in mean</option><option value="llh">from latitude, longitude, height</option><option value="ecef">from ECEF X, Y, Z</option></select></div>
+<li><b>Set a fixed base position</b>, save, then restart with <code>PQTMSRR</code> so it takes effect. The survey-in mean is used only once the survey-in has finished (Valid=2).
+<div class="inline"><select id="s-src" aria-label="Position source"><option value="survey">from the survey-in mean (once finished)</option><option value="llh">from latitude, longitude, height</option><option value="ecef">from ECEF X, Y, Z</option></select></div>
 <div id="s-llh" class="inline" hidden><input id="s-lat" inputmode="decimal" placeholder="Latitude °" aria-label="Latitude in degrees"><input id="s-lon" inputmode="decimal" placeholder="Longitude °" aria-label="Longitude in degrees"><input id="s-h" inputmode="decimal" placeholder="Ellipsoidal height m" aria-label="Ellipsoidal height in metres"></div>
 <div id="s-ecef" class="inline" hidden><input id="s-x" inputmode="decimal" placeholder="X m" aria-label="ECEF X in metres"><input id="s-y" inputmode="decimal" placeholder="Y m" aria-label="ECEF Y in metres"><input id="s-z" inputmode="decimal" placeholder="Z m" aria-label="ECEF Z in metres"></div>
 <div class="inline"><button id="s-fixed" type="button">Prepare…</button></div></li>
@@ -269,8 +269,11 @@ function render(s){
   $("free").className="big "+(d.paused||d.last_error?"bad":"");
   dl("disk",[["Logging",d.paused?"Paused, disk limit":(d.last_error||"On")],["Today",size(d.bytes_today)],["Not logged",size(d.dropped_bytes)],["All logs",size(d.stored_bytes)],["Compressed per day",size(d.compressed_bytes_per_day)],["Days until limit",d.days_until_limit]]);
   const v=s.survey_in||{};
-  $("svin").textContent=(v.state||"Not reported")+(v.age_s>5?" (stale)":"");
-  dl("svind",[["Observations",v.observations==null?null:`${v.observations} of ${v.target}`],["Mean accuracy",v.accuracy_m==null?null:v.accuracy_m+" m"]]);
+  const svinStale=v.age_s!=null&&v.age_s>5;
+  $("svin").textContent=(v.state||"Not reported")+(svinStale?" (stale)":"");
+  // Stale is shown like a stale fix: never green, whatever the last state was.
+  $("svin").className="big "+(svinStale?"bad":v.valid===2?"good":v.valid===1?"":v.state?"warn":"");
+  dl("svind",[["Valid flag",v.valid],["Observations (Obs)",v.observations],["Target (CfgDur)",v.target],["Mean accuracy",v.accuracy_m==null?null:v.accuracy_m+" m"]]);
   table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz","Source"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median,x.source]),"No signal data yet");
   table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
   if(typeof renderReceiver==="function")renderReceiver(s);

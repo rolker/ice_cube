@@ -197,8 +197,8 @@ class Tracking(unittest.TestCase):
         self.assertEqual(snap["signals"][0]["signal"], "1")
         survey = dict(snap["survey_in"])
         survey.pop("age_s")
-        self.assertEqual(survey, {"state": "In progress", "observations": 42, "target": 300,
-                                  "accuracy_m": 1.25})
+        self.assertEqual(survey, {"state": "In progress", "valid": 1, "observations": 42,
+                                  "target": 300, "accuracy_m": 1.25})
         self.assertEqual(snap["rtcm"]["1005"]["count"], 1)
         self.assertNotIn("points", json.dumps(snap), "the history belongs in api/track only")
 
@@ -2388,7 +2388,8 @@ class RtcmStatus(unittest.TestCase):
         self.feed(status, nmea(f"PQTMSVINSTATUS,1,1000,2,,01,300,300,{x:.4f},{y:.4f},{z:.4f},0.5"))
         snap = status.snapshot()
         self.assertEqual((snap["survey_mean"]["lat"], snap["survey_mean"]["height_m"]), (0.0, 7.0))
-        self.assertEqual(status.survey_mean()["state"], "Valid")
+        self.assertEqual(status.survey_mean()["state"], "Finished (valid)")
+        self.assertEqual(status.survey_mean()["valid"], 2)
         for bad in ("0,0,0", "1e308,1e308,1e308", "nan,1,1", ",,"):
             self.feed(status, nmea(f"PQTMSVINSTATUS,1,1000,1,,01,20,300,{bad},0.5"))
             self.assertIsNone(status.snapshot()["survey_mean"], bad)
@@ -2554,10 +2555,12 @@ class ApiCommands(TempDir):
             out["svin_bad"] = [await self.post(client, "/api/steps/survey-in", {"count": c})
                                for c in (0, 86401, "300", 1.5, True)]
             out["no_mean"] = await self.post(client, "/api/steps/fixed", {"source": "survey"})
-            for kind, payload in FrameParser().feed(nmea(
-                    f"PQTMSVINSTATUS,1,1000,1,,01,20,300,{x:.4f},{y:.4f},{z:.4f},1.2")):
-                status.add_frame(kind, payload)
-            out["mean"] = await self.post(client, "/api/steps/fixed", {"source": "survey"})
+            for valid in (1, 2):
+                for kind, payload in FrameParser().feed(nmea(
+                        f"PQTMSVINSTATUS,1,1000,{valid},,01,20,300,{x:.4f},{y:.4f},{z:.4f},1.2")):
+                    status.add_frame(kind, payload)
+                key = "mean" if valid == 2 else "unfinished"
+                out[key] = await self.post(client, "/api/steps/fixed", {"source": "survey"})
             out["llh"] = await self.post(client, "/api/steps/fixed",
                                          {"source": "llh", "lat": "0.5", "lon": 1, "height": 20})
             out["ecef"] = await self.post(client, "/api/steps/fixed",
@@ -2586,13 +2589,16 @@ class ApiCommands(TempDir):
             code, reply = out[key]
             self.assertEqual(code, 200, reply)
             self.assertEqual(reply["commands"], [f"${expected}*{checksum(expected)}",
-                                                 "$PQTMSAVEPAR*5A"], key)
+                                                 "$PQTMSAVEPAR*5A", "$PQTMSRR*4B"], key)
+            self.assertTrue(any("restarts" in w for w in reply["warnings"]), key)
             details = reply["details"]
             self.assertAlmostEqual(details["lat"], 0.5, places=8)
             self.assertAlmostEqual(details["lon"], 1.0, places=8)
             self.assertAlmostEqual(details["height_m"], 20.0, places=3)
             self.assertEqual(details["ecef"], [round(v, 4) for v in (x, y, z)])
-        self.assertTrue(any("not finished" in w for w in out["mean"][1]["warnings"]))
+        self.assertEqual(out["unfinished"][0], 400)
+        self.assertIn("not finished", out["unfinished"][1]["error"])
+        self.assertFalse(any("not finished" in w for w in out["mean"][1]["warnings"]))
         self.assertEqual([code for code, _ in out["bad"]], [400] * 6)
         self.assertEqual(out["written"], [], "steps only stage; nothing is sent")
 
@@ -2820,6 +2826,491 @@ class ControllerSafety(TempDir):
         self.assertEqual(written.count("PQTMCFGUART,R"), 2)
         self.assertEqual(written.count("PQTMVERNO"), 2)
         self.assertEqual(uart, "1")
+
+
+class RestartAndRecheck(TempDir):
+    """0.3.1: the survey-in and fixed steps restart the receiver; a confirmed profile
+    apply is followed by one automatic profile check."""
+
+    def controller(self, loop, answer=simulated_reply):
+        holder = {}
+        port = FakePort(loop, lambda reply: holder["c"].on_nmea(reply), answer=answer)
+        controller = holder["c"] = control.Controller(port.write, self.dir / "commands.jsonl",
+                                                      profile.load())
+        controller.current_uart = "1"
+        return controller, port
+
+    def test_survey_in_step_saves_then_restarts(self):
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop())
+            staged = controller.step_survey_in(120)
+            done = await controller.confirm(staged["pending"], None)
+            return staged, done, port.written, controller._startup
+
+        staged, done, written, startup = run_async(go)
+        self.assertEqual(staged["commands"], [prepare("PQTMCFGSVIN,W,1,120,0,0,0,0").shown,
+                                              "$PQTMSAVEPAR*5A", "$PQTMSRR*4B"])
+        self.assertIn("restart", staged["title"])
+        self.assertTrue(any("only after a restart" in w for w in staged["warnings"]))
+        self.assertEqual(done["outcome"], "ok")
+        self.assertEqual(written, ["PQTMCFGSVIN,W,1,120,0,0,0,0", "PQTMSAVEPAR", "PQTMSRR"])
+        self.assertNotIn("rechecking", done, "the restart's own PQTMVER starts the check")
+        self.assertIsNone(startup)
+
+    def test_survey_in_step_does_not_restart_after_a_failure(self):
+        def failing(name):
+            def answer(body):
+                return [f"{name},ERROR,2"] if body.startswith(name) else simulated_reply(body)
+            return answer
+
+        for name, sent, outcomes in (
+                ("PQTMCFGSVIN", ["PQTMCFGSVIN,W,1,300,0,0,0,0"],
+                 ["error", "not sent", "not sent"]),
+                ("PQTMSAVEPAR", ["PQTMCFGSVIN,W,1,300,0,0,0,0", "PQTMSAVEPAR"],
+                 ["ok", "error", "not sent"])):
+            async def go():
+                controller, port = self.controller(asyncio.get_running_loop(), failing(name))
+                staged = controller.step_survey_in()
+                return await controller.confirm(staged["pending"], None), port.written
+
+            with self.subTest(failing=name):
+                done, written = run_async(go)
+                self.assertEqual(done["outcome"], "failed")
+                self.assertEqual(written, sent)
+                self.assertEqual([r["outcome"] for r in done["results"]], outcomes)
+                self.assertIn("ended error", done["results"][2]["error"])
+
+    def test_survey_in_step_does_not_restart_after_a_timeout(self):
+        def silent_save(body):
+            return [] if body == "PQTMSAVEPAR" else simulated_reply(body)
+
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop(), silent_save)
+            staged = controller.step_survey_in()
+            with mock.patch.object(commands, "SAVE_TIMEOUT_S", 0.05):
+                return await controller.confirm(staged["pending"], None), port.written
+
+        done, written = run_async(go)
+        self.assertEqual(written, ["PQTMCFGSVIN,W,1,300,0,0,0,0", "PQTMSAVEPAR"])
+        self.assertEqual([r["outcome"] for r in done["results"]], ["ok", "timeout", "not sent"])
+
+    def test_fixed_step_saves_then_restarts(self):
+        x, y, z = rtcmdec.llh_to_ecef(0.5, 1.0, 20.0)
+
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop())
+            staged = controller.step_fixed({"source": "ecef", "x": x, "y": y, "z": z})
+            done = await controller.confirm(staged["pending"], None)
+            return staged, done, port.written
+
+        staged, done, written = run_async(go)
+        self.assertIn("restart", staged["title"])
+        self.assertEqual(done["outcome"], "ok")
+        self.assertEqual(written[1:], ["PQTMSAVEPAR", "PQTMSRR"])
+        self.assertTrue(written[0].startswith("PQTMCFGSVIN,W,2,"))
+
+    def test_a_confirmed_apply_checks_the_profile_once(self):
+        def failing_rate(body):
+            if body.startswith("PQTMCFGMSGRATE,W"):
+                return ["PQTMCFGMSGRATE,ERROR,2"]
+            return simulated_reply(body)
+
+        for answer, outcome in ((simulated_reply, "ok"), (failing_rate, "failed")):
+            async def go():
+                loop = asyncio.get_running_loop()
+                controller, port = self.controller(loop, answer)
+                staged = await controller.apply_profile(None)
+                before = controller.profile_checked
+                port.written.clear()
+                done = await controller.confirm(staged["pending"], None)
+                writes = list(port.written)
+                with self.assertLogs("gnss_base", "WARNING"):
+                    await controller._startup
+                await asyncio.sleep(0.05)
+                return (done, writes, port.written[len(writes):], before,
+                        controller.profile_checked, controller._startup.done())
+
+            with self.subTest(outcome=outcome), \
+                    mock.patch.object(control, "RECHECK_DELAY_S", 0.01):
+                done, writes, after, before, checked, idle = run_async(go)
+                self.assertEqual(done["outcome"], outcome)
+                self.assertTrue(done["rechecking"])
+                self.assertFalse(any(prepare(b).kind == "query" for b in writes))
+                queries = [item.query for item in profile.load()]
+                self.assertEqual(after, ["PQTMVERNO", "PQTMCFGUART,R"] + queries,
+                                 "exactly one read-only check")
+                self.assertGreater(checked, before)
+                self.assertTrue(idle)
+
+    def test_the_recheck_never_runs_alongside_another_check(self):
+        async def go():
+            loop = asyncio.get_running_loop()
+            controller, port = self.controller(loop)
+            staged = await controller.apply_profile(None)
+            original, counts = controller.startup_check, {"active": 0, "peak": 0, "runs": 0}
+
+            async def counted():
+                counts["active"] += 1
+                counts["runs"] += 1
+                counts["peak"] = max(counts["peak"], counts["active"])
+                try:
+                    await original()
+                finally:
+                    counts["active"] -= 1
+
+            controller.startup_check = counted
+            with self.assertLogs("gnss_base", "WARNING"):
+                controller.port_opened()
+                while not controller._checking:
+                    await asyncio.sleep(0.001)
+                done = await controller.confirm(staged["pending"], None)
+                controller.schedule_check()  # and again, while it runs
+                await controller._startup
+            await asyncio.sleep(0.05)
+            return done, counts, controller._startup.done(), controller.snapshot()
+
+        with mock.patch.object(control, "STARTUP_DELAY_S", 0.01), \
+                mock.patch.object(control, "RECHECK_DELAY_S", 0.01):
+            done, counts, idle, snap = asyncio.run(go())
+        self.assertEqual(done["outcome"], "ok")
+        self.assertEqual(counts["peak"], 1, "never two checks at once")
+        self.assertEqual(counts["runs"], 2, "the running check, then one more")
+        self.assertTrue(idle)
+        self.assertFalse(snap["checking"])
+
+    def test_page_shows_the_recheck_and_survey_state(self):
+        script = (Path(control.__file__).parent / "static" / "control.js").read_text()
+        page = (Path(control.__file__).parent / "static" / "index.html").read_text()
+        self.assertIn("j.rechecking", script)
+        self.assertIn("r.checking", script)
+        self.assertIn("Valid=", script)
+        self.assertIn("CfgDur", page)
+        self.assertNotIn("restart the receiver.", page)
+
+
+class ReviewFixes031(TempDir):
+    """0.3.1 review: step 5 refuses an unfinished survey-in mean; a check that cannot
+    complete marks the profile stale; a stale survey state is not green; the check
+    holds the port from start to end."""
+
+    def controller(self, loop, answer=simulated_reply, status=None, delay=0.0):
+        holder = {}
+        port = FakePort(loop, lambda reply: holder["c"].on_nmea(reply), answer=answer,
+                        delay=delay)
+        controller = holder["c"] = control.Controller(port.write, self.dir / "commands.jsonl",
+                                                      profile.load(), status)
+        controller.current_uart = "1"
+        return controller, port
+
+    def test_fixed_step_refuses_an_unfinished_survey_mean(self):
+        x, y, z = rtcmdec.llh_to_ecef(0.5, 1.0, 20.0)
+        clock = Clock()
+        status = Status(clock=clock)
+        controller = control.Controller(lambda data: None, self.dir / "commands.jsonl",
+                                        profile.load(), status, clock=clock)
+        controller.current_uart = "1"
+
+        def survey(valid):
+            for kind, payload in FrameParser().feed(nmea(
+                    f"PQTMSVINSTATUS,1,1000,{valid},,01,20,300,{x:.4f},{y:.4f},{z:.4f},1.2")):
+                status.add_frame(kind, payload)
+
+        for valid, state in (("0", "Not running"), ("1", "In progress"), ("", "Unknown"),
+                             ("7", "Unknown")):
+            with self.subTest(valid=valid):
+                survey(valid)
+                with self.assertRaises(control.RequestError) as refused:
+                    controller.step_fixed({"source": "survey"})
+                text = str(refused.exception)
+                self.assertIn("not finished", text)
+                self.assertIn(f"state: {state}", text)
+                self.assertIn(f"Valid={valid or '—'}", text)
+                self.assertIn("Obs 20 of CfgDur 300", text)
+                self.assertIn("mean accuracy 1.2 m", text)
+        survey("2")
+        staged = controller.step_fixed({"source": "survey"})
+        self.assertTrue(staged["commands"][0].startswith("$PQTMCFGSVIN,W,2,0,0,"))
+        self.assertEqual(staged["details"]["from"], "survey")
+        clock.now += control.SURVEY_MAX_AGE_S + 1  # finished, but no longer fresh
+        with self.assertRaises(control.RequestError) as stale:
+            controller.step_fixed({"source": "survey"})
+        self.assertIn("stale", str(stale.exception))
+        survey("2")
+        status.add_frame("nmea", "PQTMSVINSTATUS,1,1000,2,,01,20,300,1.0,2.0,3.0,1.2")
+        with self.assertRaises(control.RequestError) as implausible:
+            controller.step_fixed({"source": "survey"})
+        self.assertIn("not near the Earth's surface", str(implausible.exception))
+        self.assertIn("pending", controller.step_fixed({"source": "ecef", "x": x, "y": y,
+                                                        "z": z}), "coordinates unaffected")
+
+    def test_a_check_that_cannot_complete_marks_the_profile_stale(self):
+        silent = set()
+
+        def answer(body):
+            return [] if body in silent else simulated_reply(body)
+
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop(), answer)
+            out = {}
+            with mock.patch.object(commands, "TIMEOUT_S", 0.05), \
+                    self.assertLogs("gnss_base", "WARNING"):
+                await controller.startup_check()
+                out["fresh"] = controller.snapshot()["profile"]
+                for body in ("PQTMVERNO", "PQTMCFGUART,R"):
+                    silent.clear()
+                    silent.add(body)
+                    port.written.clear()
+                    await controller.startup_check()
+                    out[body] = (controller.snapshot(), list(port.written))
+                silent.clear()
+                await controller.startup_check()
+                out["again"] = controller.snapshot()
+            return out
+
+        out = run_async(go)
+        self.assertIsNone(out["fresh"]["stale"])
+        rows = out["fresh"]["results"]
+        self.assertEqual(len(rows), len(profile.load()))
+        for body, sent in (("PQTMVERNO", ["PQTMVERNO"]),
+                           ("PQTMCFGUART,R", ["PQTMVERNO", "PQTMCFGUART,R"])):
+            with self.subTest(silent=body):
+                snap, written = out[body]
+                self.assertEqual(written, sent, "the profile queries are skipped")
+                stale = snap["profile"]["stale"]
+                self.assertIn(body, stale["reason"])
+                self.assertGreaterEqual(stale["age_s"], 0)
+                self.assertEqual(snap["profile"]["results"], rows, "kept, but marked stale")
+                self.assertIn(body, snap["check_note"])
+        self.assertIsNone(out["again"]["profile"]["stale"], "a full check clears it")
+        self.assertEqual(out["again"]["check_note"], "")
+        script = (Path(control.__file__).parent / "static" / "control.js").read_text()
+        page = (Path(control.__file__).parent / "static" / "index.html").read_text()
+        self.assertIn("Check failed at", script)
+        self.assertNotIn("re-check failed", script)
+        self.assertIn('classList.toggle("stale"', script)
+        self.assertIn("table.stale{", page)
+
+    def test_a_check_that_fails_outright_marks_the_profile_stale(self):
+        async def go():
+            controller, _port = self.controller(asyncio.get_running_loop())
+
+            async def broken():
+                raise OSError("boom")
+
+            controller.startup_check = broken
+            with self.assertLogs("gnss_base", "ERROR"):
+                controller.schedule_check(0)
+                await controller._startup
+            return controller.snapshot()["profile"]["stale"]
+
+        stale = run_async(go)
+        self.assertIn("OSError", stale["reason"])
+
+    def test_a_stale_survey_state_is_not_green(self):
+        page = (Path(control.__file__).parent / "static" / "index.html").read_text()
+        line = next(x for x in page.splitlines() if '$("svin").className' in x)
+        self.assertLess(line.index("svinStale?"), line.index('"good"'),
+                        "stale is decided before the Finished state can make it green")
+        self.assertIn('svinStale?"bad"', line, "shown like a stale fix")
+
+    def test_a_batch_confirmed_during_a_check_runs_after_it(self):
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop(), delay=0.01)
+            staged = controller.step_base_mode()
+            with self.assertLogs("gnss_base", "WARNING"):
+                check = asyncio.ensure_future(controller.startup_check())
+                while "PQTMVERNO" not in port.written:
+                    await asyncio.sleep(0.001)
+                done = await controller.confirm(staged["pending"], None)
+                await check
+            return done, port.written
+
+        done, written = run_async(go)
+        queries = [item.query for item in profile.load()]
+        self.assertEqual(done["outcome"], "ok")
+        self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries +
+                         ["PQTMCFGRCVRMODE,W,2", "PQTMSAVEPAR", "PQTMSRR"])
+
+    def test_a_quiet_receiver_ends_the_check_at_the_first_timeout(self):
+        queries = [item.query for item in profile.load()]
+        quiet = queries[2]
+
+        def answer(body):
+            return [] if body == quiet else simulated_reply(body)
+
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop(), answer)
+            staged = controller.step_base_mode()
+            with mock.patch.object(commands, "TIMEOUT_S", 0.1), \
+                    self.assertLogs("gnss_base", "WARNING"):
+                check = asyncio.ensure_future(controller.startup_check())
+                while "PQTMVERNO" not in port.written:
+                    await asyncio.sleep(0.001)
+                done = await controller.confirm(staged["pending"], None)
+                await check
+            return done, port.written, controller.snapshot()
+
+        done, written, snap = run_async(go)
+        self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries[:3] +
+                         ["PQTMCFGRCVRMODE,W,2", "PQTMSAVEPAR", "PQTMSRR"])
+        self.assertEqual(done["outcome"], "ok")
+        statuses = [row["status"] for row in snap["profile"]["results"]]
+        self.assertEqual(len(statuses), len(queries))
+        self.assertTrue(all(s == "error" for s in statuses[2:]))
+        self.assertIn("got no answer", snap["check_note"])
+
+    def test_the_held_port_runs_batches_only_while_held(self):
+        async def go():
+            loop = asyncio.get_running_loop()
+            controller, port = self.controller(loop)
+            runner = controller.runner
+            async with runner.hold() as send:
+                waiting = asyncio.ensure_future(runner.run([prepare("PQTMVERNO")]))
+                (first,) = await send([prepare("PQTMCFGUART,R")])
+                await asyncio.sleep(0.02)
+                held_order = list(port.written)
+            await waiting
+            with self.assertRaises(RuntimeError):
+                await send([prepare("PQTMVERNO")])
+            return first, held_order, port.written
+
+        first, held_order, written = run_async(go)
+        self.assertEqual(first["outcome"], "ok")
+        self.assertEqual(held_order, ["PQTMCFGUART,R"])
+        self.assertEqual(written, ["PQTMCFGUART,R", "PQTMVERNO"])
+
+
+class ReviewFixes031Round2(TempDir):
+    """0.3.1 review, round 2: a profile check that did not get an answer to every query
+    stays stale; an unverified PQTMCFGUART,R answer leaves the app's port unknown."""
+
+    def controller(self, loop, answer=simulated_reply):
+        holder = {}
+        port = FakePort(loop, lambda reply: holder["c"].on_nmea(reply), answer=answer)
+        controller = holder["c"] = control.Controller(port.write, self.dir / "commands.jsonl",
+                                                      profile.load())
+        controller.current_uart = "1"
+        return controller, port
+
+    def check(self, answer=simulated_reply, during=None):
+        """A full check, then a check with `answer` (`during(controller, port, body)`
+        runs as each body is written). Returns both snapshots and what was written."""
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop())
+            with mock.patch.object(commands, "TIMEOUT_S", 0.05), \
+                    self.assertLogs("gnss_base", "WARNING"):
+                await controller.startup_check()
+                first = controller.snapshot()
+                port.answer, port.written = answer, []
+                if during is not None:
+                    write = port.write
+
+                    def hooked(data):
+                        during(controller, port, sentence_body(data))
+                        return write(data)
+                    controller.runner._write = hooked
+                await controller.startup_check()
+            return first, controller.snapshot(), port.written
+
+        return run_async(go)
+
+    def test_a_full_check_with_an_error_reply_is_not_stale(self):
+        first, again, _written = self.check()
+        for snap in (first, again):
+            statuses = [row["status"] for row in snap["profile"]["results"]]
+            self.assertIn("unsupported", statuses, "the simulated ERROR,1 is an answer")
+            self.assertNotIn("error", statuses)
+            self.assertIsNone(snap["profile"]["stale"])
+            self.assertEqual(snap["check_note"], "")
+            self.assertEqual(snap["current_uart"], "1")
+
+    def test_a_timeout_mid_check_leaves_the_profile_stale(self):
+        quiet = profile.load()[3].query
+
+        def answer(body):
+            return [] if body == quiet else simulated_reply(body)
+
+        _first, snap, _written = self.check(answer)
+        stale = snap["profile"]["stale"]
+        self.assertEqual(stale["kind"], "incomplete")
+        self.assertEqual(stale["reason"], f"{prepare(quiet).shown} got no answer")
+        self.assertIsInstance(stale["time"], float)
+        rows = snap["profile"]["results"]
+        self.assertEqual(len(rows), len(profile.load()), "the rows are kept, with outcomes")
+        self.assertTrue(all(r["status"] == "error" for r in rows[3:]))
+        self.assertIn("got no answer", snap["check_note"])
+
+    def test_a_port_closed_mid_check_leaves_the_profile_stale(self):
+        closing = profile.load()[2].query
+
+        def during(controller, port, body):
+            if body == closing:  # the port drops just before this query is written
+                port.closed = True
+                controller.port_lost()
+
+        _first, snap, written = self.check(during=during)
+        stale = snap["profile"]["stale"]
+        self.assertEqual(stale["kind"], "incomplete")
+        self.assertIn("port closed", stale["reason"])
+        self.assertIsNone(snap["current_uart"])
+        self.assertEqual(len(snap["profile"]["results"]), len(profile.load()))
+
+    def test_an_unanswered_query_without_a_port_change_is_stale(self):
+        failing = profile.load()[1].query
+
+        def during(controller, port, body):
+            port.closed = body == failing
+
+        _first, snap, _written = self.check(during=during)
+        stale = snap["profile"]["stale"]
+        self.assertEqual(stale["kind"], "incomplete")
+        self.assertIn("not connected", stale["reason"])
+
+    def test_an_unverified_uart_is_forgotten_and_the_check_is_incomplete(self):
+        queries = [item.query for item in profile.load()]
+        for case, reply in (("error", ["PQTMCFGUART,ERROR,3"]),
+                            ("malformed", ["PQTMCFGUART,OK,1,460800"]),
+                            ("wrong port", ["PQTMCFGUART,OK,7,460800,8,0,1,0"]),
+                            ("no reply", [])):
+            with self.subTest(case):
+                def answer(body, reply=reply):
+                    return reply if body == "PQTMCFGUART,R" else simulated_reply(body)
+
+                first, snap, written = self.check(answer)
+                self.assertEqual(first["current_uart"], "1")
+                self.assertIsNone(snap["current_uart"], "the older value is not kept")
+                stale = snap["profile"]["stale"]
+                self.assertIn("PQTMCFGUART,R", stale["reason"])
+                self.assertIn("PQTMCFGUART,R", snap["check_note"])
+                if case == "no reply":
+                    self.assertEqual(stale["kind"], "failed")
+                    self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"])
+                else:
+                    self.assertEqual(stale["kind"], "incomplete")
+                    self.assertIn("unverified", stale["reason"])
+                    self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries,
+                                     "the profile is still read")
+
+    def test_uart_writes_stay_refused_after_an_unverified_answer(self):
+        async def go():
+            controller, port = self.controller(asyncio.get_running_loop())
+            port.answer = (lambda body: ["PQTMCFGUART,ERROR,3"] if body == "PQTMCFGUART,R"
+                           else simulated_reply(body))
+            with mock.patch.object(commands, "TIMEOUT_S", 0.05), \
+                    self.assertLogs("gnss_base", "WARNING"):
+                await controller.startup_check()
+            return await controller.command("PQTMCFGUART,W,2,115200", None)
+
+        reply = run_async(go)
+        self.assertEqual(reply["outcome"], "blocked", "with port 1 known, this would confirm")
+        self.assertIn("does not know its port", reply["reason"])
+
+    def test_the_page_words_a_failed_and_an_incomplete_check(self):
+        script = (Path(control.__file__).parent / "static" / "control.js").read_text()
+        self.assertIn("Incomplete check at", script)
+        self.assertIn("Check failed at", script)
+        self.assertIn("st.time * 1000", script, "the time comes from the app")
+        self.assertNotIn("st.age_s", script)
 
 
 class SerialWrite(unittest.TestCase):

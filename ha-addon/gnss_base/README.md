@@ -137,7 +137,9 @@ query and shows **match**, **differ**, **unsupported** (error 1 or 3) or **error
 reply). The app checks at startup and whenever the receiver reports a restart
 (`$PQTMVER`), logs a warning for differences, and never changes anything by itself.
 **Apply differences** checks again, then asks you to confirm the write commands for the
-settings that differ, followed by PQTMSAVEPAR.
+settings that differ, followed by PQTMSAVEPAR. Once the confirmed batch has run, whatever
+its outcome, the app checks the profile again by itself (the same read-only queries), so
+the table shows what the receiver now has, even if the page was closed.
 
 The profile sets:
 
@@ -176,15 +178,53 @@ PQTMSAVEPAR and a restart after Set commands, so restart the receiver after appl
 3. Step 3 switches to base mode: PQTMCFGRCVRMODE,W,2, PQTMSAVEPAR, then PQTMSRR. The
    receiver restarts; NMEA output stops, so the fix and GSV disappear. The page then shows
    signals from MSM.
-4. Check the profile again and **Apply differences**, then restart the receiver
-   (console: `PQTMSRR`, with confirmation), and check once more.
-5. Step 4 starts a survey-in (default 300 fixes, no accuracy limit) and saves. Progress
-   shows under the step, from PQTMSVINSTATUS.
-6. When the survey is valid, step 5 sets fixed mode from the survey-in mean, or from
-   coordinates you enter (latitude, longitude, ellipsoidal height, or ECEF). The
-   confirmation shows ECEF and latitude/longitude/height. It sends PQTMCFGSVIN,W,2 and
-   PQTMSAVEPAR. Keep the coordinates out of public repositories.
+4. Check the profile again and **Apply differences**; the app then checks the profile
+   again by itself. If a setting needs it, restart the receiver (console: `PQTMSRR`,
+   with confirmation); the app checks again when the receiver is back.
+5. Step 4 starts a survey-in (default 300 fixes, no accuracy limit): PQTMCFGSVIN,W,1,
+   PQTMSAVEPAR, then PQTMSRR. The restart is needed: on firmware LG290P03AANR02A02S a
+   PQTMCFGSVIN write is answered OK but takes effect only after a save and restart.
+   Each command is sent only if the one before it answered OK. Progress shows under the
+   step and in the Survey-in card, from PQTMSVINSTATUS: the state in words (Valid flag
+   0 not running, 1 in progress, 2 finished), observations (Obs) of the target (CfgDur)
+   and mean accuracy.
+6. When the survey is finished (Valid=2), step 5 sets fixed mode from the survey-in mean,
+   or from coordinates you enter (latitude, longitude, ellipsoidal height, or ECEF). Until
+   then, and if PQTMSVINSTATUS is more than 5 s old, the survey-in mean is refused. The
+   confirmation shows ECEF and latitude/longitude/height. It sends PQTMCFGSVIN,W,2,
+   PQTMSAVEPAR and PQTMSRR, restarting for the same reason as step 4. Keep the
+   coordinates out of public repositories.
 7. Once the receiver sends 1005, the base position appears on the page.
+
+## Changes
+
+**0.3.1**
+
+- The survey-in (step 4) and fixed-position (step 5) steps now restart the receiver
+  (PQTMSRR) after saving: this firmware applies PQTMCFGSVIN only after a restart.
+- The survey-in state from PQTMSVINSTATUS is shown in words, with the Valid flag, Obs,
+  CfgDur and mean accuracy.
+- After a confirmed **Apply differences**, the app checks the profile again by itself;
+  the page shows "checking again" until the new result is in.
+- Step 5 refuses the survey-in mean until the survey-in has finished (Valid=2), and says
+  the state, Obs of CfgDur and mean accuracy; it used to only warn.
+- If a check cannot complete (no answer to PQTMVERNO or PQTMCFGUART,R), the profile table
+  is greyed and marked stale with the reason and time, instead of looking current.
+- A stale survey-in status is no longer shown green when its last state was Finished.
+- The profile check holds the port from PQTMVERNO to the last profile query, so a change
+  confirmed meanwhile (a restart, say) is sent after the check, not between its queries.
+  A profile query that times out ends the check, so a quiet receiver holds the port for
+  at most one timeout per step.
+- A profile check that does not get an answer to every query (one timed out, or the
+  port closed during it) keeps its rows but marks them stale and "incomplete", with
+  the reason. An ERROR reply counts as an answer.
+- If PQTMCFGUART,R answers ERROR, answers with an OK the app does not understand, or
+  does not answer, the app forgets the port it was on, so UART and protocol writes for
+  it stay refused, and the check is marked incomplete. The profile is still read after
+  an ERROR reply.
+- The page says "Check failed at …" or "Incomplete check at …" with the reason, instead
+  of "re-check failed" even when there was no earlier check. The time comes from the
+  app.
 
 ## Install
 

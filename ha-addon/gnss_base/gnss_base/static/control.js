@@ -33,7 +33,8 @@ function show(out, j) {
   if (j.pending) { out.textContent = "Waiting for your confirmation…"; openConfirm(j, out); return; }
   if (j.outcome === "blocked") { out.textContent = "Refused: " + j.reason; out.className = "bad"; }
   else if (j.result) out.textContent = resultText(j.result);
-  else if (j.results) out.textContent = (j.title ? j.title + "\n" : "") + j.results.map(resultText).join("\n");
+  else if (j.results) out.textContent = (j.title ? j.title + "\n" : "") + j.results.map(resultText).join("\n") +
+    (j.rechecking ? "\nChecking the profile again; the table updates by itself." : "");
   else if (j.message) out.textContent = j.message;
   else if (j.profile) out.textContent = "Profile checked.";
   loadHistory();
@@ -93,22 +94,34 @@ $("cyes").onclick = async () => {
 const STATUS_CLASS = {match: "good", differ: "warn", unsupported: "note", error: "bad"};
 function renderReceiver(s) {
   const r = s.receiver || {}, p = r.profile || {}, c = p.counts || {};
+  // A check that failed before reading the profile leaves the table from any earlier
+  // check; one that read it only in part shows what it read. Either way it is stale.
+  const st = p.stale, at = st ? new Date(st.time * 1000).toLocaleTimeString() : "";
+  const counts = p.checked_age_s == null ? "" :
+    `${c.match || 0} match, ${c.differ || 0} differ, ${c.unsupported || 0} unsupported, ${c.error || 0} no answer` +
+    ` (${Math.round(p.checked_age_s)} s ago)`;
+  let prof;
+  if (!st) prof = counts || "Not checked yet";
+  else if (st.kind === "incomplete") prof = `Incomplete check at ${at} (${st.reason}): ${counts}`;
+  else prof = `Check failed at ${at} (${st.reason})` + (counts ? `; showing an earlier check: ${counts}` : "");
   dl("rcv", [["Firmware", r.firmware], ["Mode", r.mode], ["App's UART", r.current_uart],
-    ["Profile", p.checked_age_s == null ? "Not checked yet" :
-      `${c.match || 0} match, ${c.differ || 0} differ, ${c.unsupported || 0} unsupported, ${c.error || 0} no answer`
-      + ` (${Math.round(p.checked_age_s)} s ago)`],
+    ["Profile", prof + (r.checking ? "; checking again…" : "")],
     ["Busy with", r.busy_with || null], ["Command log", r.log_error || "OK"]]);
   $("rcvnote").textContent = r.check_note || "";
   const rows = p.results || [];
+  $("prof").classList.toggle("stale", !!st);
   $("prof").innerHTML = rows.length ? "<tr><th>Setting</th><th>Expected</th><th>Receiver</th><th>Status</th></tr>" +
     rows.map(x => `<tr><td class="wrap">${esc(x.label)}${x.note ? `<div class="note">${esc(x.note)}</div>` : ""}</td>` +
       `<td class="mono">${esc(x.expected)}</td><td class="mono wrap">${esc(x.actual)}</td>` +
       `<td class="${STATUS_CLASS[x.status] || ""}">${esc(x.status)}</td></tr>`).join("")
     : `<tr><td class="note">${esc("No profile check yet")}</td></tr>`;
   const v = s.survey_in || {}, m = s.survey_mean;
-  $("s-progress").textContent = v.state ? `Survey-in: ${v.state}, ${v.observations ?? "—"} of ${v.target ?? "—"} fixes` +
+  $("s-progress").textContent = v.state ? `Survey-in: ${v.state} (Valid=${v.valid ?? "—"}), ` +
+    `Obs ${v.observations ?? "—"} of CfgDur ${v.target ?? "—"}` +
     (v.accuracy_m != null ? `, mean accuracy ${v.accuracy_m} m` : "") + (v.age_s > 5 ? " (stale)" : "") +
-    (m ? `. Mean: ${m.lat.toFixed(9)}°, ${m.lon.toFixed(9)}°, ${m.height_m.toFixed(3)} m` : "")
+    (m ? `. Mean: ${m.lat.toFixed(9)}°, ${m.lon.toFixed(9)}°, ${m.height_m.toFixed(3)} m` : "") +
+    (v.valid === 0 ? ". Not running. A new survey-in starts only after a restart, and only " +
+      "in base mode." : "")
     : "No survey-in status (PQTMSVINSTATUS) received.";
 }
 

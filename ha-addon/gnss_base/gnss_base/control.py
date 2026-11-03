@@ -15,6 +15,8 @@ STARTUP_DELAY_S = 2.0
 HISTORY_COUNT = 20
 SURVEY_MAX_AGE_S = 5.0
 SURVEY_DEFAULT = 300
+# After a confirmed profile apply, the app checks the profile again after this long.
+RECHECK_DELAY_S = 0.5
 # A position this far from the Earth's centre is on or near the ground (from below
 # the Dead Sea shore to above the highest mountains).
 MIN_RADIUS_M, MAX_RADIUS_M = 6_355_000.0, 6_388_000.0
@@ -22,6 +24,8 @@ BASE_MODE_WARNING = ("The receiver will restart. In base mode it stops sending N
                      "fix, GGA position and GSV signals disappear; the page then uses RTCM "
                      "1005 and MSM messages instead. Survey-in or a fixed position is needed "
                      "before it sends a base position.")
+SVIN_RESTART_NOTE = ("The receiver restarts after saving: this firmware applies PQTMCFGSVIN "
+                     "only after a restart. It checks the profile again once it is back.")
 
 
 class RequestError(ValueError):
@@ -46,6 +50,35 @@ def position_details(x, y, z):
             "lon": round(lon, 9), "height_m": round(height, 4)}
 
 
+def answered(result):
+    """Whether the receiver answered: OK, or an ERROR reply (which says the receiver
+    heard the query, though it may not support it)."""
+    return result["outcome"] == "ok" or (result["outcome"] == "error"
+                                         and bool(result.get("error_code")))
+
+
+def uart_port(result):
+    """The app's port (1 to 3) from a PQTMCFGUART,R result, or None if the result is
+    not a well-formed OK reply."""
+    if result["outcome"] != "ok" or not result["replies"]:
+        return None
+    fields = result["replies"][0].lstrip("$").split(",")
+    if fields[1:2] == ["OK"] and len(fields) == 8 and fields[2] in ("1", "2", "3"):
+        return fields[2]
+    return None
+
+
+def survey_unfinished(survey):
+    """Why an unfinished survey-in mean is not used for a fixed position."""
+    def shown(value, unit=""):
+        return "—" if value is None else f"{value}{unit}"
+    return (f"The survey-in is not finished (state: {survey['state']}, "
+            f"Valid={shown(survey['valid'])}, Obs {shown(survey.get('observations'))} of "
+            f"CfgDur {shown(survey.get('target'))}, mean accuracy "
+            f"{shown(survey.get('accuracy_m'), ' m')}). Its mean may still move, so it is not "
+            "used. Wait until it is finished (Valid=2), or enter coordinates.")
+
+
 class Controller:
     def __init__(self, write, log_path, profile_items, status=None, clock=time.monotonic):
         self.runner = CommandRunner(write, CommandLog(log_path))
@@ -59,6 +92,8 @@ class Controller:
         self.profile_results = []
         self.profile_checked = None
         self.check_note = ""
+        # Why the profile table is not current, and when that was found: None while it is.
+        self.profile_stale = None
         self._startup = None
         self._checking = False   # the check has started sending
         self._check_again = False
@@ -98,8 +133,9 @@ class Controller:
             self._checking, self._check_again = True, False
             try:
                 await self.startup_check()
-            except Exception:  # never let the check take the app down
+            except Exception as error:  # never let the check take the app down
                 LOG.exception("receiver check failed")
+                self._mark_stale(f"the check failed ({type(error).__name__})")
             finally:
                 self._checking = False
             again = self._check_again
@@ -116,7 +152,13 @@ class Controller:
     def _learn(self, prepared, result, connection):
         """Keep what a successful query says about the receiver. `connection` is the
         runner's connection count when the query was written (None if it was not); the
-        port is learned only if it has not closed since."""
+        port is learned only if it has not closed since. Any other answer to
+        PQTMCFGUART,R (an ERROR, a malformed OK, no reply) leaves the port unknown, so
+        UART and protocol writes for it are refused until it is read again."""
+        if prepared.body == "PQTMCFGUART,R":
+            port = uart_port(result)
+            self.current_uart = port if connection == self.runner.connection else None
+            return
         if result["outcome"] != "ok" or not result["replies"]:
             return
         fields = result["replies"][0].lstrip("$").split(",")
@@ -124,21 +166,21 @@ class Controller:
             self.firmware = fields[1]
         elif prepared.body == "PQTMCFGRCVRMODE,R" and fields[1:2] == ["OK"] and len(fields) > 2:
             self.mode = {"1": "Rover", "2": "Base station"}.get(fields[2], f"Unknown ({fields[2]})")
-        elif prepared.body == "PQTMCFGUART,R" and fields[1:2] == ["OK"] and len(fields) == 8:
-            if fields[2] in ("1", "2", "3") and connection == self.runner.connection:
-                self.current_uart = fields[2]
 
-    async def _queries(self, bodies, user, source):
+    async def _queries(self, bodies, user, source, send=None, stop_on=()):
         prepared = [prepare(body, self.current_uart) for body in bodies]
         for item in prepared:
             if item.kind != "query":  # the app's own checks are read-only
                 raise RequestError(f"{item.body} is not a query")
-        return await self._run(prepared, user, source, stop_on_failure=False)
+        return await self._run(prepared, user, source, send=send, stop_on_failure=False,
+                               stop_on=stop_on)
 
-    async def _run(self, prepared, user, source, check=None, **options):
+    async def _run(self, prepared, user, source, check=None, send=None, **options):
         """Run a batch through the runner and learn from its replies. `check(item)`,
         if given, runs immediately before each write; a reason it returns stops the
-        batch. The connection count is noted at each write, for `_learn`."""
+        batch. `send` is the runner's `hold` function while the port is held, else
+        the batch waits for the port. The connection count is noted at each write,
+        for `_learn`."""
         written = {}
 
         def recheck(item):
@@ -147,30 +189,77 @@ class Controller:
                 written[id(item)] = self.runner.connection
             return reason
 
-        results = await self.runner.run(prepared, user, source, recheck=recheck, **options)
+        send = send or self.runner.run
+        results = await send(prepared, user, source, recheck=recheck, **options)
         for item, result in zip(prepared, results):
             self._learn(item, result, written.get(id(item)))
         return results
 
+    def _mark_stale(self, reason, kind="failed"):
+        """The profile table is not current: a check failed before reading the profile
+        (`kind` "failed": the table is from an earlier check, if any), or read it only
+        in part or without a verified port ("incomplete": the table is from this
+        check). `time` is wall-clock time, for the page to show."""
+        self.profile_stale = {"reason": reason, "kind": kind, "at": self._clock(),
+                              "time": time.time()}
+
     async def startup_check(self):
+        """Read the firmware, the app's port and the profile, holding the port for the
+        whole check so that no confirmed change (a restart, say) lands in between. A
+        request made meanwhile waits for the check: a few dozen ms per query, or at
+        most one timeout per step if the receiver goes quiet."""
         source = "startup check"
-        (first,) = await self._queries(["PQTMVERNO"], None, source)
-        if first["outcome"] != "ok":
-            self.check_note = "The receiver did not answer PQTMVERNO; the check was skipped."
-            LOG.warning("receiver check: no answer to PQTMVERNO, check skipped")
-            return
-        await self._queries(["PQTMCFGUART,R"], None, source)
-        await self.check_profile(None, source)
+        async with self.runner.hold() as send:
+            connection = self.runner.connection
+            (first,) = await self._queries(["PQTMVERNO"], None, source, send)
+            if first["outcome"] != "ok":
+                self.check_note = "The receiver did not answer PQTMVERNO; the check was skipped."
+                self._mark_stale("no answer to PQTMVERNO")
+                LOG.warning("receiver check: no answer to PQTMVERNO, check skipped")
+                return
+            (uart,) = await self._queries(["PQTMCFGUART,R"], None, source, send)
+            if not answered(uart):
+                self.check_note = ("The receiver did not answer PQTMCFGUART,R; the profile "
+                                   "check was skipped.")
+                self._mark_stale("no answer to PQTMCFGUART,R")
+                LOG.warning("receiver check: no answer to PQTMCFGUART,R, profile skipped")
+                return
+            # The profile is still read when the receiver answers ERROR (the firmware
+            # may not support the query), but the check is then incomplete: without a
+            # verified port, UART and protocol writes for it stay refused (see _learn).
+            unverified = ""
+            if self.current_uart is None:
+                if uart["outcome"] == "error":
+                    unverified = (f"PQTMCFGUART,R answered ERROR,{uart['error_code']}, so "
+                                  "the app's UART is unverified")
+                elif connection != self.runner.connection:
+                    unverified = "the port closed during the check"
+                else:
+                    unverified = (f"PQTMCFGUART,R answered {uart['replies'][0]}, which is "
+                                  "not understood, so the app's UART is unverified")
+            await self.check_profile(None, source, send, unverified, connection)
         differ = [r["label"] for r in self.profile_results if r["status"] != "match"]
+        if self.profile_stale is not None:
+            LOG.warning("receiver check incomplete: %s", self.profile_stale["reason"])
         if differ:
             LOG.warning("receiver profile: %d of %d settings differ or could not be read: %s",
                         len(differ), len(self.profile_results), "; ".join(differ))
         else:
             LOG.info("receiver profile: all %d settings match", len(self.profile_results))
 
-    async def check_profile(self, user, source="profile check"):
-        # The profile's receiver mode query also updates `mode` (see _learn).
-        results = await self._queries([item.query for item in self.profile], user, source)
+    async def check_profile(self, user, source="profile check", send=None, incomplete="",
+                            connection=None):
+        """Read the profile and keep the rows. They are a complete check only if every
+        query was answered (OK, or ERROR from the receiver), the port stayed open since
+        `connection` (the connection count when the check began) and the caller gave
+        no `incomplete` reason; otherwise they are kept, but marked stale."""
+        if connection is None:
+            connection = self.runner.connection
+        # The profile's receiver mode query also updates `mode` (see _learn). A query
+        # that times out stops the check: the receiver has likely gone quiet, and each
+        # further query would hold the port for another timeout.
+        results = await self._queries([item.query for item in self.profile], user, source,
+                                      send, stop_on=("timeout",))
         rows = []
         for item, result in zip(self.profile, results):
             row = {"label": item.label, "query": result["command"], "expected": item.expected,
@@ -191,7 +280,26 @@ class Controller:
             rows.append(row)
         self.profile_results = rows
         self.profile_checked = self._clock()
-        self.check_note = ""
+        missing = next((r for r in results if not answered(r)), None)
+        if incomplete:
+            reason, note = incomplete, f"The check is incomplete: {incomplete}."
+        elif connection != self.runner.connection:
+            reason = "the port closed during the check"
+            note = "The serial port closed during the check, so the table may not be current."
+        elif missing is not None and missing["outcome"] == "timeout":
+            reason = f"{missing['command']} got no answer"
+            rest = results[-1]["outcome"] == "not sent"
+            note = reason + (", so the rest of the profile was not read." if rest else ".")
+        elif missing is not None:
+            reason = f"{missing['command']} ended {missing['outcome']}: {missing['error']}"
+            note = f"The check is incomplete: {reason}."
+        else:
+            reason = note = ""
+        self.check_note = note
+        if reason:
+            self._mark_stale(reason, "incomplete")
+        else:
+            self.profile_stale = None
         return rows
 
     # ---- page requests ----
@@ -242,8 +350,15 @@ class Controller:
             self.runner.log_unsent(staged, user, source, reason)
             raise RequestError(reason)
         results = await self._run(staged, user, source, check=lambda item: self._changed(staged))
-        return {"title": entry["title"], "results": results,
-                "outcome": "ok" if all(r["outcome"] == "ok" for r in results) else "failed"}
+        reply = {"title": entry["title"], "results": results,
+                 "outcome": "ok" if all(r["outcome"] == "ok" for r in results) else "failed"}
+        if entry["details"].get("source") == "profile apply":
+            # Whatever the outcome, read the profile again so the page shows what the
+            # receiver now has. A restart is not needed for this: its own PQTMVER
+            # starts a check (on_nmea), and the apply batch has no restart.
+            self.schedule_check(RECHECK_DELAY_S)
+            reply["rechecking"] = True
+        return reply
 
     def _changed(self, staged):
         """Why a staged batch may no longer be sent, or "" if the rules still give
@@ -275,14 +390,14 @@ class Controller:
     def step_survey_in(self, count=SURVEY_DEFAULT):
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 86400:
             raise RequestError("The survey-in count must be a whole number from 1 to 86400.")
-        return self._stage([f"PQTMCFGSVIN,W,1,{count},0,0,0,0", "PQTMSAVEPAR"],
-                           f"Start a survey-in of {count} fixes?", "step: survey-in",
-                           ["The receiver must be in base mode. If PQTMSVINSTATUS does not show "
-                            "the survey in progress within a few seconds, restart the receiver."],
+        return self._stage([f"PQTMCFGSVIN,W,1,{count},0,0,0,0", "PQTMSAVEPAR", "PQTMSRR"],
+                           f"Start a survey-in of {count} fixes and restart the receiver?",
+                           "step: survey-in",
+                           ["The receiver must be in base mode.", SVIN_RESTART_NOTE],
                            {"count": count})
 
     def survey_mean(self):
-        """The latest survey-in mean (x, y, z) and whether it is valid, or a RequestError."""
+        """The latest survey-in mean (x, y, z) and its state, or a RequestError."""
         survey = self.status.survey_mean() if self.status is not None else None
         if not survey:
             raise RequestError("No survey-in mean has been received (PQTMSVINSTATUS).")
@@ -297,10 +412,9 @@ class Controller:
         warnings = []
         if source == "survey":
             survey = self.survey_mean()
+            if survey["valid"] != 2:
+                raise RequestError(survey_unfinished(survey))
             x, y, z = survey["ecef"]
-            if survey["state"] != "Valid":
-                warnings.append(f"The survey-in is not finished (state: {survey['state']}). "
-                                "Its mean may still move.")
         elif source == "ecef":
             x, y, z = (_number(request.get(k), k) for k in ("x", "y", "z"))
         elif source == "llh":
@@ -317,23 +431,30 @@ class Controller:
         details = dict(position_details(x, y, z), **{"from": source})
         warnings.append("Any error in the base position becomes an error in every rover "
                         "position.")
-        return self._stage([f"PQTMCFGSVIN,W,2,0,0,{x:.4f},{y:.4f},{z:.4f}", "PQTMSAVEPAR"],
-                           "Set this fixed base position?", "step: fixed position",
-                           warnings, details)
+        warnings.append(SVIN_RESTART_NOTE)
+        return self._stage([f"PQTMCFGSVIN,W,2,0,0,{x:.4f},{y:.4f},{z:.4f}", "PQTMSAVEPAR",
+                            "PQTMSRR"],
+                           "Set this fixed base position and restart the receiver?",
+                           "step: fixed position", warnings, details)
 
     def history(self, count=HISTORY_COUNT):
         return self.runner.log.tail(count)
 
     def snapshot(self):
-        checked = self.profile_checked
+        checked, stale = self.profile_checked, self.profile_stale
         counts = {}
         for row in self.profile_results:
             counts[row["status"]] = counts.get(row["status"], 0) + 1
         return {
             "firmware": self.firmware or None, "mode": self.mode,
             "current_uart": self.current_uart, "busy_with": self.runner.busy_with,
+            "checking": self._startup is not None and not self._startup.done(),
             "log_error": self.runner.log.error, "check_note": self.check_note,
             "profile": {"checked_age_s": None if checked is None
                         else round(self._clock() - checked, 1),
-                        "counts": counts, "results": self.profile_results},
+                        "counts": counts, "results": self.profile_results,
+                        "stale": None if stale is None else {
+                            "reason": stale["reason"], "kind": stale["kind"],
+                            "time": stale["time"],
+                            "age_s": round(self._clock() - stale["at"], 1)}},
         }

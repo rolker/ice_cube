@@ -14,6 +14,7 @@ Command syntax, replies and error codes follow the Quectel LG29xP & LGx80P GNSS
 protocol specification, version 1.3.
 """
 import asyncio
+import contextlib
 import json
 import re
 import secrets
@@ -446,13 +447,16 @@ class CommandRunner:
         """Log commands that will not be sent, and return their results."""
         return [self._finish(p, user, source, "not sent", [], reason) for p in commands]
 
-    async def run(self, commands, user=None, source="", stop_on_failure=True, recheck=None):
+    async def run(self, commands, user=None, source="", stop_on_failure=True, recheck=None,
+                  stop_on=()):
         """Send prepared commands in order, holding the port for all of them. Each is
         logged, including those not sent. Blocked commands are refused, never sent.
         `recheck(prepared)`, if given, is called immediately before each write; a
         reason it returns stops the batch there. A change that is not a query also
         stops the batch if the port closed since the batch took the port, and every
-        batch stops if an earlier write is still stuck. Returns results."""
+        batch stops if an earlier write is still stuck. With `stop_on_failure`, a
+        command that does not end ok stops the batch; an outcome in `stop_on` always
+        does. Returns results."""
         commands = list(commands)
         if self._queued >= MAX_QUEUED:
             return self.log_unsent(commands, user, source,
@@ -465,13 +469,39 @@ class CommandRunner:
                 self.log_unsent(commands, user, source, STOPPED)
                 raise
             try:
-                return await self._run_held(commands, user, source, stop_on_failure, recheck)
+                return await self._run_held(commands, user, source, stop_on_failure, recheck,
+                                            stop_on)
             finally:
                 self._lock.release()
         finally:
             self._queued -= 1
 
-    async def _run_held(self, commands, user, source, stop_on_failure, recheck):
+    @contextlib.asynccontextmanager
+    async def hold(self):
+        """Hold the port across several batches, for the app's own read-only check,
+        so that no other request is written between them. Yields a function that runs
+        a batch like `run`, without waiting for the port again; never call `run`
+        inside. Requests made meanwhile wait their turn, as for any batch. Each batch
+        still stops on a stuck write, so a silent receiver cannot hold the port for
+        longer than the batches' own timeouts."""
+        self._queued += 1
+        try:
+            await self._lock.acquire()
+            try:
+                yield self._run_holding
+            finally:
+                self._lock.release()
+        finally:
+            self._queued -= 1
+
+    async def _run_holding(self, commands, user=None, source="", stop_on_failure=True,
+                           recheck=None, stop_on=()):
+        if not self._lock.locked():
+            raise RuntimeError("the port is not held")
+        return await self._run_held(list(commands), user, source, stop_on_failure, recheck,
+                                    stop_on)
+
+    async def _run_held(self, commands, user, source, stop_on_failure, recheck, stop_on=()):
         connection = self.connection
         results = []
         for index, prepared in enumerate(commands):
@@ -489,7 +519,7 @@ class CommandRunner:
                 finally:
                     self.busy_with = ""
             results.append(result)
-            if stop_on_failure and result["outcome"] != "ok":
+            if (stop_on_failure and result["outcome"] != "ok") or result["outcome"] in stop_on:
                 reason = (f"Not sent: the earlier command {result['command']} "
                           f"ended {result['outcome']}.")
                 return results + self.log_unsent(commands[index + 1:], user, source, reason)
