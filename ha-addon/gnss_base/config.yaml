@@ -1,7 +1,7 @@
 name: GNSS Base Station
-version: "0.2.2"
+version: "0.3.0"
 slug: gnss_base
-description: Logs a GNSS base receiver and shows its status. Stage 1 only listens to the receiver.
+description: Logs a GNSS base receiver, shows its status, and configures it as a base with confirmed commands.
 arch:
   - aarch64
   - amd64

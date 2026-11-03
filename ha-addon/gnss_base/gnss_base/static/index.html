@@ -38,6 +38,20 @@ button{font:inherit;font-size:13px;color:var(--text);background:var(--bg);border
 .ramp{display:inline-block;width:70px;height:8px;border-radius:4px;vertical-align:middle;margin:0 6px;background:linear-gradient(90deg,var(--age-old),var(--age-new))}
 dl.posd{grid-template-columns:auto 1fr auto 1fr}
 @media (max-width:560px){dl.posd{grid-template-columns:auto 1fr}}
+h3{font-size:14px;margin:14px 0 6px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
+input,select{font:inherit;font-size:14px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;max-width:100%}
+input[type=number]{width:9em}
+button:disabled{opacity:.5;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--card)}
+.steps{margin:0;padding-left:20px}.steps li{margin:0 0 12px}
+.inline{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px}
+#cmd{flex:1;min-width:0}
+#confirm{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:16px;z-index:2000}
+#confirm.open{display:flex}
+#confirm>div{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:16px;max-width:560px;width:100%;max-height:90vh;overflow:auto}
+#confirm pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0}
+td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 </style>
 </head>
 <body>
@@ -50,18 +64,47 @@ dl.posd{grid-template-columns:auto 1fr auto 1fr}
 <section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
 <p id="mapnote" class="note">Waiting for a position fix</p>
-<dl id="posd" class="posd"></dl></section>
+<dl id="posd" class="posd"></dl>
+<h3>Base position (RTCM 1005)</h3><dl id="based" class="posd"></dl></section>
 <section class="wide"><h2>Drift around the median position</h2>
 <div id="drifttxt" class="note">No positions yet</div>
 <canvas id="scatter" role="img" aria-label="East and north offsets from the median position, coloured by age"></canvas>
 <div class="note legend">older<span class="ramp"></span>newer · <span id="hover">Point at a dot for details</span></div>
 <canvas id="up" role="img" aria-label="Up offset from the median height over time"></canvas></section>
 <section class="wide"><h2>Signals</h2><table id="sig"></table></section>
+<section><h2>Satellites in RTCM MSM</h2><table id="msm"></table></section>
+<section class="wide"><div class="row"><h2>Receiver</h2><span><button id="check" type="button">Check profile</button> <button id="apply" type="button">Apply differences…</button></span></div>
+<dl id="rcv"></dl><p id="rcvnote" class="note"></p><table id="prof"></table></section>
+<section class="wide"><h2>Base setup</h2>
+<p class="note">Each step shows the exact command first. Steps that change the receiver ask you to confirm.</p>
+<ol class="steps">
+<li><b>Read the firmware version.</b> Sends <code>$PQTMVERNO*58</code> at once (read-only). <button id="s-fw" type="button">Read</button></li>
+<li><b>Check the receiver profile</b> with read-only queries; then apply the differences if you choose. <button id="s-check" type="button">Check</button></li>
+<li><b>Switch to base mode:</b> <code>PQTMCFGRCVRMODE,W,2</code>, save, then restart with <code>PQTMSRR</code>. The receiver restarts and stops sending NMEA. <button id="s-base" type="button">Prepare…</button></li>
+<li><b>Start a survey-in</b> of <input id="s-count" type="number" min="1" max="86400" step="1" value="300" aria-label="Survey-in fixes"> fixes, with no accuracy limit, then save. <button id="s-svin" type="button">Prepare…</button>
+<div id="s-progress" class="note"></div></li>
+<li><b>Set a fixed base position</b>, then save.
+<div class="inline"><select id="s-src" aria-label="Position source"><option value="survey">from the survey-in mean</option><option value="llh">from latitude, longitude, height</option><option value="ecef">from ECEF X, Y, Z</option></select></div>
+<div id="s-llh" class="inline" hidden><input id="s-lat" inputmode="decimal" placeholder="Latitude °" aria-label="Latitude in degrees"><input id="s-lon" inputmode="decimal" placeholder="Longitude °" aria-label="Longitude in degrees"><input id="s-h" inputmode="decimal" placeholder="Ellipsoidal height m" aria-label="Ellipsoidal height in metres"></div>
+<div id="s-ecef" class="inline" hidden><input id="s-x" inputmode="decimal" placeholder="X m" aria-label="ECEF X in metres"><input id="s-y" inputmode="decimal" placeholder="Y m" aria-label="ECEF Y in metres"><input id="s-z" inputmode="decimal" placeholder="Z m" aria-label="ECEF Z in metres"></div>
+<div class="inline"><button id="s-fixed" type="button">Prepare…</button></div></li>
+</ol><pre id="stepout" class="note"></pre></section>
+<section class="wide"><h2>Command console</h2>
+<p class="note">Queries (<code>,R</code> forms and read-only commands) run at once. Anything else asks you to confirm the exact bytes. Factory reset, firmware commands and UART or protocol changes to UART1 or this app's port are refused. The checksum is added for you.</p>
+<form id="console" class="inline" autocomplete="off"><input id="cmd" class="mono" placeholder="PQTMCFGRCVRMODE,R" aria-label="Command"><button type="submit">Send</button></form>
+<pre id="cmdout" class="note"></pre>
+<h3>Recent commands</h3><table id="hist"></table></section>
 <section><h2>RTCM messages</h2><table id="rtcm"></table></section>
 <section><h2>NMEA messages</h2><table id="nmea"></table></section>
 <section class="wide"><h2>Log files</h2><table id="files"></table></section>
 <section class="wide"><h2>Receiver messages</h2><pre id="msgs" class="note">None yet</pre></section>
 </main>
+<div id="confirm" role="dialog" aria-modal="true" aria-labelledby="ctitle"><div>
+<h2 id="ctitle">Confirm</h2><p class="note">These exact bytes will be sent, in order (each ends with CR LF):</p>
+<pre id="cbytes" class="mono"></pre><dl id="cdetails"></dl><div id="cwarn"></div>
+<p id="cexpire" class="note"></p>
+<div class="inline"><button id="cyes" class="primary" type="button">Send to the receiver</button><button id="cno" type="button">Cancel</button></div>
+</div></div>
 <script>
 const $=id=>document.getElementById(id);
 const esc=v=>String(v??"—").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -82,7 +125,7 @@ function frame(ref){
 }
 
 // ---- map: works without tiles, and without Leaflet at all ----
-let map=null,here=null,ring=null,trail=null,fitted=false,follow=true,lastFix=null,dim=false;
+let map=null,here=null,ring=null,trail=null,baseMark=null,fitted=false,follow=true,lastFix=null,dim=false,basePos=null;
 let fixNote="Waiting for a position fix",tileNote="";
 function note(text){$("mapnote").textContent=text}
 function showNote(){if(map)note(fixNote||tileNote)}
@@ -90,6 +133,7 @@ function mapStyle(){
   if(!map)return;
   const accent=css("--accent"),text=css("--card");
   here.setStyle({color:text,fillColor:dim?css("--muted"):accent,fillOpacity:dim?0.5:1});ring.setStyle({color:accent,fillColor:accent});trail.setStyle({color:accent});
+  baseMark.setStyle({color:css("--warn")});
 }
 try{
   if(typeof L==="undefined")throw new Error("no Leaflet");
@@ -105,20 +149,26 @@ try{
   trail=L.polyline([],{weight:2,opacity:0.35,interactive:false}).addTo(map);
   ring=L.circle([0,0],{radius:0,weight:1,opacity:0.6,fillOpacity:0.12,interactive:false});
   here=L.circleMarker([0,0],{radius:6,weight:2,fillOpacity:1,interactive:false});
+  baseMark=L.circleMarker([0,0],{radius:9,weight:3,fill:false,interactive:false});
   map.on("dragstart",()=>{follow=false});
   mapStyle();
 }catch(e){map=null;note("The map is unavailable. Position and drift still update.")}
-$("centre").onclick=()=>{follow=true;if(map&&lastFix)map.setView(lastFix,Math.max(map.getZoom(),18))};
+$("centre").onclick=()=>{follow=true;const p=lastFix||basePos;if(map&&p)map.setView(p,Math.max(map.getZoom(),18))};
 // A lost or stale fix greys the dot at the last known position and hides the ring.
-function updateMap(f,stale){
+// The base position from RTCM 1005 is a hollow ring, separate from any GGA fix.
+function updateMap(f,stale,b){
   const lost=f.lat==null||f.lon==null||!(f.quality>0);
   if(!lost)lastFix=[f.lat,f.lon];
-  fixNote=!lastFix?"Waiting for a position fix":lost?"No position fix now. The grey dot is the last known position.":
-    stale?`The position fix is stale (${f.age_s} s old). The grey dot is the last known position.`:"";
+  basePos=b&&b.lat!=null?[b.lat,b.lon]:null;
+  const baseText=basePos?" The hollow ring is the base position from RTCM 1005.":"";
+  fixNote=!lastFix?(basePos?"No GGA fix (a receiver in base mode sends no NMEA)."+baseText:"Waiting for a position fix"):lost?"No position fix now. The grey dot is the last known position."+baseText:
+    stale?`The position fix is stale (${f.age_s} s old). The grey dot is the last known position.`+baseText:(basePos?baseText.trim():"");
+  if(map&&basePos){baseMark.setLatLng(basePos);if(!map.hasLayer(baseMark))baseMark.addTo(map);if(!fitted&&!lastFix){map.setView(basePos,19);fitted=true}}
+  else if(map&&map.hasLayer(baseMark))baseMark.remove();
   if(!map)return;
-  if(lastFix&&!fitted){map.setView(lastFix,19);here.addTo(map);fitted=true}
+  if(lastFix&&!map.hasLayer(here)){if(!fitted)map.setView(lastFix,19);here.addTo(map);fitted=true}
   if(dim!==(lost||stale)){dim=lost||stale;mapStyle()}
-  if(fitted&&!dim){
+  if(lastFix&&fitted&&!dim){
     here.setLatLng(lastFix);ring.setLatLng(lastFix);ring.setRadius(hsigma(f)||0);
     if(!map.hasLayer(ring))ring.addTo(map);
     if(follow&&!map.getBounds().contains(lastFix))map.panTo(lastFix);
@@ -207,7 +257,11 @@ function render(s){
   dl("posd",[["Latitude",f.lat==null?null:f.lat.toFixed(9)+"°"],["σ latitude",metres(f.lat_sigma_m)],
     ["Longitude",f.lon==null?null:f.lon.toFixed(9)+"°"],["σ longitude",metres(f.lon_sigma_m)],
     ["Ellipsoidal height",f.height_m==null?null:f.height_m.toFixed(3)+" m"],["σ height",metres(f.height_sigma_m)]]);
-  updateMap(f,stale);
+  const b=s.base_position||{};
+  dl("based",b.lat==null?[["Status","None received"]]:[["Latitude",b.lat.toFixed(9)+"°"],["Station ID",b.station_id],
+    ["Longitude",b.lon.toFixed(9)+"°"],["Message",b.message],["Ellipsoidal height",b.height_m.toFixed(3)+" m"],["Age",b.age_s+" s"],
+    ["ECEF X, Y, Z",b.ecef.map(v=>v.toFixed(4)).join(", ")+" m"],["Antenna height",b.antenna_height_m==null?null:b.antenna_height_m.toFixed(4)+" m"]]);
+  updateMap(f,stale,s.base_position);
   $("rate").textContent=size(s.bytes_per_s)+"/s";
   dl("data",[["Received",size(s.total_bytes)],["Unreadable bytes",s.parser.unknown_bytes],["Bad checksums",s.parser.bad_frames],["Dropped, app overloaded",size(s.parser.queue_dropped_bytes)],["Uptime",Math.round(s.uptime_s/60)+" min"]]);
   const d=s.storage;
@@ -217,7 +271,9 @@ function render(s){
   const v=s.survey_in||{};
   $("svin").textContent=(v.state||"Not reported")+(v.age_s>5?" (stale)":"");
   dl("svind",[["Observations",v.observations==null?null:`${v.observations} of ${v.target}`],["Mean accuracy",v.accuracy_m==null?null:v.accuracy_m+" m"]]);
-  table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median]),"No signal data yet");
+  table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz","Source"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median,x.source]),"No signal data yet");
+  table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
+  if(typeof renderReceiver==="function")renderReceiver(s);
   table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
   table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");
   table("files",["File","Size"],d.files.map(x=>[x.file,size(x.bytes)]),"No logs yet");
@@ -245,5 +301,6 @@ drawDrift();
 tick();
 trackTick();
 </script>
+<script src="control.js"></script>
 </body>
 </html>

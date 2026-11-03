@@ -1,4 +1,7 @@
-"""Read the receiver in a thread. This module never writes to the serial port.
+"""Read the receiver in a thread, and let the command writer write to the open port.
+
+The read path never writes. The only write is `SerialReader.write`, used by
+commands.CommandRunner, which applies the safety rules before calling it.
 
 Opening the port leaves DTR and RTS as the kernel sets them on open, the same as
 reading the port with `cat`. Changing them could toggle a line that is wired to
@@ -9,8 +12,11 @@ import threading
 
 import serial
 
+from .commands import PortClosed
+
 READ_SIZE = 4096
 RETRY_S = 5
+WRITE_TIMEOUT_S = 1
 
 
 class ChunkQueue:
@@ -75,6 +81,18 @@ class SerialReader:
         self._on_state = on_state
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        self._write_lock = threading.Lock()
+        self._open = None  # the port while it is open
+
+    def write(self, data):
+        """Write bytes to the open port, or raise PortClosed. Blocking: call it from
+        an executor, never from the event loop."""
+        with self._write_lock:
+            port = self._open
+            if port is None:
+                raise PortClosed("The receiver is not connected.")
+            port.write(data)
+            port.flush()
 
     def start(self):
         self._thread.start()
@@ -91,12 +109,19 @@ class SerialReader:
                     self._on_state(False, problem)
                     self._stop.wait(RETRY_S)
                     continue
-                with serial.Serial(self._port, self._baud, timeout=0.2, exclusive=True) as port:
+                with serial.Serial(self._port, self._baud, timeout=0.2, exclusive=True,
+                                   write_timeout=WRITE_TIMEOUT_S) as port:
+                    with self._write_lock:
+                        self._open = port
                     self._on_state(True, "")
-                    while not self._stop.is_set():
-                        data = port.read(min(port.in_waiting, READ_SIZE) or 1)
-                        if data:
-                            self._on_data(data)
+                    try:
+                        while not self._stop.is_set():
+                            data = port.read(min(port.in_waiting, READ_SIZE) or 1)
+                            if data:
+                                self._on_data(data)
+                    finally:
+                        with self._write_lock:
+                            self._open = None
             except Exception as error:  # any failure: report it, then reopen
                 self._on_state(False, f"{type(error).__name__}: {error}")
             self._stop.wait(RETRY_S)

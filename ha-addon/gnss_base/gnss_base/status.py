@@ -9,6 +9,7 @@ import time
 from collections import Counter, deque
 
 from .frames import rtcm_type
+from .rtcm import decode_1005, decode_msm, ecef_to_llh, signal_name
 
 FIX_NAMES = {0: "No fix", 1: "Standalone", 2: "Differential", 4: "RTK fixed",
              5: "RTK float", 6: "Dead reckoning"}
@@ -23,6 +24,7 @@ RECENTRE_M = 1000          # a fix this far from the origin is held back as an o
 RECENTRE_SAMPLES = 30      # unless this many in a row agree: then the history restarts there
 RECENTRE_AGREE_M = 50      # held fixes agree if all are this close to their median
 MAX_HEIGHT_M = 100_000     # altitude, geoid separation or height beyond this is corrupt
+MAX_ECEF_M = 10_000_000     # an ECEF coordinate beyond this is corrupt
 MAX_CURSOR_DIGITS = 20     # a longer sequence in a cursor is not one this app sent
 
 # WGS84
@@ -104,6 +106,13 @@ class Status:
         self.rtcm_last = {}
         self.latest_text = deque(maxlen=20)
         self._signals = {}
+        # From RTCM: (system, satellite, signal id) -> (cnr, msm type, seen)
+        self._msm_cells = {}
+        self._msm_last = {}        # system -> (message number, seen)
+        self.base = {}             # from 1005/1006
+        self._base_time = None
+        self._survey_mean = None   # (x, y, z) from PQTMSVINSTATUS, or None
+        self.rtcm_decode_errors = 0
         self._rate = deque()
         self._fix_time = None
         self._survey_time = None
@@ -137,6 +146,13 @@ class Status:
             number = rtcm_type(payload)
             self.rtcm_counts[number] += 1
             self.rtcm_last[number] = self._clock()
+            try:
+                if number in (1005, 1006):
+                    self._on_1005(decode_1005(payload))
+                elif number // 10 in (107, 108, 109, 111, 112, 113) and 1 <= number % 10 <= 7:
+                    self._on_msm(decode_msm(payload))
+            except ValueError:
+                self.rtcm_decode_errors += 1
             return
         fields = payload.split(",")
         name = fields[0]
@@ -309,6 +325,27 @@ class Status:
             return empty
         return result
 
+    def _on_1005(self, message):
+        x, y, z = message["ecef"]
+        lat, lon, height = ecef_to_llh(x, y, z)
+        if not (all(math.isfinite(v) for v in (lat, lon, height))
+                and abs(height) <= MAX_HEIGHT_M):
+            self.rtcm_decode_errors += 1  # zero or corrupt: no base position
+            return
+        self.base = {"message": message["message"], "station_id": message["station_id"],
+                     "lat": round(lat, 9), "lon": round(lon, 9), "height_m": round(height, 4),
+                     "ecef": [round(v, 4) for v in (x, y, z)],
+                     "antenna_height_m": None if message["antenna_height_m"] is None
+                     else round(message["antenna_height_m"], 4)}
+        self._base_time = self._clock()
+
+    def _on_msm(self, message):
+        now = self._clock()
+        system = message["system"]
+        self._msm_last[system] = (message["message"], now)
+        for satellite, signal, cnr in message["cells"]:
+            self._msm_cells[(system, satellite, signal)] = (cnr, message["msm"], now)
+
     def _on_gsv(self, name, fields):
         talker = name[:2]
         has_signal = (len(fields) - 4) % 4 == 1
@@ -324,6 +361,11 @@ class Status:
         if len(fields) < 7:
             return
         state = {0: "Off", 1: "In progress", 2: "Valid"}.get(_number(fields[3], int), "Unknown")
+        mean = tuple(_number(v) for v in fields[8:11]) if len(fields) > 10 else ()
+        # A mean of zeros means none yet; one far from the Earth is corrupt.
+        plausible = (len(mean) == 3 and None not in mean and any(mean)
+                     and all(abs(v) <= MAX_ECEF_M for v in mean))
+        self._survey_mean = mean if plausible else None
         self.survey_in = {
             "state": state,
             "observations": _number(fields[6], int),
@@ -341,24 +383,61 @@ class Status:
     def _on_pqtmtxt(self, name, fields):
         self._on_txt(name, fields)
 
+    def survey_mean(self):
+        """The latest survey-in mean: ECEF, state and age, or None."""
+        if not self.survey_in:
+            return None
+        return {"ecef": self._survey_mean, "state": self.survey_in["state"],
+                "age_s": self._clock() - self._survey_time}
+
+    def _prune_msm(self, now):
+        for key in [k for k, v in self._msm_cells.items() if now - v[2] > SIGNAL_EXPIRY_S]:
+            del self._msm_cells[key]
+
     def signals(self):
+        """Signal strengths per constellation and signal. GSV is used for a
+        constellation while it is fresh; otherwise RTCM MSM, for example in base mode,
+        when the receiver sends no NMEA."""
         now = self._clock()
-        grouped = {}
         for key in [k for k, v in self._signals.items() if now - v[1] > SIGNAL_EXPIRY_S]:
             del self._signals[key]
+        self._prune_msm(now)
+        grouped = {}
         for (talker, signal, _satellite), (cn0, _seen) in self._signals.items():
-            grouped.setdefault((talker, signal), []).append(cn0)
+            key = (CONSTELLATIONS.get(talker, talker), signal, "GSV")
+            grouped.setdefault(key, []).append(cn0)
+        from_gsv = {constellation for constellation, _, _ in grouped}
+        for (system, _satellite, signal), (cnr, msm, _seen) in self._msm_cells.items():
+            if system in from_gsv or cnr is None:
+                continue
+            key = (system, signal_name(system, signal), f"RTCM MSM{msm}")
+            grouped.setdefault(key, []).append(round(cnr, 1))
         result = []
-        for (talker, signal), values in sorted(grouped.items()):
+        for (constellation, signal, source), values in sorted(grouped.items()):
             values.sort(reverse=True)
             result.append({
-                "constellation": CONSTELLATIONS.get(talker, talker),
+                "constellation": constellation,
                 "signal": signal,
                 "satellites": len(values),
                 "strongest": values[0],
                 "median": values[len(values) // 2],
+                "source": source,
             })
         return result
+
+    def msm_summary(self):
+        """Satellites and signals per constellation in recent MSM messages."""
+        now = self._clock()
+        self._prune_msm(now)
+        satellites, signals = {}, {}
+        for system, satellite, signal in self._msm_cells:
+            satellites.setdefault(system, set()).add(satellite)
+            signals.setdefault(system, set()).add(signal)
+        return {system: {"satellites": len(satellites[system]),
+                         "signals": [signal_name(system, s) for s in sorted(signals[system])],
+                         "message": self._msm_last[system][0],
+                         "age_s": round(now - self._msm_last[system][1], 1)}
+                for system in sorted(satellites)}
 
     def snapshot(self):
         now = self._clock()
@@ -387,6 +466,13 @@ class Status:
             "total_bytes": self.total_bytes,
             "fix": fix,
             "survey_in": aged(self.survey_in, self._survey_time),
+            "survey_mean": None if self._survey_mean is None else dict(
+                zip(("lat", "lon", "height_m"),
+                    (round(v, r) for v, r in zip(ecef_to_llh(*self._survey_mean), (9, 9, 4)))),
+                ecef=[round(v, 4) for v in self._survey_mean]),
+            "base_position": aged(self.base, self._base_time),
+            "msm": self.msm_summary(),
+            "rtcm_decode_errors": self.rtcm_decode_errors,
             "antenna": self.antenna,
             "signals": self.signals(),
             "nmea": dict(sorted(self.nmea_counts.items())),

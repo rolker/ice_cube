@@ -1,4 +1,4 @@
-"""Stage 1 entry point: listen to the receiver, log it, serve status."""
+"""Entry point: read and log the receiver, serve status, send checked commands."""
 import argparse
 import asyncio
 import contextlib
@@ -11,6 +11,8 @@ from pathlib import Path
 
 from aiohttp import web
 
+from . import profile
+from .control import Controller
 from .frames import FrameParser
 from .rawlog import RawLog, compress
 from .receiver import ChunkQueue, SerialReader
@@ -32,6 +34,8 @@ def load_settings(argv=None):
     parser.add_argument("--baud", type=int)
     parser.add_argument("--log-dir", dest="log_dir")
     parser.add_argument("--min-free-gb", dest="min_free_gb", type=float)
+    parser.add_argument("--profile", default=str(profile.DEFAULT_PATH),
+                        help="receiver profile (TOML) to check the receiver against")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8099)
     parser.add_argument("--by-id-dir", dest="by_id_dir", default=BY_ID_DIR,
@@ -48,7 +52,7 @@ def load_settings(argv=None):
         if value is not None:
             settings[key] = value
     settings.update(host=args.host, port=args.port, allow_any_client=args.allow_any_client,
-                    by_id_dir=args.by_id_dir)
+                    by_id_dir=args.by_id_dir, profile=args.profile)
     return settings
 
 
@@ -84,16 +88,19 @@ def check_device(settings, by_id_dir=BY_ID_DIR):
 
 
 class Pipeline:
-    def __init__(self, status, log):
+    def __init__(self, status, log, on_nmea=None):
         self.status = status
         self.log = log
         self.parser = FrameParser()
+        self.on_nmea = on_nmea
 
     def on_data(self, data):
         self.status.add_bytes(len(data))
         self.log.write(data)
         for kind, payload in self.parser.feed(data):
             self.status.add_frame(kind, payload)
+            if kind == "nmea" and self.on_nmea is not None:
+                self.on_nmea(payload)
 
 
 class ErrorReporter:
@@ -138,12 +145,19 @@ async def housekeeping(log, errors):
 
 
 async def run(settings):
+    items = profile.load(settings["profile"])  # a broken profile stops the app here
     status = Status()
     log = RawLog(settings["log_dir"], settings["min_free_gb"])
-    pipeline = Pipeline(status, log)
     loop = asyncio.get_running_loop()
-    queue = ChunkQueue(loop, pipeline.on_data)
     errors = ErrorReporter()
+    reader = None
+
+    def write(data):
+        return reader.write(data)
+
+    control = Controller(write, Path(settings["log_dir"]) / "commands.jsonl", items, status)
+    pipeline = Pipeline(status, log, on_nmea=control.on_nmea)
+    queue = ChunkQueue(loop, pipeline.on_data)
 
     def on_state(connected, error):
         def apply():
@@ -151,7 +165,9 @@ async def run(settings):
             status.last_error = error
             if connected:
                 LOG.info("receiver connected")
+                control.port_opened()
             else:
+                control.port_lost()
                 errors.check("receiver", error)
         loop.call_soon_threadsafe(apply)
 
@@ -167,10 +183,12 @@ async def run(settings):
         result["parser"] = {"unknown_bytes": pipeline.parser.unknown_bytes,
                             "bad_frames": pipeline.parser.bad_frames,
                             "queue_dropped_bytes": queue.dropped_bytes}
+        result["receiver"] = control.snapshot()
         return result
 
     allowed = () if settings["allow_any_client"] else (INGRESS_PROXY,)
-    runner = web.AppRunner(create_app(snapshot, allowed, get_track=status.track))
+    app = create_app(snapshot, allowed, get_track=status.track, control=control)
+    runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, settings["host"], settings["port"]).start()
     LOG.info("status page on port %s", settings["port"])
@@ -183,6 +201,7 @@ async def run(settings):
     keeper.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await keeper
+    await control.stop()
     await loop.run_in_executor(None, reader.stop)
     queue.drain()
     queue.close()  # a reader thread that outlived stop() can no longer reach the log
