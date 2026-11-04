@@ -17,6 +17,8 @@ of its USB serial bridge).
 - **Stage 3a (0.4.0):** serves the receiver's RTCM corrections to rovers on your network
   (a small NTRIP caster), and can upload them to an NTRIP caster such as RTK2go, so a
   rover on cellular data can use them too
+- **Stage 3c (0.5.0):** shows a live measured position in base mode, from RTKLIB's
+  `rtkrcv` running on a copy of the receiver's RTCM (single point, metre level)
 
 ## Status page
 
@@ -390,7 +392,76 @@ So that a busy or hostile network cannot fill the disk:
 
 The caster card shows any lines held back, dropped or not written.
 
+## Measured position (stage 3c)
+
+In base mode the receiver only repeats the position it was given (GGA quality 7, or no
+GGA at all), so the page would have no measured position. The app runs RTKLIB's `rtkrcv`
+(Ubuntu's `rtklib` package, 2.4.3 b34) on a copy of the receiver's RTCM and shows its
+solution on the map and the drift plot, as offsets from the RTCM 1005 base position.
+
+What to expect: this is **single point positioning** on L1 (GPS, GLONASS, Galileo,
+BeiDou), with broadcast orbits and RTKLIB's default ionosphere model, because RTCM
+carries no ionosphere parameters. Expect 1 to 2 m of scatter horizontally, more
+vertically, and Up a few metres high. A steady offset is normal. It catches gross
+problems (a wrong base position typed in, an antenna knocked over, the receiver tracking
+nothing useful), not centimetre drift. Centimetre checks need a rover (RTK) or PPP.
+
+How it runs:
+
+- rtkrcv starts when the first MSM message arrives, and keeps running. A receiver that
+  sends no MSM (a rover without RTCM output) never starts it.
+- It reads the RTCM from a small server of the app on `127.0.0.1` and sends its solution
+  back to another; both use a port the system picks. rtkrcv opens no listening port of
+  its own, and nothing from it can reach the receiver.
+- Its console is a pseudo-terminal the app keeps (rtkrcv needs one); there is no telnet
+  console.
+- Its working folder is `<data dir>/rtkrcv/` (`/data/rtkrcv/` in Home Assistant), kept
+  across restarts. rtkrcv saves the satellite orbits it knows there (`rtkrcv.nav`) when it
+  stops cleanly and loads them when it starts, so after a restart it has a solution at
+  once. The app stops it with SIGTERM, and kills it only if it has not exited within 3 s
+  (then the next start waits for orbits: about a minute with the profile's EPH_Mode 2,
+  up to 2 hours without it). Linux also sends rtkrcv SIGTERM if the app itself dies, so
+  it never outlives the app.
+- If it exits it is restarted after 5 s, doubling up to 5 minutes; the delay resets after
+  10 minutes of running. Once it has received at least 4 GPS ephemerides (so a cold
+  start waiting for orbits is not mistaken for a hang), if MSM keeps arriving and no
+  solution comes for 5 minutes, it is restarted the same way.
+- Settings: single point, L1, elevation mask `measured_elevation_mask` (15 deg), SNR mask
+  `measured_snr_mask` (35 dB-Hz; 0 turns it off), RAIM fault exclusion on. The SNR mask
+  matters: weak signals make RTKLIB reject many epochs; 38 lowers the Up bias a little at
+  the cost of satellites.
+
+The drift plot and the map use the receiver's GGA while it reports a measured fix, and
+rtkrcv's solution otherwise, while its latest solution is under a minute old
+(`api/track?source=gga` or `?source=measured` forces one).
+For rtkrcv the reference is the latest 1005; when 1005 changes (a survey-in, or a new
+fixed position), the history is kept and the reference moves. Without a 1005 the
+reference is the median, as for GGA. The **Measured position** card shows the state,
+the last solution, mean and spread over the last 10 minutes and 2 hours, rtkrcv's CPU and
+memory, restarts, and its last output lines when something is wrong.
+
+Solutions are logged to `<log_dir>/measured/YYYY-MM-DD.pos` (see Logs).
+
+Stopping: Home Assistant kills an app 10 s after asking it to stop, so the app aims to be
+done in under 9 s. Everything stops at once, each part bounded by the time left: rtkrcv
+(SIGTERM, SIGKILL after 3 s) and then the solution log, the outputs and then the
+connection log, the receiver and the raw log, the status page (1.5 s for open requests).
+File work still running at the deadline is abandoned, not waited for. A day being
+compressed then keeps its original file and is compressed again after the next start;
+the half-written `.gz.partial` is removed then. A log line being written at that moment
+may be cut short.
+
 ## Changes
+
+**0.5.0**
+
+- Live measured position from `rtkrcv` (see Measured position): new options
+  `measured_enabled`, `measured_elevation_mask`, `measured_snr_mask`, command-line
+  `--no-measured`, `--measured-elevation-mask`, `--measured-snr-mask` and `--rtkrcv`.
+  The image now installs Ubuntu's `rtklib` package.
+- The position history is a class shared by the GGA and the measured track;
+  `api/track` says which `source` and `reference_kind` it used, and takes `?source=`.
+- Daily solution log under `<log_dir>/measured/`, compressed like the raw log.
 
 **0.4.1**
 
@@ -534,12 +605,17 @@ start manually for now.
 | upload_mountpoint | empty | Your reserved mountpoint. Empty: no upload |
 | upload_password | empty | The mountpoint's password. Empty: no upload |
 | upload_style | rev1 | NTRIP style of the reservation. Only rev1 works so far |
+| measured_enabled | true | Run rtkrcv for the live measured position |
+| measured_elevation_mask | 15 | rtkrcv's elevation mask, degrees (0 to 45) |
+| measured_snr_mask | 35 | rtkrcv's SNR mask, dB-Hz (0 to 50; 0 = no mask) |
 
 Command-line arguments override options (`--device`, `--baud`, `--caster-mountpoint`,
 `--upload-host`, ...; `--no-caster`, and `--caster-host`/`--caster-port` for where the
 caster listens). Passwords can be set only in the options. `--data-dir` sets where the
 upload keeps `upload-state.json` (default: the options file's folder, `/data` in Home
-Assistant).
+Assistant) and rtkrcv its working folder `rtkrcv/`. `--no-measured`,
+`--measured-elevation-mask` and `--measured-snr-mask` override the measured options;
+`--rtkrcv PATH` runs another rtkrcv build (default: `rtkrcv` on the path).
 
 ## Logs
 
@@ -550,11 +626,19 @@ the day is over; read it after the day's own file. A name already taken by a `.g
 `-2`, `-3`… suffix, so nothing is overwritten. Logs contain your position, so keep them out of public repositories.
 Home Assistant backups that include `/share` will include them too.
 
+`<log_dir>/measured/YYYY-MM-DD.pos` (UTC day of arrival) has one `%` header line (app and
+rtkrcv versions, masks, "time GPST") and then rtkrcv's solution lines as it sent them:
+GPST date and time, latitude, longitude, ellipsoidal height, quality (5 = single),
+satellites, the sigmas, age and ratio. A new `%` line starts each block written with
+other settings or another rtkrcv version. About 13 MB a day, 3 to 4 MB compressed; finished
+days become `.pos.gz`. They hold positions too, so keep them private. Nothing is written
+below `min_free_gb`. They can be made again by replaying the raw log through rtkrcv.
+
 ## Tests
 
 From this folder, with `aiohttp` and `pyserial` installed (Python 3.11 or later):
 
-    python -m unittest tests.test_app tests.test_outputs
+    python -m unittest tests.test_app tests.test_outputs tests.test_measured
 
 `tests.test_outputs` covers the hub, the filter, the caster and the upload, against a fake
 caster on localhost; nothing connects outside the machine. If RTKLIB's `str2str` is on
@@ -562,3 +646,8 @@ the path (or named by the `STR2STR` environment variable), it is used as an inde
 NTRIP client of the caster. The page's track merging is tested under Node (`tests/track_test.js`), which the suite
 runs if `node` is installed and skips otherwise. Tests use synthetic positions only, and
 a simulated receiver on a pseudo-terminal.
+
+`tests.test_measured` covers the rtkrcv runner against a fake rtkrcv
+(`tests/fake_rtkrcv.py`), and the whole app with it. If a real `rtkrcv` is on the path
+(or named by the `RTKRCV` environment variable), a smoke test starts it with no data: it
+must connect to both local servers and exit cleanly on SIGTERM. No real RTCM is used.

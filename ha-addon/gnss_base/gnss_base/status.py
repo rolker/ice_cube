@@ -30,13 +30,19 @@ BASE_STALE_MAX_S = 120     # but never more than this
 BASE_INTERVALS = 5         # recent 1005/1006 intervals kept; their median is the interval
 BASE_SAME_EPOCH_S = 0.5    # a 1005 and a 1006 closer than this are one epoch, not an interval
 RECENT_S = 10              # GGA or RTCM this recent tells why there is no measured position
-NO_MEASURED_BASE_MODE = ("No measured position: the receiver is in base mode. "
-                         "A live position from the observations is planned.")
+MEASURED_SOURCE_S = 60     # rtkrcv solutions older than this no longer pick the plot source
+NO_MEASURED_BASE_MODE = "No measured GGA position: the receiver is in base mode."
+NO_MEASURED_FIXED = ("No measured GGA position: the receiver reports its fixed base position "
+                     "(GGA quality 7, manual input), which is not measured, so it is not "
+                     "plotted.")
+# Added to the two above while rtkrcv can give a solution (not off, not unavailable).
+RTKRCV_HINT = (" The live solution from rtkrcv is drawn instead once it has one (see the "
+               "Measured position card).")
 NO_MEASURED_NO_FIX = ("No measured position: the latest GGA has no usable position fix "
                       "(no fix, or a position that was rejected).")
-NO_MEASURED_FIXED = ("No measured position: the receiver reports its fixed base position "
-                     "(GGA quality 7, manual input), which is not measured, so it is not "
-                     "plotted. A live position from the observations is planned.")
+NO_SOLUTION_YET = "No live solution from rtkrcv yet (see the Measured position card)."
+NO_SOLUTION_NOW = ("No live solution from rtkrcv in the last 10 s (see the Measured "
+                   "position card).")
 RATE_WINDOW_S = 10
 GST_EXPIRY_S = 5           # sigmas older than this are not shown with the fix
 TRACK_WINDOW_S = 2 * 3600  # position history: one sample per second for 2 hours
@@ -47,6 +53,8 @@ RECENTRE_AGREE_M = 50      # held fixes agree if all are this close to their med
 MAX_HEIGHT_M = 100_000     # altitude, geoid separation or height beyond this is corrupt
 MAX_ECEF_M = 10_000_000     # an ECEF coordinate beyond this is corrupt
 MAX_CURSOR_DIGITS = 20     # a longer sequence in a cursor is not one this app sent
+STATS_RECENT_S = 600       # the measured card's short window
+BASE_MOVED_M = 0.001       # a 1005 that moves more than this is a new base position
 
 # WGS84
 _A = 6378137.0
@@ -108,6 +116,194 @@ class LocalFrame:
         return self.lat + north / self._north, lon, self.height + up
 
 
+class PositionTrack:
+    """A position history: at most one sample per clock second for TRACK_WINDOW_S, stored
+    as east/north/up metres from `_anchor`, the history's origin: the first good position
+    since the history was last empty, or the last position of a sustained move.
+
+    `query` gives the samples as offsets from a reference: by default the per-axis median
+    of the stored samples (the GGA track); or a supplied position, such as the RTCM 1005
+    base position (the measured track). A supplied reference that changes moves the
+    offsets but keeps the history, since the samples stay in the anchor's frame.
+
+    Every time is on the caller's clock (monotonic in the app)."""
+
+    def __init__(self):
+        # Samples: (time, sequence, east, north, up, quality)
+        self._anchor = None
+        self._history_id = None    # changes whenever the origin does
+        self._track = deque(maxlen=TRACK_POINTS)
+        self._track_second = None
+        self._sequence = 0
+        # Positions far from the origin, held back: (time, lat, lon, height, quality)
+        self._far = []
+        self.outliers_dropped = 0
+
+    def __len__(self):
+        return len(self._track)
+
+    def latest_time(self):
+        return self._track[-1][0] if self._track else None
+
+    def add(self, now, lat, lon, height, quality):
+        """Keep at most one position per clock second. A position more than RECENTRE_M
+        from the origin is held back, not stored. If RECENTRE_SAMPLES of them in a row
+        agree with each other, all within RECENTRE_AGREE_M of their median, the receiver
+        has moved, and the history restarts with them; otherwise they are dropped and
+        counted as outliers."""
+        second = math.floor(now)
+        if second == self._track_second:
+            return
+        self._track_second = second
+        self.prune(now)
+        if self._anchor is None:
+            self._start_history(lat, lon, height)
+        east, north, up = self._anchor.to_enu(lat, lon, height)
+        if math.hypot(east, north) <= RECENTRE_M:
+            self._drop_far()
+            self._store(now, east, north, up, quality)
+            return
+        self._far.append((now, lat, lon, height, quality))
+        while not self._far_agree():  # the oldest held positions disagree: no move
+            del self._far[0]
+            self.outliers_dropped += 1
+        if len(self._far) >= RECENTRE_SAMPLES:  # moved: start a new history here
+            far, self._far = self._far, []
+            self._track.clear()
+            self._start_history(*far[-1][1:4])
+            for t, *position, q in far:
+                self._store(t, *self._anchor.to_enu(*position), q)
+
+    def _far_agree(self):
+        newest = LocalFrame(*self._far[-1][1:4])
+        offsets = [newest.to_enu(*fix[1:4])[:2] for fix in self._far]
+        centre = [statistics.median(axis) for axis in zip(*offsets)]
+        return all(math.hypot(e - centre[0], n - centre[1]) <= RECENTRE_AGREE_M
+                   for e, n in offsets)
+
+    def _start_history(self, lat, lon, height):
+        self._anchor = LocalFrame(lat, lon, height)
+        self._history_id = secrets.token_hex(6)
+
+    def _store(self, now, east, north, up, quality):
+        if not all(math.isfinite(value) for value in (east, north, up)):
+            self.outliers_dropped += 1  # finite heights whose difference overflows
+            return
+        self._sequence += 1
+        self._track.append((now, self._sequence, east, north, up, quality))
+
+    def _drop_far(self):
+        self.outliers_dropped += len(self._far)
+        self._far.clear()
+
+    def prune(self, now):
+        while self._track and now - self._track[0][0] > TRACK_WINDOW_S:
+            self._track.popleft()
+        if not self._track and self._anchor is not None:
+            self._anchor = None
+            self._drop_far()
+
+    def _resume_after(self, since):
+        """The sequence number in a cursor from an earlier response, if it belongs
+        to the current history, otherwise None: the caller needs everything."""
+        history, _, sequence = (since or "").rpartition(":")
+        if not history or history != self._history_id:
+            return None
+        if not (len(sequence) <= MAX_CURSOR_DIGITS and sequence.isascii()
+                and sequence.isdigit()):
+            return None
+        sequence = int(sequence)
+        return sequence if sequence <= self._track[-1][1] else None
+
+    def _reference_enu(self, reference):
+        """The reference in the anchor's frame: the median of the samples, or the
+        supplied (lat, lon, height)."""
+        if reference is None:
+            return [statistics.median(sample[axis] for sample in self._track)
+                    for axis in (2, 3, 4)]
+        return list(self._anchor.to_enu(*reference))
+
+    def query(self, now, since=None, reference=None):
+        """Recent positions as offsets from a reference: the per-axis median of the
+        stored samples, or `reference` (lat, lon, height) if given. The median moves only
+        slowly as samples come and go, so drift shows up as a trend around it, and a few
+        bad positions do not shift it.
+
+        `since` is the `cursor` of an earlier response. If it belongs to the current
+        history, only newer points are returned and `full` is false; otherwise, for
+        example after a restart or a move, all points are returned. Adding
+        `reference_offset` (the reference from the history's fixed origin) to a
+        point gives its offset from that origin, which does not change between calls.
+        `oldest_age_s` is the age of the oldest point still kept, so a caller can drop
+        older points it kept itself.
+
+        If the reference or an offset is not finite, which only corrupt heights could
+        cause, the response has no reference and no points."""
+        self.prune(now)
+        result = {"window_s": TRACK_WINDOW_S, "max_points": TRACK_POINTS,
+                  "fields": ["age_s", "e", "n", "u", "quality"],
+                  "reference": None, "reference_offset": None, "cursor": None, "full": True,
+                  "outliers_dropped": self.outliers_dropped, "oldest_age_s": None, "points": []}
+        if not self._track:
+            return result
+        mid = self._reference_enu(reference)
+        lat, lon, height = self._anchor.from_enu(*mid)
+        if not all(math.isfinite(value) for value in (*mid, lat, lon, height)):
+            return result
+        empty = dict(result)
+        result["reference"] = {"lat": round(lat, 9), "lon": round(lon, 9),
+                               "height_m": round(height, 4)}
+        result["reference_offset"] = [round(value, 4) for value in mid]
+        result["cursor"] = f"{self._history_id}:{self._track[-1][1]}"
+        result["oldest_age_s"] = round(now - self._track[0][0], 1)
+        after = self._resume_after(since)
+        samples = self._track
+        if after is not None:
+            result["full"] = False
+            newer = []
+            for sample in reversed(self._track):
+                if sample[1] <= after:
+                    break
+                newer.append(sample)
+            samples = reversed(newer)
+        result["points"] = [
+            [round(now - t, 1), round(e - mid[0], 4), round(n - mid[1], 4),
+             round(u - mid[2], 4), quality]
+            for t, _, e, n, u, quality in samples]
+        if not all(math.isfinite(value) for point in result["points"] for value in point[1:4]):
+            return empty
+        return result
+
+    def stats(self, now, windows, reference=None):
+        """For each window in seconds: count, mean and standard deviation of the
+        east/north/up offsets from the reference (as in `query`) over that last stretch,
+        or None if it has no samples."""
+        self.prune(now)
+        if not self._track:
+            return [None for _ in windows]
+        mid = self._reference_enu(reference)
+        return [self._stats(now, within_s, mid) for within_s in windows]
+
+    def _stats(self, now, within_s, mid):
+        recent = [s for s in self._track if now - s[0] <= within_s]
+        if not recent:
+            return None
+        result = {"count": len(recent), "window_s": within_s}
+        count = len(recent)
+        for axis, name in ((2, "e"), (3, "n"), (4, "u")):
+            # Plain floats, two passes: the statistics module's exact sums are too slow
+            # for a status request every second.
+            values = [s[axis] for s in recent]
+            centre = sum(values) / count
+            std = math.sqrt(sum((v - centre) ** 2 for v in values) / count)
+            mean = centre - mid[axis - 2]
+            if not (math.isfinite(mean) and math.isfinite(std)):
+                return None
+            result[f"{name}_mean_m"] = round(mean, 3)
+            result[f"{name}_std_m"] = round(std, 3)
+        return result
+
+
 class Status:
     """Every age, rate and window here uses `clock`, a monotonic clock by default,
     so a step in the wall clock cannot make an age negative or prune the wrong samples."""
@@ -140,17 +336,33 @@ class Status:
         self._survey_time = None
         self._gst = None
         self._gst_time = None
-        # Position history: (time, sequence, east, north, up, quality) in metres
-        # from `_anchor`, the history's origin: the first good fix since the
-        # history was last empty, or the last fix of a sustained move.
-        self._anchor = None
-        self._history_id = None    # changes whenever the origin does
-        self._track = deque(maxlen=TRACK_POINTS)
-        self._track_second = None
-        self._sequence = 0
-        # Fixes far from the origin, held back: (time, lat, lon, height, quality)
-        self._far = []
-        self.outliers_dropped = 0
+        # Position histories: measured GGA fixes, and the live solution of rtkrcv
+        # (offsets from the latest 1005, so a new 1005 moves the plot, not the history).
+        self.gga_track = PositionTrack()
+        self.measured_track = PositionTrack()
+        self.measured = {}          # the latest rtkrcv solution
+        self._measured_time = None
+        self._base_llh = None       # the latest 1005/1006 position, unrounded
+        self._base_changed = None   # when it last moved by more than BASE_MOVED_M
+        self._base_ecef = None
+        # Set by the app: whether rtkrcv may give a solution (not off or unavailable).
+        self.measured_expected = lambda: False
+
+    # The GGA history's internals, by their names before PositionTrack existed.
+    @property
+    def outliers_dropped(self):
+        return self.gga_track.outliers_dropped
+
+    @property
+    def _history_id(self):
+        return self.gga_track._history_id
+
+    @property
+    def _far(self):
+        return self.gga_track._far
+
+    def _add_track(self, now, lat, lon, height, quality):
+        self.gga_track.add(now, lat, lon, height, quality)
 
     def add_bytes(self, count):
         now = self._clock()
@@ -231,126 +443,83 @@ class Status:
         self._gst = tuple(_number(value) for value in fields[6:9])
         self._gst_time = self._clock()
 
-    def _add_track(self, now, lat, lon, height, quality):
-        """Keep at most one fix per clock second. A fix more than RECENTRE_M from
-        the origin is held back, not stored. If RECENTRE_SAMPLES of them in a row
-        agree with each other, all within RECENTRE_AGREE_M of their median, the
-        receiver has moved, and the history restarts with them; otherwise they are
-        dropped and counted as outliers."""
-        second = math.floor(now)
-        if second == self._track_second:
-            return
-        self._track_second = second
-        self._prune_track(now)
-        if self._anchor is None:
-            self._start_history(lat, lon, height)
-        east, north, up = self._anchor.to_enu(lat, lon, height)
-        if math.hypot(east, north) <= RECENTRE_M:
-            self._drop_far()
-            self._store(now, east, north, up, quality)
-            return
-        self._far.append((now, lat, lon, height, quality))
-        while not self._far_agree():  # the oldest held fixes disagree: no move
-            del self._far[0]
-            self.outliers_dropped += 1
-        if len(self._far) >= RECENTRE_SAMPLES:  # moved: start a new history here
-            far, self._far = self._far, []
-            self._track.clear()
-            self._start_history(*far[-1][1:4])
-            for t, *position, q in far:
-                self._store(t, *self._anchor.to_enu(*position), q)
-
-    def _far_agree(self):
-        newest = LocalFrame(*self._far[-1][1:4])
-        offsets = [newest.to_enu(*fix[1:4])[:2] for fix in self._far]
-        centre = [statistics.median(axis) for axis in zip(*offsets)]
-        return all(math.hypot(e - centre[0], n - centre[1]) <= RECENTRE_AGREE_M
-                   for e, n in offsets)
-
-    def _start_history(self, lat, lon, height):
-        self._anchor = LocalFrame(lat, lon, height)
-        self._history_id = secrets.token_hex(6)
-
-    def _store(self, now, east, north, up, quality):
-        if not all(math.isfinite(value) for value in (east, north, up)):
-            self.outliers_dropped += 1  # finite heights whose difference overflows
-            return
-        self._sequence += 1
-        self._track.append((now, self._sequence, east, north, up, quality))
-
-    def _drop_far(self):
-        self.outliers_dropped += len(self._far)
-        self._far.clear()
-
-    def _prune_track(self, now):
-        while self._track and now - self._track[0][0] > TRACK_WINDOW_S:
-            self._track.popleft()
-        if not self._track and self._anchor is not None:
-            self._anchor = None
-            self._drop_far()
-
-    def _resume_after(self, since):
-        """The sequence number in a cursor from an earlier response, if it belongs
-        to the current history, otherwise None: the caller needs everything."""
-        history, _, sequence = (since or "").rpartition(":")
-        if not history or history != self._history_id:
-            return None
-        if not (len(sequence) <= MAX_CURSOR_DIGITS and sequence.isascii()
-                and sequence.isdigit()):
-            return None
-        sequence = int(sequence)
-        return sequence if sequence <= self._track[-1][1] else None
-
-    def track(self, since=None):
-        """Recent positions as offsets from a reference, the per-axis median of the
-        stored samples. The reference moves only slowly as samples come and go, so
-        drift shows up as a trend around it, and a few bad fixes do not shift it.
-
-        `since` is the `cursor` of an earlier response. If it belongs to the current
-        history, only newer points are returned and `full` is false; otherwise, for
-        example after a restart or a move, all points are returned. Adding
-        `reference_offset` (the reference from the history's fixed origin) to a
-        point gives its offset from that origin, which does not change between calls.
-        `oldest_age_s` is the age of the oldest point still kept, so a caller can drop
-        older points it kept itself.
-
-        If the reference or an offset is not finite, which only corrupt heights could
-        cause, the response has no reference and no points."""
+    def track(self, since=None, source=None):
+        """The position history for the drift plot and the map (see PositionTrack.query),
+        from `source`: "gga" (measured GGA fixes, offsets from their median) or
+        "measured" (rtkrcv's live solution, offsets from the latest RTCM 1005, or from
+        the median while there is none). Without a source the rule is: GGA while the
+        latest GGA is a recent measured fix; otherwise the measured track if it has
+        points; otherwise GGA, as before there was a measured track. `source` and
+        `reference_kind` ("median" or "base") in the response say which was used."""
         now = self._clock()
-        self._prune_track(now)
-        result = {"window_s": TRACK_WINDOW_S, "max_points": TRACK_POINTS,
-                  "fields": ["age_s", "e", "n", "u", "quality"],
-                  "reference": None, "reference_offset": None, "cursor": None, "full": True,
-                  "outliers_dropped": self.outliers_dropped, "oldest_age_s": None, "points": []}
-        result["no_measured_reason"] = self.no_measured_reason(now)
-        if not self._track:
-            return result
-        mid = [statistics.median(sample[axis] for sample in self._track) for axis in (2, 3, 4)]
-        lat, lon, height = self._anchor.from_enu(*mid)
-        if not all(math.isfinite(value) for value in (*mid, lat, lon, height)):
-            return result
-        empty = dict(result)
-        result["reference"] = {"lat": round(lat, 9), "lon": round(lon, 9),
-                               "height_m": round(height, 4)}
-        result["reference_offset"] = [round(value, 4) for value in mid]
-        result["cursor"] = f"{self._history_id}:{self._track[-1][1]}"
-        result["oldest_age_s"] = round(now - self._track[0][0], 1)
-        after = self._resume_after(since)
-        samples = self._track
-        if after is not None:
-            result["full"] = False
-            newer = []
-            for sample in reversed(self._track):
-                if sample[1] <= after:
-                    break
-                newer.append(sample)
-            samples = reversed(newer)
-        result["points"] = [
-            [round(now - t, 1), round(e - mid[0], 4), round(n - mid[1], 4),
-             round(u - mid[2], 4), quality]
-            for t, _, e, n, u, quality in samples]
-        if not all(math.isfinite(value) for point in result["points"] for value in point[1:4]):
-            return empty
+        if source is None:
+            source = self.track_source(now)
+        if source == "measured":
+            reference = self._base_llh
+            result = self.measured_track.query(now, since, reference)
+            result["no_measured_reason"] = self.no_measured_solution_reason(now)
+            changed = self._base_changed
+            result["base_changed_age_s"] = (None if changed is None or reference is None
+                                            else round(now - changed, 1))
+        else:
+            source, reference = "gga", None
+            result = self.gga_track.query(now, since)
+            result["no_measured_reason"] = self.no_measured_reason(now)
+        result["source"] = source
+        result["reference_kind"] = "median" if reference is None else "base"
+        return result
+
+    def _rtkrcv_hint(self):
+        try:
+            return RTKRCV_HINT if self.measured_expected() else ""
+        except Exception:
+            return ""
+
+    def track_source(self, now=None):
+        """"gga" while the latest GGA is a recent measured fix, else "measured" if rtkrcv
+        gave a solution in the last MEASURED_SOURCE_S, else "gga"."""
+        now = self._clock() if now is None else now
+        if (self._fix_time is not None and now - self._fix_time <= RECENT_S
+                and self.fix.get("measured")):
+            return "gga"
+        latest = self.measured_track.latest_time()
+        return "measured" if latest is not None and now - latest <= MEASURED_SOURCE_S \
+            else "gga"
+
+    def add_measured(self, solution):
+        """One live solution from rtkrcv: a dict with lat, lon, height_m, quality and
+        optionally satellites, sigmas and gpst. Kept in the measured track on the
+        arrival clock, like GGA."""
+        now = self._clock()
+        self.measured = dict(solution)
+        self._measured_time = now
+        self.measured_track.add(now, solution["lat"], solution["lon"], solution["height_m"],
+                                solution["quality"])
+
+    def no_measured_solution_reason(self, now=None):
+        """Why the measured track has no current position, or None."""
+        now = self._clock() if now is None else now
+        if self._measured_time is not None and now - self._measured_time <= RECENT_S:
+            return None
+        if self._measured_time is None:
+            return NO_SOLUTION_YET
+        return NO_SOLUTION_NOW
+
+    def measured_summary(self):
+        """The latest solution with its age, and the offsets from the reference (the
+        latest 1005, or the median without one) over the last 10 minutes and the whole
+        window, for the Measured position card."""
+        now = self._clock()
+        reference = self._base_llh
+        recent, window = self.measured_track.stats(now, (STATS_RECENT_S, TRACK_WINDOW_S),
+                                                   reference)
+        result = {"solution": dict(self.measured, age_s=round(now - self._measured_time, 1))
+                  if self.measured else None,
+                  "reference_kind": "median" if reference is None else "base",
+                  "base_changed_age_s": None if self._base_changed is None or reference is None
+                  else round(now - self._base_changed, 1),
+                  "recent": recent, "window": window,
+                  "outliers_dropped": self.measured_track.outliers_dropped}
         return result
 
     def no_measured_reason(self, now=None):
@@ -365,11 +534,11 @@ class Status:
             if self.fix.get("measured"):
                 return None
             if self.fix.get("quality") == 7:
-                return NO_MEASURED_FIXED
+                return NO_MEASURED_FIXED + self._rtkrcv_hint()
         base_seen = max((self.rtcm_last[n] for n in (1005, 1006) if n in self.rtcm_last),
                         default=None)
         if base_seen is not None and now - base_seen <= max(RECENT_S, self.base_stale_s()):
-            return NO_MEASURED_BASE_MODE
+            return NO_MEASURED_BASE_MODE + self._rtkrcv_hint()
         if fix_recent:
             return NO_MEASURED_NO_FIX
         return None
@@ -404,6 +573,10 @@ class Status:
                      "antenna_height_m": None if message["antenna_height_m"] is None
                      else round(message["antenna_height_m"], 4)}
         self._base_time = self._clock()
+        ecef = (x, y, z)
+        if self._base_llh is not None and math.dist(ecef, self._base_ecef) > BASE_MOVED_M:
+            self._base_changed = self._base_time
+        self._base_llh, self._base_ecef = (lat, lon, height), ecef
 
     def _on_msm(self, message):
         now = self._clock()

@@ -38,6 +38,13 @@ def frame_type(frame):
     return (frame[3] << 4) | (frame[4] >> 4)
 
 
+def _ends_with_newline(path):
+    """Whether a non-empty file's last byte is a newline."""
+    with open(path, "rb") as stream:
+        stream.seek(-1, 2)
+        return stream.read(1) == b"\n"
+
+
 class Secret:
     """A password. Only `reveal()` gives the value; everything else prints it hidden."""
 
@@ -396,6 +403,8 @@ class ConnectionLog:
             if self._size is None:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 self._size = self.path.stat().st_size if self.path.exists() else 0
+                if self._size and not _ends_with_newline(self.path):
+                    data = b"\n" + data   # a line cut short (power loss) stays on its own
             if self._size and self._size + len(data) > self.max_bytes:
                 self._rotate()
             with open(self.path, "ab") as stream:

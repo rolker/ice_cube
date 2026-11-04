@@ -35,7 +35,7 @@ def _gz_target(path):
     part = 1
     while target.exists():  # never overwrite: a day can restart after a failure
         part += 1
-        target = path.with_name(f"{path.stem}-{part}.raw.gz")
+        target = path.with_name(f"{path.stem}-{part}{path.suffix}.gz")
     return target
 
 

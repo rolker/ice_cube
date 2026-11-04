@@ -35,6 +35,8 @@ button{font:inherit;font-size:13px;color:var(--text);background:var(--bg);border
 .key{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin:0 4px 0 10px}
 .key.fix{background:var(--accent)}.key.base{border:2px solid var(--warn);width:12px;height:12px}
 .key.rover{border-radius:0;width:9px;height:9px;transform:rotate(45deg);background:var(--good)}
+.key.meas{background:var(--muted);border:2px solid var(--accent);width:11px;height:11px}
+.key.mean{border-radius:0;width:16px;height:2px;background:var(--text)}
 .rover{background:var(--good);border:2px solid var(--card);transform:rotate(45deg)}.rover.stale{background:var(--muted)}
 dl.stale{opacity:.5}
 #scatter{display:block;width:100%;max-width:440px;aspect-ratio:1;margin:8px auto 0}
@@ -69,16 +71,19 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section><h2>NTRIP caster (local network)</h2><div id="caster" class="big">—</div><dl id="casterd"></dl>
 <table id="clients"></table></section>
 <section><h2>Upload (RTK2go)</h2><div id="upload" class="big">—</div><dl id="uploadd"></dl></section>
+<section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
+<p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
+<pre id="measout" class="note" hidden></pre></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl></section>
 <section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
 <p id="mapnote" class="note">Waiting for a position fix</p>
-<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005) <span class="key rover"></span>Rover on the caster (its GGA)</div>
+<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005) <span class="key rover"></span>Rover on the caster (its GGA) <span class="key meas"></span>rtkrcv solution (latest)</div>
 <dl id="posd" class="posd"></dl></section>
-<section class="wide"><h2>Drift around the median position</h2>
+<section class="wide"><h2 id="drifth">Drift around the median position</h2>
 <div id="drifttxt" class="note">No positions yet</div>
 <canvas id="scatter" role="img" aria-label="East and north offsets from the median position, coloured by age"></canvas>
-<div class="note legend">older<span class="ramp"></span>newer · <span id="hover">Point at a dot for details</span></div>
+<div class="note legend">older<span class="ramp"></span>newer<span id="meankey" hidden> · <span class="key mean"></span>5-min running mean</span> · <span id="hover">Point at a dot for details</span></div>
 <canvas id="up" role="img" aria-label="Up offset from the median height over time"></canvas></section>
 <section class="wide"><h2>Signals</h2><table id="sig"></table></section>
 <section><h2>Satellites in RTCM MSM</h2><table id="msm"></table></section>
@@ -134,7 +139,8 @@ function frame(ref){
 }
 
 // ---- map: works without tiles, and without Leaflet at all ----
-let map=null,here=null,ring=null,trail=null,baseMark=null,fitted=false,follow=true,lastFix=null,dim=false,basePos=null,baseStale=false,baseCentredOn=null;
+let measStale=false;
+let map=null,here=null,ring=null,trail=null,baseMark=null,measMark=null,fitted=false,follow=true,lastFix=null,dim=false,basePos=null,baseStale=false,baseCentredOn=null;
 let fixNote="Waiting for a position fix",tileNote="";
 function note(text){$("mapnote").textContent=text}
 function showNote(){if(map)note(fixNote||tileNote)}
@@ -143,6 +149,7 @@ function mapStyle(){
   const accent=css("--accent"),text=css("--card");
   here.setStyle({color:text,fillColor:dim?css("--muted"):accent,fillOpacity:dim?0.5:1});ring.setStyle({color:accent,fillColor:accent});trail.setStyle({color:accent});
   baseMark.setStyle(baseStale?{color:css("--muted"),dashArray:"3 4"}:{color:css("--warn"),dashArray:null});
+  measMark.setStyle(measStale?{color:css("--muted"),fillColor:css("--muted"),dashArray:"3 4"}:{color:css("--accent"),fillColor:css("--muted"),dashArray:null});
 }
 try{
   if(typeof L==="undefined")throw new Error("no Leaflet");
@@ -159,6 +166,7 @@ try{
   ring=L.circle([0,0],{radius:0,weight:1,opacity:0.6,fillOpacity:0.12,interactive:false});
   here=L.circleMarker([0,0],{radius:6,weight:2,fillOpacity:1,interactive:false});
   baseMark=L.circleMarker([0,0],{radius:9,weight:3,fill:false,interactive:false});
+  measMark=L.circleMarker([0,0],{radius:5,weight:2,fillOpacity:0.7,interactive:false});
   map.on("dragstart",()=>{follow=false});
   mapStyle();
 }catch(e){map=null;note("The map is unavailable. Position and drift still update.")}
@@ -216,8 +224,11 @@ function drawDrift(){
   const muted=css("--muted"),line=css("--line"),text=css("--text"),old=hex(css("--age-old")),young=hex(css("--age-new"));
   const oldest=pts.length?pts[0][0]:0,colour=age=>mix(old,young,oldest>0?1-age/oldest:1);
   const dropped=track&&track.outliers_dropped?` ${track.outliers_dropped} isolated fixes more than 1 km away were left out.`:"";
-  const why=track&&track.no_measured_reason;
-  $("drifttxt").textContent=(pts.length?`${pts.length} positions over the last ${duration(oldest)} (one per second, up to ${duration(track.window_s)}). Offsets are from the median position.`+(why?" No new ones now. "+why:""):why||"No positions yet.")+dropped;
+  const why=track&&track.no_measured_reason,label=trackLabel(track),measured=!!track&&track.source==="measured";
+  const moved=measured&&track.base_changed_age_s!=null?` The base position (RTCM 1005) changed ${duration(track.base_changed_age_s)} ago; the history is kept.`:"";
+  $("drifth").textContent=label.title;
+  $("drifttxt").textContent=(pts.length?`${pts.length} positions over the last ${duration(oldest)} (one per second, up to ${duration(track.window_s)}). ${label.offsets}`+moved+(measured?" Single point: metres of scatter, Up reads high.":"")+(why?" No new ones now. "+why:""):why||"No positions yet.")+dropped;
+  const mean=measured&&pts.length>1?runningMean(pts):null;$("meankey").hidden=!mean;
   if(!pts.length)$("hover").textContent="Point at a dot for details";
   // East/north scatter: square, centred on the reference, at least ±5 cm.
   let [c,w]=prep($("scatter"));
@@ -238,6 +249,7 @@ function drawDrift(){
     const x=mid+p[1]*k,y=mid-p[2]*k;dots.push([x,y,p]);
     c.fillStyle=colour(p[0]);c.beginPath();c.arc(x,y,2,0,7);c.fill();
   }
+  if(mean){c.strokeStyle=text;c.lineWidth=1.5;c.beginPath();mean.forEach((m,i)=>{const x=mid+m[1]*k,y=mid-m[2]*k;i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();c.lineWidth=1}
   if(pts.length){const [x,y]=dots[dots.length-1];c.strokeStyle=text;c.lineWidth=2;c.beginPath();c.arc(x,y,5,0,7);c.stroke()}
   if(!pts.length){c.fillStyle=muted;c.textAlign="center";c.fillText(why?"No measured position":"No positions yet",mid,mid-20)}
   // Up over time, same age colours, at least ±5 cm.
@@ -252,6 +264,7 @@ function drawDrift(){
   c.fillText("+"+span(ustep),left-4,top+4);c.fillText("Up 0",left-4,ymid);c.fillText("−"+span(ustep),left-4,bottom-4);
   c.textBaseline="top";c.fillText("now",w-6,bottom+4);c.textAlign="left";c.fillText("−"+duration(window_s),left,bottom+4);
   for(const p of pts){c.fillStyle=colour(p[0]);c.fillRect(tx(p[0])-1,ymid-p[3]*ky-1,2,2)}
+  if(mean){c.strokeStyle=text;c.lineWidth=1.5;c.beginPath();mean.forEach((m,i)=>{const x=tx(m[0]),y=ymid-m[3]*ky;i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();c.lineWidth=1}
 }
 function pick(ev){
   const r=$("scatter").getBoundingClientRect(),x=ev.clientX-r.left,y=ev.clientY-r.top;
@@ -263,9 +276,16 @@ $("scatter").addEventListener("pointermove",pick);
 $("scatter").addEventListener("pointerdown",pick);
 function drawTrail(){
   if(!map)return;
-  if(!track||!track.reference||!track.points.length){trail.setLatLngs([]);return}
+  if(!track||!track.reference||!track.points.length){trail.setLatLngs([]);if(map.hasLayer(measMark))measMark.remove();return}
   const toLatLon=frame(track.reference);
   trail.setLatLngs(track.points.map(p=>toLatLon(p[1],p[2])));
+  // The latest rtkrcv solution, when the plot shows rtkrcv (no measured GGA fix).
+  const last=track.points[track.points.length-1];
+  // Grey and dashed once the latest solution is older than ROVER_STALE_S, like a stale fix.
+  const stale=last[0]>ROVER_STALE_S;if(stale!==measStale){measStale=stale;mapStyle()}
+  if(track.source==="measured"){measMark.setLatLng(toLatLon(last[1],last[2]));if(!map.hasLayer(measMark))measMark.addTo(map);
+    if(!fitted){map.setView(toLatLon(last[1],last[2]),19);fitted=true}}
+  else if(map.hasLayer(measMark))measMark.remove();
 }
 window.addEventListener("resize",drawDrift);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{drawDrift();mapStyle()});
@@ -315,6 +335,30 @@ function renderOutputs(s){
     ["Frames skipped",u.frames_skipped],["Attempts today",u.attempts_today],
     ["Refusals, ban replies since the last accepted connection",`${u.refusals??0}, ${u.bans??0}`],["State file",u.state_error||null]]);
 }
+// The measured position card: rtkrcv's state and solution, and offsets from the reference.
+const MEAS_STATES={off:"Off","not available":"Not available",idle:"Idle: no MSM from the receiver yet",starting:"Starting",running:"Running","no solution":"No solution",restarting:"Restarting"};
+const signed=v=>v==null?null:(v<0?"−":"+")+Math.abs(v).toFixed(2)+" m";
+const offsets=w=>w?`E ${signed(w.e_mean_m)} ±${w.e_std_m.toFixed(2)}, N ${signed(w.n_mean_m)} ±${w.n_std_m.toFixed(2)}, U ${signed(w.u_mean_m)} ±${w.u_std_m.toFixed(2)} (${w.count})`:null;
+function renderMeasured(m){
+  if(!m)return;
+  const sol=m.solution,state=m.state||"—",live=state!=="off"&&state!=="not available",waiting=(state==="starting"||state==="no solution")&&m.last_solution_age_s==null;
+  $("meas").textContent=(MEAS_STATES[state]||state)+(state==="restarting"&&m.retry_in_s!=null?` in ${duration(m.retry_in_s)}`:"");
+  $("meas").className="big "+(state==="running"?"good":state==="not available"?"bad":state==="no solution"||state==="restarting"?"warn":"");
+  const eph=m.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
+  const why=(state==="off"?"Off (measured_enabled is false)":null)||m.reason||(waiting?`No solution yet: waiting for ephemerides (received so far: ${ephText||"none"})`:null)||(m.last_exit&&state!=="running"?`Last exit: ${m.last_exit.reason}`:null);
+  const dropped=Object.entries((m.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
+  const log=m.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
+  dl("measd",[["Why",why],["Last solution",sol?`${sol.age_s} s ago, ${sol.satellites} satellites, quality ${sol.quality}${sol.quality===5?" (single)":""}`:null],
+    ["σ N, E, U",sol?`${sol.sigma_n_m.toFixed(2)}, ${sol.sigma_e_m.toFixed(2)}, ${sol.sigma_u_m.toFixed(2)} m`:null],
+    ["Offsets from",!live?null:m.reference_kind==="base"?"the RTCM 1005 base position":"the median (no RTCM 1005)"],
+    ["Base position changed",m.base_changed_age_s==null?null:duration(m.base_changed_age_s)+" ago (history kept)"],
+    ["Mean ± std, 10 min",offsets(m.recent)],["Mean ± std, 2 h",offsets(m.window)],
+    ["rtkrcv CPU",m.cpu_percent==null?null:m.cpu_percent+" % of one core"],["rtkrcv memory",m.rss_bytes==null?null:size(m.rss_bytes)],
+    ["Restarts today",live?m.restarts_today:null],["Feed frames skipped",(m.feed||{}).frames_skipped||null],["Lines dropped",dropped||null],
+    ["Masks",!live||m.elevation_mask==null?null:`elevation ${m.elevation_mask}°, SNR ${m.snr_mask?m.snr_mask+" dB-Hz":"off"}`],
+    ["rtkrcv",m.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
+  const out=(m.output||[]).join("\n");$("measout").textContent=out;$("measout").hidden=!out;
+}
 function render(s){
   const live=s.connected&&s.data_age_s!=null&&s.data_age_s<5;
   $("link").className=live?"good":"bad";
@@ -354,6 +398,7 @@ function render(s){
   table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz","Source"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median,x.source]),"No signal data yet");
   table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
   renderOutputs(s);
+  renderMeasured(s.measured);
   if(typeof renderReceiver==="function")renderReceiver(s);
   table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
   table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");

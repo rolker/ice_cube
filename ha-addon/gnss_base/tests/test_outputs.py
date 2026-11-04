@@ -1176,13 +1176,17 @@ class ConnectionLogLimits(unittest.TestCase):
         source = (ROOT / "gnss_base" / "__main__.py").read_text()
         self.assertIn("room=lambda: not log.paused", source)
         self.assertIn("events.start()", source)
-        self.assertIn("await events.stop()", source)
+        self.assertIn("await events.stop(", source)
         # The writer task ends in a finally, even if starting up or shutting down fails.
         tree = ast.parse(source)
         run = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                    and n.name == "run")
         tries = [n for n in ast.walk(run) if isinstance(n, ast.Try)]
-        self.assertTrue(any("events.stop()" in ast.unparse(n.finalbody) for n in tries))
+        self.assertTrue(any("await shutdown(" in ast.unparse(n.finalbody)
+                            and "events=events" in ast.unparse(n.finalbody) for n in tries))
+        stop = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
+                    and n.name == "shutdown")
+        self.assertIn("events.stop(", ast.unparse(stop))
 
 
 class ConnectionLogBackground(unittest.IsolatedAsyncioTestCase):
@@ -1944,7 +1948,7 @@ class Packaging(unittest.TestCase):
     def test_config_yaml_version_options_and_ports(self):
         text = (ROOT / "config.yaml").read_text()
         self.assertIn(f'version: "{__version__}"', text)
-        self.assertEqual(__version__, "0.4.1")
+        self.assertEqual(__version__, "0.5.0")
         self.assertIn("ports:\n  2101/tcp: 2101\n", text)
         self.assertIn("ports_description:\n  2101/tcp: ", text)
         options = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)

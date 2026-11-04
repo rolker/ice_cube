@@ -1,7 +1,7 @@
 name: GNSS Base Station
-version: "0.4.1"
+version: "0.5.0"
 slug: gnss_base
-description: Logs a GNSS base receiver, shows its status, and configures it as a base with confirmed commands.
+description: Logs a GNSS base receiver, shows its status and a live measured position, configures it as a base with confirmed commands, and serves its corrections.
 arch:
   - aarch64
   - amd64
@@ -35,6 +35,9 @@ options:
   upload_mountpoint: ""
   upload_password: ""
   upload_style: rev1
+  measured_enabled: true
+  measured_elevation_mask: 15
+  measured_snr_mask: 35
 schema:
   device: device(subsystem=tty)
   device_match: str
@@ -51,3 +54,6 @@ schema:
   upload_mountpoint: match(^[A-Za-z0-9_.-]{0,64}$)
   upload_password: password
   upload_style: list(rev1|rev2)
+  measured_enabled: bool
+  measured_elevation_mask: int(0,45)
+  measured_snr_mask: int(0,50)

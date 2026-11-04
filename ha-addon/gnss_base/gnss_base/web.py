@@ -26,6 +26,7 @@ STRICT_JSON = functools.partial(json.dumps, allow_nan=False)
 USER_HEADERS = {"id": "X-Remote-User-Id", "name": "X-Remote-User-Name",
                 "display_name": "X-Remote-User-Display-Name"}
 MAX_BODY = 4096
+TRACK_SOURCES = ("gga", "measured")
 
 
 def ingress_user(request):
@@ -56,10 +57,16 @@ def create_app(get_status, allowed_clients=(INGRESS_PROXY,), get_track=None, con
         return reply(get_status())
 
     async def track(request):
-        """`since`, if given, is the `cursor` of an earlier response."""
+        """`since`, if given, is the `cursor` of an earlier response; `source` (gga or
+        measured), if given, forces that history instead of the app's choice."""
         if get_track is None:
             raise web.HTTPNotFound()
-        return reply(get_track(request.query.get("since")))
+        source = request.query.get("source")
+        if source is None:
+            return reply(get_track(request.query.get("since")))
+        if source not in TRACK_SOURCES:
+            return reply({"error": "source must be gga or measured."}, 400)
+        return reply(get_track(request.query.get("since"), source))
 
     def receiver_route(handler):
         """A POST with a JSON object body; RequestError becomes a 400 with its text."""

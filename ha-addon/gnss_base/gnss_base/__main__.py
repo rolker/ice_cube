@@ -1,12 +1,14 @@
 """Entry point: read and log the receiver, serve status, send checked commands."""
 import argparse
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import logging
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -16,6 +18,7 @@ from .caster import Caster, CasterSettings
 from .control import Controller
 from .frames import FrameParser
 from .hub import ConnectionLog, RtcmHub, Secret
+from .measured import MeasuredSettings, RtkrcvRunner, SolutionLog
 from .rawlog import RawLog, compress
 from .receiver import ChunkQueue, SerialReader
 from .status import Status
@@ -25,17 +28,21 @@ from .web import INGRESS_PROXY, create_app
 LOG = logging.getLogger("gnss_base")
 BY_ID_DIR = "/dev/serial/by-id"
 HOUSEKEEPING_S = 60
+SHUTDOWN_BUDGET_S = 9.0   # Home Assistant kills the app 10 s after asking it to stop
+WEB_SHUTDOWN_S = 1.5      # open page requests get this long at shutdown
 DEFAULTS = {"device": "", "device_match": "USB_Dual_Serial", "baud": 460800,
             "log_dir": "/share/gnss_base", "min_free_gb": 10,
             "caster_enabled": True, "caster_mountpoint": "BASE", "caster_user": "",
             "caster_password": "", "caster_max_clients": 16,
             "upload_host": "rtk2go.com", "upload_port": 2101, "upload_mountpoint": "",
-            "upload_password": "", "upload_style": "rev1"}
+            "upload_password": "", "upload_style": "rev1",
+            "measured_enabled": True, "measured_elevation_mask": 15, "measured_snr_mask": 35}
 # Options that a command-line argument can override. Passwords are options only: on a
 # command line they would show in process lists.
 OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster_enabled",
              "caster_mountpoint", "caster_max_clients", "upload_host", "upload_port",
-             "upload_mountpoint", "upload_style")
+             "upload_mountpoint", "upload_style", "measured_enabled",
+             "measured_elevation_mask", "measured_snr_mask")
 
 
 def load_settings(argv=None):
@@ -69,6 +76,13 @@ def load_settings(argv=None):
     parser.add_argument("--upload-port", dest="upload_port", type=int)
     parser.add_argument("--upload-mountpoint", dest="upload_mountpoint")
     parser.add_argument("--upload-style", dest="upload_style", choices=("rev1", "rev2"))
+    parser.add_argument("--no-measured", dest="measured_enabled", action="store_const",
+                        const=False, help="do not run rtkrcv for the live measured position")
+    parser.add_argument("--measured-elevation-mask", dest="measured_elevation_mask", type=int)
+    parser.add_argument("--measured-snr-mask", dest="measured_snr_mask", type=int,
+                        help="dB-Hz; 0 = no SNR mask")
+    parser.add_argument("--rtkrcv", default="rtkrcv",
+                        help="the rtkrcv program (default: rtkrcv on PATH)")
     args = parser.parse_args(argv)
     settings = dict(DEFAULTS)
     if os.path.exists(args.options):
@@ -78,11 +92,27 @@ def load_settings(argv=None):
         value = getattr(args, key)
         if value is not None:
             settings[key] = value
-    data_dir = args.data_dir or os.path.dirname(os.path.abspath(args.options))
+    # Absolute: rtkrcv runs in a folder under it, with its own working directory.
+    data_dir = os.path.abspath(args.data_dir or os.path.dirname(os.path.abspath(args.options)))
     settings.update(host=args.host, port=args.port, allow_any_client=args.allow_any_client,
                     by_id_dir=args.by_id_dir, profile=args.profile, data_dir=data_dir,
-                    caster_host=args.caster_host, caster_port=args.caster_port)
+                    caster_host=args.caster_host, caster_port=args.caster_port,
+                    rtkrcv=args.rtkrcv)
     return settings
+
+
+def measured_settings(settings):
+    """rtkrcv's settings from the options. Its work folder is `<data_dir>/rtkrcv`, kept
+    across restarts for its ephemeris cache."""
+    def number(key):
+        value = settings[key]
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return MeasuredSettings(
+        enabled=bool(settings["measured_enabled"]), binary=str(settings["rtkrcv"]),
+        work_dir=Path(settings["data_dir"]).absolute() / "rtkrcv",
+        elevation_mask=number("measured_elevation_mask"),
+        snr_mask=number("measured_snr_mask"))
 
 
 def output_settings(settings):
@@ -164,7 +194,7 @@ class ErrorReporter:
         self._last[name] = message
 
 
-async def housekeeping(log, errors):
+async def housekeeping(log, errors, solution_log=None):
     loop = asyncio.get_running_loop()
     while True:
         try:
@@ -190,7 +220,60 @@ async def housekeeping(log, errors):
         errors.check("logging", log.write_error)
         errors.check("disk", log.disk_error)
         errors.check("housekeeping", log.housekeeping_error)
+        if solution_log is not None:
+            try:
+                await solution_log.housekeep()
+            except Exception as error:
+                LOG.exception("solution log housekeeping failed")
+                solution_log.error = f"solution log housekeeping: {error}"
         await asyncio.sleep(HOUSEKEEPING_S)
+
+
+class DaemonExecutor(concurrent.futures.ThreadPoolExecutor):
+    """The event loop's executor for file work (log writes, a finished day's gzip, the
+    upload state, stopping the serial reader). Each call runs in its own daemon thread,
+    and `shutdown` never waits, so work still running at the shutdown deadline cannot hold
+    the app's exit: it is abandoned. That is safe: a log write is only cut short, and an
+    unfinished compression leaves its `.partial` file, which the raw and solution logs
+    remove at the next start, and the original day, which is compressed again.
+    (A ThreadPoolExecutor only because asyncio's set_default_executor asks for one; its
+    pool is never used.)"""
+
+    def __init__(self):
+        super().__init__(max_workers=1)
+        self._closed = False
+
+    def submit(self, fn, /, *args, **kwargs):
+        if self._closed:
+            raise RuntimeError("the executor is shut down")
+        future = concurrent.futures.Future()
+
+        def work():
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                result = fn(*args, **kwargs)
+            except BaseException as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+        threading.Thread(target=work, daemon=True, name="gnss_base-io").start()
+        return future
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        self._closed = True    # never waits: see the class comment
+
+
+async def _bounded(deadline, awaitable, what):
+    """Await `awaitable` until `deadline` (loop time) at the latest."""
+    loop = asyncio.get_running_loop()
+    try:
+        await asyncio.wait_for(awaitable, max(0.1, deadline - loop.time()))
+    except asyncio.TimeoutError:
+        LOG.error("shutdown: %s did not finish in time; going on", what)
+    except Exception:
+        LOG.exception("shutdown: %s failed", what)
 
 
 async def run(settings):
@@ -198,6 +281,8 @@ async def run(settings):
     status = Status()
     log = RawLog(settings["log_dir"], settings["min_free_gb"])
     loop = asyncio.get_running_loop()
+    executor = DaemonExecutor()
+    loop.set_default_executor(executor)
     errors = ErrorReporter()
     reader = None
 
@@ -211,12 +296,33 @@ async def run(settings):
     events = ConnectionLog(Path(settings["log_dir"]) / "caster.jsonl",
                            room=lambda: not log.paused)
     events.start()  # file writes in a background task, never on the serial path
+    measured = measured_settings(settings)
+    rtkrcv = caster = uploader = queue = runner = keeper = None
+
+    def solution_header():
+        version = rtkrcv.output.version if rtkrcv is not None else None
+        return (f"% gnss_base {__version__}, rtkrcv {version or 'unknown version'}, "
+                f"single point, elevation mask {measured.elevation_mask} deg, SNR mask "
+                f"{measured.snr_mask} dB-Hz, time GPST, lines as rtkrcv sent them (llh)")
+
+    solutions = SolutionLog(Path(settings["log_dir"]) / "measured", solution_header,
+                            room=lambda: not log.paused)
+    solutions.start()
     try:
         caster_settings, upload_settings = output_settings(settings)
         caster = Caster(caster_settings, hub, events, __version__)
         uploader = Uploader(upload_settings, hub, events, __version__,
                             state_path=Path(settings["data_dir"]) / "upload-state.json")
         pipeline = Pipeline(status, log, on_nmea=control.on_nmea, hub=hub)
+
+        def on_solution(solution, line):
+            status.add_measured(solution)
+            solutions.write(line)
+
+        # rtkrcv gets the hub only, like the other outputs.
+        rtkrcv = RtkrcvRunner(measured, hub, on_solution)
+        # The no-measured-GGA texts mention rtkrcv only while it can give a solution.
+        status.measured_expected = lambda: rtkrcv.state() not in ("off", "not available")
         queue = ChunkQueue(loop, pipeline.on_data)
 
         def on_state(connected, error):
@@ -246,37 +352,81 @@ async def run(settings):
             result["receiver"] = control.snapshot()
             result["caster"] = dict(caster.snapshot(), **hub.snapshot(), **events.snapshot())
             result["upload"] = uploader.snapshot()
+            result["measured"] = dict(rtkrcv.snapshot(), **status.measured_summary(),
+                                      log=solutions.snapshot())
             return result
 
         allowed = () if settings["allow_any_client"] else (INGRESS_PROXY,)
         app = create_app(snapshot, allowed, get_track=status.track, control=control)
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, shutdown_timeout=WEB_SHUTDOWN_S)
         await runner.setup()
         await web.TCPSite(runner, settings["host"], settings["port"]).start()
         LOG.info("status page on port %s", settings["port"])
         await caster.start()
         uploader.start()
+        rtkrcv.start()
 
         stop = asyncio.Event()
-        for name in (signal.SIGINT, signal.SIGTERM):
+        for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             loop.add_signal_handler(name, stop.set)
-        keeper = asyncio.create_task(housekeeping(log, errors))
+        keeper = asyncio.create_task(housekeeping(log, errors, solutions))
         await stop.wait()
-        keeper.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await keeper
-        await uploader.stop()
-        await caster.stop()
-        await control.stop()
-        await loop.run_in_executor(None, reader.stop)
-        queue.drain()
-        queue.close()  # a reader thread that outlived stop() can no longer reach the log
-        log.close()
-        await runner.cleanup()
     finally:
-        # Even if starting up or shutting down failed: end the writer task,
-        # waiting at most a few seconds for the disk.
-        await events.stop()
+        await shutdown(SHUTDOWN_BUDGET_S, keeper=keeper, rtkrcv=rtkrcv, solutions=solutions,
+                       outputs=[x for x in (uploader, caster) if x is not None],
+                       events=events, control=control, reader=reader, queue=queue,
+                       log=log, runner=runner)
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, reader,
+                   queue, log, runner):
+    """Stop everything within `budget` seconds from now (Home Assistant's 10 s stop
+    timeout), independent parts at once, each bounded by the time left:
+    - rtkrcv (SIGTERM so it saves its ephemeris cache, SIGKILL after 3 s), then the
+      solution log, so the lines it sent last are written;
+    - the upload and the caster, then the connection log, which records their ends;
+    - the startup check, the serial reader, then what it still queued, into the raw log;
+    - the status page, with WEB_SHUTDOWN_S for open requests.
+    Anything still running at the deadline, such as a day being compressed, is left
+    behind (see DaemonExecutor)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget
+    if keeper is not None:
+        keeper.cancel()   # housekeeping: a compression in its thread is abandoned
+
+    def left(margin=0.0):
+        return max(0.1, deadline - loop.time() - margin)
+
+    async def measured_part():
+        if rtkrcv is not None:
+            await rtkrcv.stop()
+        await solutions.stop(timeout=left(0.2))
+
+    async def outputs_part():
+        await asyncio.gather(*(output.stop() for output in outputs), return_exceptions=True)
+        await events.stop(timeout=left(0.2))
+
+    async def receiver_part():
+        await control.stop()
+        if reader is not None:
+            await loop.run_in_executor(None, reader.stop)
+        if queue is not None:
+            queue.drain()
+            queue.close()  # a reader thread that outlived stop() can no longer reach the log
+        log.close()
+
+    async def web_part():
+        if runner is not None:
+            await runner.cleanup()
+
+    await asyncio.gather(_bounded(deadline, measured_part(), "rtkrcv and its log"),
+                         _bounded(deadline, outputs_part(), "the outputs and their log"),
+                         _bounded(deadline, receiver_part(), "the receiver"),
+                         _bounded(deadline, web_part(), "the status page"))
+    if keeper is not None:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(keeper, 0.1)
 
 
 def main():

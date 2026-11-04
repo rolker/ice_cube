@@ -3,7 +3,8 @@
 "use strict";
 const assert = require("assert");
 const path = require("path");
-const {mergeTrack, clockJumped, baseCentring, sentText, roverPoints} = require(
+const {mergeTrack, clockJumped, baseCentring, sentText, roverPoints, runningMean,
+  trackLabel} = require(
   path.join(__dirname, "..", "gnss_base", "static", "track.js"));
 
 const REF = {lat: 0, lon: 0, height_m: 0};
@@ -107,6 +108,60 @@ const checks = {
     state = baseCentring(state.centredOn, [0.0011, 0.002], true);
     assert.strictEqual(state.centredOn, null);
     assert.strictEqual(baseCentring(state.centredOn, [0.0011, 0.002], false).centre, true);
+  },
+
+  "switching source drops the kept points and passes the source through"() {
+    let {kept, track} = mergeTrack(null, response({source: "gga", cursor: "g:2",
+      points: [[2, 0.01, 0, 0, 4], [1, 0.02, 0, 0, 4]]}), 1000);
+    assert.strictEqual(track.source, "gga");
+    // A measured response that (wrongly) says it continues: still not merged with GGA.
+    ({kept, track} = mergeTrack(kept, response({source: "measured", reference_kind: "base",
+      base_changed_age_s: 30, cursor: "m:1", full: false, points: [[1, 1.5, -2, 3, 5]]}), 1001));
+    assert.deepStrictEqual(track.points, [[1, 1.5, -2, 3, 5]]);
+    assert.deepStrictEqual([track.source, track.reference_kind, track.base_changed_age_s],
+      ["measured", "base", 30]);
+    assert.strictEqual(kept.source, "measured");
+    // An older app sends no source: GGA, median.
+    const {track: old} = mergeTrack(null, response({points: [[1, 0, 0, 0, 4]]}), 1000);
+    assert.deepStrictEqual([old.source, old.reference_kind, old.base_changed_age_s],
+      ["gga", "median", null]);
+    const {track: empty} = mergeTrack(null, response({source: "measured", reference: null,
+      reference_offset: null, cursor: null}), 1000);
+    assert.strictEqual(empty.source, "measured");
+  },
+
+  "a new 1005 moves the measured reference and keeps the points"() {
+    // Points stay in the history's frame; the 1005 moved 2 m north between polls.
+    let {kept} = mergeTrack(null, response({source: "measured", reference_kind: "base",
+      reference_offset: [0, 0, 0], points: [[2, 1, 0, 3, 5], [1, 1, 0, 3, 5]]}), 1000);
+    const {track} = mergeTrack(kept, response({source: "measured", reference_kind: "base",
+      reference_offset: [0, 2, 0], full: false, points: [[1, -1, -2, 0, 5]]}), 1001);
+    assert.deepStrictEqual(track.points.map(p => p.slice(1, 4)),
+      [[1, -2, 3], [1, -2, 3], [-1, -2, 0]]);
+  },
+
+  "running mean over five minutes"() {
+    // One point a second for 10 minutes: east 0 for the first 5, then 1.
+    const pts = [];
+    for (let age = 600; age >= 1; age--) pts.push([age, age > 300 ? 0 : 1, 2, -age / 100, 5]);
+    const mean = runningMean(pts);
+    assert.strictEqual(mean.length, pts.length);
+    assert.deepStrictEqual(mean[0], [600, 0, 2, -6]);
+    assert.strictEqual(mean[299][1], 0);
+    const last = mean[mean.length - 1];
+    assert.strictEqual(last[0], 1);
+    assert.ok(Math.abs(last[1] - 300 / 301) < 1e-9, last);
+    assert.ok(Math.abs(last[3] - -1.51) < 1e-9, last);
+    assert.deepStrictEqual(runningMean([]), []);
+    // A gap longer than the window: the mean starts again.
+    assert.deepStrictEqual(runningMean([[1000, 5, 5, 5, 5], [10, 1, 1, 1, 5]])[1], [10, 1, 1, 1]);
+  },
+
+  "labels say where the offsets are from"() {
+    assert.strictEqual(trackLabel(null).title, "Drift around the median position");
+    assert.ok(/RTCM 1005/.test(trackLabel({source: "measured", reference_kind: "base"}).offsets));
+    assert.ok(/median/.test(trackLabel({source: "measured", reference_kind: "median"}).offsets));
+    assert.ok(/rtkrcv/.test(trackLabel({source: "measured"}).title));
   },
 
   "notices a clock jump"() {

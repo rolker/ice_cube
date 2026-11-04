@@ -33,6 +33,7 @@ from yarl import URL
 
 from gnss_base import commands, control, profile, rawlog, receiver
 from gnss_base import rtcm as rtcmdec
+from gnss_base import status as status_module
 from gnss_base.__main__ import ErrorReporter, check_device, housekeeping, load_settings
 from gnss_base.commands import (CommandLog, CommandRunner, PendingStore, PortClosed, checksum,
                                 prepare)
@@ -582,7 +583,8 @@ class Api(unittest.TestCase):
         track = json.loads(body)
         self.assertEqual(set(track), {"window_s", "max_points", "fields", "reference",
                                       "reference_offset", "cursor", "full", "outliers_dropped",
-                                      "oldest_age_s", "points", "no_measured_reason"})
+                                      "oldest_age_s", "points", "no_measured_reason",
+                                      "source", "reference_kind"})
         self.assertEqual(track["reference"], {"lat": 0.0, "lon": 0.0, "height_m": 0.0})
         self.assertEqual(track["points"], [[3.0, 0.0, 0.0, 0.0, 1], [2.0, 0.0, 0.0, 0.0, 1],
                                            [1.0, 0.0, 0.0, 0.0, 1]])
@@ -778,7 +780,7 @@ class Page(unittest.TestCase):
         result = subprocess.run(["node", str(ROOT / "tests" / "track_test.js")],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 10,
+        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 14,
                          result.stdout)
 
     def test_receiver_script_is_served_and_uses_relative_urls(self):
@@ -2579,6 +2581,149 @@ class BasePosition032(unittest.TestCase):
             for value in re.findall(r"\$\{([^}]*)\}", template):
                 self.assertTrue(value.startswith(("esc(", "head.map(h=>`<th>${esc(",
                                                   "r.map(c=>`<td>${esc(")), value)
+
+
+class MeasuredTrack(unittest.TestCase):
+    """0.5.0: rtkrcv's live solution as a second history, offsets from the latest RTCM
+    1005; a changed 1005 moves the reference and keeps the history. Synthetic positions
+    on the equator only."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.status = Status(clock=self.clock)
+        self.frame = LocalFrame(0.0, 0.0, 0.0)
+
+    def feed(self, data):
+        for kind, payload in FrameParser().feed(data):
+            self.status.add_frame(kind, payload)
+
+    def base(self, east=0.0, north=0.0, up=0.0):
+        self.feed(arp_frame(*rtcmdec.llh_to_ecef(*self.frame.from_enu(east, north, up))))
+
+    def solutions(self, count, east=0.0, north=0.0, up=0.0, quality=5):
+        lat, lon, height = self.frame.from_enu(east, north, up)
+        for _ in range(count):
+            self.status.add_measured({"lat": lat, "lon": lon, "height_m": height,
+                                      "quality": quality, "satellites": 20})
+            self.clock.now += 1
+
+    def test_offsets_from_the_1005(self):
+        self.base()
+        self.solutions(3, east=1.0, north=-2.0, up=3.0)
+        track = self.status.track()
+        self.assertEqual((track["source"], track["reference_kind"]), ("measured", "base"))
+        self.assertEqual(track["reference"], {"lat": 0.0, "lon": 0.0, "height_m": 0.0})
+        self.assertEqual([p[1:] for p in track["points"]], [[1.0, -2.0, 3.0, 5]] * 3)
+        self.assertIsNone(track["base_changed_age_s"])
+        strict_json(json.dumps(track, allow_nan=False))
+
+    def test_a_new_1005_moves_the_reference_and_keeps_the_history(self):
+        self.base()
+        self.solutions(5, east=1.0)
+        first = self.status.track()
+        self.base(north=2.0)  # step 5 again: a new base position 2 m north
+        self.clock.now += 60
+        self.solutions(1, east=1.0)
+        track = self.status.track(first["cursor"])
+        self.assertFalse(track["full"], "same history: only the new point")
+        self.assertEqual([p[1:4] for p in track["points"]], [[1.0, -2.0, 0.0]])
+        self.assertEqual(track["base_changed_age_s"], 61.0)
+        everything = self.status.track()
+        self.assertEqual(len(everything["points"]), 6, "the history is kept")
+        self.assertEqual({p[2] for p in everything["points"]}, {-2.0})
+        # The page re-bases its kept points with reference_offset.
+        self.assertEqual([round(a - b, 4) for a, b in zip(track["reference_offset"],
+                                                           first["reference_offset"])],
+                         [0.0, 2.0, 0.0])
+        # A 1005 repeated at the same place is no change.
+        self.base(north=2.0)
+        self.assertEqual(self.status.track()["base_changed_age_s"], 61.0)
+
+    def test_a_sustained_move_beyond_1_km_restarts_the_history(self):
+        self.base()
+        self.solutions(10)
+        first = self.status.track()
+        self.solutions(RECENTRE_SAMPLES, east=2000.0)
+        track = self.status.track(first["cursor"])
+        self.assertTrue(track["full"])
+        self.assertEqual(len(track["points"]), RECENTRE_SAMPLES)
+        self.assertEqual(track["reference"], {"lat": 0.0, "lon": 0.0, "height_m": 0.0},
+                         "the 1005 is still the reference")
+        self.assertAlmostEqual(track["points"][-1][1], 2000.0, places=1)
+        # A 1005 far from the solutions is shown as it is, a gross offset.
+        self.base(east=-3000.0)
+        self.assertAlmostEqual(self.status.track()["points"][-1][1], 5000.0, places=0)
+
+    def test_median_reference_without_a_1005(self):
+        for east in (0.0, 1.0, 2.0, 3.0, 10.0):
+            self.solutions(1, east=east)
+        track = self.status.track()
+        self.assertEqual((track["source"], track["reference_kind"]), ("measured", "median"))
+        self.assertEqual([p[1] for p in track["points"]], [-2.0, -1.0, 0.0, 1.0, 8.0])
+        self.assertIsNone(track["base_changed_age_s"])
+
+    def test_source_rule(self):
+        self.assertEqual(self.status.track()["source"], "gga", "nothing yet: as before")
+        self.feed(gga(0.0, 0.0, quality=4))
+        self.solutions(1, east=1.0)
+        self.assertEqual(self.status.track_source(), "gga", "a recent measured GGA fix")
+        self.feed(gga(0.0, 0.0, quality=7))
+        self.assertEqual(self.status.track_source(), "measured", "a fixed base position")
+        self.feed(gga(0.0, 0.0, quality=1))
+        self.clock.now += RECENT_S + 1
+        self.assertEqual(self.status.track_source(), "measured", "GGA stopped")
+        track = self.status.track(source="gga")
+        self.assertEqual((track["source"], len(track["points"])), ("gga", 2))
+        self.assertEqual(self.status.track(source="measured")["no_measured_reason"],
+                         status_module.NO_SOLUTION_NOW)
+        empty = Status(clock=self.clock)
+        self.assertEqual(empty.track(source="measured")["no_measured_reason"],
+                         status_module.NO_SOLUTION_YET)
+
+    def test_stale_solutions_no_longer_pick_the_source(self):
+        self.solutions(3, east=1.0)
+        self.assertEqual(self.status.track_source(), "measured")
+        self.clock.now += status_module.MEASURED_SOURCE_S
+        self.assertEqual(self.status.track_source(), "gga")
+        self.assertEqual(len(self.status.track(source="measured")["points"]), 3, "still kept")
+
+    def test_rtkrcv_is_mentioned_only_while_it_can_give_a_solution(self):
+        self.feed(rtcm(1005))
+        self.assertEqual(self.status.no_measured_reason(), NO_MEASURED_BASE_MODE)
+        self.assertNotIn("rtkrcv", NO_MEASURED_BASE_MODE + NO_MEASURED_FIXED)
+        self.status.measured_expected = lambda: True
+        self.assertEqual(self.status.no_measured_reason(),
+                         NO_MEASURED_BASE_MODE + status_module.RTKRCV_HINT)
+        self.feed(gga(0.0, 0.0, quality=7))
+        self.assertIn("rtkrcv", self.status.no_measured_reason())
+
+    def test_source_over_http(self):
+        self.base()
+        self.solutions(2, east=1.0)
+        self.feed(gga(0.0, 0.0, quality=4))
+        app = create_app(self.status.snapshot, (), get_track=self.status.track)
+        results = serve(app, "/api/track", "/api/track?source=measured",
+                        "/api/track?source=gga", "/api/track?source=x")
+        self.assertEqual([code for code, _ in results], [200, 200, 200, 400])
+        auto, measured, forced, _ = (strict_json(body) for _, body in results)
+        self.assertEqual((auto["source"], measured["source"], forced["source"]),
+                         ("gga", "measured", "gga"))
+        self.assertEqual(len(measured["points"]), 2)
+
+    def test_summary_means_and_spread(self):
+        self.base()
+        for east in (1.0, 3.0) * 400:
+            self.solutions(1, east=east, up=2.0)
+        summary = self.status.measured_summary()
+        recent = summary["recent"]
+        self.assertEqual((recent["count"], recent["e_mean_m"], recent["e_std_m"]),
+                         (600, 2.0, 1.0))
+        self.assertEqual((recent["u_mean_m"], recent["u_std_m"]), (2.0, 0.0))
+        self.assertEqual(summary["window"]["count"], 800)
+        self.assertEqual((summary["reference_kind"], summary["solution"]["satellites"]),
+                         ("base", 20))
+        strict_json(json.dumps(summary, allow_nan=False))
+        self.assertIsNone(Status(clock=self.clock).measured_summary()["recent"])
 
 
 class ApiCommands(TempDir):

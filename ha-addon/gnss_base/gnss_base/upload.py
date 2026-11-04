@@ -36,12 +36,12 @@ import re
 import secrets
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .hub import OutputFilter, Secret
 
 LOG = logging.getLogger("gnss_base")
+STATE_STOP_WAIT_S = 2.0   # stop() waits at most this long for the last state write
 
 FIRST_RETRY_S = 60          # first retry, and the least time between any two attempts
 MAX_RETRY_S = 30 * 60       # the retry delay doubles up to this
@@ -189,7 +189,6 @@ class Uploader:
         self._last_kind = ""
         self._state_path = state_path
         self._salt = secrets.token_hex(16)
-        self._saver = None
         self._saving = None
         self.state_error = ""
         problem = settings.problem()
@@ -233,10 +232,9 @@ class Uploader:
             except Exception:
                 LOG.exception("upload stopped with an error")
             self._task = None
-        await self.saved()
-        if self._saver is not None:
-            self._saver.shutdown(wait=True)
-            self._saver = None
+        # The last state write gets a moment; a stalled disk must not hold the app's stop
+        # (the write itself runs on in a daemon thread, see __main__.DaemonExecutor).
+        await self.saved(timeout=STATE_STOP_WAIT_S)
 
     # ---- the state file: survives a restart ----
 
@@ -346,10 +344,17 @@ class Uploader:
                 "reason": self._scrub(self.reason), "day": self._day,
                 "attempts_today": self.attempts_today, "bytes_today": self.bytes_today}
         text = json.dumps(data, indent=1) + "\n"
-        if self._saver is None:
-            self._saver = ThreadPoolExecutor(1, thread_name_prefix="upload-state")
-        self._saving = asyncio.get_running_loop().run_in_executor(
-            self._saver, _write_state, self._state_path, text)
+        loop = asyncio.get_running_loop()
+        previous, path = self._saving, self._state_path
+
+        async def write():
+            # One write at a time, in order: each waits for the one before it. The file
+            # work runs in the loop's default executor (daemon threads in the app).
+            if previous is not None:
+                await asyncio.wait({previous})
+            await loop.run_in_executor(None, _write_state, path, text)
+
+        self._saving = loop.create_task(write())
         self._saving.add_done_callback(self._saved)
 
     def _saved(self, future):
@@ -361,10 +366,10 @@ class Uploader:
         else:
             self.state_error = ""
 
-    async def saved(self):
-        """Wait for the last state write (for stop and tests)."""
+    async def saved(self, timeout=None):
+        """Wait for the last state write (for stop and tests), at most `timeout` s."""
         if self._saving is not None:
-            await asyncio.wait({self._saving})
+            await asyncio.wait({self._saving}, timeout=timeout)
 
     # ---- the schedule ----
 
