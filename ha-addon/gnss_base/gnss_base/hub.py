@@ -164,10 +164,11 @@ class OutputFilter:
 
 class ConnectionLog:
     """`caster.jsonl`: one JSON line per caster connect, disconnect or refusal, per upload
-    connect or error, and what rovers send. Callers pass only safe fields: never a
-    password, a rover's GGA line or the position taken from it. The few sample lines of
-    what a rover sent (`rover_sent`) are any bytes, NMEA or not, with every number that
-    could be a coordinate replaced by "-" first (`caster.redact_position`).
+    connect or error, and what rovers send. Callers never pass a password. The few
+    sample lines of what a rover sent (`rover_sent`, at most one GGA) and the last GGA on
+    `disconnect` (`last_gga_line`) are any bytes, escaped and shortened but otherwise as
+    sent, so they can hold the rover's position: this file stays on the device and is
+    never copied into a public repo.
 
     `write` never touches the disk on the caller's path. Once `start` has run (in the
     app), lines go into a bounded queue that a writer task drains, doing the file work in
@@ -176,13 +177,14 @@ class ConnectionLog:
 
     Limits, so a busy or hostile network cannot fill the disk:
     - each address gets at most PER_ADDRESS lines a minute (NOISY_PER_ADDRESS for
-      sourcetable requests, refusals and failed logins), and all addresses together
-      PER_MINUTE; the rest are counted and summed up in one `suppressed` line per
+      sourcetable requests, refusals and failed logins), plus PER_ADDRESS disconnect
+      lines counted on their own, and all addresses together PER_MINUTE; the rest are counted and summed up in one `suppressed` line per
       address when the minute ends;
     - the file is rotated at `max_bytes` to `caster.jsonl.1`, ... keeping `keep` old ones;
     - nothing is written while `room()` is false (the raw log's free space floor)."""
 
     NOISY = frozenset({"sourcetable", "refused", "auth_failed"})
+    SEPARATE = frozenset({"disconnect"})   # counted per address on their own; see _allow
     NOISY_PER_ADDRESS = 10
     PER_ADDRESS = 30
     PER_MINUTE = 200
@@ -213,6 +215,7 @@ class ConnectionLog:
         self.skipped_low_disk = 0  # lines not written because free space is low
         self._window = None
         self._counts = Counter()          # address -> lines written this window
+        self._separate = Counter()        # address -> disconnect lines written this window
         self._held = {}                   # address -> Counter of events held back
         self._total = 0                   # rate-limited lines written this window
         self._busy = False
@@ -236,15 +239,21 @@ class ConnectionLog:
         return dict({"utc": utc, "event": event}, **fields)
 
     def _allow(self, event, address):
-        if (address not in self._counts and address not in self._held
-                and len(self._counts) + len(self._held) >= self.MAX_ADDRESSES):
+        known = set(self._counts) | set(self._separate) | set(self._held)
+        if address not in known and len(known) >= self.MAX_ADDRESSES:
             address = "other"
+        # Disconnect lines have their own PER_ADDRESS budget, so the connects, samples
+        # and the like of a rover that reconnects often cannot use up the budget its
+        # disconnect lines (summary, last GGA line) need. One address still gets at most
+        # 2 * PER_ADDRESS lines a minute, so a connect/close loop cannot take the whole
+        # PER_MINUTE and crowd out other rovers.
+        counts = self._separate if event in self.SEPARATE else self._counts
         limit = self.NOISY_PER_ADDRESS if event in self.NOISY else self.PER_ADDRESS
-        if self._counts[address] >= limit or self._total >= self.PER_MINUTE:
+        if counts[address] >= limit or self._total >= self.PER_MINUTE:
             self._held.setdefault(address, Counter())[event] += 1
             self.suppressed += 1
             return False
-        self._counts[address] += 1
+        counts[address] += 1
         self._total += 1
         return True
 
@@ -257,6 +266,7 @@ class ConnectionLog:
         self._window = window
         held, self._held = self._held, {}
         self._counts.clear()
+        self._separate.clear()
         self._total = 0
         addresses = sorted(held, key=lambda a: -sum(held[a].values()))
         for address in addresses[:self.MAX_SUMMARY_LINES]:

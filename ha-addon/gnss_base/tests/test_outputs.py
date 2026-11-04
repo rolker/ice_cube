@@ -28,8 +28,7 @@ from unittest import mock
 from gnss_base import __version__, caster as caster_module
 from gnss_base import upload as upload_module
 from gnss_base.__main__ import DEFAULTS, Pipeline, load_settings, output_settings
-from gnss_base.caster import (Caster, CasterSettings, Client, parse_basic, peer_address,
-                              redact_position)
+from gnss_base.caster import Caster, CasterSettings, Client, parse_basic, peer_address
 from gnss_base.control import Controller
 from gnss_base import profile
 from gnss_base.frames import crc24q, nmea_checksum
@@ -305,9 +304,12 @@ class CasterClient(unittest.TestCase):
             self.assertIsNone(parse_basic(bad), bad)
 
 
-async def ntrip_get(port, path="/BASE", login=None, headers=b"", read_until=None, timeout=3):
-    """Send a request; return (reader, writer, first bytes of the reply)."""
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+async def ntrip_get(port, path="/BASE", login=None, headers=b"", read_until=None, timeout=3,
+                    local=None):
+    """Send a request (from address `local` if given); return (reader, writer, first bytes
+    of the reply)."""
+    reader, writer = await asyncio.open_connection(
+        "127.0.0.1", port, local_addr=(local, 0) if local else None)
     request = f"GET {path} HTTP/1.0\r\nUser-Agent: NTRIP TestClient/1.0\r\n".encode()
     if login is not None:
         request += b"Authorization: Basic " + base64.b64encode(login.encode()) + b"\r\n"
@@ -554,6 +556,12 @@ class CasterServer(CasterBase):
         with self.assertLogs("gnss_base", "ERROR"):
             self.assertFalse(await caster.start())
         self.assertIn("caster_mountpoint", caster.snapshot()["error"])
+        # caster_max_clients: 1 to 16, as config.yaml's schema allows
+        for clients, ok in ((1, True), (16, True), (0, False), (17, False), (64, False)):
+            problem = CasterSettings(max_clients=clients).problem()
+            self.assertEqual(problem == "", ok, clients)
+            if not ok:
+                self.assertEqual(problem, "caster_max_clients must be 1 to 16.")
 
 
 # ---------------------------------------------------------------- upload
@@ -1106,6 +1114,25 @@ class ConnectionLogLimits(unittest.TestCase):
                          ("192.0.2.1", 40, {"sourcetable": 40}))
         self.assertEqual(after["event"], "sourcetable")  # a new minute: logged again
 
+    def test_disconnects_have_their_own_budget_per_address(self):
+        clock = StepClock()
+        log = ConnectionLog(self.path, clock=clock)
+        for _ in range(100):   # one address in a connect/close loop
+            log.write("connect", address="192.0.2.9")
+            log.write("disconnect", address="192.0.2.9")
+        events = [e["event"] for e in self.lines()]
+        self.assertEqual(events.count("connect"), ConnectionLog.PER_ADDRESS)
+        self.assertEqual(events.count("disconnect"), ConnectionLog.PER_ADDRESS)
+        # Another rover still gets its lines.
+        log.write("connect", address="192.0.2.10")
+        log.write("disconnect", address="192.0.2.10", last_gga_line="$GPGGA,1")
+        self.assertEqual([e["event"] for e in self.lines()[-2:]], ["connect", "disconnect"])
+        # The global cap still applies, disconnects included.
+        for i in range(ConnectionLog.PER_MINUTE):
+            log.write("refused", address=f"10.0.{i // 250}.{i % 250}")
+        log.write("disconnect", address="192.0.2.11")
+        self.assertEqual(len(self.lines()), ConnectionLog.PER_MINUTE)
+
     def test_connection_events_have_a_looser_limit_and_all_addresses_a_shared_cap(self):
         clock = StepClock()
         log = ConnectionLog(self.path, clock=clock)
@@ -1313,9 +1340,11 @@ class RoverInput(unittest.TestCase):
         client.received(b"\xb5\x62\x01\x07binary\r\n" + nmea("PQTMVERNO") + b"x" * 1000)
         client.received(nmea("GPGSV,1,1,00") * 3)
         summary = client.summary()
-        self.assertEqual((summary["gga"], summary["nmea_other"], summary["other"]), (3, 6, 2))
+        # The x run is flushed unfinished, so the first GPGSV is the rest of that line:
+        # "other", not NMEA.
+        self.assertEqual((summary["gga"], summary["nmea_other"], summary["other"]), (3, 5, 3))
         self.assertEqual(summary["gga_hz"], 1.0)
-        self.assertEqual(summary["types"], {"GPGSV": 3, "GPRMC": 1, "GNGSA": 1, "PQTMVERNO": 1})
+        self.assertEqual(summary["types"], {"GPGSV": 2, "GPRMC": 1, "GNGSA": 1, "PQTMVERNO": 1})
         self.assertEqual(summary["bytes_received"], client.bytes_received)
         snapshot = client.snapshot(self.clock.now)
         self.assertEqual(snapshot["sent"], summary)
@@ -1324,23 +1353,19 @@ class RoverInput(unittest.TestCase):
         self.assertAlmostEqual(position["lon"], 11 + 31 / 60)
         self.assertEqual((position["quality"], position["utc"], position["age_s"]),
                          (4, "123519.00", 1.0))
-        # Five samples, the GGA never among them, escaped, shortened, positions blanked.
+        # Five samples logged as sent: only the first GGA, so the rest is not crowded out.
         self.assertEqual(len(self.notes), caster_module.ROVER_SAMPLES)
         self.assertEqual([f["n"] for _, f in self.notes], [1, 2, 3, 4, 5])
-        rmc = self.notes[0][1]
-        self.assertEqual((rmc["kind"], rmc["type"]), ("nmea", "GPRMC"))
-        self.assertNotIn("4807", rmc["text"])
-        self.assertNotIn("01131", rmc["text"])
-        self.assertIn("$GPRMC,123519,A,-,N,-,E,022.4", rmc["text"])
-        binary = self.notes[2][1]
-        self.assertEqual(binary["kind"], "other")
-        self.assertTrue(binary["text"].startswith("\\xb5b\\x01\\x07binary"))
-        long_run = self.notes[4][1]
-        self.assertEqual((len(long_run["text"]), long_run["shortened"]),
-                         (caster_module.SAMPLE_CHARS, True))
-        for event, fields in self.notes:
+        self.assertEqual([f["type"] for _, f in self.notes],
+                         ["GGA", "GPRMC", "GNGSA", None, "PQTMVERNO"])
+        gga = self.notes[0][1]
+        self.assertEqual((gga["kind"], gga["text"], gga["shortened"]),
+                         ("nmea", nmea(self.GGA).decode().rstrip("\r\n"), False))
+        self.assertIn("4807.038,N,01131.000,E", self.notes[1][1]["text"])
+        self.assertEqual(client.last_gga_line(),
+                         (nmea(self.GGA).decode().rstrip("\r\n"), False))
+        for event, _ in self.notes:
             self.assertEqual(event, "rover_sent")
-            self.assertNotIn("GGA", fields["text"])
 
     def test_a_gga_without_a_fix_clears_the_position(self):
         client = self.client()
@@ -1352,60 +1377,141 @@ class RoverInput(unittest.TestCase):
         client.received(nmea("GPGGA,123521.00,9907.0,N,01131.0,E,1,08,0.9,0,M,0,M,,"))
         self.assertIsNone(client.position, "latitude over 90 is not a position")
 
-    def test_redaction_of_position_fields(self):
-        self.assertEqual(redact_position(b"$GPGLL,4916.45,N,12311.12,W,225444,A*1D"),
-                         b"$GPGLL,-,N,-,W,225444,A*1D")
-        self.assertEqual(redact_position(b"$GPGLL,3751.65,S,14507.36,E*77"),
-                         b"$GPGLL,-,S,-,E*77")
-        self.assertEqual(redact_position(b"$GNGSA,A,3,01,02*00"), b"$GNGSA,A,3,01,02*00")
-        cases = {
-            # NMEA ddmm.mmmm / dddmm.mmmm before a hemisphere, also without decimals
-            b"$GPGLL,4916,N,12311,W,225444,A*1D": b"$GPGLL,-,N,-,W,225444,A*1D",
-            b"$GNRMC,1,A,4807.03812345,S,01131.00000000,W": b"$GNRMC,1,A,-,S,-,W",
-            # decimal degrees: 4 or more digits after the point, signed or not
-            b"$PQTMPVT,1,123519.000,2023,1,1,3,48.1173,11.5167,545.4*00":
-                b"$PQTMPVT,1,-,2023,1,1,3,-,-,545.4*00",
-            b"lat=48.1173 lon=-11.5167": b"lat=- lon=-",
-            b"pos 0.1234,+179.99999": b"pos -,-",
-            # ECEF metres: 5 or more digits before the point
-            b"$PQTMECEF,1334567.12,-4654321.5,4138000.0": b"$PQTMECEF,-,-,-",
-            # ddmm.mmm without a hemisphere: 7 digits in all; exponents
-            b"$X,4807.038,01131.000": b"$X,-,-",
-            b"4.81173e+01 1E5 2.5e-3": b"- - -",
-        }
-        for line, expected in cases.items():
-            self.assertEqual(redact_position(line), expected, line)
-        # Short numbers stay: counts, times without decimals, speeds, DOPs, heights.
-        keep = b"$GNGSA,A,3,01,02,,,,,,,,,,,1.0,0.9,0.5*00 $GPVTG,084.4,T,,M,022.4,K"
-        self.assertEqual(redact_position(keep), keep)
-        # Over-redaction is accepted: VTG's speed in knots is followed by "N".
-        self.assertEqual(redact_position(b"$GPVTG,084.4,T,,M,022.4,N"), b"$GPVTG,084.4,T,,M,-,N")
-
-    def test_every_logged_sample_is_redacted_nmea_or_not(self):
+    def test_logged_samples_keep_positions_and_are_escaped_and_shortened(self):
         client = self.client()
         lines = [
             b"\x00$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A\r\n",
             b" $GNGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n",
-            b"$PQTMPVT,1,123519.000,2023,1,1,3,48.1173,11.5167,545.4*00\r\n",
-            b"\xb5\x62lat=48.1173 lon=11.5167 ecef=1334567.12,-4654321.5\r\n",
+            nmea(self.GGA),
+            nmea(self.GGA.replace("123519.00", "123520.00")),   # a second GGA: not sampled
+            b"$PQTMX,\xb5\x62\x01binary\\lat=48.1173 ecef=1334567.12,-4654321.5\r\n",
+            b"$X," + b"x" * 192 + b"48.1173456,11.5167" + b"9" * 300 + b"\r\n",
             nmea(self.RMC),
         ]
         client.received(b"".join(lines))
         self.assertEqual(len(self.notes), caster_module.ROVER_SAMPLES)
-        self.assertEqual([f["kind"] for _, f in self.notes],
-                         ["other", "other", "nmea", "other", "nmea"])
-        for _, fields in self.notes:
-            for digits in ("4807", "01131", "48.1", "11.5", "1334567", "4654321"):
-                self.assertNotIn(digits, fields["text"])
-        self.assertIn("$GPRMC,123519,A,-,N,-,E", self.notes[0][1]["text"])
-        self.assertIn("$PQTMPVT,1,-,2023,1,1,3,-,-,545.4", self.notes[2][1]["text"])
-        # A coordinate cut by the 200-character limit is still blanked, and a long
-        # line costs no more than a short one.
+        self.assertEqual([(f["kind"], f["type"]) for _, f in self.notes],
+                         [("other", None), ("other", None), ("nmea", "GGA"),
+                          ("nmea", "PQTMX"), ("nmea", "X")])
+        texts = [f["text"] for _, f in self.notes]
+        # Not starting with "$": only the first word, if any, and the length.
+        self.assertEqual(texts[0], f"({len(lines[0]) - 2} bytes)")
+        self.assertEqual(texts[1], f"({len(lines[1]) - 2} bytes)")
+        # Starting with "$": as sent, escaped.
+        self.assertEqual(texts[2], nmea(self.GGA).decode().rstrip("\r\n"))
+        self.assertEqual(texts[3], "$PQTMX,\\xb5b\\x01binary\\\\lat=48.1173 "
+                                   "ecef=1334567.12,-4654321.5")
+        self.assertFalse(any(f["shortened"] for _, f in self.notes[2:4]))
+        self.assertTrue(all(f["shortened"] for _, f in self.notes[:2]))
+        # A long line is cut at SAMPLE_CHARS, after escaping.
+        self.assertEqual(texts[4], ("$X," + "x" * 192 + "48.1173456,11.5167")[
+            :caster_module.SAMPLE_CHARS])
+        self.assertTrue(self.notes[4][1]["shortened"])
+        self.assertIn("123520.00", client.last_gga_line()[0])
+
+    def test_other_lines_are_logged_as_first_word_and_length(self):
+        sample = caster_module.sample
+        self.assertEqual(sample(b"Authorization: Basic abc="), ("Authorization: (25 bytes)", True))
+        self.assertEqual(sample(b"GET /BASE?x HTTP/1.0"), ("GET (20 bytes)", True))
+        self.assertEqual(sample(b"hello"), ("(5 bytes)", True))
+        self.assertEqual(sample(b" folded"), ("(7 bytes)", True))
+        self.assertEqual(sample(b"A" * 33 + b" x"), ("(35 bytes)", True))
+        self.assertEqual(sample(b"A" * 32 + b" x"), ("A" * 32 + " (34 bytes)", True))
+        self.assertEqual(sample(b"x\\y z"), ("(5 bytes)", True))
+        self.assertEqual(sample(b"$GPGSA,1", start=False), ("(8 bytes)", True))
+
+    def test_a_bare_token_or_query_line_is_never_logged(self):
+        sample = caster_module.sample
+        for line in (b"hunter2", b"user=u&password=hunter2", b"/m?pw=s3cr3t", b"a=b c"):
+            text = sample(line)[0]
+            self.assertEqual(text, f"({len(line)} bytes)", line)
+        self.assertEqual(sample(b"$GPGGA,x?apikey=s3cr3t")[0], "$GPGGA,x?apikey=-")
+
+    def test_the_last_gga_line_is_escaped_and_shortened(self):
         client = self.client()
-        client.received(b"x" * 195 + b"48.1173456,11.5167" + b"9" * 50000 + b"\r\n")
-        text = self.notes[0][1]["text"]
-        self.assertEqual(text, "x" * 195 + "-,-")
-        self.assertTrue(self.notes[0][1]["shortened"])
+        self.assertEqual(client.last_gga_line(), (None, False))
+        client.received(nmea(self.GGA))
+        client.received(b"$GPGGA,1\x00\\" + b"9" * 50000 + b"\r\n")
+        text, shortened = client.last_gga_line()
+        self.assertTrue(text.startswith("$GPGGA,1\\x00\\\\999"), text)
+        self.assertEqual((len(text), shortened), (caster_module.SAMPLE_CHARS, True))
+        self.assertEqual(len(self.notes), 1, "only the first GGA is a sample")
+
+    def test_a_cut_never_splits_an_escape(self):
+        limit = caster_module.SAMPLE_CHARS
+        for pad in range(limit - 5, limit + 1):
+            for tail in (b"\\", b"\x00", b"\xff\xfe", b"\\\\"):
+                raw = b"x" * pad + tail + b"yz"
+                text, shortened = caster_module._escape(raw)
+                self.assertLessEqual(len(text), limit)
+                full = caster_module._escape(raw, limit=10 ** 6)[0]
+                self.assertTrue(full.startswith(text))
+                self.assertEqual(shortened, len(full) > limit)
+                # What is left unescapes cleanly: no dangling backslash or partial \xN.
+                self.assertIsNone(re.search(r"(?<!\\)(\\\\)*\\(x[0-9a-f]?)?$", text),
+                                  (pad, tail, text[-6:]))
+        exact = b"a" * (limit - 4) + b"\x01"
+        self.assertEqual(caster_module._escape(exact), ("a" * (limit - 4) + "\\x01", False))
+        self.assertEqual(caster_module._escape(exact + b"b")[1], True)
+        # A rover_sent sample is cut the same way.
+        client = self.client()
+        client.received(b"$" + b"x" * (limit - 2) + b"\x07rest\r\n")
+        self.assertEqual((self.notes[0][1]["text"], self.notes[0][1]["shortened"]),
+                         ("$" + "x" * (limit - 2), True))
+
+    def test_credentials_in_dollar_lines_are_hidden_positions_are_not(self):
+        hide = caster_module.hide_credentials
+        self.assertEqual(hide(b"$X,4807.038,N,Authorization: Basic aHVudGVyMg==\r x"),
+                         b"$X,4807.038,N,Authorization: -")
+        self.assertEqual(hide(b"$X,proxy-AUTHORIZATION:Bearer t"), b"$X,proxy-AUTHORIZATION: -")
+        self.assertEqual(hide(b"$X,SOURCE hunter2 /BASE"), b"$X,SOURCE -")
+        self.assertEqual(hide(b"$X,http://u:hun/ter2@host/B 4807.038,N"),
+                         b"$X,http://-@host/B 4807.038,N")
+        self.assertEqual(hide(b"$X,http://u:hun@ter2@host/B"), b"$X,http://-@host/B")
+        self.assertEqual(hide(b"$X,/B?user=u&password=hunter2&n=1"), b"$X,/B?user=u&password=-&n=1")
+        self.assertEqual(hide(nmea(self.GGA)), nmea(self.GGA))
+
+    LEAKS = {
+        "url beyond 200": [b"$PQTMX," + b"a" * 250 + b" http://u:hunter2@host/B\r\n",
+                           b"GET " + b"a" * 250 + b" http://u:hunter2@host/B\r\n"],
+        "gga with lone CR": [
+            b"$GPGGA,123519.00,4807.0380,N,01131.0000,E,4,08,0.9,545.4,M,46.9,M,1.0,0000"
+            b"\rAuthorization: Basic aHVudGVyMg==\r\n"],
+        "bearer over reads": [b"Authorization: Bearer " + b"hunter2" * 200 + b"\r\n",
+                              b"$X,Authorization: Bearer " + b"hunter2" * 200 + b"\r\n",
+                              b"$X," + b"j" * 500 + b"Authoriz", b"ation: Basic hunter2\r\n"],
+        "junk then split header": [b"j" * 520 + b"Authorization: Basic hunter2==\r\n",
+                                   b"$" + b"j" * 519 + b"Authorization: Basic hunter2==\r\n"],
+        "lone CR in header": [b"GET /BASE HTTP/1.0\rAuthorization: Basic hunter2\r\n",
+                              b"Accept: x\rAuthorization: Basic hunter2\r\n"],
+        "folded header": [b"Authorization: Basic\r\n hunter2\r\n",
+                          b"Authorization: Basic\r\n\thunter2\r\n"],
+        "url passwords": [b"GET http://u:hun/ter2@host/BASE\r\n", b"u:hun@ter2@host\r\n",
+                          b"$X,http://u:hun/ter2@host/B\r\n", b"$X,http://u:hun@ter2@host\r\n"],
+        "query password": [b"GET /BASE?password=hunter2 HTTP/1.0\r\n",
+                           b"$X,/BASE?password=hunter2&x=1\r\n"],
+    }
+
+    def test_no_credential_reaches_the_log(self):
+        log_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, log_dir)
+        log = ConnectionLog(log_dir / "caster.jsonl")
+        for name, chunks in self.LEAKS.items():
+            for chunk in chunks:
+                for size in (512, 7, len(chunk)):   # split into reads of these sizes
+                    client = Client(FakeWriter(), "192.0.2.5", "", "Ntrip/1.0", "",
+                                    StepClock(), note=log.write)
+                    data = chunk if chunk.endswith(b"\n") else b"".join(chunks)
+                    for i in range(0, len(data), size):
+                        client.received(data[i:i + size])
+                    text, cut = client.last_gga_line()
+                    log.write("disconnect", case=name, last_gga_line=text,
+                              last_gga_shortened=cut, **client.summary())
+        text = (log_dir / "caster.jsonl").read_text()
+        self.assertIn("4807.0380,N", text, "positions are logged")
+        self.assertIn('"last_gga_line": "$GPGGA,123519.00', text)
+        for secret in ("hunter", "ter2", "aHVudGVyMg", "hun/", "hun@"):
+            self.assertNotIn(secret, text)
 
     def test_ipv4_mapped_peers_count_as_their_ipv4_address(self):
         self.assertEqual(peer_address("::ffff:192.0.2.5"), "192.0.2.5")
@@ -1417,28 +1523,55 @@ class RoverInput(unittest.TestCase):
 
 
 class RoverInputServer(CasterBase):
-    async def test_what_a_rover_sends_is_logged_without_its_position(self):
+    async def test_what_a_rover_sends_is_logged_as_sent(self):
         port = await self.start()
         _, writer, _ = await ntrip_get(port, read_until=b"OK\r\n")
-        writer.write(nmea(RoverInput.GGA) + nmea(RoverInput.RMC) + b"hello\r\n")
+        last = RoverInput.GGA.replace("123519.00", "123521.00")
+        writer.write(nmea(RoverInput.GGA) + nmea(RoverInput.RMC) + nmea(last) + b"hello\r\n")
         await until(lambda: self.caster.clients and self.caster.clients[0].other == 1)
         client = self.caster.snapshot()["clients"][0]
-        self.assertEqual(client["sent"]["gga"], 1)
+        self.assertEqual(client["sent"]["gga"], 2)
+        self.assertNotIn("last_gga_line", client["sent"])
         self.assertEqual(client["position"]["quality"], 4)
         writer.close()
         await until(lambda: not self.caster.clients)
-        text = (self.dir / "caster.jsonl").read_text()
-        for digits in ("4807", "01131", "48.1", "11.5"):
-            self.assertNotIn(digits, text)
         events = self.log_lines()
         sent = [e for e in events if e["event"] == "rover_sent"]
-        self.assertEqual([e["type"] for e in sent], ["GPRMC", None])
-        self.assertEqual(sent[1]["text"], "hello")
+        self.assertEqual([e["type"] for e in sent], ["GGA", "GPRMC", None])
+        self.assertEqual(sent[0]["text"], nmea(RoverInput.GGA).decode().rstrip("\r\n"))
+        self.assertIn("4807.038,N,01131.000,E", sent[1]["text"])
+        self.assertEqual(sent[2]["text"], "(5 bytes)")
         disconnect = events[-1]
         self.assertEqual(disconnect["event"], "disconnect")
         self.assertEqual((disconnect["gga"], disconnect["nmea_other"], disconnect["other"]),
-                         (1, 1, 1))
+                         (2, 1, 1))
+        self.assertEqual(disconnect["last_gga_line"], nmea(last).decode().rstrip("\r\n"))
+        self.assertIs(disconnect["last_gga_shortened"], False)
         self.assertEqual(disconnect["types"], {"GPRMC": 1})
+
+    async def test_a_reconnecting_address_cannot_crowd_out_another_rover(self):
+        port = await self.start()
+        with mock.patch.object(ConnectionLog, "PER_ADDRESS", 2), \
+                mock.patch.object(ConnectionLog, "PER_MINUTE", 8):
+            for n in range(10):   # 127.0.0.2 connects and closes over and over
+                _, writer, _ = await ntrip_get(port, read_until=b"OK\r\n", local="127.0.0.2")
+                writer.write(nmea(RoverInput.GGA))
+                await until(lambda: self.caster.clients and self.caster.clients[0].gga == 1)
+                writer.close()
+                await until(lambda: not self.caster.clients)
+            _, writer, _ = await ntrip_get(port, read_until=b"OK\r\n")
+            last = RoverInput.GGA.replace("123519.00", "123530.00")
+            writer.write(nmea(last))
+            await until(lambda: self.caster.clients and self.caster.clients[0].gga == 1)
+            writer.close()
+            await until(lambda: not self.caster.clients)
+        events = self.log_lines()
+        looping = [e["event"] for e in events if e.get("address") == "127.0.0.2"]
+        self.assertEqual(looping.count("disconnect"), 2, "its own budget for disconnects")
+        self.assertEqual(len(looping) - looping.count("disconnect"), 2)
+        normal = [e for e in events if e.get("address") == "127.0.0.1"]
+        self.assertEqual([e["event"] for e in normal], ["connect", "rover_sent", "disconnect"])
+        self.assertEqual(normal[-1]["last_gga_line"], nmea(last).decode().rstrip("\r\n"))
 
 
 class UploadPolicy(UploadBase):
@@ -1811,7 +1944,7 @@ class Packaging(unittest.TestCase):
     def test_config_yaml_version_options_and_ports(self):
         text = (ROOT / "config.yaml").read_text()
         self.assertIn(f'version: "{__version__}"', text)
-        self.assertEqual(__version__, "0.4.0")
+        self.assertEqual(__version__, "0.4.1")
         self.assertIn("ports:\n  2101/tcp: 2101\n", text)
         self.assertIn("ports_description:\n  2101/tcp: ", text)
         options = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)

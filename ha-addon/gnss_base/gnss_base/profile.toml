@@ -111,13 +111,6 @@ base_only = true
 note = "Survey-in progress. The specification says the receiver must be in base mode."
 
 [[message]]
-name = "PQTMANTENNASTATUS"
-rate = 1
-version = 1
-note = """Antenna status. Specification v1.3 says only the LG680P (03) supports it, so \
-an LG290P will probably report it unsupported."""
-
-[[message]]
 name = "GST"
 rate = 1
 note = """Position error estimates. Once per fix: in base mode that is once a second, \

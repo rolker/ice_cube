@@ -64,13 +64,13 @@ should not move. History is kept in memory only, and starts again if the app res
 A fix more than 1 km from the history's origin is held back: if 30 such fixes in a row
 agree with each other, all within 50 m of their median, the receiver has moved and the
 history starts again there; otherwise they are dropped as outliers and counted
-(`outliers_dropped`). Ages use the
-system's monotonic clock, so a step in the wall clock does not disturb the history.
+(`outliers_dropped`). Ages use the system's monotonic clock, so a step in the wall clock
+does not disturb the history.
 
 The JSON behind the page is `api/status` (current state) and `api/track` (the reference
 position and `[age_s, e, n, u, quality]` for each kept fix, oldest first, and
-`no_measured_reason`, a sentence or null, also in `api/status`). `api/track`
-also returns a `cursor`; `api/track?since=<cursor>` returns only the fixes after it, with
+`no_measured_reason`, a sentence or null, also in `api/status`). `api/track` also
+returns a `cursor`; `api/track?since=<cursor>` returns only the fixes after it, with
 `full` false. If the cursor is not from the current history (the app restarted or the
 receiver moved, or the cursor is malformed), all fixes are returned with `full` true.
 Points are offsets from the current reference; add `reference_offset` to get offsets from
@@ -176,7 +176,6 @@ The profile sets:
 | MSM 107X, 108X, 109X, 112X (GPS, GLONASS, Galileo, BeiDou) | every fix, offset 0 |
 | RTCM3-1230, 1019, 1020, 1042, 1046 | rate 1 (the only rate the specification allows) |
 | PQTMSVINSTATUS | every fix; base mode only |
-| PQTMANTENNASTATUS | every fix; the specification says only the LG680P supports it, so an LG290P will likely show unsupported |
 | GST | every fix |
 
 Message rates are set for UART1 with the per-port form of PQTMCFGMSGRATE. In base mode
@@ -275,18 +274,24 @@ client):
   address may have at most 4 requests still unfinished (20 in all), so a client that
   sends its request very slowly cannot keep a rover elsewhere out.
 - **What rovers send**: counted and then dropped; it never reaches the receiver. The
-  **Sent to us** column shows it, for example `GGA 1 Hz`, or `GGA 1 Hz + 3 other
-  (GPRMC, ...)` in amber when anything but GGA arrives. The first 5 lines that are not
-  GGA, per connection, go to `caster.jsonl` (escaped, at most 200 characters), and the
-  disconnect line sums up what came. Before a line is logged, NMEA or not (binary too),
-  every number that could be a coordinate is replaced by `-`: any number followed by a
-  `N`, `S`, `E` or `W` field (NMEA latitude and longitude), and any decimal number with
-  4 or more digits after the point (decimal degrees, as in `$PQTMPVT` or `lat=48.1173`),
-  5 or more before it (ECEF metres) or 7 or more in all, or with an exponent. This
-  blanks some harmless numbers too, such as times with decimals. A position written
-  some other way (say, as whole micro-degrees) is not recognised. A rover's GGA lines
-  are never logged; its latest GGA position shows on the map as a green diamond (grey
-  once its GGA is over 10 s old), kept in memory for the page only.
+  **Sent to us** column shows it, for example `GGA 1 Hz`, or `GGA 1 Hz + 3 other (GPRMC,
+  ...)` in amber when anything but GGA arrives. The first 5 lines per connection go to
+  `caster.jsonl`. A line that starts with `$` (NMEA, receiver commands) is logged as
+  sent, positions included, escaped and cut to at most 200 characters (never inside an
+  escape); before the cut, credentials anywhere in the whole line are replaced by `-`:
+  an `Authorization` or `Proxy-Authorization` header or a rev1 `SOURCE` and the rest of
+  the line, `user:password@` in a URL and password-like query values. Any other line
+  (HTTP headers, URLs, binary, the rest of a line over 512 bytes that arrived without a
+  line end) is logged only as its first word and its length, such as `Authorization: (42
+  bytes)` or `GET (61 bytes)`. The first word is shown only when it is a label (letters,
+  digits, `-`, `_`, at most 32 characters) followed by a space or `:`; anything else, such
+  as a bare token, a query string or the rest of a split line, shows only the length. At most one sample is a GGA (the first), so a rover's GGA
+  does not crowd out its commands or other data. The disconnect line sums up what came
+  and carries the last GGA line received (`last_gga_line`, handled like a `$` sample,
+  with `last_gga_shortened`), so the log shows where the rover ended up. The log lives
+  in `log_dir` on the device (the share), like the raw logs; since it holds rover
+  positions, never copy it into a public repository. A rover's latest GGA position also
+  shows on the map as a green diamond (grey once its GGA is over 10 s old).
 - **Port in use**: if host port 2101 is taken, Home Assistant cannot start the app at
   all. Change the host port in the app's Network section (the container side stays 2101),
   or turn it off there to run without the caster.
@@ -360,17 +365,23 @@ anyone can read the full 1005 from the stream. It also sees your IP address.
 `upload_connect`, `upload_disconnect`, `upload_error`), `address`, `user_agent`,
 `ntrip_version`, `user` (on connect and disconnect only; a failed login logs just the
 address), `bytes_sent`, `frames_skipped`, `duration_s`, `reason`, what the client sent
-(`bytes_received`, `gga`, `gga_hz`, `nmea_other`, `other`, `types`) on disconnect, the
-sample lines (`n`, `kind`, `type`, `text`, `shortened`) on `rover_sent`, and for the
-upload `host`, `port`, `mountpoint`, `kind` and the caster's `reply`. Passwords and rover
-GGA lines are never logged, and the `rover_sent` samples have coordinate-like numbers
-blanked as described above.
+(`bytes_received`, `gga`, `gga_hz`, `nmea_other`, `other`, `types`) and the last GGA
+line (`last_gga_line`, null if none, and `last_gga_shortened`) on disconnect, the sample
+lines (`n`, `kind`, `type`, `text`, `shortened`) on `rover_sent`, and for the upload
+`host`, `port`, `mountpoint`, `kind` and the caster's `reply`. Passwords are never
+logged: a sample that does not start with `$` is only its first word and length, and
+credentials in a `$` line are replaced by `-` (see above). The `$` samples (at most one
+GGA) and `last_gga_line` are otherwise what the rover sent, positions included, so keep
+this file on the device and never copy it into a public repository.
 
 So that a busy or hostile network cannot fill the disk:
 
-- each address gets at most 10 sourcetable, refused and failed-login lines a minute, and
-  30 lines of any kind; all addresses together 200. The rest are counted, and one
-  `suppressed` line per address (`count`, `events`) follows when the minute ends;
+- each address gets at most 10 sourcetable, refused and failed-login lines a minute, 30
+  lines of any kind, and on top of those 30 `disconnect` lines with a budget of their
+  own, so a rover that reconnects often still has its last GGA lines logged while one
+  address in a connect/close loop cannot take more than 60 of the 200 lines all
+  addresses together get. The rest are counted, and one `suppressed` line per address
+  (`count`, `events`) follows when the minute ends;
 - at 10 MB the file is renamed `caster.jsonl.1` (older ones move to `.2`, `.3`; the
   oldest is deleted), so it never takes more than about 40 MB;
 - nothing is written while free space is below `min_free_gb`, like the raw log;
@@ -380,6 +391,24 @@ So that a busy or hostile network cannot fill the disk:
 The caster card shows any lines held back, dropped or not written.
 
 ## Changes
+
+**0.4.1**
+
+- The first 5 lines a rover sends are logged to `caster.jsonl`; coordinates are no
+  longer blanked. A line that starts with `$` is logged as sent, positions and all
+  (escaped, cut to 200 characters, rate-limited), with credentials in the whole line
+  (`Authorization` and `Proxy-Authorization`, `SOURCE`, `user:password@` in a URL,
+  password-like query values) replaced by `-`. Any other line is logged only as its
+  first word and length. At most one sample is a GGA (the first), and the disconnect
+  line carries the last GGA line (`last_gga_line`, `last_gga_shortened`), so the log
+  shows where the rover ended up. Disconnect lines have their own per-address budget. A
+  cut sample never ends inside an escape. Keep the log on the device; never copy it into
+  a public repository.
+- `caster_max_clients` defaults to 16 (was 4); the app now accepts 1 to 16, as the
+  options schema does (it accepted up to 64). An existing install keeps its saved value:
+  set `caster_max_clients` to 16 in the app's options to get the new default.
+- PQTMANTENNASTATUS is no longer in the profile: only the LG680P supports it, and an
+  LG290P answers ERROR 1, which showed as a permanent mismatch.
 
 **0.4.0**
 
@@ -499,7 +528,7 @@ start manually for now.
 | caster_mountpoint | BASE | Its mountpoint: 1 to 32 letters, digits or `_` |
 | caster_user | empty | With a password: the user name it requires (empty: any user) |
 | caster_password | empty | Empty: no login needed. Set: rovers must log in |
-| caster_max_clients | 4 | Rovers at once (1 to 16) |
+| caster_max_clients | 16 | Rovers at once (1 to 16) |
 | upload_host | rtk2go.com | NTRIP caster to upload to |
 | upload_port | 2101 | Its port |
 | upload_mountpoint | empty | Your reserved mountpoint. Empty: no upload |

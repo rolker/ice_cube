@@ -16,11 +16,13 @@ MAX_HANDSHAKES_PER_ADDRESS requests unfinished at once, so a slow sender cannot 
 every slot.
 
 What clients send (rovers may send GGA) is counted by kind and then dropped: GGA, other
-NMEA by type, and anything else. The first ROVER_SAMPLES lines that are not GGA go to the
-connection log, escaped and shortened, NMEA or not, with every number that could be a
-coordinate blanked first (see redact_position); a summary goes with the disconnect line.
-A client's GGA lines are never logged, and its latest GGA position is kept in memory for
-the page only.
+NMEA by type, and anything else. The first ROVER_SAMPLES lines go to the connection log
+(see `sample`): a line that starts with `$` (NMEA, receiver commands) as sent, positions
+included, with credentials hidden, escaped and shortened; any other line only as its
+first word and its length. At most one sample is a GGA (the first), so GGA cannot crowd
+out commands or other data. The disconnect line carries a summary and the client's last
+GGA line (`last_gga_line`, handled like a `$` sample), which records where the rover
+ended up. A client's latest GGA position is also kept in memory for the page.
 
 This module never imports the command, control or serial modules, so nothing from the
 network can reach the receiver.
@@ -67,7 +69,7 @@ class CasterSettings:
     mountpoint: str = "BASE"
     user: str = ""
     password: Secret = field(default_factory=lambda: Secret(""))
-    max_clients: int = 4
+    max_clients: int = 16
 
     @property
     def login(self):
@@ -78,8 +80,8 @@ class CasterSettings:
             return ""
         if not MOUNTPOINT.fullmatch(self.mountpoint or ""):
             return "caster_mountpoint must be 1 to 32 letters, digits or '_'."
-        if not isinstance(self.max_clients, int) or not 1 <= self.max_clients <= 64:
-            return "caster_max_clients must be 1 to 64."
+        if not isinstance(self.max_clients, int) or not 1 <= self.max_clients <= 16:
+            return "caster_max_clients must be 1 to 16."
         return ""
 
 
@@ -136,46 +138,68 @@ def parse_basic(header):
 
 
 def _escape(raw, limit=SAMPLE_CHARS):
-    """Printable ASCII as it is, anything else as \\xNN; (text, shortened)."""
-    out = []
+    """Printable ASCII as it is, anything else as \\xNN; (text, shortened). A cut falls
+    between escapes, never inside one, so the text never ends in a partial `\\` or
+    `\\x0`."""
+    out, size = [], 0
     for byte in raw[:limit + 1]:   # each byte gives at least one character
         if byte == 0x5C:
-            out.append("\\\\")
+            piece = "\\\\"
         elif 0x20 <= byte < 0x7F:
-            out.append(chr(byte))
+            piece = chr(byte)
         else:
-            out.append({9: "\\t", 10: "\\n", 13: "\\r"}.get(byte, f"\\x{byte:02x}"))
-    text = "".join(out)
-    return (text[:limit], True) if len(text) > limit else (text, False)
+            piece = {9: "\\t", 10: "\\n", 13: "\\r"}.get(byte, f"\\x{byte:02x}")
+        if size + len(piece) > limit:
+            return "".join(out), True
+        out.append(piece)
+        size += len(piece)
+    return "".join(out), len(raw) > len(out)
 
 
-# Anything in a rover's line that could be a coordinate is replaced by "-":
-# - a number followed by a hemisphere field (",N" ",S" ",E" ",W"): NMEA ddmm.mmmm and
-#   dddmm.mmmm latitude and longitude, with or without decimals;
-# - a decimal number with 4 or more digits after the point (decimal degrees, as in
-#   $PQTMPVT or "lat=48.1173"), 5 or more before it (ECEF metres) or 7 or more in all
-#   (ddmm.mmm without a hemisphere), and any number with an exponent.
-# Over-redaction is fine: these lines only show what kind of data a rover sends.
-_HEMISPHERE = re.compile(rb"\d+(?:\.\d*)?(?=\s*,\s*[NSEW]\s*(?:[,*\r\n]|$))")
-_NUMBER = re.compile(rb"[-+]?(?:\d+\.\d*|\.\d+|\d+(?=[eE]))(?:[eE][-+]?\d+)?")
+# Credentials that could be inside a line starting with `$` (anything else is never logged
+# beyond its first word): an Authorization or Proxy-Authorization header or a rev1
+# `SOURCE` and everything after it on the line, `user:password@` in a URL (up to the
+# last "@" before a space) and password-like query values. Each becomes "-"; nothing
+# else changes (positions stay). Over-hiding is fine.
+_CREDENTIALS = (
+    (re.compile(rb"(?is)((?:proxy-)?authorization[ \t]*:).*"), rb"\1 -"),
+    (re.compile(rb"(?is)(source[ \t]+).*"), rb"\1-"),
+    (re.compile(rb"(?i)(://)\S*@"), rb"\1-@"),
+    (re.compile(rb"(?i)([?&;][^=&;\s]*(?:pass|pw|pwd|token|key|secret|auth)[^=&;\s]*=)"
+                rb"[^&;\s]*"),
+     rb"\1-"),
+)
+# A label such as "GET" or "Authorization": letters, digits, "-" and "_", logged only when a
+# space or ":" follows it, so a bare token ("hunter2") or "user=u&password=x" is never logged.
+_WORD = re.compile(rb"[A-Za-z0-9_-]+(?=[ :])")
+WORD_CHARS = 32
 
 
-def _maybe_coordinate(match):
-    text = match.group()
-    mantissa, _, exponent = text.lstrip(b"+-").lower().partition(b"e")
-    whole, point, fraction = mantissa.partition(b".")
-    if exponent or (point and (len(fraction) >= 4 or len(whole) >= 5
-                               or len(whole) + len(fraction) >= 7)):
-        return b"-"
-    return text
+def hide_credentials(line):
+    """`line` with any credential in it replaced by "-" (see _CREDENTIALS)."""
+    for pattern, replacement in _CREDENTIALS:
+        line = pattern.sub(replacement, line)
+    return line
 
 
-def redact_position(line):
-    """Any line from a rover, NMEA or not, with every number that could be a coordinate
-    replaced by "-" (see the rules above), so a logged sample does not give away where
-    the rover is."""
-    line = _HEMISPHERE.sub(b"-", line)
-    return _NUMBER.sub(_maybe_coordinate, line)
+def sample(line, start=True):
+    """(text, shortened) to log for one line a client sent. A line that starts with `$`
+    (and is the start of a line, not the rest of one split at CLIENT_READ) is logged as
+    sent, with credentials hidden in the whole line before it is cut to SAMPLE_CHARS.
+    Anything else (HTTP headers, URLs, binary, the rest of a split line) is logged only
+    as its first word (letters, digits, "-", "_", followed by a space or ":", at most
+    WORD_CHARS long), and its
+    length in bytes, such as `Authorization: (42 bytes)`; never the rest."""
+    if start and line[:1] == b"$":
+        return _escape(hide_credentials(line))
+    match = _WORD.match(line) if start else None
+    word = match.group() if match else b""
+    if len(word) > WORD_CHARS:
+        word = b""
+    elif word and line[len(word):len(word) + 1] == b":":
+        word += b":"
+    text = _escape(word)[0]
+    return (f"{text} " if text else "") + f"({len(line)} bytes)", len(word) < len(line)
 
 
 def peer_address(host):
@@ -246,6 +270,9 @@ class Client:
         self.other = 0              # anything else: lines or runs of bytes
         self.types = Counter()      # other NMEA by type
         self.samples = 0
+        self.gga_logged = False     # the one GGA sample is taken
+        self._last_gga_line = None  # the latest GGA line, whole
+        self._continued = False     # the next line is the rest of one flushed unfinished
         self.reason = ""
         self._last_progress = self.connected_at
         self._last_buffer = 0
@@ -280,21 +307,25 @@ class Client:
             transport.abort()
 
     def received(self, data):
-        """Count what the client sent, keep its latest GGA, log the first few other
-        lines; the bytes go nowhere else."""
+        """Count what the client sent, keep its latest GGA, log the first few lines as
+        sent; the bytes go nowhere else."""
         self.bytes_received += len(data)
         lines = (self._partial + data).split(b"\n")
         self._partial = lines.pop()
-        if len(self._partial) > CLIENT_READ:   # a long run without a line end
+        flushed = len(self._partial) > CLIENT_READ
+        if flushed:                            # a long run without a line end
             lines.append(self._partial)
             self._partial = b""
-        for line in lines:
+        for i, line in enumerate(lines):
             line = line.rstrip(b"\r")
             if line:
-                self._line(line)
+                # The rest of a line flushed earlier is not the start of a line.
+                self._line(line, start=not (i == 0 and self._continued))
+        if lines:
+            self._continued = flushed
 
-    def _line(self, line):
-        kind = _sentence_type(line)
+    def _line(self, line, start=True):
+        kind = _sentence_type(line) if start else None
         if kind == "GGA":
             self.gga += 1
             fields = line.split(b"*", 1)[0].split(b",")
@@ -309,8 +340,11 @@ class Client:
                              if re.fullmatch(rb"\d{6}(\.\d{1,4})?", utc) else None)
             position = gga_position(fields) if self.gga_quality else None
             self.position = position and (position[0], position[1], self.gga_quality, now)
-            return
-        if kind is None:
+            self._last_gga_line = line          # at most about 2 * CLIENT_READ bytes
+            if self.gga_logged:
+                return
+            self.gga_logged = True
+        elif kind is None:
             self.other += 1
         else:
             self.nmea_other += 1
@@ -320,14 +354,15 @@ class Client:
                 self.types["other types"] += 1
         if self.samples < ROVER_SAMPLES:
             self.samples += 1
-            # Only what can be shown is redacted (with room for a number that runs on
-            # past the cut), which also keeps the regex work small.
-            shown = line[:SAMPLE_CHARS + 64]
-            text, shortened = _escape(redact_position(shown))
-            shortened = shortened or len(line) > len(shown)
+            text, shortened = sample(line, start)
             if self._note is not None:
                 self._note("rover_sent", n=self.samples, kind="nmea" if kind else "other",
                            type=kind, text=text, shortened=shortened)
+
+    def last_gga_line(self):
+        """(text, shortened) of the latest GGA line, as a `$` sample, or (None, False):
+        for the disconnect line."""
+        return (None, False) if self._last_gga_line is None else sample(self._last_gga_line)
 
     def gga_hz(self):
         if self.gga < 2 or self.last_gga is None or self.last_gga <= self.first_gga:
@@ -552,10 +587,12 @@ class Caster:
         finally:
             self.clients.remove(client)
             duration = round(self._clock() - client.connected_at, 1)
+            last_gga, last_gga_cut = client.last_gga_line()
             self._log("disconnect", address, user_agent=agent, ntrip_version=version,
                       user=user, bytes_sent=client.bytes_sent,
                       frames_skipped=client.frames_skipped, duration_s=duration,
-                      reason=client.reason, **client.summary())
+                      reason=client.reason, **client.summary(),
+                      last_gga_line=last_gga, last_gga_shortened=last_gga_cut)
             LOG.info("caster: %s disconnected after %s s: %s", address, duration,
                      client.reason)
 

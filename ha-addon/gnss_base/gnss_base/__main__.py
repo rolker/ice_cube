@@ -28,7 +28,7 @@ HOUSEKEEPING_S = 60
 DEFAULTS = {"device": "", "device_match": "USB_Dual_Serial", "baud": 460800,
             "log_dir": "/share/gnss_base", "min_free_gb": 10,
             "caster_enabled": True, "caster_mountpoint": "BASE", "caster_user": "",
-            "caster_password": "", "caster_max_clients": 4,
+            "caster_password": "", "caster_max_clients": 16,
             "upload_host": "rtk2go.com", "upload_port": 2101, "upload_mountpoint": "",
             "upload_password": "", "upload_style": "rev1"}
 # Options that a command-line argument can override. Passwords are options only: on a

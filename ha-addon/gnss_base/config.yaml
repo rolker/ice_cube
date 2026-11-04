@@ -1,5 +1,5 @@
 name: GNSS Base Station
-version: "0.4.0"
+version: "0.4.1"
 slug: gnss_base
 description: Logs a GNSS base receiver, shows its status, and configures it as a base with confirmed commands.
 arch:
@@ -29,7 +29,7 @@ options:
   caster_mountpoint: BASE
   caster_user: ""
   caster_password: ""
-  caster_max_clients: 4
+  caster_max_clients: 16
   upload_host: rtk2go.com
   upload_port: 2101
   upload_mountpoint: ""

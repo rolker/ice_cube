@@ -1388,7 +1388,9 @@ def simulated_reply(body):
     if body in fixed:
         return [fixed[body]]
     if name == "PQTMCFGMSGRATE" and fields[1:2] == ["R"]:
-        if "PQTMANTENNASTATUS" in fields:
+        if "RTCM3-1042" in fields:
+            # Synthetic: a real LG290P supports it, but one ERROR,1 keeps the
+            # "unsupported" path covered.
             return ["PQTMCFGMSGRATE,ERROR,1"]
         # MSM messages report an offset; every rate reads 0 (off), except GPS MSM.
         rate = "1" if fields[4] == "RTCM3-107X" else "0"
@@ -2209,9 +2211,9 @@ class Profiles(unittest.TestCase):
                          ("PQTMCFGMSGRATE,R,1,1,PQTMSVINSTATUS,1",
                           "PQTMCFGMSGRATE,W,1,1,PQTMSVINSTATUS,1,1", True))
         for name in ("RTCM3-1005", "RTCM3-108X", "RTCM3-109X", "RTCM3-112X", "RTCM3-1230",
-                     "RTCM3-1019", "RTCM3-1020", "RTCM3-1042", "RTCM3-1046", "GST",
-                     "PQTMANTENNASTATUS"):
+                     "RTCM3-1019", "RTCM3-1020", "RTCM3-1042", "RTCM3-1046", "GST"):
             self.assertIn(name, by_label)
+        self.assertNotIn("PQTMANTENNASTATUS", by_label, "LG680P only; an LG290P answers ERROR,1")
         for item in items:
             self.assertEqual(prepare(item.query, "1").kind, "query", item.query)
             self.assertEqual(prepare(item.set, "1").kind, "confirm", item.set)
@@ -2701,7 +2703,7 @@ class ApiCommands(TempDir):
         self.assertEqual(rows["RTCM3-107X"]["status"], "match")
         self.assertEqual(rows["RTCM3-1005"]["status"], "differ")
         self.assertEqual(rows["RTCM3-1005"]["actual"], "0")
-        self.assertEqual(rows["PQTMANTENNASTATUS"]["status"], "unsupported")
+        self.assertEqual(rows["RTCM3-1042"]["status"], "unsupported")
         self.assertTrue(all(prepare(body).kind == "query" for body in staged_written))
         differ = [r["set"] for r in check[1]["profile"] if r["status"] == "differ"]
         self.assertEqual(apply[1]["commands"],
@@ -3603,7 +3605,7 @@ class EndToEnd(unittest.TestCase):
         results = {r["label"]: r["status"] for r in rcv["profile"]["results"]}
         self.assertEqual(results["RTCM: MSM type, elevation mask, ephemeris output"], "match")
         self.assertEqual(results["RTCM3-1005"], "differ")
-        self.assertEqual(results["PQTMANTENNASTATUS"], "unsupported")
+        self.assertEqual(results["RTCM3-1042"], "unsupported")
         # Nothing but queries before the confirmation; the change only after it.
         self.assertTrue(before and all(prepare(b).kind == "query" for b in before), before)
         self.assertEqual(staged["commands"], ["$PQTMCFGRCVRMODE,W,2*29"])
