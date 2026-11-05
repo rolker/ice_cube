@@ -168,6 +168,29 @@ settings that differ, followed by PQTMSAVEPAR. Once the confirmed batch has run,
 its outcome, the app checks the profile again by itself (the same read-only queries), so
 the table shows what the receiver now has, even if the page was closed.
 
+A check that reads the profile ends with `PQTMCFGSVIN,R`, the survey-in configuration
+(not a profile row: it holds the site's coordinates). The reply is
+`$PQTMCFGSVIN,OK,<Mode>,<CFG_CNT>,<3D_AccLimit>,<ECEF_X>,<ECEF_Y>,<ECEF_Z>[,<Distance>]`
+(specification v1.3, 2.3.22): mode 0 disabled, 1 survey-in, 2 fixed. `api/status` has
+it as `receiver.svin`: `mode`, `mode_name`, when fixed the configured position as `ecef`,
+`lat`, `lon` and `height_m` (all null if the receiver reports zeros or something
+unreadable), `reason` when the mode is unknown (an ERROR, no answer, a reply the app does
+not understand, not read yet, or not read again since a restart or port loss; a query not
+sent because an earlier one timed out leaves the previous reading in place) and
+`read_age_s`, seconds since the last read or attempt. An unanswered PQTMCFGSVIN,R leaves
+the mode unknown; it does not make the profile table incomplete. Step 5 does not offer
+the survey-in mean in fixed mode. The Survey-in card and step 5 say when the receiver is
+in fixed mode, because PQTMSVINSTATUS then reports the configured position as the "mean"
+(Valid=2), which is not a measurement. The firmware applies a PQTMCFGSVIN write only
+after a restart, and every restart starts a check, so what the last check read is the
+configuration in force; after a restart or a port loss it is unknown again until that
+check reads it, and after a PQTMCFGSVIN write that reached the port (answered OK,
+unanswered or failed: it may have been sent; not one answered ERROR) it is unknown until
+the app sees the receiver restart (`$PQTMVER`), because a
+check before that may read the written values while the receiver still runs the old
+ones. A restart the app did not see (the port was down) leaves it unknown until the next
+restart.
+
 The profile sets:
 
 | setting | value |
@@ -218,10 +241,26 @@ PQTMSAVEPAR and a restart after Set commands, so restart the receiver after appl
    and mean accuracy.
 6. When the survey is finished (Valid=2), step 5 sets fixed mode from the survey-in mean,
    or from coordinates you enter (latitude, longitude, ellipsoidal height, or ECEF). Until
-   then, and if PQTMSVINSTATUS is more than 5 s old, the survey-in mean is refused. The
-   confirmation shows ECEF and latitude/longitude/height. It sends PQTMCFGSVIN,W,2,
-   PQTMSAVEPAR and PQTMSRR, restarting for the same reason as step 4. Keep the
-   coordinates out of public repositories.
+   then, and if PQTMSVINSTATUS is more than 5 s old, the survey-in mean is refused. Once
+   the receiver is in fixed mode, the "mean" it reports is the configured position, so
+   the survey-in mean is refused as a source then too (the option is relabelled): enter
+   the new position, from PPP for instance; a survey-sourced batch is refused again at
+   confirmation, and just before its first write (once the position is written, the save
+   and restart follow), if a check has found fixed mode since,
+   and a step 5 batch staged while a base position was shown is refused if the receiver
+   has since started sending another position, or its position is no longer known (the
+   shift shown would be out of date); a survey-sourced batch is refused if the mean has
+   moved or is no longer usable, or if the survey-in configuration it was staged under
+   has been read again, lost or found since. The survey-in mean must have arrived since the port last
+   opened and the receiver last restarted.
+   The confirmation shows ECEF and latitude/longitude/height, the base position the
+   receiver now sends in RTCM 1005, and the shift to the new position as east, north, up,
+   horizontal and 3D (unknown without a fresh 1005 received since the port last opened
+   and the receiver last restarted: the step still works, with a warning). A shift of
+   more than 1 m gets a warning to check every digit, since a wrong digit moves every
+   rover by that amount.
+   It sends PQTMCFGSVIN,W,2, PQTMSAVEPAR and PQTMSRR, restarting for the same reason as
+   step 4. Keep the coordinates out of public repositories.
 7. Once the receiver sends 1005, the base position appears on the page.
 
 ## Corrections out (stage 3a)
@@ -452,6 +491,21 @@ the half-written `.gz.partial` is removed then. A log line being written at that
 may be cut short.
 
 ## Changes
+
+**0.5.1**
+
+- Step 5 (fixed position) shows, in the confirmation, the base position the receiver now
+  sends in RTCM 1005 and the shift to the new position: east, north, up, horizontal and
+  3D (`details.current_base`, `details.shift`, `details.shift_unknown`). A warning states
+  the shift in words; over 1 m it says to check every digit. Without a fresh 1005 the
+  shift is unknown, the warning says so, and the step still works.
+- The profile check now ends with `PQTMCFGSVIN,R` and `api/status` has `receiver.svin`:
+  the survey-in mode (0 disabled, 1 survey-in, 2 fixed, or unknown with the reason) and
+  the configured position when fixed. The Survey-in card and step 5 say when the
+  receiver is in fixed mode, because PQTMSVINSTATUS then reports the configured
+  position as the mean (Valid=2), not a measurement. Step 5 refuses "from the survey-in
+  mean" in fixed mode (it silently re-sent the current position before), relabels that
+  option "current fixed position", and warns instead when the mode could not be read.
 
 **0.5.0**
 

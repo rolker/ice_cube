@@ -56,6 +56,19 @@ function openConfirm(p, out) {
       ["Latitude", d.lat.toFixed(9) + "°"], ["Longitude", d.lon.toFixed(9) + "°"],
       ["Ellipsoidal height", d.height_m.toFixed(4) + " m"], ["From", d.from]);
   }
+  if ("shift" in d) {
+    // The shift from the base position the receiver now sends (RTCM 1005), so a
+    // mistyped digit shows as a large move before anything is sent.
+    const s = d.shift;
+    // Millimetres, like the warning text (control.py metres()); never "−0.0 mm".
+    const mm = v => { const a = Math.abs(v); const t = a >= 1 ? v.toFixed(3) + " m" :
+      a >= 0.01 ? (v * 100).toFixed(1) + " cm" : (v * 1000).toFixed(1) + " mm";
+      return t.replace(/^-(?=0\.0 mm)/, "").replace("-", "−"); };
+    rows.push(["Current base (RTCM 1005)", d.current_base ? d.current_base.map(v => v.toFixed(4)).join(", ") + " m"
+      : "unknown: " + d.shift_unknown],
+      ["Shift E, N, U", s ? [s.east_m, s.north_m, s.up_m].map(mm).join(", ") : "unknown"],
+      ["Shift horizontal, 3D", s ? mm(s.horizontal_m) + ", " + mm(s.total_m) : "unknown"]);
+  }
   dl("cdetails", rows);
   $("cwarn").innerHTML = (p.warnings || []).map(w => `<p class="warn">${esc(w)}</p>`).join("");
   $("confirm").classList.add("open");
@@ -115,6 +128,22 @@ function renderReceiver(s) {
       `<td class="mono">${esc(x.expected)}</td><td class="mono wrap">${esc(x.actual)}</td>` +
       `<td class="${STATUS_CLASS[x.status] || ""}">${esc(x.status)}</td></tr>`).join("")
     : `<tr><td class="note">${esc("No profile check yet")}</td></tr>`;
+  // The survey-in configuration read at the last check: in fixed mode (PQTMCFGSVIN
+  // mode 2) the receiver reports its configured position as the survey-in mean.
+  const sv = r.svin || {}, inFixed = sv.mode === 2;
+  $("svinnote").textContent = inFixed ? "The receiver is in fixed mode (PQTMCFGSVIN mode 2): " +
+      "the mean it reports is its configured position, not a measurement."
+    : sv.mode === 1 ? "Receiver in survey-in mode (PQTMCFGSVIN mode 1)."
+    : sv.mode === 0 ? "Survey-in disabled on the receiver (PQTMCFGSVIN mode 0)."
+    : `Survey-in configuration not known (${sv.reason || "not read yet"}).`;
+  $("s-fixednote").textContent = inFixed ? "The receiver is already in fixed mode: the survey-in " +
+    "mean is its configured position, not a measurement. Enter the position from PPP or another source." : "";
+  const label = inFixed ? "current fixed position (receiver is in fixed mode)" : "from the survey-in mean (once finished)";
+  const option = $("s-src").options[0];
+  if (option.textContent !== label) option.textContent = label;
+  // Not offered in fixed mode (the app refuses it anyway): the choice moves to coordinates.
+  option.disabled = inFixed;
+  if (inFixed && $("s-src").value === "survey") { $("s-src").value = "llh"; $("s-src").dispatchEvent(new Event("change")); }
   const v = s.survey_in || {}, m = s.survey_mean;
   $("s-progress").textContent = v.state ? `Survey-in: ${v.state} (Valid=${v.valid ?? "—"}), ` +
     `Obs ${v.observations ?? "—"} of CfgDur ${v.target ?? "—"}` +

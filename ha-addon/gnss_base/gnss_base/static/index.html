@@ -74,7 +74,7 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
 <p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
 <pre id="measout" class="note" hidden></pre></section>
-<section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl></section>
+<section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl><p id="svinnote" class="note"></p></section>
 <section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
 <p id="mapnote" class="note">Waiting for a position fix</p>
@@ -97,7 +97,8 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <li><b>Switch to base mode:</b> <code>PQTMCFGRCVRMODE,W,2</code>, save, then restart with <code>PQTMSRR</code>. The receiver restarts and stops sending NMEA. <button id="s-base" type="button">Prepare…</button></li>
 <li><b>Start a survey-in</b> of <input id="s-count" type="number" min="1" max="86400" step="1" value="300" aria-label="Survey-in fixes"> fixes, with no accuracy limit, save, then restart with <code>PQTMSRR</code>: this firmware starts a survey-in only after a restart. <button id="s-svin" type="button">Prepare…</button>
 <div id="s-progress" class="note"></div></li>
-<li><b>Set a fixed base position</b>, save, then restart with <code>PQTMSRR</code> so it takes effect. The survey-in mean is used only once the survey-in has finished (Valid=2).
+<li><b>Set a fixed base position</b>, save, then restart with <code>PQTMSRR</code> so it takes effect. The survey-in mean is used only once the survey-in has finished (Valid=2), and only while the receiver is not already in fixed mode. The confirmation shows the shift from the base position the receiver now sends.
+<div id="s-fixednote" class="note"></div>
 <div class="inline"><select id="s-src" aria-label="Position source"><option value="survey">from the survey-in mean (once finished)</option><option value="llh">from latitude, longitude, height</option><option value="ecef">from ECEF X, Y, Z</option></select></div>
 <div id="s-llh" class="inline" hidden><input id="s-lat" inputmode="decimal" placeholder="Latitude °" aria-label="Latitude in degrees"><input id="s-lon" inputmode="decimal" placeholder="Longitude °" aria-label="Longitude in degrees"><input id="s-h" inputmode="decimal" placeholder="Ellipsoidal height m" aria-label="Ellipsoidal height in metres"></div>
 <div id="s-ecef" class="inline" hidden><input id="s-x" inputmode="decimal" placeholder="X m" aria-label="ECEF X in metres"><input id="s-y" inputmode="decimal" placeholder="Y m" aria-label="ECEF Y in metres"><input id="s-z" inputmode="decimal" placeholder="Z m" aria-label="ECEF Z in metres"></div>

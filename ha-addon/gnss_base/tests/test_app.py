@@ -1384,7 +1384,8 @@ def simulated_reply(body):
     fixed = {"PQTMVERNO": f"PQTMVERNO,{FIRMWARE},2024/04/30,10:53:07",
              "PQTMCFGUART,R": "PQTMCFGUART,OK,1,460800,8,0,1,0",
              "PQTMCFGRCVRMODE,R": "PQTMCFGRCVRMODE,OK,2",
-             "PQTMCFGRTCM,R": "PQTMCFGRTCM,OK,4,0,-90.0,07,06,2,60"}
+             "PQTMCFGRTCM,R": "PQTMCFGRTCM,OK,4,0,-90.0,07,06,2,60",
+             "PQTMCFGSVIN,R": "PQTMCFGSVIN,OK,1,300,0.0,0.0000,0.0000,0.0000,0.0"}
     if body == "PQTMLSTMSG":
         return ["PQTMLSTMSG,OK,1,1,GGA,1", "PQTMLSTMSG,OK,1,1,RTCM3-107X,1,0", "PQTMLSTMSG,OK,End"]
     if body in fixed:
@@ -2958,7 +2959,7 @@ class Startup(TempDir):
         with mock.patch.object(control, "STARTUP_DELAY_S", 0.01):
             first, second, snap, logged = asyncio.run(go())
         self.assertEqual(first[:3], ["PQTMVERNO", "PQTMCFGUART,R", "PQTMCFGRCVRMODE,R"])
-        self.assertEqual(len(first), 2 + len(profile.load()))
+        self.assertEqual(len(first), 3 + len(profile.load()), "plus PQTMCFGSVIN,R")
         self.assertTrue(all(prepare(body).kind == "query" for body in first + second))
         self.assertEqual(second, first)
         self.assertEqual((snap["firmware"], snap["current_uart"]), (FIRMWARE, "1"))
@@ -3267,8 +3268,8 @@ class RestartAndRecheck(TempDir):
                 self.assertTrue(done["rechecking"])
                 self.assertFalse(any(prepare(b).kind == "query" for b in writes))
                 queries = [item.query for item in profile.load()]
-                self.assertEqual(after, ["PQTMVERNO", "PQTMCFGUART,R"] + queries,
-                                 "exactly one read-only check")
+                self.assertEqual(after, ["PQTMVERNO", "PQTMCFGUART,R"] + queries
+                                 + ["PQTMCFGSVIN,R"], "exactly one read-only check")
                 self.assertGreater(checked, before)
                 self.assertTrue(idle)
 
@@ -3458,8 +3459,8 @@ class ReviewFixes031(TempDir):
         done, written = run_async(go)
         queries = [item.query for item in profile.load()]
         self.assertEqual(done["outcome"], "ok")
-        self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries +
-                         ["PQTMCFGRCVRMODE,W,2", "PQTMSAVEPAR", "PQTMSRR"])
+        self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries + ["PQTMCFGSVIN,R"]
+                         + ["PQTMCFGRCVRMODE,W,2", "PQTMSAVEPAR", "PQTMSRR"])
 
     def test_a_quiet_receiver_ends_the_check_at_the_first_timeout(self):
         queries = [item.query for item in profile.load()]
@@ -3618,8 +3619,8 @@ class ReviewFixes031Round2(TempDir):
                 else:
                     self.assertEqual(stale["kind"], "incomplete")
                     self.assertIn("unverified", stale["reason"])
-                    self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries,
-                                     "the profile is still read")
+                    self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries
+                                     + ["PQTMCFGSVIN,R"], "the profile is still read")
 
     def test_uart_writes_stay_refused_after_an_unverified_answer(self):
         async def go():
@@ -3838,6 +3839,737 @@ class EndToEnd(unittest.TestCase):
             process.wait(timeout=10)
         self.assertIsNotNone(missing, "the missing receiver must be reported")
         self.assertIsNotNone(connected, "the app must keep retrying until the receiver appears")
+
+
+class FixedPosition051(TempDir):
+    """0.5.1: step 5 shows the shift from the base position the receiver now sends
+    (RTCM 1005) and warns when it is large or unknown; the survey-in configuration
+    (PQTMCFGSVIN,R) is read with the profile, and the survey-in mean is refused as a
+    source once the receiver is in fixed mode, because it is then the configured
+    position repeated. Positions are synthetic: a point in the South Pacific."""
+
+    LAT, LON, HEIGHT = -30.0, -140.0, 10.0
+
+    def setUp(self):
+        super().setUp()
+        self.clock = Clock()
+        self.status = Status(clock=self.clock)
+        self.status.connected = True
+        self.port = None
+
+    def controller(self, loop=None, answer=simulated_reply, delay=0.0):
+        holder = {}
+        if loop is None:
+            controller = control.Controller(lambda data: None, self.dir / "commands.jsonl",
+                                            profile.load(), self.status, clock=self.clock)
+        else:
+            self.port = FakePort(loop, lambda reply: holder["c"].on_nmea(reply), answer=answer,
+                                 delay=delay)
+            controller = control.Controller(self.port.write, self.dir / "commands.jsonl",
+                                            profile.load(), self.status, clock=self.clock)
+        holder["c"] = controller
+        controller.current_uart = "1"
+        return controller
+
+    def base(self, x, y, z):
+        for kind, payload in FrameParser().feed(arp_frame(x, y, z)):
+            self.status.add_frame(kind, payload)
+
+    def survey(self, x, y, z, valid=2):
+        self.status.add_frame(
+            "nmea", f"PQTMSVINSTATUS,1,1000,{valid},,01,300,300,{x:.4f},{y:.4f},{z:.4f},0.9")
+
+    def ecef(self, dlat=0.0, dlon=0.0, dheight=0.0):
+        return rtcmdec.llh_to_ecef(self.LAT + dlat, self.LON + dlon, self.HEIGHT + dheight)
+
+    def request(self, x, y, z):
+        return {"source": "ecef", "x": x, "y": y, "z": z}
+
+    def test_ecef_to_enu_is_a_rotation(self):
+        origin = self.ecef()
+        east, north, up = rtcmdec.ecef_to_enu(origin, self.ecef(dheight=1.0))
+        self.assertAlmostEqual(up, 1.0, places=6)
+        self.assertAlmostEqual(math.hypot(east, north), 0.0, places=6)
+        east, north, up = rtcmdec.ecef_to_enu(origin, self.ecef(dlat=1e-5))
+        self.assertGreater(north, 1.0)
+        self.assertLess(north, 1.2)  # ~1.11 m per 1e-5 degree of latitude
+        self.assertAlmostEqual(abs(east), 0.0, places=6)
+        east, north, up = rtcmdec.ecef_to_enu(origin, self.ecef(dlon=1e-5))
+        self.assertGreater(east, 0.9)
+        self.assertAlmostEqual(abs(north), 0.0, places=6)
+        # Exact at any distance: the lengths agree with the straight-line distance.
+        far = self.ecef(dlat=3.0, dlon=-2.0, dheight=5000.0)
+        enu = rtcmdec.ecef_to_enu(origin, far)
+        self.assertAlmostEqual(math.hypot(*enu), math.dist(origin, far), places=6)
+        self.assertEqual(rtcmdec.ecef_to_enu(origin, origin), (0.0, 0.0, 0.0))
+
+    def test_fixed_step_shows_the_shift_from_the_current_base(self):
+        self.base(*self.ecef())
+        controller = self.controller()
+        staged = controller.step_fixed(self.request(*self.ecef(dlat=1e-5, dheight=0.5)))
+        d = staged["details"]
+        self.assertEqual(d["current_base"], [round(v, 4) for v in self.ecef()])
+        self.assertEqual(d["shift_unknown"], "")
+        shift = d["shift"]
+        self.assertAlmostEqual(shift["east_m"], 0.0, places=3)
+        self.assertAlmostEqual(shift["north_m"], 1.108, places=2)
+        self.assertAlmostEqual(shift["up_m"], 0.5, places=3)
+        self.assertAlmostEqual(shift["horizontal_m"], shift["north_m"], places=3)
+        self.assertAlmostEqual(shift["total_m"], math.hypot(shift["north_m"], 0.5), places=3)
+        words = [w for w in staged["warnings"] if "RTCM 1005" in w]
+        self.assertEqual(len(words), 1)
+        self.assertIn("east 0.0 mm", words[0])
+        self.assertIn("north 1.10", words[0])
+        self.assertIn("up 50.0 cm", words[0])
+        self.assertIn("more than 1 m", words[0])
+        self.assertIn("check every digit", words[0])
+        # A small shift is stated, with no call to check the numbers.
+        staged = controller.step_fixed(self.request(*self.ecef(dheight=0.02)))
+        self.assertAlmostEqual(staged["details"]["shift"]["up_m"], 0.02, places=3)
+        (words,) = [w for w in staged["warnings"] if "RTCM 1005" in w]
+        self.assertIn("up 2.0 cm", words)
+        self.assertNotIn("more than", words)
+        self.assertNotIn("could not be checked", words)
+        # The 1 m rule is on the 3D shift, not the horizontal one.
+        staged = controller.step_fixed(self.request(*self.ecef(dheight=-1.5)))
+        self.assertAlmostEqual(staged["details"]["shift"]["horizontal_m"], 0.0, places=3)
+        (words,) = [w for w in staged["warnings"] if "RTCM 1005" in w]
+        self.assertIn("up -1.500 m", words)
+        self.assertIn("more than 1 m", words)
+        # Everything else in the confirmation is as before.
+        self.assertEqual(d["from"], "ecef")
+        self.assertTrue(staged["commands"][0].startswith("$PQTMCFGSVIN,W,2,0,0,"))
+        self.assertEqual(staged["commands"][1:], ["$PQTMSAVEPAR*5A", "$PQTMSRR*4B"])
+
+    def test_fixed_step_says_when_the_shift_is_unknown(self):
+        controller = self.controller()
+        staged = controller.step_fixed(self.request(*self.ecef()))
+        d = staged["details"]
+        self.assertIsNone(d["current_base"])
+        self.assertIsNone(d["shift"])
+        self.assertEqual(d["shift_unknown"], "no RTCM 1005 received")
+        (words,) = [w for w in staged["warnings"] if "could not be checked" in w]
+        self.assertIn("no RTCM 1005 received", words)
+        self.assertIn("Check every digit", words)
+        self.base(*self.ecef())
+        self.status.connected = False  # what it sends when it is back is not known
+        staged = controller.step_fixed(self.request(*self.ecef()))
+        self.assertIsNone(staged["details"]["shift"])
+        self.assertIn("not connected", staged["details"]["shift_unknown"])
+        self.status.connected = True
+        self.assertIsNotNone(controller.step_fixed(self.request(*self.ecef()))["details"]["shift"])
+        self.clock.now += BASE_STALE_S + 1
+        staged = controller.step_fixed(self.request(*self.ecef()))
+        self.assertIsNone(staged["details"]["shift"])
+        self.assertIn("stale", staged["details"]["shift_unknown"])
+        self.assertTrue(any("stale" in w for w in staged["warnings"]))
+        # Without a status at all (as in some tests), the step still works.
+        bare = control.Controller(lambda data: None, self.dir / "commands.jsonl",
+                                  profile.load())
+        bare.current_uart = "1"
+        staged = bare.step_fixed(self.request(*self.ecef()))
+        self.assertEqual(staged["details"]["shift_unknown"], "no RTCM 1005 received")
+
+    def test_shift_is_shown_for_every_source(self):
+        self.base(*self.ecef())
+        controller = self.controller()
+        self.survey(*self.ecef(dheight=0.1))
+        for request in ({"source": "survey"},
+                        {"source": "llh", "lat": self.LAT, "lon": self.LON,
+                         "height": self.HEIGHT + 0.1}):
+            with self.subTest(request["source"]):
+                staged = controller.step_fixed(request)
+                self.assertAlmostEqual(staged["details"]["shift"]["up_m"], 0.1, places=3)
+
+    def test_svin_config_is_parsed_from_the_reply(self):
+        def result(outcome, replies=(), code=""):
+            entry = {"outcome": outcome, "replies": list(replies), "error": "x",
+                     "command": "$PQTMCFGSVIN,R*26"}
+            if code:
+                entry["error_code"] = code
+            return entry
+
+        x, y, z = self.ecef()
+        fixed = f"$PQTMCFGSVIN,OK,2,0,0.0,{x:.4f},{y:.4f},{z:.4f},0.0"
+        cases = [
+            (result("ok", ["$PQTMCFGSVIN,OK,1,3600,1.2,0.0000,0.0000,0.0000,0.0"]),
+             {"mode": 1, "ecef": None, "reason": ""}),
+            (result("ok", ["$PQTMCFGSVIN,OK,0,0,0.0,0.0000,0.0000,0.0000"]),
+             {"mode": 0, "ecef": None, "reason": ""}),
+            (result("ok", [fixed]),
+             {"mode": 2, "ecef": (round(x, 4), round(y, 4), round(z, 4)), "reason": ""}),
+            (result("ok", [fixed.rsplit(",", 1)[0]]),  # no <Distance> field
+             {"mode": 2, "ecef": (round(x, 4), round(y, 4), round(z, 4)), "reason": ""}),
+            (result("ok", ["$PQTMCFGSVIN,OK,2,0,0.0,0.0000,0.0000,0.0000,0.0"]),
+             {"mode": 2, "ecef": None, "reason": ""}),  # fixed, but no usable position
+            (result("ok", ["$PQTMCFGSVIN,OK,2,0,0.0,1.0,nan,2.0,0.0"]),
+             {"mode": 2, "ecef": None, "reason": ""}),
+            (result("ok", ["$PQTMCFGSVIN,OK,7,0,0.0,0.0,0.0,0.0,0.0"]),
+             {"mode": None, "ecef": None,
+              "reason": "PQTMCFGSVIN,R answered $PQTMCFGSVIN,OK,7,0,0.0,0.0,0.0,0.0,0.0, "
+                        "which is not understood"}),
+            (result("ok", ["$PQTMCFGSVIN,OK,1"]),
+             {"mode": None, "ecef": None,
+              "reason": "PQTMCFGSVIN,R answered $PQTMCFGSVIN,OK,1, which is not understood"}),
+            (result("error", ["$PQTMCFGSVIN,ERROR,1"], "1"),
+             {"mode": None, "ecef": None, "reason": "PQTMCFGSVIN,R answered ERROR,1"}),
+            (result("timeout"),
+             {"mode": None, "ecef": None, "reason": "PQTMCFGSVIN,R got no answer"}),
+            (result("not sent"),
+             {"mode": None, "ecef": None, "reason": "PQTMCFGSVIN,R ended not sent: x"}),
+            (result("error"),  # the port closed: no error code
+             {"mode": None, "ecef": None, "reason": "PQTMCFGSVIN,R ended error: x"}),
+        ]
+        for entry, expected in cases:
+            with self.subTest(entry["replies"] or entry["outcome"]):
+                self.assertEqual(control.svin_config(entry), expected)
+
+    def test_the_check_reads_the_survey_in_configuration(self):
+        x, y, z = self.ecef()
+        replies = {"survey": ["PQTMCFGSVIN,OK,1,300,0.0,0.0000,0.0000,0.0000,0.0"],
+                   "fixed": [f"PQTMCFGSVIN,OK,2,0,0.0,{x:.4f},{y:.4f},{z:.4f},0.0"],
+                   "error": ["PQTMCFGSVIN,ERROR,1"], "silent": []}
+
+        async def go(case):
+            def answer(body):
+                return replies[case] if body == "PQTMCFGSVIN,R" else simulated_reply(body)
+
+            controller = self.controller(asyncio.get_running_loop(), answer)
+            before = controller.snapshot()["svin"]
+            with mock.patch.object(commands, "TIMEOUT_S", 0.05):
+                with contextlib.suppress(AssertionError):
+                    with self.assertLogs("gnss_base", "WARNING"):
+                        await controller.startup_check()
+            self.clock.now += 2
+            return before, controller.snapshot(), self.port.written
+
+        queries = [item.query for item in profile.load()]
+        for case in replies:
+            with self.subTest(case):
+                before, snap, written = run_async(lambda: go(case))
+                self.assertEqual(before, {"mode": None, "mode_name": None, "ecef": None,
+                                          "lat": None, "lon": None, "height_m": None,
+                                          "reason": "not read yet", "read_age_s": None})
+                self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries
+                                 + ["PQTMCFGSVIN,R"], "read last, after the profile")
+                svin = snap["svin"]
+                self.assertEqual(svin["read_age_s"], 2.0)
+                if case == "survey":
+                    self.assertEqual((svin["mode"], svin["mode_name"], svin["ecef"],
+                                      svin["reason"]), (1, "survey-in", None, ""))
+                    self.assertIsNone(snap["profile"]["stale"])
+                elif case == "fixed":
+                    self.assertEqual((svin["mode"], svin["mode_name"]), (2, "fixed"))
+                    self.assertEqual(svin["ecef"], [round(v, 4) for v in (x, y, z)])
+                    self.assertAlmostEqual(svin["lat"], self.LAT, places=8)
+                    self.assertAlmostEqual(svin["lon"], self.LON, places=8)
+                    self.assertAlmostEqual(svin["height_m"], self.HEIGHT, places=3)
+                    self.assertIsNone(snap["profile"]["stale"])
+                elif case == "error":
+                    self.assertEqual((svin["mode"], svin["mode_name"], svin["ecef"]),
+                                     (None, None, None))
+                    self.assertEqual(svin["reason"], "PQTMCFGSVIN,R answered ERROR,1")
+                    self.assertIsNone(snap["profile"]["stale"], "an ERROR is an answer")
+                else:
+                    self.assertEqual(svin["mode"], None)
+                    self.assertEqual(svin["reason"], "PQTMCFGSVIN,R got no answer")
+                    self.assertIsNone(snap["profile"]["stale"], "not a profile row")
+                    self.assertEqual(snap["check_note"], "")
+                statuses = [row["status"] for row in snap["profile"]["results"]]
+                self.assertEqual(len(statuses), len(queries), "not a profile row")
+
+    def test_a_quiet_last_profile_query_does_not_blame_the_survey_in_query(self):
+        queries = [item.query for item in profile.load()]
+
+        def answer(body):
+            return [] if body == queries[-1] else simulated_reply(body)
+
+        async def go():
+            controller = self.controller(asyncio.get_running_loop(), answer)
+            with mock.patch.object(commands, "TIMEOUT_S", 0.05), \
+                    self.assertLogs("gnss_base", "WARNING"):
+                await controller.startup_check()
+            return controller.snapshot(), self.port.written
+
+        snap, written = run_async(go)
+        self.assertEqual(written, ["PQTMVERNO", "PQTMCFGUART,R"] + queries, "SVIN not sent")
+        self.assertEqual(snap["check_note"], f"{prepare(queries[-1]).shown} got no answer.",
+                         "every profile row was sent, so not 'the rest of the profile'")
+        self.assertEqual((snap["svin"]["mode"], snap["svin"]["reason"]), (None, "not read yet"),
+                         "a query that was not sent leaves what was read before")
+
+    def test_confirm_refuses_a_survey_mean_staged_before_fixed_mode_was_read(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            self.survey(*self.ecef())
+            staged = controller.step_fixed({"source": "survey"})  # mode not read yet
+            controller.svin = {"mode": 2, "ecef": None, "reason": ""}
+            with self.assertRaises(control.RequestError) as refused:
+                await controller.confirm(staged["pending"], None)
+            coordinates = controller.step_fixed(self.request(*self.ecef()))
+            done = await controller.confirm(coordinates["pending"], None)
+            return str(refused.exception), self.port.written, done, controller.history()
+
+        text, written, done, history = run_async(go)
+        self.assertIn("already in fixed mode", text)
+        self.assertEqual(done["outcome"], "ok")
+        self.assertEqual(written[1:], ["PQTMSAVEPAR", "PQTMSRR"], "only the coordinates")
+        unsent = [e for e in history if e["outcome"] == "not sent"]
+        self.assertEqual(len(unsent), 3, "the refused batch is logged")
+        self.assertIn("already in fixed mode", unsent[0]["error"])
+
+    def test_a_manual_profile_check_reads_it_too(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            rows = await controller.check_profile(None)
+            return rows, controller.snapshot()["svin"]["mode"], self.port.written
+
+        rows, mode, written = run_async(go)
+        self.assertEqual(len(rows), len(profile.load()))
+        self.assertEqual(mode, 1)
+        self.assertEqual(written[-1], "PQTMCFGSVIN,R")
+
+    def test_survey_mean_is_refused_in_fixed_mode_and_warned_about_when_unknown(self):
+        self.survey(*self.ecef())
+        controller = self.controller()
+        # Never read: allowed, with a warning that says why it could not be checked.
+        staged = controller.step_fixed({"source": "survey"})
+        (words,) = [w for w in staged["warnings"] if "not known" in w]
+        self.assertIn("not read yet", words)
+        self.assertIn("re-sends that position", words)
+        self.assertEqual(staged["details"]["from"], "survey")
+        for reason in ("PQTMCFGSVIN,R answered ERROR,1", "PQTMCFGSVIN,R got no answer"):
+            controller.svin = {"mode": None, "ecef": None, "reason": reason}
+            staged = controller.step_fixed({"source": "survey"})
+            (words,) = [w for w in staged["warnings"] if "not known" in w]
+            self.assertIn(reason, words)
+        # Survey-in mode (or disabled): as before, no such warning.
+        for mode in (1, 0):
+            controller.svin = {"mode": mode, "ecef": None, "reason": ""}
+            staged = controller.step_fixed({"source": "survey"})
+            self.assertFalse(any("not known" in w for w in staged["warnings"]))
+        # Fixed mode: refused, whatever the survey status says, before it is looked at.
+        controller.svin = {"mode": 2, "ecef": list(self.ecef()), "reason": ""}
+        with self.assertRaises(control.RequestError) as refused:
+            controller.step_fixed({"source": "survey"})
+        text = str(refused.exception)
+        self.assertIn("already in fixed mode", text)
+        self.assertIn("configured position", text)
+        self.assertIn("ECEF, instead", text)
+        self.status.survey_in = {}  # no PQTMSVINSTATUS at all: still the clearer message
+        with self.assertRaises(control.RequestError) as refused:
+            controller.step_fixed({"source": "survey"})
+        self.assertIn("already in fixed mode", str(refused.exception))
+        # Coordinates are still accepted in fixed mode.
+        self.assertIn("pending", controller.step_fixed(self.request(*self.ecef())))
+        self.assertIn("pending", controller.step_fixed(
+            {"source": "llh", "lat": self.LAT, "lon": self.LON, "height": self.HEIGHT}))
+
+    def test_the_mode_is_forgotten_after_a_restart_or_a_port_loss(self):
+        """A restart applies a pending PQTMCFGSVIN write and a port loss may hide one, so
+        the mode read before is not trusted until the check reads it again."""
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            self.survey(*self.ecef())
+            await controller.startup_check()
+            self.assertEqual(controller.snapshot()["svin"]["mode"], 1)
+            controller.svin = {"mode": 2, "ecef": None, "reason": ""}
+            with self.assertRaises(control.RequestError):
+                controller.step_fixed({"source": "survey"})
+            with mock.patch.object(control, "STARTUP_DELAY_S", 3600):
+                controller.on_nmea(f"PQTMVER,1,MODULE,{FIRMWARE},2024/04/30,10:53:07")
+                after_restart = controller.snapshot()["svin"]
+                self.clock.now += 1
+                self.survey(*self.ecef())  # a status from after the restart
+                staged = controller.step_fixed({"source": "survey"})
+                await controller.stop()
+            controller.svin = {"mode": 2, "ecef": None, "reason": ""}
+            controller.port_lost()
+            after_loss = controller.snapshot()["svin"]
+            return after_restart, staged, after_loss
+
+        after_restart, staged, after_loss = run_async(go)
+        self.assertEqual((after_restart["mode"], after_restart["read_age_s"]), (None, None))
+        self.assertIn("restarted", after_restart["reason"])
+        (words,) = [w for w in staged["warnings"] if "not known" in w]
+        self.assertIn("restarted", words)
+        self.assertIsNone(after_loss["mode"])
+        self.assertIn("port closed", after_loss["reason"])
+
+    def test_confirm_rechecks_fixed_mode_just_before_writing(self):
+        """A profile check queued ahead of the confirmation may find fixed mode while
+        the confirmation waits for the port: the batch is then not sent."""
+        x, y, z = self.ecef()
+
+        def answer(body):
+            if body == "PQTMCFGSVIN,R":
+                return [f"PQTMCFGSVIN,OK,2,0,0.0,{x:.4f},{y:.4f},{z:.4f},0.0"]
+            return simulated_reply(body)
+
+        async def go():
+            controller = self.controller(asyncio.get_running_loop(), answer)
+            self.survey(x, y, z)
+            staged = controller.step_fixed({"source": "survey"})  # mode not read yet
+            check = asyncio.ensure_future(controller.check_profile(None))
+            await asyncio.sleep(0)  # the check holds the port first
+            done = await controller.confirm(staged["pending"], None)
+            await check
+            return done, self.port.written, controller.history()
+
+        done, written, history = run_async(go)
+        self.assertEqual(done["outcome"], "failed")
+        self.assertEqual([r["outcome"] for r in done["results"]], ["not sent"] * 3)
+        self.assertIn("already in fixed mode", done["results"][0]["error"])
+        self.assertFalse(any(b.startswith("PQTMCFGSVIN,W") for b in written))
+        unsent = [e for e in history if e["outcome"] == "not sent"]
+        self.assertEqual(len(unsent), 3)
+
+    def test_a_reply_from_before_a_restart_or_port_loss_is_not_kept(self):
+        """The check's own result is applied after its batch: a restart or a port loss
+        in between makes it obsolete, and the mode stays unknown until read again."""
+        for event in ("restart", "port loss"):
+            async def go():
+                controller = self.controller(asyncio.get_running_loop())
+                controller.restarts = 0
+                with mock.patch.object(control, "STARTUP_DELAY_S", 3600):
+                    original = controller._learn
+
+                    def learn(prepared, result, written):
+                        if prepared.body == "PQTMCFGSVIN,R":
+                            if event == "restart":
+                                controller.on_nmea(
+                                    f"PQTMVER,1,MODULE,{FIRMWARE},2024/04/30,10:53:07")
+                            else:
+                                controller.port_lost()
+                        return original(prepared, result, written)
+
+                    controller._learn = learn
+                    await controller.check_profile(None)
+                    snap = controller.snapshot()
+                    await controller.stop()
+                return snap
+
+            with self.subTest(event):
+                snap = run_async(go)
+                self.assertIsNone(snap["svin"]["mode"])
+                self.assertIn("restarted" if event == "restart" else "port closed",
+                              snap["svin"]["reason"])
+
+    def test_a_1005_from_before_a_port_loss_or_a_restart_is_not_the_current_base(self):
+        for event in ("port loss", "restart"):
+            with self.subTest(event):
+                self.base(*self.ecef())
+                controller = self.controller()
+                self.clock.now += 1
+                if event == "port loss":
+                    controller.port_lost()
+                else:
+                    async def restart():
+                        with mock.patch.object(control, "STARTUP_DELAY_S", 3600):
+                            controller.on_nmea(
+                                f"PQTMVER,1,MODULE,{FIRMWARE},2024/04/30,10:53:07")
+                            await controller.stop()
+                    run_async(restart)
+                self.clock.now += 1
+                self.status.connected = True
+                staged = controller.step_fixed(self.request(*self.ecef()))
+                self.assertIsNone(staged["details"]["shift"])
+                self.assertEqual(staged["details"]["shift_unknown"], "no RTCM 1005 received "
+                                 "since the port reopened or the receiver restarted")
+                self.clock.now += 1
+                self.base(*self.ecef())  # a new one after the event
+                self.assertIsNotNone(controller.step_fixed(
+                    self.request(*self.ecef()))["details"]["shift"])
+
+    def test_confirm_refuses_a_shift_staged_against_another_base_position(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            self.base(*self.ecef())
+            staged = controller.step_fixed(self.request(*self.ecef(dheight=0.1)))
+            self.base(*self.ecef(dheight=0.01))  # the receiver now sends another position
+            with self.assertRaises(control.RequestError) as refused:
+                await controller.confirm(staged["pending"], None)
+            # Staged with no base known: nothing to compare, so sent.
+            self.status.base = {}
+            unknown = controller.step_fixed(self.request(*self.ecef(dheight=0.1)))
+            self.assertIsNone(unknown["details"]["current_base"])
+            self.base(*self.ecef())
+            done = await controller.confirm(unknown["pending"], None)
+            # Staged against the position still sent (within a millimetre): sent.
+            same = controller.step_fixed(self.request(*self.ecef(dheight=0.1)))
+            self.base(*self.ecef(dheight=0.0005))
+            done_same = await controller.confirm(same["pending"], None)
+            return str(refused.exception), done, done_same, self.port.written
+
+        text, done, done_same, written = run_async(go)
+        self.assertIn("changed since this was staged", text)
+        self.assertEqual((done["outcome"], done_same["outcome"]), ("ok", "ok"))
+        self.assertEqual(sum(b.startswith("PQTMCFGSVIN,W") for b in written), 2)
+
+    def test_confirm_refuses_a_shift_whose_base_is_no_longer_known(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            self.base(*self.ecef())
+            staged = controller.step_fixed(self.request(*self.ecef(dheight=0.1)))
+            self.clock.now += BASE_STALE_S + 1  # the 1005 stopped: stale
+            with self.assertRaises(control.RequestError) as stale:
+                await controller.confirm(staged["pending"], None)
+            self.base(*self.ecef())
+            staged = controller.step_fixed(self.request(*self.ecef(dheight=0.1)))
+            with mock.patch.object(control, "STARTUP_DELAY_S", 3600):
+                controller.on_nmea(f"PQTMVER,1,MODULE,{FIRMWARE},2024/04/30,10:53:07")
+                self.clock.now += 1
+                with self.assertRaises(control.RequestError) as restarted:
+                    await controller.confirm(staged["pending"], None)
+                await controller.stop()
+            return str(stale.exception), str(restarted.exception), self.port.written
+
+        stale, restarted, written = run_async(go)
+        self.assertIn("no longer known (the last RTCM 1005 is stale", stale)
+        self.assertIn("no longer known (no RTCM 1005 received since", restarted)
+        self.assertEqual(written, [])
+
+    def test_confirm_rechecks_a_survey_sourced_mean(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            self.survey(*self.ecef())
+            staged = controller.step_fixed({"source": "survey"})
+            self.survey(*self.ecef(dheight=0.01))  # the mean moved (a re-survey)
+            with self.assertRaises(control.RequestError) as moved:
+                await controller.confirm(staged["pending"], None)
+            staged = controller.step_fixed({"source": "survey"})
+            self.survey(*self.ecef(dheight=0.01), valid=1)  # running again
+            with self.assertRaises(control.RequestError) as running:
+                await controller.confirm(staged["pending"], None)
+            self.survey(*self.ecef(dheight=0.01))
+            staged = controller.step_fixed({"source": "survey"})
+            self.clock.now += control.SURVEY_MAX_AGE_S + 1  # the status stopped
+            with self.assertRaises(control.RequestError) as stale:
+                await controller.confirm(staged["pending"], None)
+            self.survey(*self.ecef(dheight=0.01))
+            staged = controller.step_fixed({"source": "survey"})
+            self.survey(*self.ecef(dheight=0.0105))  # within a millimetre: the same mean
+            done = await controller.confirm(staged["pending"], None)
+            # Typed coordinates do not depend on the survey-in status at all.
+            staged = controller.step_fixed(self.request(*self.ecef()))
+            self.survey(*self.ecef(dheight=0.5), valid=1)
+            typed = await controller.confirm(staged["pending"], None)
+            return (str(moved.exception), str(running.exception), str(stale.exception),
+                    done, typed, self.port.written)
+
+        moved, running, stale, done, typed, written = run_async(go)
+        self.assertIn("survey-in mean changed", moved)
+        self.assertIn("not finished (state: In progress", running)
+        self.assertIn("Stage the change again", running)
+        self.assertIn("stale", stale)
+        self.assertIn("Stage the change again", stale)
+        self.assertEqual((done["outcome"], typed["outcome"]), ("ok", "ok"))
+        self.assertEqual(sum(b.startswith("PQTMCFGSVIN,W") for b in written), 2)
+
+    def test_state_checks_gate_the_first_write_only(self):
+        """Once PQTMCFGSVIN,W is out, the save and restart follow even if the survey-in
+        status goes stale meanwhile; the rules still apply to every write."""
+        async def go():
+            controller = self.controller(asyncio.get_running_loop(), delay=0.05)
+            self.survey(*self.ecef())
+            staged = controller.step_fixed({"source": "survey"})
+            confirm = asyncio.ensure_future(controller.confirm(staged["pending"], None))
+            while "PQTMCFGSVIN,W,2,0,0," not in "".join(self.port.written):
+                await asyncio.sleep(0.001)
+            self.clock.now += control.SURVEY_MAX_AGE_S + 1  # stale after the first write
+            return await confirm, self.port.written
+
+        done, written = run_async(go)
+        self.assertEqual(done["outcome"], "ok")
+        self.assertEqual(written[1:], ["PQTMSAVEPAR", "PQTMSRR"])
+
+    def test_a_write_cut_short_by_the_app_stopping_still_counts(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop(), delay=0.05)
+            await controller.check_profile(None)
+            staged = controller.step_fixed(self.request(*self.ecef()))
+            confirm = asyncio.ensure_future(controller.confirm(staged["pending"], None))
+            while not any(b.startswith("PQTMCFGSVIN,W") for b in self.port.written):
+                await asyncio.sleep(0.001)
+            confirm.cancel()  # while waiting for the reply
+            with self.assertRaises(asyncio.CancelledError):
+                await confirm
+            return controller.snapshot()["svin"], controller._svin_written
+
+        svin, written = run_async(go)
+        self.assertTrue(written)
+        self.assertIsNone(svin["mode"])
+        self.assertIn("has not restarted since", svin["reason"])
+
+    def test_confirm_refuses_a_survey_mean_whose_mode_evidence_changed(self):
+        """Staged under a known survey-in mode, a port loss (which may hide a restart
+        into fixed mode) makes the mode unknown: not sent without staging again."""
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            await controller.check_profile(None)  # mode 1
+            self.survey(*self.ecef())
+            staged = controller.step_fixed({"source": "survey"})
+            self.assertEqual(staged["details"]["svin_mode"], 1)
+            self.clock.now += 1
+            controller.port_lost()
+            self.clock.now += 1
+            self.survey(*self.ecef())  # a fresh status after the port reopened
+            with self.assertRaises(control.RequestError) as lost:
+                await controller.confirm(staged["pending"], None)
+            # Staged with the mode unknown and still unknown: sent (with its warning).
+            staged = controller.step_fixed({"source": "survey"})
+            self.assertIsNone(staged["details"]["svin_mode"])
+            done = await controller.confirm(staged["pending"], None)
+            # Staged unknown, read as survey-in since: evidence changed, stage again.
+            self.survey(*self.ecef())
+            controller.forget_svin("x")
+            staged = controller.step_fixed({"source": "survey"})
+            controller.svin = {"mode": 1, "ecef": None, "reason": ""}
+            with self.assertRaises(control.RequestError) as found:
+                await controller.confirm(staged["pending"], None)
+            typed = controller.step_fixed(self.request(*self.ecef()))
+            self.assertNotIn("svin_mode", typed["details"])
+            return str(lost.exception), done, str(found.exception)
+
+        lost, done, found = run_async(go)
+        self.assertIn("no longer what this was staged under (the port closed", lost)
+        self.assertEqual(done["outcome"], "ok")
+        self.assertIn("no longer what this was staged under. Stage", found)
+
+    def test_a_survey_status_from_before_a_restart_is_not_used(self):
+        self.survey(*self.ecef())
+        controller = self.controller()
+        self.assertIn("pending", controller.step_fixed({"source": "survey"}))
+        self.clock.now += 1
+        controller.port_lost()
+        self.clock.now += 1
+        with self.assertRaises(control.RequestError) as refused:
+            controller.step_fixed({"source": "survey"})
+        self.assertIn("No PQTMSVINSTATUS has arrived since", str(refused.exception))
+        self.survey(*self.ecef())  # a new one after the event
+        self.assertIn("pending", controller.step_fixed({"source": "survey"}))
+
+    def test_a_survey_in_write_leaves_the_mode_unknown_until_a_restart(self):
+        """PQTMCFGSVIN,R may answer with the written values while the receiver still
+        runs the old ones (this firmware applies the write after a restart)."""
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            await controller.check_profile(None)
+            self.assertEqual(controller.snapshot()["svin"]["mode"], 1)
+            staged = await controller.command("PQTMCFGSVIN,W,2,0,0,1.0,2.0,3.0", None)
+            await controller.confirm(staged["pending"], None)
+            after_write = controller.snapshot()["svin"]
+            await controller.check_profile(None)  # the read shows the written value
+            after_read = controller.snapshot()["svin"]
+            self.survey(*self.ecef())
+            warned = controller.step_fixed({"source": "survey"})
+            with mock.patch.object(control, "STARTUP_DELAY_S", 0.01):
+                controller.on_nmea(f"PQTMVER,1,MODULE,{FIRMWARE},2024/04/30,10:53:07")
+                await controller._startup
+            return after_write, after_read, warned, controller.snapshot()["svin"]
+
+        after_write, after_read, warned, after_restart = run_async(go)
+        self.assertIsNone(after_write["mode"])
+        # A read with a stray argument is a query, not a write: it changes nothing.
+        controller = self.controller()
+        controller.svin = {"mode": 1, "ecef": None, "reason": ""}
+        controller._learn(prepare("PQTMCFGSVIN,R,1"), {"outcome": "ok", "replies": [
+            "$PQTMCFGSVIN,OK,1,300,0.0,0.0000,0.0000,0.0000,0.0"], "error": ""}, (0, 0))
+        self.assertEqual(controller.svin["mode"], 1)
+        # A write that timed out, or lost its reply to a port loss, may have been
+        # sent: unknown too.
+        for outcome in ("timeout", "error"):
+            controller.svin, controller._svin_written = {"mode": 1, "ecef": None,
+                                                         "reason": ""}, False
+            controller._learn(prepare("PQTMCFGSVIN,W,1,300,0,0,0,0"),
+                              {"outcome": outcome, "replies": [], "error": "x"}, (0, 0))
+            self.assertIsNone(controller.svin["mode"], outcome)
+            self.assertTrue(controller._svin_written, outcome)
+        # Not sent, or rejected by the receiver (ERROR): the configuration did not change.
+        for result, written in (({"outcome": "not sent", "replies": [], "error": "x"}, None),
+                                ({"outcome": "error", "replies": ["$PQTMCFGSVIN,ERROR,1"],
+                                  "error": "x", "error_code": "1"}, (0, 0))):
+            controller.svin, controller._svin_written = {"mode": 1, "ecef": None,
+                                                         "reason": ""}, False
+            controller._learn(prepare("PQTMCFGSVIN,W,1,300,0,0,0,0"), result, written)
+            self.assertEqual(controller.svin["mode"], 1, result["outcome"])
+            self.assertFalse(controller._svin_written, result["outcome"])
+        self.assertIn("has not restarted since", after_write["reason"])
+        self.assertIsNone(after_read["mode"])
+        self.assertIn("has not restarted since", after_read["reason"])
+        self.assertTrue(any("has not restarted since" in w for w in warned["warnings"]))
+        self.assertEqual(after_restart["mode"], 1, "read again after the restart")
+
+    def test_a_restart_before_the_write_is_learned_does_not_leave_the_mode_unknown(self):
+        """Step 5 writes, saves and restarts; if PQTMVER arrives before the batch's results
+        are applied, the write has been applied already and the restart's check rules."""
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            await controller.check_profile(None)
+            original = controller._learn
+
+            def learn(prepared, result, written):
+                if prepared.body.startswith("PQTMCFGSVIN,W"):
+                    controller.on_nmea(f"PQTMVER,1,MODULE,{FIRMWARE},2024/04/30,10:53:07")
+                return original(prepared, result, written)
+
+            controller._learn = learn
+            with mock.patch.object(control, "STARTUP_DELAY_S", 0.01):
+                staged = controller.step_fixed(self.request(*self.ecef()))
+                await controller.confirm(staged["pending"], None)
+                await controller._startup
+            return controller.snapshot()["svin"], controller._svin_written
+
+        svin, written = run_async(go)
+        self.assertEqual(svin["mode"], 1, "read by the check after the restart")
+        self.assertFalse(written)
+
+    def test_the_1_m_rule_uses_the_unrounded_shift(self):
+        self.base(*self.ecef())
+        controller = self.controller()
+        staged = controller.step_fixed(self.request(*self.ecef(dheight=1.00004)))
+        self.assertEqual(staged["details"]["shift"]["total_m"], 1.0)
+        self.assertTrue(any("more than 1 m" in w for w in staged["warnings"]))
+        staged = controller.step_fixed(self.request(*self.ecef(dheight=0.9998)))
+        self.assertLess(staged["details"]["shift"]["total_m"], 1.0)
+        self.assertFalse(any("more than 1 m" in w for w in staged["warnings"]))
+
+    def test_survey_mean_in_fixed_mode_is_refused_through_the_api(self):
+        async def go():
+            controller = self.controller(asyncio.get_running_loop())
+            controller.svin = {"mode": 2, "ecef": None, "reason": ""}
+            self.survey(*self.ecef())
+            app = create_app(lambda: {"receiver": controller.snapshot()}, (),
+                             control=controller)
+            async with TestClient(TestServer(app)) as client:
+                refused = await client.post("api/steps/fixed", json={"source": "survey"})
+                status = await (await client.get("api/status")).json()
+                return refused.status, await refused.json(), status["receiver"]["svin"]
+
+        code, body, svin = run_async(go)
+        self.assertEqual(code, 400)
+        self.assertIn("already in fixed mode", body["error"])
+        self.assertEqual((svin["mode"], svin["mode_name"]), (2, "fixed"))
+
+    def test_the_page_words_fixed_mode_and_the_shift(self):
+        script = (STATIC / "control.js").read_text()
+        page = (STATIC / "index.html").read_text()
+        for text in ("Current base (RTCM 1005)", "Shift E, N, U", "Shift horizontal, 3D",
+                     "d.shift_unknown", "sv.mode === 2", "svinnote", "s-fixednote",
+                     "current fixed position (receiver is in fixed mode)",
+                     "not a measurement"):
+            self.assertIn(text, script)
+        for text in ('id="svinnote"', 'id="s-fixednote"', "not already in fixed mode"):
+            self.assertIn(text, page)
+        self.assertIn("option.disabled = inFixed", script)
+        self.assertIn('v.toFixed(3) + " m"', script, "millimetres, like the warning")
+
+    def test_metres_in_words(self):
+        for value, text in ((0.0004, "0.4 mm"), (0.0096, "9.6 mm"), (0.02, "2.0 cm"),
+                            (-0.153, "-15.3 cm"), (0.9996, "100.0 cm"), (1.0, "1.000 m"),
+                            (-0.00001, "0.0 mm"), (-0.0004, "-0.4 mm"), (-0.00004, "0.0 mm"),
+                            (-1.5124, "-1.512 m"), (12345.6789, "12345.679 m")):
+            self.assertEqual(control.metres(value), text)
 
 
 if __name__ == "__main__":

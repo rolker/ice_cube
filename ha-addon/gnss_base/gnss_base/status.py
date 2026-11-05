@@ -578,6 +578,17 @@ class Status:
             self._base_changed = self._base_time
         self._base_llh, self._base_ecef = (lat, lon, height), ecef
 
+    def current_base(self):
+        """The base position the receiver sends in RTCM 1005/1006: its ECEF (unrounded),
+        age, whether it is stale, and whether the receiver is connected (while it is
+        not, the last position may not be what it sends when it is back); None if none
+        has been received."""
+        if not self.base:
+            return None
+        age = self._clock() - self._base_time
+        return {"ecef": self._base_ecef, "at": self._base_time, "age_s": age,
+                "stale": age > self.base_stale_s(), "connected": self.connected}
+
     def _on_msm(self, message):
         now = self._clock()
         system = message["system"]
@@ -630,7 +641,8 @@ class Status:
         survey = self.survey_in
         return {"ecef": self._survey_mean, "state": survey["state"], "valid": survey["valid"],
                 "observations": survey["observations"], "target": survey["target"],
-                "accuracy_m": survey["accuracy_m"], "age_s": self._clock() - self._survey_time}
+                "accuracy_m": survey["accuracy_m"], "at": self._survey_time,
+                "age_s": self._clock() - self._survey_time}
 
     def _prune_msm(self, now):
         for key in [k for k, v in self._msm_cells.items() if now - v[2] > SIGNAL_EXPIRY_S]:

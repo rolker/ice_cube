@@ -8,7 +8,8 @@ import time
 
 from . import commands
 from .commands import CommandLog, CommandRunner, PendingStore, prepare
-from .rtcm import ecef_to_llh, llh_to_ecef
+from .rtcm import ecef_to_enu, ecef_to_llh, llh_to_ecef
+from .status import BASE_MOVED_M
 
 LOG = logging.getLogger("gnss_base")
 STARTUP_DELAY_S = 2.0
@@ -20,6 +21,18 @@ RECHECK_DELAY_S = 0.5
 # A position this far from the Earth's centre is on or near the ground (from below
 # the Dead Sea shore to above the highest mountains).
 MIN_RADIUS_M, MAX_RADIUS_M = 6_355_000.0, 6_388_000.0
+# The survey-in configuration (PQTMCFGSVIN,R) is read with the profile. Its <Mode>:
+SVIN_MODES = {0: "disabled", 1: "survey-in", 2: "fixed"}
+SVIN_QUERY = "PQTMCFGSVIN,R"
+SVIN_UNREAD = "not read yet"
+SVIN_WRITTEN = ("PQTMCFGSVIN was written and the receiver has not restarted since, so the "
+                "configuration in force is not known until it restarts")
+# A fixed position this far (3D) from the one the receiver now sends gets a warning
+# to check the numbers: a wrong digit is the mistake to catch.
+SHIFT_CHECK_M = 1.0
+ALREADY_FIXED = ("The receiver is already in fixed mode (PQTMCFGSVIN mode 2), so the "
+                 "survey-in mean it reports is the configured position repeated, not a "
+                 "measurement. Enter latitude, longitude and height, or ECEF, instead.")
 BASE_MODE_WARNING = ("The receiver will restart. In base mode it stops sending NMEA, so the "
                      "fix, GGA position and GSV signals disappear; the page then uses RTCM "
                      "1005 and MSM messages instead. Survey-in or a fixed position is needed "
@@ -42,6 +55,23 @@ def _number(value, name):
     if not math.isfinite(result):
         raise RequestError(f"{name} must be a finite number")
     return result
+
+
+def near_earth(x, y, z):
+    """Whether an ECEF position is on or near the ground."""
+    return MIN_RADIUS_M <= math.sqrt(x * x + y * y + z * z) <= MAX_RADIUS_M
+
+
+def metres(value):
+    """A length in words: mm below 1 cm, cm below 1 m, else m to the millimetre."""
+    size = abs(value)
+    if size >= 1:
+        text = f"{value:.3f} m"
+    elif size >= 0.01:
+        text = f"{value * 100:.1f} cm"
+    else:
+        text = f"{value * 1000:.1f} mm"
+    return text[1:] if text.startswith("-0.0 mm") else text  # never "-0.0 mm"
 
 
 def position_details(x, y, z):
@@ -68,6 +98,52 @@ def uart_port(result):
     return None
 
 
+def svin_config(result):
+    """The survey-in configuration from a PQTMCFGSVIN,R result: `mode` 0 (disabled),
+    1 (survey-in), 2 (fixed) or None if it could not be read, `ecef` the configured
+    position when fixed (None if not understood), and `reason` why the mode is
+    unknown. The specification (v1.3, 2.3.22) gives the reply as
+    `$PQTMCFGSVIN,OK,<Mode>,<CFG_CNT>,<3D_AccLimit>,<ECEF_X>,<ECEF_Y>,<ECEF_Z>[,<Distance>]`."""
+    config = {"mode": None, "ecef": None, "reason": ""}
+    if result["outcome"] == "ok" and result["replies"]:
+        reply = result["replies"][-1]
+        fields = reply.lstrip("$").split(",")
+        if fields[1:2] == ["OK"] and len(fields) >= 8 and fields[2] in ("0", "1", "2"):
+            config["mode"] = int(fields[2])
+            if config["mode"] == 2:
+                try:
+                    ecef = tuple(float(v) for v in fields[5:8])
+                except ValueError:
+                    ecef = None
+                if ecef is not None and all(math.isfinite(v) for v in ecef) \
+                        and near_earth(*ecef):
+                    config["ecef"] = ecef
+            return config
+        config["reason"] = f"{SVIN_QUERY} answered {reply}, which is not understood"
+    elif result["outcome"] == "error" and result.get("error_code"):
+        config["reason"] = f"{SVIN_QUERY} answered ERROR,{result['error_code']}"
+    elif result["outcome"] == "timeout":
+        config["reason"] = f"{SVIN_QUERY} got no answer"
+    else:  # the port closed, or the app stopped (a query not sent never gets here)
+        config["reason"] = f"{SVIN_QUERY} ended {result['outcome']}: {result['error']}"
+    return config
+
+
+def shift_warning(shift, unknown):
+    """The shift from the current base position in words: `shift` as `shift_details`
+    gives it (unrounded), or None with `unknown` saying why."""
+    if shift is None:
+        return (f"The shift from the current base position could not be checked "
+                f"({unknown}). Check every digit before sending.")
+    text = (f"The new position is {metres(shift['total_m'])} from the base position the "
+            f"receiver now sends in RTCM 1005: east {metres(shift['east_m'])}, north "
+            f"{metres(shift['north_m'])}, up {metres(shift['up_m'])}.")
+    if shift["total_m"] > SHIFT_CHECK_M:
+        text += (f" That is more than {SHIFT_CHECK_M:g} m: check every digit before "
+                 "sending. A wrong digit here moves every rover position by the same amount.")
+    return text
+
+
 def survey_unfinished(survey):
     """Why an unfinished survey-in mean is not used for a fixed position."""
     def shown(value, unit=""):
@@ -89,6 +165,20 @@ class Controller:
         self.firmware = ""
         self.mode = None
         self.current_uart = None
+        # From PQTMCFGSVIN,R at the last check (see svin_config). This firmware applies
+        # a PQTMCFGSVIN write only after a restart, and every restart starts a check,
+        # so what was read then is the configuration in force.
+        self.svin = {"mode": None, "ecef": None, "reason": SVIN_UNREAD}
+        self.svin_read = None
+        # A PQTMCFGSVIN write was answered OK and the receiver has not restarted since:
+        # PQTMCFGSVIN,R may then answer with the written values while the receiver still
+        # runs the old ones, so the configuration in force is unknown until a restart.
+        self._svin_written = False
+        self.restarts = 0            # PQTMVER sentences seen
+        # When the port last closed or the receiver last restarted (clock time): a
+        # base position or survey-in status received before then is not what the
+        # receiver sends now.
+        self._cutoff = None
         self.profile_results = []
         self.profile_checked = None
         self.check_note = ""
@@ -105,7 +195,11 @@ class Controller:
         if fields[0] == "PQTMVER" and len(fields) > 3:
             # Sent first after every start: the receiver restarted, so check again.
             self.firmware = fields[3]
+            self.restarts += 1
+            self._cutoff = self._clock()
+            self._svin_written = False
             self.runner.receiver_restarted()
+            self.forget_svin("the receiver restarted and it has not been read again")
             self.schedule_check()
 
     def port_opened(self):
@@ -115,12 +209,22 @@ class Controller:
         """The port closed: the app may be on another port when it reopens, so
         UART and protocol writes are blocked until `PQTMCFGUART,R` answers again."""
         self.current_uart = None
+        self._cutoff = self._clock()
+        self.forget_svin("the port closed and it has not been read again")
         self.runner.port_lost()
 
-    def schedule_check(self, delay=STARTUP_DELAY_S):
-        """Run the read-only startup check soon, once, however often this is called.
-        If a check is already sending, another runs when it ends, so the port and
-        receiver are read again after a reconnect or restart."""
+    def forget_svin(self, reason):
+        """The survey-in configuration read earlier may no longer be in force (a restart
+        applies pending writes; a port loss may hide one): unknown until read again."""
+        self.svin = {"mode": None, "ecef": None, "reason": reason}
+        self.svin_read = None
+
+    def schedule_check(self, delay=None):
+        """Run the read-only startup check soon (after STARTUP_DELAY_S by default),
+        once, however often this is called. If a check is already sending, another
+        runs when it ends, so the port and receiver are read again after a reconnect
+        or restart."""
+        delay = STARTUP_DELAY_S if delay is None else delay
         if self._startup is not None and not self._startup.done():
             self._check_again = self._check_again or self._checking
             return
@@ -149,15 +253,37 @@ class Controller:
                 pass
 
     # ---- read-only ----
-    def _learn(self, prepared, result, connection):
-        """Keep what a successful query says about the receiver. `connection` is the
-        runner's connection count when the query was written (None if it was not); the
-        port is learned only if it has not closed since. Any other answer to
+    def _learn(self, prepared, result, written):
+        """Keep what a successful query says about the receiver. `written` is the
+        runner's connection count and the restart count when the query was written
+        (None if it was not); the port is learned only if it has not closed since, and
+        the survey-in configuration only if the receiver has not restarted either (a
+        restart applies a pending write, so the answer may be obsolete; `forget_svin`
+        has run and the check after the restart reads it again). A survey-in query
+        that was not sent leaves what was read before. Any other answer to
         PQTMCFGUART,R (an ERROR, a malformed OK, no reply) leaves the port unknown, so
         UART and protocol writes for it are refused until it is read again."""
+        connection = written[0] if written is not None else None
         if prepared.body == "PQTMCFGUART,R":
             port = uart_port(result)
             self.current_uart = port if connection == self.runner.connection else None
+            return
+        if prepared.body == SVIN_QUERY:
+            if written == (self.runner.connection, self.restarts):
+                self.svin = svin_config(result)
+                self.svin_read = self._clock()
+                if self._svin_written:
+                    self.forget_svin(SVIN_WRITTEN)
+            return
+        if prepared.body.startswith("PQTMCFGSVIN,W"):
+            # A write the receiver may hold: anything written counts, whatever came back
+            # (no reply, or the port closed before one), except an ERROR reply, which
+            # rejected it. Not if the receiver has restarted since: the restart applied
+            # it, and the check after it reads it again. A port loss alone applies nothing.
+            if (written is not None and written[1] == self.restarts
+                    and not result.get("error_code")):
+                self._svin_written = True
+                self.forget_svin(SVIN_WRITTEN)
             return
         if result["outcome"] != "ok" or not result["replies"]:
             return
@@ -179,18 +305,27 @@ class Controller:
         """Run a batch through the runner and learn from its replies. `check(item)`,
         if given, runs immediately before each write; a reason it returns stops the
         batch. `send` is the runner's `hold` function while the port is held, else
-        the batch waits for the port. The connection count is noted at each write,
-        for `_learn`."""
+        the batch waits for the port. The connection and restart counts are noted at
+        each write, for `_learn`."""
         written = {}
 
         def recheck(item):
             reason = check(item) if check is not None else ""
             if not reason:
-                written[id(item)] = self.runner.connection
+                written[id(item)] = (self.runner.connection, self.restarts)
             return reason
 
         send = send or self.runner.run
-        results = await send(prepared, user, source, recheck=recheck, **options)
+        try:
+            results = await send(prepared, user, source, recheck=recheck, **options)
+        except asyncio.CancelledError:
+            # The app is stopping. A PQTMCFGSVIN write that reached the port still
+            # counts (it holds until a restart, as _learn would have noted).
+            for item in prepared:
+                if id(item) in written and item.body.startswith("PQTMCFGSVIN,W"):
+                    self._learn(item, {"outcome": "cancelled", "replies": [], "error": ""},
+                                written[id(item)])
+            raise
         for item, result in zip(prepared, results):
             self._learn(item, result, written.get(id(item)))
         return results
@@ -246,6 +381,11 @@ class Controller:
                         len(differ), len(self.profile_results), "; ".join(differ))
         else:
             LOG.info("receiver profile: all %d settings match", len(self.profile_results))
+        if self.svin["mode"] is None:
+            LOG.warning("receiver survey-in configuration unknown: %s", self.svin["reason"])
+        else:
+            LOG.info("receiver survey-in configuration: mode %d (%s)", self.svin["mode"],
+                     SVIN_MODES[self.svin["mode"]])
 
     async def check_profile(self, user, source="profile check", send=None, incomplete="",
                             connection=None):
@@ -255,11 +395,12 @@ class Controller:
         no `incomplete` reason; otherwise they are kept, but marked stale."""
         if connection is None:
             connection = self.runner.connection
-        # The profile's receiver mode query also updates `mode` (see _learn). A query
-        # that times out stops the check: the receiver has likely gone quiet, and each
+        # The profile's receiver mode query also updates `mode`, and the survey-in
+        # configuration query at the end updates `svin` (see _learn). A query that
+        # times out stops the check: the receiver has likely gone quiet, and each
         # further query would hold the port for another timeout.
-        results = await self._queries([item.query for item in self.profile], user, source,
-                                      send, stop_on=("timeout",))
+        results = await self._queries([item.query for item in self.profile] + [SVIN_QUERY],
+                                      user, source, send, stop_on=("timeout",))
         rows = []
         for item, result in zip(self.profile, results):
             row = {"label": item.label, "query": result["command"], "expected": item.expected,
@@ -280,6 +421,9 @@ class Controller:
             rows.append(row)
         self.profile_results = rows
         self.profile_checked = self._clock()
+        # The survey-in query is not part of the profile: unanswered, it leaves `svin`
+        # unknown with the reason, and the table is as complete as its own rows.
+        results = results[:len(self.profile)]
         missing = next((r for r in results if not answered(r)), None)
         if incomplete:
             reason, note = incomplete, f"The check is incomplete: {incomplete}."
@@ -345,11 +489,28 @@ class Controller:
         # unknown or different since the batch was staged.
         staged = entry["commands"]
         source = f"confirmed ({entry['details'].get('source', 'page')})"
-        reason = self._changed(staged)
+
+        def changed(item=None):
+            # Before the batch and again before its first write (a check that ended
+            # since the step was staged, or while this confirmation waited for the
+            # port, may have found fixed mode, another base position or another mean):
+            # the receiver state the position was staged against must still hold. Once
+            # the position is written, the save and restart that follow are not held
+            # back by a change of state; the rules (_changed) apply to every write.
+            if item is None or item is staged[0]:
+                if entry["details"].get("from") == "survey" and self.svin["mode"] == 2:
+                    return f"Not sent: {ALREADY_FIXED}"
+                reason = (self._survey_outdated(entry["details"])
+                          or self._shift_outdated(entry["details"].get("current_base")))
+                if reason:
+                    return reason
+            return self._changed(staged)
+
+        reason = changed()
         if reason:
             self.runner.log_unsent(staged, user, source, reason)
             raise RequestError(reason)
-        results = await self._run(staged, user, source, check=lambda item: self._changed(staged))
+        results = await self._run(staged, user, source, check=changed)
         reply = {"title": entry["title"], "results": results,
                  "outcome": "ok" if all(r["outcome"] == "ok" for r in results) else "failed"}
         if entry["details"].get("source") == "profile apply":
@@ -403,18 +564,99 @@ class Controller:
             raise RequestError("No survey-in mean has been received (PQTMSVINSTATUS).")
         if survey["age_s"] > SURVEY_MAX_AGE_S:
             raise RequestError("The survey-in mean is stale: PQTMSVINSTATUS stopped arriving.")
+        if self._cutoff is not None and survey["at"] <= self._cutoff:
+            raise RequestError("No PQTMSVINSTATUS has arrived since the port reopened or the "
+                               "receiver restarted; the last mean may be from before.")
         if survey["ecef"] is None:
             raise RequestError("PQTMSVINSTATUS has no mean position yet.")
         return survey
+
+    def _current_base(self):
+        """(the base position the receiver now sends in RTCM 1005, or None, why not):
+        the latest 1005 if the receiver is connected, it arrived since the port last
+        opened and the receiver last restarted, and it is still fresh."""
+        current = self.status.current_base() if self.status is not None else None
+        if current is None:
+            return None, "no RTCM 1005 received"
+        if not current["connected"]:
+            return None, "the receiver is not connected, so what it sends now is not known"
+        if self._cutoff is not None and current["at"] <= self._cutoff:
+            return None, "no RTCM 1005 received since the port reopened or the receiver restarted"
+        if current["stale"]:
+            return None, f"the last RTCM 1005 is stale ({current['age_s']:.0f} s old)"
+        return current, ""
+
+    def _survey_outdated(self, details):
+        """Why a batch staged from the survey-in mean may no longer be sent: the mean
+        is no longer usable (stale, from before a restart, unfinished) or it moved."""
+        if details.get("from") != "survey":
+            return ""
+        if self.svin["mode"] != details.get("svin_mode"):
+            # The configuration it was staged under was read again, lost (a restart or
+            # a port loss, which may hide a restart into fixed mode) or found since.
+            known = ("" if self.svin["mode"] is not None
+                     else f" ({self.svin['reason']})")
+            return ("Not sent: the survey-in configuration is no longer what this was "
+                    f"staged under{known}. Stage the change again.")
+        try:
+            survey = self.survey_mean()
+        except RequestError as error:
+            return f"Not sent: {error} Stage the change again."
+        if survey["valid"] != 2:
+            return f"Not sent: {survey_unfinished(survey)} Stage the change again."
+        if math.dist(survey["ecef"], details["ecef"]) > BASE_MOVED_M:
+            return ("Not sent: the survey-in mean changed since this was staged. Stage the "
+                    "change again.")
+        return ""
+
+    def _shift_outdated(self, shown):
+        """Why the shift a confirmation showed, against the base position `shown` (None
+        if none was known when it was staged), may no longer hold: the receiver now
+        sends another position, or what it sends is no longer known."""
+        if shown is None:
+            return ""
+        current, why = self._current_base()
+        if current is None:
+            return (f"Not sent: the base position the receiver sends is no longer known "
+                    f"({why}), so the shift shown may be out of date. Stage the change again.")
+        if math.dist(current["ecef"], shown) > BASE_MOVED_M:
+            return ("Not sent: the base position the receiver sends (RTCM 1005) changed "
+                    "since this was staged, so the shift shown was out of date. Stage the "
+                    "change again.")
+        return ""
+
+    def shift_details(self, new):
+        """The base position the receiver now sends in RTCM 1005 and the shift from it
+        to `new` (ECEF): east, north, up, horizontal and 3D, in metres. Returns the
+        details for the page (rounded) and the unrounded shift, which is None, with
+        `shift_unknown` saying why, without a usable 1005 (see _current_base)."""
+        current, why = self._current_base()
+        if current is not None:
+            east, north, up = ecef_to_enu(current["ecef"], new)
+            shift = {"east_m": east, "north_m": north, "up_m": up,
+                     "horizontal_m": math.hypot(east, north),
+                     "total_m": math.dist(current["ecef"], new)}
+            return {"current_base": [round(v, 4) for v in current["ecef"]],
+                    "shift": {k: round(v, 4) for k, v in shift.items()},
+                    "shift_unknown": ""}, shift
+        return {"current_base": None, "shift": None, "shift_unknown": why}, None
 
     def step_fixed(self, request):
         source = request.get("source")
         warnings = []
         if source == "survey":
+            if self.svin["mode"] == 2:
+                raise RequestError(ALREADY_FIXED)
             survey = self.survey_mean()
             if survey["valid"] != 2:
                 raise RequestError(survey_unfinished(survey))
             x, y, z = survey["ecef"]
+            if self.svin["mode"] is None:
+                warnings.append("The survey-in configuration is not known "
+                                f"({self.svin['reason']}), so the app cannot tell whether "
+                                "this mean is a measurement or the receiver's configured "
+                                "fixed position repeated. If the receiver is already in "
+                                "fixed mode, this re-sends that position.")
         elif source == "ecef":
             x, y, z = (_number(request.get(k), k) for k in ("x", "y", "z"))
         elif source == "llh":
@@ -424,11 +666,15 @@ class Controller:
             x, y, z = llh_to_ecef(lat, lon, height)
         else:
             raise RequestError("source must be survey, ecef or llh.")
-        radius = math.sqrt(x * x + y * y + z * z)
-        if not MIN_RADIUS_M <= radius <= MAX_RADIUS_M:
+        if not near_earth(x, y, z):
             raise RequestError("That position is not near the Earth's surface; check it.")
         x, y, z = (round(v, 4) for v in (x, y, z))
         details = dict(position_details(x, y, z), **{"from": source})
+        if source == "survey":
+            details["svin_mode"] = self.svin["mode"]  # the evidence this rests on
+        shift_details, shift = self.shift_details((x, y, z))
+        details.update(shift_details)
+        warnings.append(shift_warning(shift, shift_details["shift_unknown"]))
         warnings.append("Any error in the base position becomes an error in every rover "
                         "position.")
         warnings.append(SVIN_RESTART_NOTE)
@@ -445,8 +691,15 @@ class Controller:
         counts = {}
         for row in self.profile_results:
             counts[row["status"]] = counts.get(row["status"], 0) + 1
+        svin = dict(self.svin, mode_name=SVIN_MODES.get(self.svin["mode"]),
+                    read_age_s=None if self.svin_read is None
+                    else round(self._clock() - self.svin_read, 1))
+        if svin["ecef"] is not None:
+            svin.update(position_details(*svin["ecef"]))
+        else:
+            svin.update(lat=None, lon=None, height_m=None)
         return {
-            "firmware": self.firmware or None, "mode": self.mode,
+            "firmware": self.firmware or None, "mode": self.mode, "svin": svin,
             "current_uart": self.current_uart, "busy_with": self.runner.busy_with,
             "checking": self._startup is not None and not self._startup.done(),
             "log_error": self.runner.log.error, "check_note": self.check_note,

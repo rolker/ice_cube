@@ -99,6 +99,22 @@ def llh_to_ecef(lat, lon, height):
             (n * (1 - _E2) + height) * sin_lat)
 
 
+def ecef_to_enu(origin, point):
+    """East, north and up of `point` seen from `origin` (both ECEF metres): the
+    difference rotated into the local tangent plane at the origin. A rotation, so it
+    is exact at any distance; a mistyped digit can put a position thousands of
+    kilometres away, where a flat approximation would be meaningless."""
+    lat, lon, _height = ecef_to_llh(*origin)
+    lat, lon = math.radians(lat), math.radians(lon)
+    dx, dy, dz = (p - o for p, o in zip(point, origin))
+    sin_lat, cos_lat = math.sin(lat), math.cos(lat)
+    sin_lon, cos_lon = math.sin(lon), math.cos(lon)
+    east = -sin_lon * dx + cos_lon * dy
+    north = -sin_lat * cos_lon * dx - sin_lat * sin_lon * dy + cos_lat * dz
+    up = cos_lat * cos_lon * dx + cos_lat * sin_lon * dy + sin_lat * dz
+    return east, north, up
+
+
 def decode_1005(frame):
     """Station ARP from a 1005 or 1006 frame: ECEF in metres, and for 1006 the
     antenna height above the marker."""
