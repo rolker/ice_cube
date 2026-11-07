@@ -162,7 +162,8 @@ there to turn the files' lat/lon into local metres.
 Private data, relative numbers. Last season (Jan 9 outline, Feb 14, Mar 2; all via the
 state CORS network, one frame) and this fall (Oct 18 + 26 ground; Nov 4 home-base
 walk for the crossover validation only). Settings: cell 0.5 m, capture 0.75 m, k = 3,
-prior 3 cm, slope 0.05 m/m on ice and 0.10 on the lawn. Point counts: Jan 9 outline 35
+prior 3 cm, slope 0.05 m/m for the ice runs and 0.10 for the two lawn runs (`slope`
+is one value per run). Point counts: Jan 9 outline 35
 vertices; Feb 14 176 points (deck reference and the closing deck shot dropped); Mar 2 71
 (reference dropped); October 304 fixed points; Nov 4 11133 fixed epochs after dropping
 the first 90 s of every fix.
@@ -262,5 +263,9 @@ surface is flagged at more than 80 % of the crossing nodes when the pass bias si
 - The frame check is by label. Two surveys labelled the same frame but on different
   base coordinates will be differenced; store the frame with every survey.
 - The flag counter (not the surface) depends slightly on the order soundings arrive
-  in, because it is a running test.
+  in, because it is a running test. On streamed 4 Hz input every epoch is an
+  independent sounding to the gridder, so the counter also catches ordinary epoch noise
+  beyond 3 sigma; on such a survey (the Nov 4 count above) it is not a two-surface
+  count. Average to about 1 s before gridding, or read the "worst" column of the flag
+  table.
 - No basemap, no absolute coordinates, by design.

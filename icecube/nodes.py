@@ -46,7 +46,11 @@ second surface closer than about k * sqrt(2) * sb = 13 cm; the report states sb.
 
 The surface (z, sigma, n) does not depend on the order of the soundings; the flag
 counter does, slightly, because it is a running test (soundings are applied in time
-order, untimed ones in file order).
+order, untimed ones in file order). On streamed input (4 Hz epochs) every epoch is
+an independent sounding here, so a node fed by many epochs of one pass has a small
+noise variance and the counter also catches ordinary epoch noise beyond k sigma: on
+such a survey the flag count is not a two-surface count. Average to about 1 s, or
+read the flag table's "worst" column, before reading it as one.
 """
 from __future__ import annotations
 
@@ -98,7 +102,7 @@ class Surface:
     npass: np.ndarray    # passes contributing per node
     maxnr: np.ndarray = None   # largest normalised disagreement seen at the node
     datum_sigma: float = 0.0   # survey-level bias sigma, sqrt(sum_p (n_p/n)^2 sb_p^2)
-    n_outside: int = 0         # soundings that fed no node (outside the grid or capture)
+    n_outside: int = 0         # soundings that fed no node (outside the grid)
     nodes_per_sounding: float = 1.0   # mean nodes fed per sounding (neighbouring nodes share soundings)
     name: str = ""
     date: str = ""
@@ -171,9 +175,12 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
                 w = W[a, b]
                 pw = PW[a * nx + b]
                 var_node = 1.0 / w + sum((wp / w) ** 2 * s2 for wp, s2 in pw.values())
+                # bias part of the difference, written so it cannot go negative:
+                # (1 - W_p/W)^2 sb_p^2 + sum_{q != p} (W_q/W)^2 sb_q^2
                 wp_same = pw.get(pk[k], (0.0, 0.0))[0]
-                var_diff = var_node + vk + (1.0 - 2.0 * wp_same / w) * sb2
-                nr = abs(z[k] - WZ[a, b] / w) / np.sqrt(max(var_diff, 1e-12))
+                var_bias_diff = (1.0 - wp_same / w) ** 2 * sb2 + sum(
+                    (wq / w) ** 2 * s2 for q, (wq, s2) in pw.items() if q != pk[k])
+                nr = abs(z[k] - WZ[a, b] / w) / np.sqrt(1.0 / w + vk + var_bias_diff)
                 if nr > k_sigma:
                     F[a, b] += 1
                 if nr > MR[a, b]:

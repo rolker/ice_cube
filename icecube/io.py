@@ -278,10 +278,16 @@ def _parse_swmaps_time(s):
     parts = s.strip().split()
     if len(parts) < 2:
         return float("nan")
-    ampm = parts[2].upper() if len(parts) >= 3 and parts[2].upper() in ("AM", "PM") else ""
+    tag = parts[2].upper().replace(".", "") if len(parts) >= 3 else ""
+    ampm = tag if tag in ("AM", "PM") else ""
+    if tag and not ampm and len(tag) <= 2:
+        return float("nan")   # a short third token that is not AM/PM: do not guess
     txt = parts[0] + " " + parts[1] + (" " + ampm if ampm else "")
     hour = "%I" if ampm else "%H"
     tail = " %p" if ampm else ""
+    # month-first is tried first (SW Maps on a US phone); the day-first fallback is only
+    # reached for days > 12, so a day-first file crossing midnight on the 12th/13th
+    # would split a pass. The survey date itself comes from the config.
     for day in ("%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y"):
         for sec in (":%S.%f", ":%S"):
             try:
@@ -302,18 +308,20 @@ def read_swmaps_csv(path, site: Site, survey="", frame="", date=""):
     """SW Maps CSV export (feature layer or FEATURE_POINTS)."""
     lat, lon, h, t, sz, sh, q, rem = [], [], [], [], [], [], [], []
     with open(path, newline="") as fh:
-        for row in csv.DictReader(fh):
+        reader = csv.DictReader(fh)
+        has_time = "Time" in (reader.fieldnames or [])
+        for row in reader:
             la = _col(row, "Latitude", "Lat"); lo = _col(row, "Longitude", "Lon"); el = _col(row, "Elevation")
             if la is None or lo is None or el is None:
                 continue
             lat.append(float(la)); lon.append(float(lo)); h.append(float(el))
-            t.append(_parse_swmaps_time(_col(row, "Time", default="")))
+            t.append(_parse_swmaps_time(_col(row, "Time", default="")) if has_time else float("nan"))
             sz.append(float(_col(row, "Vertical Accuracy", default="nan")))
             sh.append(float(_col(row, "Horizontal Accuracy", default="nan")))
             q.append(int(float(_col(row, "Fix ID", default="-1"))))
             rem.append(_col(row, "Remarks", "REMARKS", "Feature Name", default="") or "")
     x, y, z = site.local(np.array(lat, float), np.array(lon, float), np.array(h, float))
-    bad = int(np.sum(np.isnan(t)))
+    bad = int(np.sum(np.isnan(t))) if has_time else 0
     if bad:
         raise ValueError(f"{path}: {bad} of {len(t)} Time values did not parse (expected "
                          f"'MM/DD/YYYY HH:MM:SS[.fff] [AM|PM] ZONE'); a NaN time would silently "

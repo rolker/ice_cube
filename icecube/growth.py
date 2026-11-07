@@ -52,6 +52,8 @@ class Growth:
         w = 1 / s**2
         f = self.node_factor
         noise_w = float(np.sqrt(f / np.sum(w)))
+        # node sigma already holds var_bias, so the datum added below is counted once more
+        # on top: slightly conservative, and invisible while the datum dominates.
         noise_m = float(np.sqrt(f * np.sum(s**2)) / len(d))
         return dict(n=int(len(d)), mean=float(d.mean()), wmean=float(np.sum(w * d) / np.sum(w)),
                     median=float(np.median(d)), sd=float(d.std()),

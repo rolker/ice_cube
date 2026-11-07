@@ -5,8 +5,15 @@
 data/
 private/
 
-# Local paths; config.example.toml is the committed template
+# Local paths; the *.example.toml files are the committed templates. A real site
+# config holds the origin, so no other TOML at the root is tracked.
 config.toml
+/*.toml
+!/*.example.toml
+
+# Ice-Cube outputs (local coordinates, but generated)
+output/
+*.npz
 
 # Siting scripts: yard location, data paths and generated site-plan pages
 analysis/site_config.json

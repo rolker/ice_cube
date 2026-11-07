@@ -217,11 +217,18 @@ def apply_override(cfg, item):
     if "=" not in item:
         raise SystemExit(f"--set expects KEY=VALUE, got {item!r}")
     key, val = item.split("=", 1)
-    parsed = tomllib.loads(f"v = {val}")["v"]
+    try:
+        parsed = tomllib.loads(f"v = {val}")["v"]
+    except tomllib.TOMLDecodeError:
+        parsed = val.strip()   # a bare string, e.g. --set outline.name=rink
     parts = key.strip().split(".")
     node = cfg
     for p in parts[:-1]:
+        if p not in node:
+            print(f"--set: creating new section {p!r} (check the spelling)")
         node = node.setdefault(p, {})
+        if not isinstance(node, dict):
+            raise SystemExit(f"--set cannot address {key!r}: {p!r} is a list ([[surveys]] entries are not settable)")
     node[parts[-1]] = parsed
 
 

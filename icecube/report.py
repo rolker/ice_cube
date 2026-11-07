@@ -86,7 +86,7 @@ def fig_biases(res: CrossoverResult, path, title=None):
     fig, ax = plt.subplots(figsize=(max(5, 0.35 * n + 2), 3.6))
     xs = np.arange(n)
     for k in range(n):
-        ax.errorbar(k, res.bias_raw[k] * 100, yerr=res.sigma[k] * 100, fmt="o" if res.separable[k] else "o",
+        ax.errorbar(k, res.bias_raw[k] * 100, yerr=res.sigma[k] * 100, fmt="o",
                     mfc="#2f5d8a" if res.separable[k] else "white", mec="#2f5d8a", ecolor="#2f5d8a",
                     capsize=2, ms=5, lw=1)
     ax.axhline(0, color="black", lw=0.8)

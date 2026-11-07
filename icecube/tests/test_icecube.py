@@ -130,6 +130,8 @@ class TestReaders(unittest.TestCase):
         a = io._parse_swmaps_time("10/18/2026 2:10:51.500 PM EDT")
         b = io._parse_swmaps_time("10/18/2026 14:10:51.500 EDT")
         self.assertAlmostEqual(a, b)
+        self.assertAlmostEqual(io._parse_swmaps_time("10/18/2026 2:10:51.500 p.m. EDT"), b)
+        self.assertTrue(np.isnan(io._parse_swmaps_time("10/18/2026 2:10:51.500 XX EDT")))
         self.assertTrue(np.isnan(io._parse_swmaps_time("yesterday")))
         lo, la = self._lonlat([1.0], [1.0])
         p = self.dir / "bad.csv"
@@ -139,6 +141,28 @@ class TestReaders(unittest.TestCase):
             w.writerow(["", "not a time", la[0], lo[0], 5.0, 4.0, 0.0])
         with self.assertRaises(ValueError):
             io.read_swmaps_csv(p, SITE, "s")
+        # a CSV without a Time column loads untimed
+        p2 = self.dir / "notime.csv"
+        with open(p2, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Remarks", "Latitude", "Longitude", "Elevation"])
+            w.writerow(["", la[0], lo[0], 5.0])
+        pts = io.read_swmaps_csv(p2, SITE, "s")
+        self.assertEqual(len(pts), 1)
+        self.assertTrue(np.isnan(pts.t[0]))
+
+    def test_set_override_parser(self):
+        cfg = {"grid": {"cell": 0.5}, "surveys": [{"id": "a"}]}
+        cli.apply_override(cfg, "grid.cell=0.25")
+        cli.apply_override(cfg, "outline.name=rink")
+        cli.apply_override(cfg, 'output.dir="out dir"')
+        self.assertEqual(cfg["grid"]["cell"], 0.25)
+        self.assertEqual(cfg["outline"]["name"], "rink")
+        self.assertEqual(cfg["output"]["dir"], "out dir")
+        with self.assertRaises(SystemExit):
+            cli.apply_override(cfg, "surveys.0.id=b")
+        with self.assertRaises(SystemExit):
+            cli.apply_override(cfg, "novalue")
 
     def test_sigma_floor(self):
         p = local_points("s", [0.0], [0.0], [0.0], sz=[0.0], sh=[np.nan]).with_defaults(0.015, 0.01)
@@ -411,6 +435,8 @@ class TestNodes(unittest.TestCase):
             s = nodes.grid_surface([p], [np.full(len(p), 0.03)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0)
             frac = np.mean(s.flags[on_cross & (s.n > 0)] > 0)
             self.assertEqual(frac > 0.8, expect, (plant, frac))
+            if not expect:
+                self.assertLess(frac, 0.2)
 
     def test_points_outside_grid_counted(self):
         g = nodes.Grid.from_extent(0, 1, 0, 1, 0.5)
