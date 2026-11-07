@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to site_config.json (git-ignored) and fill in. Local coordinates are metres east and north of origin_utm19n.",
+  "origin_utm19n": [300000.0, 4700000.0],
+  "epsg": 32619,
+  "ppp_to_massdot": [0.476, -1.224, 1.174],
+  "oct_minus_nov_ground": 0.095,
+  "control_local_home": [0.0, 0.0],
+  "spigot_local": [0.0, 0.0],
+  "wall_label_local": [0.0, 0.0],
+  "camper_local": [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+  "clicks_utc_offset_hours": -5,
+  "data_dir": "~/ice_cube_data",
+  "out_dir": "out",
+  "files": {
+    "nov4_points": "2026-11-04 backyard_Layer1.csv",
+    "nov4_ubx": "2026_11_04_15_48_36.ubx",
+    "oct_topo": "Backyard survey_topo.csv",
+    "oct_things": "Backyard survey_things.csv",
+    "jan_outlines": "2026-01-09_backyard_test_deck.geojson",
+    "feb_ice": "2026-03-02_Skating_rink_Ice_rink.geojson",
+    "mar_rink": "2026-03-02_skating_rink_rink.geojson"
+  }
+}

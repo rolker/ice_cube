@@ -1,0 +1,17 @@
+# Private: yard location and data
+analysis/site_config.json
+analysis/out/
+data/
+*.ubx
+*.swmz
+*.ods
+
+__pycache__/
+*.pyc
+
+# Android build output
+logger/.gradle/
+logger/build/
+logger/app/build/
+logger/local.properties
+logger/.idea/
