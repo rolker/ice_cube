@@ -1,0 +1,86 @@
+# Ice-Cube config. Copy to a private file (anything with real coordinates must stay
+# out of the repository) and run:  python -m icecube run my-rink.toml [--out DIR]
+# Command-line arguments take priority over these values. Paths are relative to this
+# file unless absolute.
+
+[site]
+# Local (0, 0) in UTM metres of the given zone; never commit real values.
+utm_zone = 19
+origin = [0.0, 0.0]
+# Alternatively take `origin_utm19n` from the siting scripts' site_config.json so both
+# tools share an origin:
+# site_config = "analysis/site_config.json"
+# Height subtracted from every point (m); 0 keeps the file's heights.
+z0 = 0.0
+
+[defaults]
+sigma_z = 0.015           # m, per-point vertical sigma when the file has none
+sigma_h = 0.01            # m, per-point horizontal sigma when the file has none
+wander_prior = 0.03       # m, prior sigma of the per-pass vertical bias
+crossover_radius = 0.5    # m, pass-cell size and pairing distance for crossovers
+slope = 0.05              # m/m, vertical allowance per metre of horizontal separation
+separable_ratio = 0.8     # a pass whose posterior sigma stays above this x prior is "not separable"
+min_pairs = 3             # ... or that has fewer overlaps than this
+max_dz = 0.25             # m, pairs differing by more are not the same surface and are dropped
+reject_sigma = 4.0        # pairs with a larger normalised residual are dropped and the solve repeated
+
+[grid]
+cell = 0.5                # m
+capture_radius = 0.75     # m, a sounding feeds every node within this distance
+k_sigma = 3.0             # inconsistency test threshold
+margin = 1.0              # m around the outline (or the points) when extent is not given
+# extent = [xmin, xmax, ymin, ymax]   # local metres
+
+[outline]                 # optional: a Polygon feature used for masks and figures
+path = "data/outlines.geojson"
+name = "rink"
+
+[output]
+dir = "output/ice-cube"
+
+# One [[surveys]] block per file. `surface` groups surveys into one surface (e.g. two
+# ground survey days); `frame` must match within a surface and between growth pairs.
+# role = "surface" (default) or "validation" (crossover check only, no mask/growth).
+[[surveys]]
+id = "ground_a"
+surface = "ground"
+date = "2026-10-18"
+frame = "NAD83(2011)"
+reader = "swmaps_csv"              # swmaps_geojson | swmaps_csv | enu_csv
+path = "data/topo.csv"
+keep_quality = [4]                 # SW Maps Fix ID values to keep
+exclude_remarks = ["deck"]         # drop points whose remark contains any of these
+# z_min = -1.0 ; z_max = 1.0        # local height window
+# drop_seq = [12, 13]               # drop points by file order
+# offset = [0.0, 0.0, 0.0]          # dx, dy, dz added (frame shift, if you know it)
+# pole_height = 0.0                 # subtracted from heights (antenna -> ground)
+[surveys.pass_rule]
+gap_s = 120.0                      # new pass after a time gap (s)
+jump_m = 3.0                       # new pass after a horizontal jump (m)
+# markers = ["ref"]                # new pass at a point whose remark contains this
+# fixed_only = true                # keep only quality 4, non-fixed points break passes
+# max_s = 600.0                    # cut passes longer than this (s)
+# settle_s = 90.0                  # drop the first seconds of every pass
+# min_points = 3
+
+[[surveys]]
+id = "ice_1"
+date = "2026-02-14"
+frame = "NAD83(2011)"
+reader = "swmaps_geojson"
+path = "data/ice_1.geojson"
+geometry = "point"                 # or "polygon" with names = ["rink"] for vertices
+exclude_remarks = ["ref"]
+[surveys.pass_rule]
+jump_m = 3.0
+
+[[growth]]
+from = "ground"
+to = "ice_1"
+# offset = 0.0   # required when the frames differ: added to `from` heights
+
+[[fill]]
+surface = "ground"
+# level = 0.0    # local metres; default: `percentile` of the surface + `margin`
+margin = 0.05
+percentile = 99.0
