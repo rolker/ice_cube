@@ -1,9 +1,12 @@
 """Differences between surfaces on one grid, masks, volumes and fill-to-level.
 
 difference(a, b): b minus a per node, sigma = sqrt(sigma_a^2 + sigma_b^2), only where
-both have soundings. The mean growth over the mask gets sigma_of_mean =
-sqrt(noise part + datum_a^2 + datum_b^2): node noise averages down over nodes, the
-pass-bias (datum) part does not. Surfaces in different frames are refused unless an explicit
+both have soundings. Two means are reported, each with its own sigma: the weighted
+mean (weights 1/sigma^2) with sqrt(f / sum(1/sigma^2) + datum^2), and the plain mean
+with sqrt(f * sum(sigma^2) / n^2 + datum^2), where datum^2 = datum_a^2 + datum_b^2
+and f = nodes per sounding (neighbouring nodes share soundings, so there are only
+about n / f independent nodes). The node-noise part averages down over nodes, the
+pass-bias (datum) part does not, and in practice dominates. Surfaces in different frames are refused unless an explicit
 `offset` (added to a) is given: frames differ by about a metre here and silently
 differencing them would look like a metre of ice.
 """
@@ -40,17 +43,22 @@ class Growth:
     mask: np.ndarray    # where both are defined (and inside the outline if given)
     offset: float
     datum_sigma: float = 0.0   # sqrt(datum_a^2 + datum_b^2)
+    node_factor: float = 1.0   # nodes per sounding, the effective-node correction
 
     def stats(self):
         d = self.dz[self.mask]; s = self.sigma[self.mask]
         if len(d) == 0:
             return dict(n=0)
         w = 1 / s**2
-        noise = float(1 / np.sqrt(np.sum(w)))
+        f = self.node_factor
+        noise_w = float(np.sqrt(f / np.sum(w)))
+        noise_m = float(np.sqrt(f * np.sum(s**2)) / len(d))
         return dict(n=int(len(d)), mean=float(d.mean()), wmean=float(np.sum(w * d) / np.sum(w)),
                     median=float(np.median(d)), sd=float(d.std()),
-                    sigma_median=float(np.median(s)), sigma_of_mean_noise=noise,
-                    sigma_of_mean=float(np.sqrt(noise**2 + self.datum_sigma**2)),
+                    sigma_median=float(np.median(s)),
+                    sigma_of_mean_noise=noise_m, sigma_of_wmean_noise=noise_w,
+                    sigma_of_mean=float(np.sqrt(noise_m**2 + self.datum_sigma**2)),
+                    sigma_of_wmean=float(np.sqrt(noise_w**2 + self.datum_sigma**2)),
                     p05=float(np.percentile(d, 5)), p95=float(np.percentile(d, 95)))
 
 
@@ -65,7 +73,8 @@ def difference(a: Surface, b: Surface, offset=None, mask=None) -> Growth:
     m = (a.n > 0) & (b.n > 0)
     if mask is not None:
         m &= mask
-    return Growth(a.name, b.name, dz, sig, m, off, float(np.hypot(a.datum_sigma, b.datum_sigma)))
+    return Growth(a.name, b.name, dz, sig, m, off, float(np.hypot(a.datum_sigma, b.datum_sigma)),
+                  float(max(a.nodes_per_sounding, b.nodes_per_sounding)))
 
 
 def volume(dz, mask, cell, positive_only=True):

@@ -10,8 +10,10 @@ closer than `radius` horizontally give the observation
 where d_ij is their horizontal separation and `slope` (m/m) allows for the surface
 not being flat between them. To keep the number of observations bounded, the points of
 each pass are first averaged in cells of `radius` metres (a pass-cell mean: mean x, y,
-z, t, and sigma of the mean), and pairs are formed between pass-cells of different
-passes within `radius`.
+z, t, and a variance that is the smaller of "sigma of the mean" and the best single
+point's variance, i.e. the points of a cell are not allowed to average down below one
+point: 4 Hz epochs a quarter second apart are not independent), and pairs are formed
+between pass-cells of different passes within `radius`.
 
 Prior. Only differences b_p - b_q are observed, so without a prior the system has a
 free datum and poorly connected passes could drift anywhere (that is how
@@ -58,7 +60,7 @@ class CrossoverResult:
     chi2_dof: float                  # weighted residual chi-square / dof (NaN if no obs)
     rms_before: float
     rms_after: float
-    components: int                  # connected components among passes with overlaps
+    components: int                  # connected components among passes (an isolated pass is one)
     n_pairs_per_pass: np.ndarray
     residuals: np.ndarray = field(default_factory=lambda: np.zeros(0))
     pair_dz: np.ndarray = field(default_factory=lambda: np.zeros(0))
@@ -82,13 +84,15 @@ def pass_cells(pts: Points, radius):
     inv = inv.ravel()
     w = 1.0 / pts.sz**2
     W = np.bincount(inv, w)
+    best = np.full(len(uniq), np.inf)
+    np.minimum.at(best, inv, pts.sz**2)
     x = np.bincount(inv, w * pts.x) / W
     y = np.bincount(inv, w * pts.y) / W
     z = np.bincount(inv, w * pts.z) / W
     tt = np.where(np.isfinite(pts.t), pts.t, 0.0)
     t = np.bincount(inv, w * tt) / W
     n = np.bincount(inv)
-    return x, y, z, t, 1.0 / W, uniq[:, 0], np.c_[uniq[:, 1], uniq[:, 2]], n
+    return x, y, z, t, np.maximum(1.0 / W, best), uniq[:, 0], np.c_[uniq[:, 1], uniq[:, 2]], n
 
 
 def _pairs_within(x, y, radius):
@@ -114,7 +118,7 @@ def _pairs_within(x, y, radius):
                 out_i.append(ii[keep]); out_j.append(jj[keep])
     if not out_i:
         return np.zeros(0, int), np.zeros(0, int)
-    return np.concatenate(out_i), np.concatenate(out_j)
+    return np.concatenate(out_i).astype(int), np.concatenate(out_j).astype(int)
 
 
 def adjust(surveys: list[Points], radius=0.5, prior=0.03, slope=0.05,
@@ -127,6 +131,8 @@ def adjust(surveys: list[Points], radius=0.5, prior=0.03, slope=0.05,
     keys = []
     cx, cy, cz, cv, ck = [], [], [], [], []
     for s in surveys:
+        if len(s) == 0:
+            raise ValueError(f"survey {s.survey}: no points left after filtering")
         if np.any(s.pass_id < 0):
             raise ValueError(f"survey {s.survey}: run passes.segment first")
         if not np.all(np.isfinite(s.sz)):
@@ -137,6 +143,7 @@ def adjust(surveys: list[Points], radius=0.5, prior=0.03, slope=0.05,
         cx.append(x); cy.append(y); cz.append(z); cv.append(v)
         ck.append(np.array([keys.index((s.survey, int(p))) for p in pidc]))
     cx, cy, cz, cv, ck = map(np.concatenate, (cx, cy, cz, cv, ck))
+    ck = ck.astype(int)
     npass = len(keys)
     i, j = _pairs_within(cx, cy, radius)
     m = ck[i] != ck[j]
@@ -168,6 +175,7 @@ def adjust(surveys: list[Points], radius=0.5, prior=0.03, slope=0.05,
     npp = np.bincount(np.r_[pi, pj], minlength=npass)
     separable = (sig < separable_ratio * prior) & (npp >= min_pairs)
     b = np.where(separable, b_raw, 0.0)
+    sig = np.where(separable, sig, prior)
     r = dz - (b[pi] - b[pj])
     dof = max(len(dz) - int(separable.sum()), 1)
     chi2 = float(np.sum(w * r**2) / dof) if len(dz) else float("nan")

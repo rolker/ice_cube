@@ -31,10 +31,22 @@ datum_sigma = sqrt(sum_p (n_p / n)^2 * sb_p^2), the same formula at survey level
 growth.difference adds it to the uncertainty of the mean growth.
 
 Inconsistency test. Before a sounding is fused, if the node already has an estimate
-and |z_i - z| > k_sigma * sqrt(var_node + v_i + sb_p^2), the node's `flags` counter
-is incremented. The sounding is still fused (there is one surface by assumption; the
-counter says where that assumption looked wrong). CUBE would instead open a second
-hypothesis; that is the part this tool drops.
+and
+
+    |z_i - z| > k_sigma * sqrt(var_noise + v_i + var_bias + (1 - 2 W_p / W) * sb_p^2)
+
+the node's `flags` counter is incremented. The last term is the bias part of the
+difference: a sounding from a pass the node has not seen adds its full sb_p^2, one
+from the pass that already makes up the whole node adds nothing (the shared bias
+cancels), and in between the formula follows from var(b_p - sum_q (W_q/W) b_q). The
+sounding is still fused (there is one surface by assumption; the counter says where
+that assumption looked wrong). CUBE would instead open a second hypothesis; that is
+the part this tool drops. Detection floor: with sb = 3 cm the test cannot see a
+second surface closer than about k * sqrt(2) * sb = 13 cm; the report states sb.
+
+The surface (z, sigma, n) does not depend on the order of the soundings; the flag
+counter does, slightly, because it is a running test (soundings are applied in time
+order, untimed ones in file order).
 """
 from __future__ import annotations
 
@@ -86,6 +98,8 @@ class Surface:
     npass: np.ndarray    # passes contributing per node
     maxnr: np.ndarray = None   # largest normalised disagreement seen at the node
     datum_sigma: float = 0.0   # survey-level bias sigma, sqrt(sum_p (n_p/n)^2 sb_p^2)
+    n_outside: int = 0         # soundings that fed no node (outside the grid or capture)
+    nodes_per_sounding: float = 1.0   # mean nodes fed per sounding (neighbouring nodes share soundings)
     name: str = ""
     date: str = ""
     frame: str = ""
@@ -132,18 +146,23 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
     PW = [dict() for _ in range(ny * nx)]
     di, dj = np.meshgrid(np.arange(-rc, rc + 1), np.arange(-rc, rc + 1))
     di, dj = di.ravel(), dj.ravel()
+    n_outside = 0
+    n_contrib = 0
     for k in order:
         ii = i0[k] + di
         jj = j0[k] + dj
         ok = (ii >= 0) & (ii < nx) & (jj >= 0) & (jj < ny)
         if not ok.any():
+            n_outside += 1
             continue
         ii, jj = ii[ok], jj[ok]
         d = np.hypot(grid.x0 + ii * grid.cell - x[k], grid.y0 + jj * grid.cell - y[k])
         ok = d <= r
         if not ok.any():
+            n_outside += 1
             continue
         ii, jj, d = ii[ok], jj[ok], d[ok]
+        n_contrib += len(ii)
         sz, sh = szsh[k]
         v = sz**2 + (slope * (d + sh))**2
         sb2 = sb[k] ** 2
@@ -152,7 +171,9 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
                 w = W[a, b]
                 pw = PW[a * nx + b]
                 var_node = 1.0 / w + sum((wp / w) ** 2 * s2 for wp, s2 in pw.values())
-                nr = abs(z[k] - WZ[a, b] / w) / np.sqrt(var_node + vk + sb2)
+                wp_same = pw.get(pk[k], (0.0, 0.0))[0]
+                var_diff = var_node + vk + (1.0 - 2.0 * wp_same / w) * sb2
+                nr = abs(z[k] - WZ[a, b] / w) / np.sqrt(max(var_diff, 1e-12))
                 if nr > k_sigma:
                     F[a, b] += 1
                 if nr > MR[a, b]:
@@ -182,4 +203,6 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
             m = pk == pkey
             ds += (m.sum() / npts) ** 2 * float(sb[m][0]) ** 2
     return Surface(grid=grid, z=Z, sigma=S, n=N, flags=F, last_t=LT, npass=NP, maxnr=MR,
-                   datum_sigma=float(np.sqrt(ds)), name=name, date=date, frame=frame)
+                   datum_sigma=float(np.sqrt(ds)), n_outside=n_outside,
+                   nodes_per_sounding=float(n_contrib / max(npts - n_outside, 1)),
+                   name=name, date=date, frame=frame)

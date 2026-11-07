@@ -48,7 +48,9 @@ date = "2026-10-18"
 frame = "NAD83(2011)"
 reader = "swmaps_csv"              # swmaps_geojson | swmaps_csv | enu_csv
 path = "data/topo.csv"
-keep_quality = [4]                 # SW Maps Fix ID values to keep
+keep_quality = [4]                 # SW Maps Fix ID values to keep (drops them before
+                                   # segmentation, so use pass_rule.fixed_only instead if a
+                                   # loss of fix should end a pass)
 exclude_remarks = ["deck"]         # drop points whose remark contains any of these
 # z_min = -1.0 ; z_max = 1.0        # local height window
 # drop_seq = [12, 13]               # drop points by file order

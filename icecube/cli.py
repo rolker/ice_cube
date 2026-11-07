@@ -1,4 +1,4 @@
-"""`python -m icecube run config.toml [--out DIR]`
+"""`python -m icecube run config.toml [--out DIR] [--set section.key=value ...]`
 
 The config (see icecube.example.toml at the repo root) lists the site origin, sigma
 defaults, the grid, an optional outline polygon, the surveys (each with a date, a
@@ -137,7 +137,8 @@ def run(cfg, out_dir=None, log=print):
         praw = growth.point_relief(pts_list, outline if role != "validation" else None)
         summary += [f"## Surface {sname} ({date}, frame {surf.frame}, role {role})", "",
                     f"Surveys: {', '.join(p.survey for p in pts_list)}; {sum(len(p) for p in pts_list)} points, "
-                    f"{len(infos)} passes.", "", "### Passes", "", report.table_passes(infos), "",
+                    f"{len(infos)} passes; {surf.n_outside} points fed no node (outside the grid); "
+                    f"{surf.nodes_per_sounding:.1f} nodes per sounding.", "", "### Passes", "", report.table_passes(infos), "",
                     "### Crossover", "", report.table_crossover(res), "", "### Nodes", "",
                     report.table_surface(surf, m), ""]
         if rel.get("n"):
@@ -160,8 +161,9 @@ def run(cfg, out_dir=None, log=print):
         np.savez(out / f"growth_{a}_{b}.npz", dz=gr.dz, sigma=gr.sigma, mask=gr.mask, **grid.as_dict())
         vol = growth.volume(gr.dz, gr.mask, grid.cell)
         summary += [f"## Growth {a} -> {b}", "",
-                    (f"n {st['n']}, mean {st['mean']*100:+.1f} cm (weighted {st['wmean']*100:+.1f}; sigma of the mean "
-                     f"{st['sigma_of_mean']*100:.1f} cm, of which datum {gr.datum_sigma*100:.1f} cm), median {st['median']*100:+.1f} cm, sd over nodes {st['sd']*100:.1f} cm, "
+                    (f"n {st['n']}, mean {st['mean']*100:+.1f} +- {st['sigma_of_mean']*100:.1f} cm (weighted mean "
+                     f"{st['wmean']*100:+.1f} +- {st['sigma_of_wmean']*100:.1f} cm; datum part {gr.datum_sigma*100:.1f} cm, "
+                     f"node factor {gr.node_factor:.1f}), median {st['median']*100:+.1f} cm, sd over nodes {st['sd']*100:.1f} cm, "
                      f"node sigma median {st['sigma_median']*100:.1f} cm, p5..p95 {st['p05']*100:+.1f}..{st['p95']*100:+.1f} cm, "
                      f"volume above {a} {vol:.2f} m^3" if st['n'] else "no overlap"), ""]
         log(f"growth {a}->{b}: {summary[-2]}")
@@ -197,12 +199,30 @@ def main(argv=None):
     r = sub.add_parser("run", help="run the pipeline on a config")
     r.add_argument("config")
     r.add_argument("--out", help="output directory (overrides [output].dir)")
+    r.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="override a config value, e.g. --set grid.cell=0.25 --set defaults.wander_prior=0.02 "
+                        "(TOML syntax for the value; dotted key into the config)")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         cfg = load_config(a.config)
+        for item in a.set:
+            apply_override(cfg, item)
         run(cfg, a.out)
         return 0
     return 1
+
+
+def apply_override(cfg, item):
+    """`section.key=value` -> cfg[section][key] = value (value parsed as TOML)."""
+    if "=" not in item:
+        raise SystemExit(f"--set expects KEY=VALUE, got {item!r}")
+    key, val = item.split("=", 1)
+    parsed = tomllib.loads(f"v = {val}")["v"]
+    parts = key.strip().split(".")
+    node = cfg
+    for p in parts[:-1]:
+        node = node.setdefault(p, {})
+    node[parts[-1]] = parsed
 
 
 if __name__ == "__main__":

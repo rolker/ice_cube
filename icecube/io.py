@@ -191,10 +191,11 @@ class Points:
                       survey=self.survey, remark=self.remark[mask], seq=self.seq[mask],
                       pass_id=self.pass_id[mask], frame=self.frame, date=self.date)
 
-    def with_defaults(self, sigma_z, sigma_h):
-        """Fill missing sigmas with the configured defaults."""
-        sz = np.where(np.isfinite(self.sz), self.sz, sigma_z)
-        sh = np.where(np.isfinite(self.sh), self.sh, sigma_h)
+    def with_defaults(self, sigma_z, sigma_h, floor=0.001):
+        """Fill missing sigmas with the configured defaults; no sigma below `floor`
+        (a receiver can report 0, which would give an infinite weight)."""
+        sz = np.maximum(np.where(np.isfinite(self.sz), self.sz, sigma_z), floor)
+        sh = np.maximum(np.where(np.isfinite(self.sh), self.sh, sigma_h), floor)
         return Points(t=self.t, x=self.x, y=self.y, z=self.z, sz=sz, sh=sh,
                       quality=self.quality, survey=self.survey, remark=self.remark,
                       seq=self.seq, pass_id=self.pass_id, frame=self.frame, date=self.date)
@@ -271,17 +272,22 @@ def read_polygon_outline(path, site: Site, name):
 
 
 def _parse_swmaps_time(s):
-    """'10/18/2026 14:10:51.500 EDT' -> seconds. The zone label is dropped: times are
-    only compared within one survey."""
-    s = s.strip()
-    parts = s.split()
-    if len(parts) >= 2:
-        s = parts[0] + " " + parts[1]
-    for fmt in ("%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc).timestamp()
-        except ValueError:
-            continue
+    """'10/18/2026 14:10:51.500 EDT' or '10/18/2026 2:10:51.500 PM EDT' -> seconds.
+    The zone label is dropped: times are only compared within one survey. NaN when
+    the text does not parse (the CSV reader refuses a file with any NaN time)."""
+    parts = s.strip().split()
+    if len(parts) < 2:
+        return float("nan")
+    ampm = parts[2].upper() if len(parts) >= 3 and parts[2].upper() in ("AM", "PM") else ""
+    txt = parts[0] + " " + parts[1] + (" " + ampm if ampm else "")
+    hour = "%I" if ampm else "%H"
+    tail = " %p" if ampm else ""
+    for day in ("%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        for sec in (":%S.%f", ":%S"):
+            try:
+                return datetime.strptime(txt, f"{day} {hour}:%M{sec}{tail}").replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
     return float("nan")
 
 
@@ -307,6 +313,11 @@ def read_swmaps_csv(path, site: Site, survey="", frame="", date=""):
             q.append(int(float(_col(row, "Fix ID", default="-1"))))
             rem.append(_col(row, "Remarks", "REMARKS", "Feature Name", default="") or "")
     x, y, z = site.local(np.array(lat, float), np.array(lon, float), np.array(h, float))
+    bad = int(np.sum(np.isnan(t)))
+    if bad:
+        raise ValueError(f"{path}: {bad} of {len(t)} Time values did not parse (expected "
+                         f"'MM/DD/YYYY HH:MM:SS[.fff] [AM|PM] ZONE'); a NaN time would silently "
+                         f"disable the gap, settle and max_s pass rules")
     return _make(survey, t, x, y, z, sz=sz, sh=sh, quality=q, remark=rem, frame=frame, date=date)
 
 
@@ -324,7 +335,7 @@ def read_enu_csv(path, survey="", date="", frame="", offset=(0.0, 0.0, 0.0), pol
         for row in csv.DictReader(fh):
             hh, mm, ss = row["utc"].split(":")
             tod = int(hh) * 3600 + int(mm) * 60 + float(ss)
-            if tod < last - 1:
+            if tod < last - 3600:   # time of day went backwards by hours: midnight
                 roll += 86400
             last = tod
             t.append(day + roll + tod)

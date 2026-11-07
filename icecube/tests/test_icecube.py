@@ -126,6 +126,25 @@ class TestReaders(unittest.TestCase):
         got = io.read_survey(dict(id="s", path=str(p), reader="swmaps_csv", keep_quality=[4]), SITE)
         self.assertEqual(len(got), 1)
 
+    def test_swmaps_time_ampm_and_failure(self):
+        a = io._parse_swmaps_time("10/18/2026 2:10:51.500 PM EDT")
+        b = io._parse_swmaps_time("10/18/2026 14:10:51.500 EDT")
+        self.assertAlmostEqual(a, b)
+        self.assertTrue(np.isnan(io._parse_swmaps_time("yesterday")))
+        lo, la = self._lonlat([1.0], [1.0])
+        p = self.dir / "bad.csv"
+        with open(p, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Remarks", "Time", "Latitude", "Longitude", "Elevation", "Fix ID", "Vertical Accuracy"])
+            w.writerow(["", "not a time", la[0], lo[0], 5.0, 4.0, 0.0])
+        with self.assertRaises(ValueError):
+            io.read_swmaps_csv(p, SITE, "s")
+
+    def test_sigma_floor(self):
+        p = local_points("s", [0.0], [0.0], [0.0], sz=[0.0], sh=[np.nan]).with_defaults(0.015, 0.01)
+        self.assertGreater(p.sz[0], 0)
+        self.assertEqual(p.sh[0], 0.01)
+
     def test_enu_csv(self):
         p = self.dir / "e.csv"
         with open(p, "w", newline="") as fh:
@@ -268,6 +287,33 @@ class TestCrossover(unittest.TestCase):
         self.assertFalse(res2.separable.any())
         np.testing.assert_array_equal(res2.bias, 0.0)
 
+    def test_separable_ratio_branch(self):
+        # two passes, a single pair 0.4 m apart: posterior sigma stays near the prior
+        a = local_points("s", [0.0, 0.4], [0.0, 0.0], [0.0, 0.03], sz=[0.02, 0.02], sh=[0.0, 0.0])
+        a.pass_id = np.array([0, 1])
+        res = crossover.adjust([a], radius=0.5, prior=0.03, slope=0.05, min_pairs=1, separable_ratio=0.8)
+        self.assertEqual(res.n_obs, 1)
+        self.assertGreater(res.sigma[0], 0.8 * 0.03 - 1e-9)
+        self.assertFalse(res.separable.any())
+        np.testing.assert_array_equal(res.bias, 0.0)
+        np.testing.assert_allclose(res.sigma, 0.03)      # held at zero -> sigma is the prior
+        self.assertNotEqual(res.bias_raw[0], 0.0)
+        res2 = crossover.adjust([a], radius=0.5, prior=0.03, slope=0.05, min_pairs=1, separable_ratio=0.95)
+        self.assertTrue(res2.separable.all())
+
+    def test_pass_cell_variance_floor(self):
+        n = 90
+        a = local_points("s", np.zeros(n), np.zeros(n), np.zeros(n), sz=np.full(n, 0.015), sh=np.zeros(n))
+        a.pass_id = np.zeros(n, int)
+        _, _, _, _, v, _, _, cnt = crossover.pass_cells(a, 0.5)
+        self.assertEqual(cnt[0], n)
+        self.assertAlmostEqual(v[0], 0.015**2)   # not 0.015^2 / 90
+
+    def test_empty_survey_refused(self):
+        a = local_points("s", [], [], [])
+        with self.assertRaises(ValueError):
+            crossover.adjust([a])
+
     def test_refuses_frames(self):
         a = make_survey("a", [0.0] * 6, frame="A")
         b = make_survey("b", [0.0] * 6, frame="B")
@@ -319,7 +365,6 @@ class TestNodes(unittest.TestCase):
         X, Y = np.meshgrid(g.xs, g.ys)
         m = s.n > 0
         err = (s.z - surface_fn(X, Y))[m]
-        self.assertLess(np.mean(np.abs(err) < 3 * s.sigma[m]), 1.01)
         self.assertGreater(np.mean(np.abs(err) < 3 * s.sigma[m]), 0.95)
         self.assertEqual(int(s.flags.sum()), 0)
 
@@ -338,6 +383,43 @@ class TestNodes(unittest.TestCase):
         self.assertGreater(s.maxnr.max(), 3.0)
         from icecube import report
         self.assertIn("| east (m) |", report.table_flags(s))
+
+    def test_flag_within_one_pass(self):
+        # a 5 cm step inside one pass: the shared bias cancels, only noise counts
+        g = nodes.Grid.from_extent(0, 0, 0, 0, 0.5)
+        p = local_points("s", [0.0, 0.0], [0.0, 0.0], [0.0, 0.05], t=[0.0, 1.0], sz=[0.01, 0.01], sh=[0.0, 0.0])
+        p.pass_id[:] = 0
+        s = nodes.grid_surface([p], [np.full(2, 0.03)], g, capture_radius=0.1, slope=0.0, k_sigma=3.0)
+        self.assertEqual(s.flags[0, 0], 1)
+        self.assertAlmostEqual(s.maxnr[0, 0], 0.05 / np.sqrt(2 * 0.01**2))
+        # the same step from a different pass is inside 3 sigma once both biases count
+        p.pass_id = np.array([0, 1])
+        s2 = nodes.grid_surface([p], [np.full(2, 0.03)], g, capture_radius=0.1, slope=0.0, k_sigma=3.0)
+        self.assertEqual(s2.flags[0, 0], 0)
+        self.assertAlmostEqual(s2.maxnr[0, 0], 0.05 / np.sqrt(2 * 0.01**2 + 2 * 0.03**2))
+
+    def test_detection_floor_at_real_bias_sigma(self):
+        # with sb = 3 cm (last season's held-at-zero passes) a 10 cm second surface is
+        # below the k*sqrt(2)*sb ~ 13 cm floor; a 20 cm one is seen
+        g = nodes.Grid.from_extent(0, 10, 0, 10, 0.5)
+        X, Y = np.meshgrid(g.xs, g.ys)
+        on_cross = (np.abs(X % 2) < 1e-9) & (np.abs(Y % 2) < 1e-9) & (X <= 6) & (Y <= 6)
+        for plant, expect in ((0.10, False), (0.20, True)):
+            p = make_crossing_survey("s", [0.0] * 8, noise=0.005, seed=9)
+            z = p.z.copy(); z[p.pass_id >= 4] += plant
+            p.z = z
+            s = nodes.grid_surface([p], [np.full(len(p), 0.03)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0)
+            frac = np.mean(s.flags[on_cross & (s.n > 0)] > 0)
+            self.assertEqual(frac > 0.8, expect, (plant, frac))
+
+    def test_points_outside_grid_counted(self):
+        g = nodes.Grid.from_extent(0, 1, 0, 1, 0.5)
+        p = local_points("s", [0.0, 50.0], [0.0, 50.0], [0.0, 0.0], sz=[0.01, 0.01], sh=[0.0, 0.0])
+        p.pass_id[:] = 0
+        s = nodes.grid_surface([p], [np.zeros(2)], g, capture_radius=0.6)
+        self.assertEqual(s.n_outside, 1)
+        self.assertEqual(int(s.n.sum()), 3)  # (0,0), (0.5,0), (0,0.5)
+        self.assertAlmostEqual(s.nodes_per_sounding, 3.0)
 
     def test_refuses_frames_and_missing_sigma(self):
         a = make_survey("a", [0.0] * 6, frame="A"); b = make_survey("b", [0.0] * 6, frame="B")
@@ -390,8 +472,13 @@ class TestGrowth(unittest.TestCase):
     def test_stats_include_datum(self):
         a = self._surf("a", 0.0); b = self._surf("b", 0.05, seed=2)
         a.datum_sigma = 0.03; b.datum_sigma = 0.04
-        st = growth.difference(a, b).stats()
+        gr = growth.difference(a, b)
+        st = gr.stats()
         self.assertAlmostEqual(st["sigma_of_mean"], np.sqrt(st["sigma_of_mean_noise"]**2 + 0.05**2))
+        self.assertAlmostEqual(st["sigma_of_wmean"], np.sqrt(st["sigma_of_wmean_noise"]**2 + 0.05**2))
+        sig = gr.sigma[gr.mask]
+        self.assertAlmostEqual(st["sigma_of_mean_noise"], np.sqrt(gr.node_factor * np.sum(sig**2)) / len(sig))
+        self.assertGreater(gr.node_factor, 1.0)
         ring = np.array([[2, 2], [8, 2], [8, 8], [2, 8]], float)
         p = make_crossing_survey("p", [0.0] * 8)
         r = growth.point_relief([p], ring)
@@ -469,6 +556,18 @@ surface = "a"
             self.assertAlmostEqual(float(np.mean(g["dz"][g["mask"]])), 0.04, delta=0.01)
             # the untimed survey was segmented by sequence jumps: lines end 10 m apart
             self.assertIn("| a | 5 |", (out / "passes_a.md").read_text())
+            # node heights are within sigma of the planted surface (biases removed by the crossover)
+            sa = np.load(out / "surface_a.npz")
+            X, Y = np.meshgrid(sa["x0"] + np.arange(sa["nx"]) * sa["cell"], sa["y0"] + np.arange(sa["ny"]) * sa["cell"])
+            m = sa["n"] > 0
+            err = np.abs(sa["z"] - surface_fn(X, Y))[m]
+            self.assertGreater(np.mean(err < 3 * sa["sigma"][m]), 0.95)
+            # --set overrides a config value (arguments take priority)
+            rc = cli.main(["run", str(d / "cfg.toml"), "--out", str(d / "out3"), "--set", "grid.cell=1.0",
+                           "--set", "defaults.wander_prior=0.02"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(float(np.load(d / "out3" / "surface_a.npz")["cell"]), 1.0)
+            self.assertIn("prior 2.0 cm", (d / "out3" / "summary.md").read_text())
             # frame mismatch in a growth pair is refused
             cfg = cli.load_config(d / "cfg.toml")
             cfg["surveys"][1]["frame"] = "B"
