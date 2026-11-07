@@ -388,22 +388,6 @@ async def probe_version(binary):
     return match.group(1).strip() if match else None
 
 
-def _write_private(path, text, mode=None):
-    """Write `text` to `path`, created with permission bits `mode` (and set to them if
-    the file exists already), or with the usual bits when mode is None."""
-    if mode is None:
-        path.write_text(text)
-        return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "w") as stream:
-            fd = None
-            stream.write(text)
-    finally:
-        if fd is not None:
-            os.close(fd)
-
 
 def gps_ephemeris_prn(frame):
     """The satellite number of a whole RTCM 1019 frame (the 6 bits after the type)."""
@@ -428,47 +412,26 @@ class MeasuredSettings:
 
 class OutputLines:
     """The last lines rtkrcv wrote to its console or its stdout/stderr, for the page.
-
-    With `secret` (a Secret: a password that may be in rtkrcv's config), every line is
-    scrubbed before it is kept, and nothing cut at an arbitrary point is shown: the
-    unfinished last line is not part of the snapshot (a read can end inside the
-    password), the unfinished text is scrubbed together with the next read (so a
-    password across two reads is still one string), a line longer than LONG_LINE is
-    kept only up to a point at least MAX_SECRET characters before its end (so a
-    password cannot straddle the cut), and a trailing beginning of the password is
-    removed from what is kept."""
+    Neither instance's config holds a credential (the reference check's NTRIP login
+    stays in the app), so the lines are kept as they come."""
 
     LONG_LINE = 2000
-    MAX_SECRET = 256
 
-    def __init__(self, size=OUTPUT_LINES, secret=None):
+    def __init__(self, size=OUTPUT_LINES):
         self.lines = deque(maxlen=size)
         self._partial = ""
         self.version = None
-        self._secret = secret
 
-    def _clean(self, line):
-        line = "".join(c for c in line if c.isprintable()).strip()
-        if self._secret is not None:
-            line = self._secret.scrub(line)
-        return line
+    @staticmethod
+    def _clean(line):
+        return "".join(c for c in line if c.isprintable()).strip()
 
     def feed(self, data):
-        text = self._partial + data.decode("utf-8", "replace")
-        if self._secret is not None:   # before the escape strip, which could eat its start
-            text = self._secret.scrub(text)
-        text = _ANSI.sub("", text)
-        if self._secret is not None:
-            text = self._secret.scrub(text)
+        text = _ANSI.sub("", self._partial + data.decode("utf-8", "replace"))
         *lines, self._partial = text.replace("\r", "\n").split("\n")
         if len(self._partial) > self.LONG_LINE:
-            if self._secret is None:
-                lines.append(self._partial)
-                self._partial = ""
-            else:
-                cut = len(self._partial) - self.MAX_SECRET
-                lines.append(self._secret.strip_prefix(self._partial[:cut]))
-                self._partial = self._partial[cut:]
+            lines.append(self._partial)
+            self._partial = ""
         for line in lines:
             line = self._clean(line)
             if line:
@@ -478,8 +441,6 @@ class OutputLines:
                     self.version = match.group(1)
 
     def snapshot(self):
-        if self._secret is not None:   # cut anywhere: not shown until its end comes
-            return list(self.lines)
         tail = self._partial.strip()
         return list(self.lines) + ([tail] if tail else [])
 
@@ -519,18 +480,16 @@ class RtkrcvRunner:
     The reference check reuses the runner with: `make_config(ports)`, which returns the
     config text for a dict of the local ports (`feed`, `solution`, and one per extra
     server in `servers`, by name); `servers`, extra local servers started and stopped with
-    the feed and solution ones (rtkrcv's log stream connects to one); `config_mode`, the
-    config file's permission bits when it holds a login; `secret`, the Secret scrubbed
-    from every console line kept; `on_start`, called when a new rtkrcv process has
-    started, once the previous one's connections are gone; and
-    `label`, the name used in log messages. `request_restart(reason)` ends the current
+    the feed and solution ones (rtkrcv's second input connects to one); `on_start`,
+    called when a new rtkrcv process has started, once the previous one's connections
+    are gone; and `label`, the name used in log messages. `request_restart(reason)` ends the current
     process (SIGTERM) and starts a new one at once, without the exit backoff."""
 
     def __init__(self, settings, hub, on_solution=None, clock=time.monotonic, wall=time.time,
                  restart_s=RESTART_S, restart_max_s=RESTART_MAX_S, reset_after_s=RESET_AFTER_S,
                  hang_s=HANG_S, no_solution_s=NO_SOLUTION_S, stop_timeout_s=STOP_TIMEOUT_S,
                  stats_s=STATS_S, poll_s=POLL_S, proc="/proc", make_config=None, servers=None,
-                 config_mode=None, secret=None, on_start=None, label="measured position"):
+                 on_start=None, label="measured position"):
         self.settings = settings
         self.hub = hub
         self._on_solution = on_solution
@@ -543,11 +502,10 @@ class RtkrcvRunner:
         self.stats_s, self.poll_s, self._proc_dir = stats_s, poll_s, proc
         self.label = label
         self._make_config = make_config or self._default_config
-        self._config_mode = config_mode
         self.servers = dict(servers or {})
         self.feed = FeedServer()
         self.solutions = SolutionServer(self._solution, label=label)
-        self.output = OutputLines(secret=secret)
+        self.output = OutputLines()
         self._subscriber = None
         self._task = None
         self._msm_seen = asyncio.Event()
@@ -715,9 +673,8 @@ class RtkrcvRunner:
             work.mkdir(parents=True, exist_ok=True)
             ports = {"feed": self.feed.port, "solution": self.solutions.port,
                      **{name: server.port for name, server in self.servers.items()}}
-            _write_private(work / CONFIG_NAME, self._config_text(ports), self._config_mode)
+            (work / CONFIG_NAME).write_text(self._config_text(ports))
         except (OSError, ValueError) as error:
-            # The error names the file, never its content (a login may be in it).
             reason = f"could not write its config: {type(error).__name__}: {error}"
             self.last_exit = {"code": None, "reason": reason, "ran_s": 0.0}
             return 0.0, reason

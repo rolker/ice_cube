@@ -97,9 +97,11 @@ class RawLog:
     that is being compressed go to `<day>-late-<n>.raw` instead, which is
     compressed in turn once that day is over."""
 
-    def __init__(self, directory, min_free_gb, clock=time.time, disk_free=None):
+    def __init__(self, directory, min_free_gb, clock=time.time, disk_free=None,
+                 suffix=".raw"):
         self.directory = Path(directory)
         self.raw_dir = self.directory / "raw"
+        self.suffix = suffix       # of the day files: .raw (the receiver), .rtcm3 (a CORS)
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.usage_path = self.directory / "storage-usage.csv"
         self.min_free_bytes = int(min_free_gb * GB)
@@ -131,7 +133,7 @@ class RawLog:
             leftover.unlink(missing_ok=True)
 
     def path_for(self, day):
-        return self.raw_dir / f"{day}.raw"
+        return self.raw_dir / f"{day}{self.suffix}"
 
     def _writable_path(self, day):
         """The day's file, or, if that is being compressed, a late file for the day."""
@@ -139,7 +141,7 @@ class RawLog:
         part = 0
         while path.name in self._compressing:
             part += 1
-            path = self.raw_dir / f"{day}-late-{part}.raw"
+            path = self.raw_dir / f"{day}-late-{part}{self.suffix}"
         return path
 
     def refresh_disk(self):
@@ -192,7 +194,7 @@ class RawLog:
                 file.close()
                 self._close_error = ""
             except (OSError, ValueError) as error:
-                self._close_error = f"closing {self._stem}.raw: {error}"
+                self._close_error = f"closing {self._stem}{self.suffix}: {error}"
                 self.write_error = self._close_error
                 self._unclosed[self._stem] = file
 
@@ -225,7 +227,7 @@ class RawLog:
             if not (self.raw_dir / name).exists():
                 del self._compress_failed[name]
         due = []
-        for path in sorted(self.raw_dir.glob("*.raw")):
+        for path in sorted(self.raw_dir.glob(f"*{self.suffix}")):
             if path.stem >= today or path.stem in self._unclosed:
                 continue
             if path.stem == self._stem and self._file is not None:

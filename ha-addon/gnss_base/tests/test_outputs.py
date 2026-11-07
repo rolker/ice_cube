@@ -330,7 +330,7 @@ class CasterBase(LocalOnly):
         self.hub = RtcmHub(clock=self.time.clock)
         settings = CasterSettings(host="127.0.0.1", port=0, **options)
         self.caster = Caster(settings, self.hub, self.events, "9.9.9", clock=self.time.clock,
-                             check_s=0.02)
+                             check_s=0.02, wall=self.time.wall)
         self.assertTrue(await self.caster.start())
         self.addAsyncCleanup(self.caster.stop)
         return self.caster.port
@@ -347,12 +347,40 @@ class CasterServer(CasterBase):
             writer.close()
             text = data.decode()
             self.assertTrue(text.startswith("SOURCETABLE 200 OK\r\n"), text)
+            # The misc field (the last) names our position's frame and the epoch: the
+            # fake wall clock is 2027-01-15 08:00 UTC, decimal year 2027.04.
             self.assertIn("STR;BASE;BASE;RTCM 3.3;1005(10),1074(1),1124(1);2;GPS+BDS;none;;"
-                          "0.00;0.00;0;0;gnss_base;none;N;N;0;\r\n", text)
+                          "0.00;0.00;0;0;gnss_base;none;N;N;0;ITRF2020 epoch 2027.04 (today, "
+                          "base_epoch not set)\r\n", text)
+            # The misc text never holds ';', the STR field separator: 18 fields exactly.
+            record = [line for line in text.splitlines() if line.startswith("STR;")][0]
+            self.assertEqual(len(record.split(";")), 19)
             self.assertTrue(text.endswith("ENDSOURCETABLE\r\n"))
             head, _, body = data.partition(b"\r\n\r\n")
             self.assertIn(f"Content-Length: {len(body)}".encode(), head)
         self.assertEqual([e["event"] for e in self.log_lines()], ["sourcetable"] * 3)
+        self.assertEqual(self.caster.snapshot()["frame"],
+                         "ITRF2020 epoch 2027.04 (today, base_epoch not set)")
+        # Another frame, in any spelling; none declared leaves the field empty.
+        self.caster.settings.base_frame = " nad83 (2011)"
+        self.assertIn(";0;NAD83(2011) epoch 2027.04 (today", self.caster.sourcetable().decode())
+        self.caster.settings.base_frame = ""
+        self.assertIn(";gnss_base;none;N;N;0;\r\n", self.caster.sourcetable().decode())
+        self.assertIsNone(self.caster.snapshot()["frame"])
+        # A wrong frame option does not stop the caster (rovers are served): the field
+        # stays empty and the card says why.
+        self.caster.settings.base_frame = "WGS84"
+        self.assertEqual(CasterSettings(base_frame="WGS84").problem(), "")
+        self.assertIn(";gnss_base;none;N;N;0;\r\n", self.caster.sourcetable().decode())
+        self.assertEqual(self.caster.snapshot()["frame_error"],
+                         "base_frame must be one of ITRF2020, ITRF2014, ITRF2008, NAD83(2011), "
+                         "or empty")
+        self.caster.settings.base_frame = "ITRF2020"
+        self.caster.settings.base_epoch = "2026-11-06"
+        self.assertIn(";0;ITRF2020 epoch 2026.85\r\n", self.caster.sourcetable().decode())
+        self.caster.settings.base_epoch = "soon"
+        self.assertIn(";0;\r\n", self.caster.sourcetable().decode())
+        self.assertIn("base_epoch must be", self.caster.snapshot()["frame_error"])
 
     async def test_no_password_accepts_any_login_and_sends_the_filtered_stream(self):
         port = await self.start()
@@ -1025,7 +1053,7 @@ class Upload(UploadBase):
 # ---------------------------------------------------------------- no path to the receiver
 
 class NoNetworkToReceiver(LocalOnly):
-    MODULES = ("hub", "caster", "upload")
+    MODULES = ("hub", "caster", "upload", "ntripclient")
 
     def test_output_modules_import_nothing_that_reaches_the_receiver(self):
         for name in self.MODULES:
@@ -1948,7 +1976,7 @@ class Packaging(unittest.TestCase):
     def test_config_yaml_version_options_and_ports(self):
         text = (ROOT / "config.yaml").read_text()
         self.assertIn(f'version: "{__version__}"', text)
-        self.assertEqual(__version__, "0.6.1")
+        self.assertEqual(__version__, "0.6.2")
         self.assertIn("ports:\n  2101/tcp: 2101\n", text)
         self.assertIn("ports_description:\n  2101/tcp: ", text)
         options = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)
@@ -1965,6 +1993,21 @@ class Packaging(unittest.TestCase):
         self.assertIn('upload_password: ""', options)
         self.assertEqual(DEFAULTS["upload_mountpoint"], "")
         self.assertEqual(DEFAULTS["caster_password"], "")
+        self.assertEqual(DEFAULTS["base_frame"], "ITRF2020")
+        self.assertIn("  base_frame: ITRF2020\n", options)
+        self.assertIn("  base_frame: str\n", schema)
+        caster, _ = output_settings(load_settings(["--options", "/nonexistent/options.json"]))
+        self.assertEqual((caster.base_frame, caster.frame()), ("ITRF2020", "ITRF2020"))
+        caster, _ = output_settings(load_settings(["--options", "/nonexistent/options.json",
+                                                   "--base-frame", " nad83(2011) "]))
+        self.assertEqual((caster.base_frame, caster.frame()), ("nad83(2011)", "NAD83(2011)"))
+        caster, _ = output_settings(load_settings(["--options", "/nonexistent/options.json",
+                                                   "--base-frame", "WGS84", "--base-epoch",
+                                                   "2026.5"]))
+        self.assertEqual(caster.problem(), "")
+        self.assertIn("base_frame must be", caster.frame_problem())
+        self.assertEqual(caster.base_epoch, "2026.5")
+        self.assertEqual(DEFAULTS["base_epoch"], "")
 
     def test_shipped_profile_sends_ephemerides_every_minute(self):
         by_label = {item.label: item for item in profile.load()}

@@ -2,17 +2,16 @@
 
 Run from ha-addon/gnss_base with: python -m unittest tests.test_reference
 
-Localhost only, against the fake rtkrcv (tests/fake_rtkrcv.py); the real one only in the
-smoke test, skipped unless a binary is found (`RTKRCV` environment variable, or
-rtkrcv-ex / rtkrcv on PATH). No real CORS is contacted, no real position is used: the
-positions are synthetic, on the equator, and the login is a made-up sentinel that must
-appear nowhere but in rtkrcv's config file.
+Localhost only, against the fake rtkrcv (tests/fake_rtkrcv.py) and the fake NTRIP
+caster (tests/fake_caster.py); the real rtkrcv only in the smoke test, skipped unless a
+binary is found (`RTKRCV` environment variable, or rtkrcv-ex / rtkrcv on PATH). No real
+CORS is contacted, no real position is used: the positions are synthetic, on the
+equator, and the login is a made-up sentinel that must appear nowhere but in the
+request's Authorization header.
 """
 import ast
 import asyncio
-import io
 import json
-import logging
 import os
 import pty
 import shutil
@@ -31,15 +30,18 @@ from unittest import mock
 from gnss_base import __version__
 from gnss_base import rtcm as rtcmdec
 from gnss_base.__main__ import DEFAULTS, OVERRIDES, load_settings, reference_settings
+from gnss_base.datums import decimal_year, expected_offset_enu
 from gnss_base.frames import crc24q
 from gnss_base.hub import RtcmHub, Secret
 from gnss_base.measured import (CONFIG_NAME, MeasuredSettings, OutputLines, RtkrcvRunner,
-                                SolutionLog, parse_solution)
+                                parse_solution)
 from gnss_base.reference import (CORRECTIONS_STALE_S, GAP_RESTART_S, NO_FIX_RED_S,
-                                 SOLUTION_STALE_S, STARTING_S, ReferenceCheck,
-                                 ReferenceSettings, SessionStats, TapServer, build_config,
-                                 parse_expected_enu, parse_reset_utc, seconds_to_reset,
-                                 verdict)
+                                 OUR_FRAME_UNKNOWN, SOLUTION_STALE_S, STATION_FRAME_UNKNOWN,
+                                 ReferenceCheck, ReferenceSettings, SessionStats,
+                                 StationDecoder, build_config, parse_reset_utc,
+                                 seconds_to_reset, verdict)
+from tests.fake_caster import FakeCaster
+from tests.test_app import BitWriter
 from tests.test_measured import FAKE, ROOT, eph, rtcm
 
 SENTINEL = "Ref-S3ntinel-pw-5b2c"   # a made-up password: nowhere but in rtkrcv's config
@@ -50,7 +52,8 @@ CORS = rtcmdec.llh_to_ecef(0.225, 0.0, 10.0)
 
 
 def settings(**fields):
-    base = dict(enabled=True, host="cors.example", port=2101, mountpoint="MP_1", user="user",
+    # A closed local port: a started client gets "connection refused", never a lookup.
+    base = dict(enabled=True, host="127.0.0.1", port=1, mountpoint="MP_1", user="user",
                 password=Secret(SENTINEL))
     base.update(fields)
     return ReferenceSettings(**base)
@@ -65,6 +68,15 @@ def frame(payload):
 def arp_frame(x, y, z, antenna_height=None):
     from tests.test_app import arp_frame as make
     return make(x, y, z, antenna_height=antenna_height)
+
+
+def arp_frame_df021(x, y, z, itrf):
+    """A 1005 frame with a non-zero ITRF realization year field (DF021)."""
+    bits = BitWriter().u(12, 1005).u(12, 7).u(6, itrf).u(1, 1).u(1, 1).u(1, 1).u(1, 0)
+    bits.s(38, round(x * 10000)).u(1, 0).u(1, 0)
+    bits.s(38, round(y * 10000)).u(2, 0)
+    bits.s(38, round(z * 10000))
+    return bits.frame()
 
 
 def frame_1033(antenna="GPPNULLANTENNA", receiver="LEICA GR30", firmware="4.31",
@@ -84,12 +96,11 @@ class Config(unittest.TestCase):
         text = build_config(40001, 40002, 40003, settings())
         self.assertEqual(text, GOLDEN.read_text(), "tests/reference_golden.conf differs")
         for line in ("inpstr1-type   =tcpcli", "inpstr1-path   =127.0.0.1:40001",
-                     "inpstr1-format =rtcm3", "inpstr2-type   =ntripcli",
-                     f"inpstr2-path   =user:{SENTINEL}@cors.example:2101/MP_1",
-                     "inpstr2-format =rtcm3", "inpstr2-nmeareq=off",
+                     "inpstr1-format =rtcm3", "inpstr2-type   =tcpcli",
+                     "inpstr2-path   =127.0.0.1:40003",
+                     "inpstr2-format =rtcm3",
                      "outstr1-type   =tcpcli", "outstr1-path   =127.0.0.1:40002",
-                     "outstr1-format =llh", "logstr2-type   =tcpcli",
-                     "logstr2-path   =127.0.0.1:40003", "misc-reconnect =5000",
+                     "outstr1-format =llh", "logstr2-type   =off", "misc-reconnect =5000",
                      "pos1-posmode   =static", "pos1-frequency =l1+l2",
                      "pos1-ionoopt   =brdc", "pos1-tropopt   =saas", "pos1-sateph    =brdc",
                      "pos1-elmask    =15", "pos1-snrmask_r =on", "pos1-snrmask_b =off",
@@ -109,8 +120,9 @@ class Config(unittest.TestCase):
                      "out-outsingle  =on"):
             self.assertIn(line + "\n", text, line)
         for absent in ("l1+2", "static-start", "rejgdop", "rejionno", "autocal",
-                       "ant2-anttype   =*", "est-stec", "kinematic", "rcvantfile"):
-            self.assertNotIn(absent, text)
+                       "ant2-anttype   =*", "est-stec", "kinematic", "rcvantfile",
+                       "ntripcli", "nmeareq", SENTINEL, "user", "MP_1", "0600"):
+            self.assertNotIn(absent, text, "no credential or caster in rtkrcv's config")
         names = [line.split("=")[0].strip() for line in text.splitlines()
                  if line and not line.startswith("#")]
         self.assertEqual(len(names), len(set(names)), "an option is given twice")
@@ -141,16 +153,14 @@ class Settings(unittest.TestCase):
         self.assertEqual(settings(password=Secret("")).problem(), "",
                          "an empty password is allowed (a caster may want none)")
 
-    def test_fields_that_would_break_the_ntrip_path(self):
+    def test_fields_that_would_break_the_request(self):
         cases = ((dict(user="a:b"), "reference_user has a ':'"),
-                 (dict(user="a@b"), "reference_user has a '@'"),
                  (dict(host="h/x"), "reference_host has a '/'"),
                  (dict(host="h:2101"), "reference_host has a ':'"),
                  (dict(mountpoint="M P"), "reference_mountpoint has a space"),
                  (dict(mountpoint="M/P"), "reference_mountpoint has a '/'"),
+                 (dict(mountpoint="M?x"), "reference_mountpoint has a '?'"),
                  (dict(password=Secret("p w")), "reference_password has a space"),
-                 (dict(password=Secret("p#w")),
-                  "reference_password has a '#' (rtkrcv reads it as a comment)"),
                  (dict(password=Secret("péw")),
                   "reference_password has a character that is not printable ASCII"),
                  (dict(password=Secret("p\tw")),
@@ -163,40 +173,45 @@ class Settings(unittest.TestCase):
                  (dict(port=True), "reference_port must be 1 to 65535"))
         for fields, expected in cases:
             self.assertEqual(settings(**fields).problem(), expected, fields)
-        # A password with ':' , '@' or '/' is fine: rtkrcv splits the path at the last
-        # '@' and the first ':' before it.
-        self.assertEqual(settings(password=Secret("a:b@c/d")).problem(), "")
-        # Each part fits, the whole path would not (rtkrcv's buffer is 1024 bytes).
-        long = settings(host="h" * 255, mountpoint="m" * 255, user="u" * 255,
-                        password=Secret("p" * 255))
-        self.assertEqual(long.problem(),
-                         "the login, host and mountpoint together are too long for rtkrcv")
+        # A password with ':', '@', '/' or '#' is fine: it only goes through base64.
+        self.assertEqual(settings(password=Secret("a:b@c/d#e")).problem(), "")
+        self.assertEqual(settings(user="a@b").problem(), "", "an e-mail address as user")
         self.assertEqual(settings(elevation_mask=None).problem(),
                          "measured_elevation_mask must be a whole number from 0 to 90")
         self.assertEqual(settings(snr_mask=61).problem(),
                          "measured_snr_mask must be a whole number from 0 to 60")
 
     def test_problems_never_quote_the_password(self):
-        for password in (SENTINEL + " x", SENTINEL + "#", "é" + SENTINEL,
-                         "x" * 256 + SENTINEL):
+        for password in (SENTINEL + " x", "é" + SENTINEL, "x" * 256 + SENTINEL):
             problem = settings(password=Secret(password)).problem()
             self.assertTrue(problem)
             self.assertNotIn(SENTINEL, problem)
         self.assertNotIn(SENTINEL, repr(settings()))
         self.assertNotIn(SENTINEL, str(settings()))
 
-    def test_expected_offset(self):
-        self.assertEqual(parse_expected_enu("0 0 0"), (0.0, 0.0, 0.0))
-        self.assertEqual(parse_expected_enu("0.56, -1.20, 1.18"), (0.56, -1.2, 1.18))
-        self.assertEqual(parse_expected_enu("+0.56 -1.2 +1.18"), (0.56, -1.2, 1.18))
-        self.assertEqual(parse_expected_enu([1, 2, 3]), (1.0, 2.0, 3.0))
-        for bad in ("1 2", "a b c", "nan 0 0", "1 2 3 4", "", "0 0 1e9"):
-            with self.assertRaises(ValueError):
-                parse_expected_enu(bad)
-        self.assertEqual(settings(expected_enu="1 2").problem(),
-                         "reference_expected_enu needs three numbers: east north up, metres")
-        self.assertEqual(settings(expected_enu="0.56 -1.20 1.18").expected(),
-                         (0.56, -1.2, 1.18))
+    def test_frames(self):
+        """0.6.2: the frames are declared by name; nothing else is accepted, and an
+        empty reference_frame means unknown (no expected offset)."""
+        self.assertEqual(settings().station_frame(), "")
+        self.assertEqual(settings().our_frame(), "ITRF2020")
+        self.assertEqual(settings(frame="nad83 (2011)").station_frame(), "NAD83(2011)")
+        self.assertEqual(settings(frame="itrf2014").station_frame(), "ITRF2014")
+        self.assertEqual(settings(base_frame="").our_frame(), "")
+        names = "ITRF2020, ITRF2014, ITRF2008, NAD83(2011)"
+        self.assertEqual(settings(frame="WGS84").problem(),
+                         f"reference_frame must be one of {names}, or empty")
+        self.assertEqual(settings(frame="0.56 -1.20 1.18").problem(),
+                         f"reference_frame must be one of {names}, or empty")
+        self.assertEqual(settings(base_frame="NAD83").problem(),
+                         f"base_frame must be one of {names}, or empty")
+        self.assertEqual(settings(frame="NAD83(2011)", base_frame="ITRF2020").problem(), "")
+        self.assertIsNone(settings().our_epoch())
+        self.assertAlmostEqual(settings(base_epoch="2026-11-06").our_epoch(), 2026.85, places=2)
+        self.assertEqual(settings(base_epoch=" 2026.85 ").our_epoch(), 2026.85)
+        self.assertEqual(settings(base_epoch="yesterday").problem(),
+                         "base_epoch must be a date YYYY-MM-DD or a decimal year, or empty")
+        self.assertEqual(settings(base_epoch="1950").problem(),
+                         "base_epoch must be a year between 1990 and 2100")
 
     def test_reset_time(self):
         self.assertIsNone(parse_reset_utc(""))
@@ -223,50 +238,59 @@ class Settings(unittest.TestCase):
         options.write_text(json.dumps({"reference_enabled": True, "reference_host": "h",
                                        "reference_mountpoint": "MP", "reference_user": "u",
                                        "reference_password": SENTINEL,
-                                       "reference_expected_enu": "0.5 -1.2 1.2",
+                                       "reference_frame": "NAD83(2011)",
                                        "measured_snr_mask": 38}))
         loaded = load_settings(["--options", str(options)])
         made = reference_settings(loaded)
         self.assertEqual((made.enabled, made.host, made.port, made.mountpoint, made.user,
-                          made.password.reveal(), made.expected(), made.reset_utc,
-                          made.binary, made.work_dir, made.elevation_mask, made.snr_mask),
-                         (True, "h", 2101, "MP", "u", SENTINEL, (0.5, -1.2, 1.2), "00:00",
-                          "rtkrcv-ex", folder / "reference", 15, 38))
+                          made.password.reveal(), made.frame, made.base_frame, made.base_epoch,
+                          made.reset_utc, made.binary, made.work_dir, made.elevation_mask,
+                          made.snr_mask),
+                         (True, "h", 2101, "MP", "u", SENTINEL, "NAD83(2011)", "ITRF2020", "",
+                          "00:00", "rtkrcv-ex", folder / "reference", 15, 38))
         self.assertNotIn("reference_password", loaded, "the password is not kept around")
         self.assertEqual(made.problem(), "")
         loaded = load_settings(["--options", str(options), "--no-reference",
                                 "--reference-host", " h2 ", "--reference-port", "2102",
                                 "--reference-mountpoint", "M2", "--reference-user", "u2",
-                                "--reference-expected-enu", "1 2 3",
+                                "--reference-frame", " itrf2014 ", "--base-frame", "",
+                                "--base-epoch", "2026-11-06",
                                 "--reference-reset-utc", "", "--data-dir", "/x"])
         made = reference_settings(loaded)
         self.assertEqual((made.enabled, made.host, made.port, made.mountpoint, made.user,
-                          made.expected(), made.reset_seconds(), made.work_dir),
-                         (False, "h2", 2102, "M2", "u2", (1.0, 2.0, 3.0), None,
+                          made.station_frame(), made.our_frame(), round(made.our_epoch(), 2),
+                          made.reset_seconds(), made.work_dir),
+                         (False, "h2", 2102, "M2", "u2", "ITRF2014", "", 2026.85, None,
                           Path("/x/reference")))
+        self.assertEqual(reference_settings(load_settings(
+            ["--options", str(options), "--reference-frame", "ETRS89"])).problem(),
+            "reference_frame must be one of ITRF2020, ITRF2014, ITRF2008, NAD83(2011), or empty")
         self.assertTrue(reference_settings(load_settings(
             ["--options", str(options), "--reference"])).enabled)
         with self.assertRaises(SystemExit):
             load_settings(["--reference-password", "x"])
         for key in ("reference_enabled", "reference_host", "reference_port",
                     "reference_mountpoint", "reference_user", "reference_password",
-                    "reference_expected_enu", "reference_reset_utc"):
+                    "reference_frame", "reference_reset_utc", "base_frame", "base_epoch"):
             self.assertIn(key, DEFAULTS)
             self.assertEqual(key in OVERRIDES, key != "reference_password", key)
+        self.assertNotIn("reference_expected_enu", DEFAULTS, "removed in 0.6.2")
         self.assertEqual((DEFAULTS["reference_enabled"], DEFAULTS["reference_host"],
                           DEFAULTS["reference_port"], DEFAULTS["reference_mountpoint"],
                           DEFAULTS["reference_user"], DEFAULTS["reference_password"],
-                          DEFAULTS["reference_expected_enu"], DEFAULTS["reference_reset_utc"]),
-                         (False, "", 2101, "", "", "", "0 0 0", "00:00"))
+                          DEFAULTS["reference_frame"], DEFAULTS["reference_reset_utc"],
+                          DEFAULTS["base_frame"], DEFAULTS["base_epoch"]),
+                         (False, "", 2101, "", "", "", "", "00:00", "ITRF2020", ""))
         # Defaults alone: off, and not configured if turned on.
         made = reference_settings(load_settings(["--options", str(folder / "none.json")]))
         self.assertFalse(made.enabled)
         self.assertEqual(made.problem(),
                          "set reference_host, reference_mountpoint, reference_user")
         # A null option (Home Assistant can send one) is an empty string, not "None".
-        options.write_text(json.dumps({"reference_host": None, "reference_user": None}))
+        options.write_text(json.dumps({"reference_host": None, "reference_user": None,
+                                       "reference_frame": None, "base_frame": None}))
         made = reference_settings(load_settings(["--options", str(options)]))
-        self.assertEqual((made.host, made.user), ("", ""))
+        self.assertEqual((made.host, made.user, made.frame, made.base_frame), ("", "", "", ""))
 
 
 class Decode1033(unittest.TestCase):
@@ -293,71 +317,63 @@ class Decode1033(unittest.TestCase):
         self.assertEqual(rtcmdec.decode_1033(odd)["antenna"], "a??")
 
 
-class Tap(unittest.IsolatedAsyncioTestCase):
-    """The tap server: rtkrcv's copy of the CORS stream, decoded."""
+class Decoder(unittest.TestCase):
+    """The station decoder: the stream as the NTRIP client receives it, decoded."""
 
-    async def asyncSetUp(self):
+    def setUp(self):
         self.now = 1000.0
         self.seen = []
-        self.tap = TapServer(on_frame=lambda t, n: self.seen.append((t, n)), clock=lambda: self.now)
-        self.port = await self.tap.start()
+        self.decoder = StationDecoder(on_frame=lambda t, n: self.seen.append((t, n)),
+                                      clock=lambda: self.now)
 
-    async def asyncTearDown(self):
-        await self.tap.stop()
-
-    async def send(self, data, close=True):
-        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
-        writer.write(data)
-        await writer.drain()
-        await asyncio.sleep(0.1)
-        if close:
-            writer.close()
-            await writer.wait_closed()
-            await asyncio.sleep(0.05)
-        return reader, writer
-
-    async def test_decodes_position_descriptors_and_msm(self):
-        await self.send(b"junk" + arp_frame(*CORS, antenna_height=0.0) + frame_1033()
-                        + rtcm(1074, 40) + rtcm(1084, 40))
-        snap = self.tap.snapshot()
+    def test_decodes_position_descriptors_and_msm(self):
+        self.decoder.feed(b"junk" + arp_frame(*CORS, antenna_height=0.0) + frame_1033()
+                          + rtcm(1074, 40) + rtcm(1084, 40))
+        snap = self.decoder.snapshot()
         self.assertEqual((snap["frames"], snap["msm_frames"], snap["unknown_bytes"],
-                          snap["decode_errors"], snap["connections"]), (4, 2, 4, 0, 1))
+                          snap["decode_errors"]), (4, 2, 4, 0))
         position = snap["position"]
         self.assertEqual((position["message"], position["lat"], position["lon"],
-                          position["height_m"], position["antenna_height_m"]),
-                         (1006, 0.225, 0.0, 10.0, 0.0))
+                          position["height_m"], position["antenna_height_m"],
+                          position["itrf_year"]),
+                         (1006, 0.225, 0.0, 10.0, 0.0, 0))
         self.assertEqual(snap["descriptors"]["antenna"], "GPPNULLANTENNA")
         self.assertEqual(snap["descriptors"]["receiver"], "LEICA GR30")
         self.assertEqual(self.seen, [(1000.0, 1006), (1000.0, 1033), (1000.0, 1074),
                                      (1000.0, 1084)])
         self.assertEqual((snap["age_s"], snap["msm_age_s"]), (0.0, 0.0))
-        self.assertAlmostEqual(self.tap.position["ecef"][0], CORS[0], places=3)
+        self.assertAlmostEqual(self.decoder.position["ecef"][0], CORS[0], places=3)
+        self.assertGreater(snap["bytes"], 100)
 
-    async def test_a_zero_position_is_an_error_not_a_position(self):
-        await self.send(arp_frame(0.0, 0.0, 0.0) + rtcm(1033, 8))
-        snap = self.tap.snapshot()
+    def test_a_zero_position_is_an_error_not_a_position(self):
+        self.decoder.feed(arp_frame(0.0, 0.0, 0.0) + rtcm(1033, 8))
+        snap = self.decoder.snapshot()
         self.assertIsNone(snap["position"])
         self.assertEqual(snap["decode_errors"], 2)
         self.assertEqual(snap["frames"], 2)
 
-    async def test_a_raising_callback_does_not_end_the_tap(self):
+    def test_a_raising_callback_does_not_stop_the_decoder(self):
         def boom(now, number):
             raise RuntimeError("the check failed")
 
-        self.tap._on_frame = boom
+        self.decoder._on_frame = boom
         with self.assertLogs("gnss_base", "ERROR"):
-            await self.send(rtcm(1074, 40) + rtcm(1084, 40), close=False)
-        self.assertEqual((self.tap.frames, self.tap.msm_frames, self.tap.callback_errors),
-                         (2, 2, 2))
-        self.assertTrue(self.tap.connected)
+            self.decoder.feed(rtcm(1074, 40) + rtcm(1084, 40))
+        self.assertEqual((self.decoder.frames, self.decoder.msm_frames,
+                          self.decoder.callback_errors), (2, 2, 2))
 
-    async def test_a_new_connection_starts_a_new_parse(self):
+    def test_a_new_connection_starts_a_new_parse(self):
         whole = arp_frame(*CORS)
-        await self.send(whole[:10])
-        self.assertEqual(self.tap.frames, 0)
-        await self.send(whole)
-        self.assertEqual((self.tap.frames, self.tap.connections), (1, 2))
-        self.assertIsNotNone(self.tap.position)
+        self.decoder.feed(whole[:10])
+        self.assertEqual(self.decoder.frames, 0)
+        self.decoder.reset()
+        self.decoder.feed(whole)
+        self.assertEqual(self.decoder.frames, 1)
+        self.assertIsNotNone(self.decoder.position)
+        # Without a reset, the rest of the cut frame is junk and the whole one still parses.
+        self.decoder.feed(whole[:10])
+        self.decoder.feed(whole)
+        self.assertEqual(self.decoder.frames, 2)
 
 
 class Stats(unittest.TestCase):
@@ -407,6 +423,12 @@ class Stats(unittest.TestCase):
 
     def test_verdict(self):
         self.assertEqual(verdict(None, None), (None, "no fixed solution this session yet"))
+        # Fixes, but no expected offset (a frame not declared): no colour from it.
+        self.assertEqual(verdict(None, 10.0), (None, "no residual: no expected offset"))
+        self.assertEqual(verdict(None, 10.0, no_expected=STATION_FRAME_UNKNOWN),
+                         (None, "no residual: station frame unknown: set reference_frame"))
+        self.assertEqual(verdict(None, NO_FIX_RED_S + 1, no_expected=STATION_FRAME_UNKNOWN),
+                         ("bad", "no fixed solution for 30 min"))
         self.assertEqual(verdict([0.03, 0.03, 0.08], 10.0)[0], "good")
         self.assertEqual(verdict([0.05, 0.0, 0.10], 0.0)[0], "good", "the limits count")
         self.assertEqual(verdict([0.04, 0.04, 0.0], 10.0)[0], "warn", "5.7 cm horizontal")
@@ -462,6 +484,19 @@ class StubRunner:
                                       "solutions": {}, "ephemerides": {}}
 
 
+def _enu_to_ecef_delta(origin, enu):
+    """The ECEF difference that is `enu` (east, north, up) at `origin`: the transpose of
+    the rotation in rtcm.ecef_to_enu."""
+    import math
+    lat, lon, _ = rtcmdec.ecef_to_llh(*origin)
+    lat, lon = math.radians(lat), math.radians(lon)
+    e, n, u = enu
+    sin_lat, cos_lat, sin_lon, cos_lon = math.sin(lat), math.cos(lat), math.sin(lon), math.cos(lon)
+    return (-sin_lon * e - sin_lat * cos_lon * n + cos_lat * cos_lon * u,
+            cos_lon * e - sin_lat * sin_lon * n + cos_lat * sin_lon * u,
+            cos_lat * n + sin_lat * u)
+
+
 def solution(lat=0.0, lon=0.0, height=3.0, quality=1, satellites=25, age=1.0, ratio=3.5):
     return {"gpst": "2026-01-01T00:00:00", "lat": lat, "lon": lon, "height_m": height,
             "quality": quality, "satellites": satellites, "sigma_n_m": 0.01,
@@ -502,7 +537,21 @@ class StateMachine(unittest.TestCase):
         await check.stop()
 
     def test_states_in_order(self):
+        """The NTRIP client's state first (until it streams), then rtkrcv's, then the
+        corrections' and the solution's."""
         check = self.check()
+        for client_state in ("connecting", "sourcetable", "login refused",
+                             "mountpoint not found", "unsuitable mountpoint", "no data",
+                             "backoff"):
+            check.client.state, check.client.reason = client_state, "why"
+            self.assertEqual(check.state(), client_state)
+            self.assertEqual(check.snapshot()["reason"], "why")
+        # The client's task died (cannot happen while the app runs): said, never silent.
+        check.client.died, check.client.reason = True, "stopped"
+        self.assertEqual(check.state(), "client stopped")
+        self.assertEqual(check.snapshot()["reason"], "stopped")
+        check.client.died = False
+        check.client.state, check.client.reason = "connected", ""
         for runner_state in ("not available", "idle", "restarting"):
             self.stub.state_value = runner_state
             self.assertEqual(check.state(), runner_state)
@@ -510,10 +559,10 @@ class StateMachine(unittest.TestCase):
         self.stub.running = None
         self.assertEqual(check.state(), "starting", "between two processes")
         self.stub.running = 5.0
-        self.assertEqual(check.state(), "starting")
-        self.stub.running = STARTING_S
-        self.assertEqual(check.state(), "connecting", "no CORS data since the start")
-        check.tap._frame(rtcm(1074, 40))
+        self.assertEqual(check.state(), "starting", "no station data yet")
+        check.station._frame(arp_frame(*CORS))
+        self.assertEqual(check.state(), "no corrections", "station data without observations")
+        check.station._frame(rtcm(1074, 40))
         self.assertEqual(check.state(), "starting", "corrections, no solution yet")
         check._solution(solution(quality=2), "line")
         self.assertEqual(check.state(), "float")
@@ -522,7 +571,7 @@ class StateMachine(unittest.TestCase):
         check._solution(solution(quality=5), "line")
         self.assertEqual(check.state(), "single")
         self.now += SOLUTION_STALE_S + 1
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         self.assertEqual(check.state(), "stale")
         self.now += CORRECTIONS_STALE_S + 1
         check._solution(solution(quality=1), "line")
@@ -530,25 +579,27 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(self.lines, ["line"] * 4)
 
     def test_offsets_session_and_residual(self):
-        check = self.check(expected_enu="0 0 3")
+        """The station declared in our own frame (ITRF2020): the expected offset is
+        zero, and the residual is the session mean itself."""
+        check = self.check(frame="ITRF2020")
         check._session_start()
-        check.tap._frame(arp_frame(*CORS, antenna_height=0.0))
-        check.tap._frame(frame_1033())
+        check.station._frame(arp_frame(*CORS, antenna_height=0.0))
+        check.station._frame(frame_1033())
         self.assertEqual(check.state(), "no corrections", "a stream without MSM")
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         east = 1e-7 * 111_319.49   # metres per 1e-7 degree of longitude at the equator
         for i in range(10):
-            check._solution(solution(lon=1e-7 if i % 2 else 0.0, height=3.0 + 0.02 * (i % 2)),
+            check._solution(solution(lon=1e-7 if i % 2 else 0.0, height=0.0 + 0.02 * (i % 2)),
                             "line")
             self.now += 1
-        check._solution(solution(quality=2, height=4.0), "line")
+        check._solution(solution(quality=2, height=1.0), "line")
         snap = check.snapshot()
         self.assertEqual(snap["state"], "float")
         self.assertEqual(snap["mountpoint"], "MP_1")
         self.assertEqual(snap["baseline_km"], round(abs(
             __import__("math").dist(OURS, CORS)) / 1000, 3))
         self.assertAlmostEqual(snap["baseline_km"], 24.88, delta=0.05)
-        self.assertEqual(snap["solution"]["offset_enu"][2], 4.0)
+        self.assertEqual(snap["solution"]["offset_enu"][2], 1.0)
         self.assertEqual(snap["solution"]["quality"], 2)
         self.assertEqual(snap["solution"]["differential_age_s"], 1.0)
         session = snap["session"]
@@ -557,7 +608,7 @@ class StateMachine(unittest.TestCase):
                          (11, 10, 1, round(10 / 11, 3)))
         self.assertAlmostEqual(session["mean_enu"][0], east / 2, places=3)
         self.assertAlmostEqual(session["mean_enu"][1], 0.0, places=3)
-        self.assertAlmostEqual(session["mean_enu"][2], 3.01, places=4)
+        self.assertAlmostEqual(session["mean_enu"][2], 0.01, places=4)
         self.assertAlmostEqual(session["std_enu"][0], east / 2, places=3)
         self.assertAlmostEqual(session["std_enu"][2], 0.01, places=4)
         self.assertEqual(session["started_utc"], "2027-01-01T01:00:00+00:00")
@@ -567,7 +618,11 @@ class StateMachine(unittest.TestCase):
         self.assertAlmostEqual(snap["residual_enu"][2], 0.01, places=4)
         self.assertAlmostEqual(snap["residual_enu"][0], east / 2, places=3)
         self.assertEqual(snap["verdict"], "good")
-        self.assertEqual(snap["expected_enu"], [0.0, 0.0, 3.0])
+        self.assertEqual(snap["expected_enu"], [0.0, 0.0, 0.0])
+        self.assertEqual((snap["station_frame"], snap["station_frame_source"],
+                          snap["station_df021"], snap["base_frame"], snap["epoch"],
+                          snap["no_expected"]),
+                         ("ITRF2020", "reference_frame", 0, "ITRF2020", 2027.0, None))
         self.assertEqual(snap["corrections"]["descriptors"]["antenna"], "GPPNULLANTENNA")
         self.assertEqual(snap["corrections"]["position"]["antenna_height_m"], 0.0)
         self.assertEqual(snap["base_ecef"], [round(v, 4) for v in OURS])
@@ -575,7 +630,10 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(snap["next_reset_s"], 23 * 3600)
         header = check.header()
         self.assertIn("RTK static against MP_1", header)
-        self.assertIn("expected offset E N U +0.000 +0.000 +3.000 m (solution minus our 1005)", header)
+        self.assertIn("expected offset E N U +0.000 +0.000 +0.000 m (computed, station frame "
+                      "minus ours)", header)
+        self.assertIn("our frame ITRF2020 (base_frame) epoch 2027.00 (today), station frame "
+                      "ITRF2020 (from reference_frame; stream DF021 0)", header)
         self.assertIn(f"CORS 1005 ECEF {CORS[0]:.4f} {CORS[1]:.4f} {CORS[2]:.4f} antenna height 0.0000", header)
         self.assertIn(f"our 1005 ECEF {OURS[0]:.4f}", header)
         self.assertIn("time GPST", header)
@@ -583,11 +641,11 @@ class StateMachine(unittest.TestCase):
         # Red once the residual is large, or there has been no fix for 30 minutes.
         check._session_start()
         for _ in range(3):
-            check._solution(solution(height=3.5), "line")
+            check._solution(solution(height=0.5), "line")
         self.assertEqual(check.snapshot()["verdict"], "bad")
         self.assertIn("more than 20 cm", check.snapshot()["verdict_reason"])
         check._session_start()
-        check._solution(solution(height=3.12), "line")
+        check._solution(solution(height=0.12), "line")
         self.assertEqual(check.snapshot()["verdict"], "warn")
         self.now += NO_FIX_RED_S + 1
         snap = check.snapshot()
@@ -601,7 +659,7 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(check.snapshot()["verdict"], "bad")
         # A session kept as "previous" keeps its red: it ended 31 min after its last fix.
         check._session_start()
-        check._solution(solution(height=3.0), "line")
+        check._solution(solution(height=0.0), "line")
         self.now += NO_FIX_RED_S + 60
         self.assertEqual(check.snapshot()["verdict"], "bad")
         check._session_start()
@@ -611,7 +669,7 @@ class StateMachine(unittest.TestCase):
         # Our 1005 changing while no solution comes is noticed by the snapshot itself,
         # and the new statistics' age starts over (not red at once).
         check._session_start()
-        check._solution(solution(height=3.0), "line")
+        check._solution(solution(height=0.0), "line")
         self.now += NO_FIX_RED_S - 60
         self.assertEqual(check.snapshot()["verdict"], "good")
         self.base = {"ecef": rtcmdec.llh_to_ecef(0.0, 0.0, 2.0)}
@@ -622,9 +680,92 @@ class StateMachine(unittest.TestCase):
         self.now += 120
         self.assertIsNone(check.snapshot()["verdict"], "the new statistics are 2 min old")
 
+    def test_computed_offset_for_a_nad83_station(self):
+        """The station declared NAD83(2011): the expected offset is the transformation
+        at our antenna and today's epoch (datums.py, tested on its own), the residual
+        is the mean minus it, and the log header and card say where it came from."""
+        check = self.check(frame="NAD83(2011)")
+        check._session_start()
+        epoch = decimal_year(self.wall)
+        expected = expected_offset_enu(OURS, "NAD83(2011)", epoch)
+        self.assertGreater(max(abs(v) for v in expected), 0.5, "a metre or two at the equator")
+        snap = check.snapshot()
+        self.assertEqual(snap["expected_enu"], [round(v, 4) for v in expected])
+        self.assertEqual((snap["station_frame"], snap["epoch"], snap["no_expected"]),
+                         ("NAD83(2011)", round(epoch, 2), None))
+        # A solution exactly at the expected offset: a zero residual, green.
+        point = rtcmdec.llh_to_ecef(0.0, 0.0, 0.0)
+        lat, lon, height = rtcmdec.ecef_to_llh(*(
+            p + d for p, d in zip(point, _enu_to_ecef_delta(OURS, expected))))
+        check._solution(solution(lat=lat, lon=lon, height=height), "line")
+        snap = check.snapshot()
+        for got, want in zip(snap["residual_enu"], (0.0, 0.0, 0.0)):
+            self.assertAlmostEqual(got, want, places=3)
+        self.assertEqual(snap["verdict"], "good")
+        self.assertIn("station frame NAD83(2011) (from reference_frame; stream DF021 unknown)",
+                      check.header())
+        self.assertIn(f"epoch {epoch:.2f}", check.header())
+        self.assertIn(" ".join(f"{v:+.3f}" for v in expected) + " m (computed", check.header())
+        # The epoch moves with the wall clock: a year on, the offset for the SAME
+        # ITRF2020 coordinate has changed by about the plate's motion (2 to 3 cm, the
+        # NAD83 rotation rates), which is why the coordinate must be kept current.
+        self.wall += 365 * 86400
+        later = check.snapshot()["expected_enu"]
+        drift = max(abs(a - b) for a, b in zip(later, expected))
+        self.assertTrue(0.01 < drift < 0.05, drift)
+        # With base_epoch set, the epoch is the coordinate's, whatever the date.
+        pinned = self.check(frame="NAD83(2011)", base_epoch="2026-11-06")
+        snap = pinned.snapshot()
+        self.assertEqual((snap["epoch"], snap["epoch_source"]), (2026.85, "base_epoch"))
+        self.assertEqual(snap["expected_enu"],
+                         [round(v, 4) for v in expected_offset_enu(OURS, "NAD83(2011)",
+                                                                   pinned.epoch())])
+        self.assertIn("epoch 2026.85 (base_epoch)", pinned.header())
+
+    def test_unknown_station_frame_shows_the_raw_offset_only(self):
+        """The design rule: no guessing. Without reference_frame there is no expected
+        offset, no residual and no residual colour, whatever the stream's DF021 says
+        (RTCM reserves that field); the no-fix rule still applies."""
+        check = self.check()
+        check._session_start()
+        check.station._frame(arp_frame_df021(*CORS, itrf=7))
+        self.assertEqual(check.station.position["itrf_year"], 7)
+        check.station._frame(rtcm(1074, 40))
+        for _ in range(3):
+            check._solution(solution(height=0.3), "line")
+        snap = check.snapshot()
+        self.assertEqual((snap["station_frame"], snap["station_frame_source"],
+                          snap["station_df021"], snap["expected_enu"], snap["residual_enu"],
+                          snap["no_expected"]),
+                         (None, None, 7, None, None, STATION_FRAME_UNKNOWN))
+        self.assertEqual(snap["session"]["mean_enu"], [0.0, 0.0, 0.3], "the raw offset")
+        self.assertEqual((snap["verdict"], snap["verdict_reason"]),
+                         (None, "no residual: station frame unknown: set reference_frame"))
+        self.assertEqual(snap["corrections"]["position"]["itrf_year"], 7)
+        header = check.header()
+        self.assertIn("station frame unknown (set reference_frame; stream DF021 7)", header)
+        self.assertIn("expected offset E N U none (computed", header)
+        # The previous session keeps "no residual" and no colour.
+        check._session_start()
+        previous = check.snapshot()["previous_session"]
+        self.assertEqual((previous["residual_enu"], previous["verdict"], previous["mean_enu"]),
+                         (None, None, [0.0, 0.0, 0.3]))
+        # 30 min without a fix is red whatever the frames.
+        check._solution(solution(quality=2), "line")
+        self.now += NO_FIX_RED_S + 1
+        self.assertEqual(check.snapshot()["verdict"], "bad")
+        # Our own frame not declared: the same, with its own reason.
+        check = self.check(frame="NAD83(2011)", base_frame="")
+        check._session_start()
+        check._solution(solution(), "line")
+        snap = check.snapshot()
+        self.assertEqual((snap["base_frame"], snap["expected_enu"], snap["no_expected"]),
+                         (None, None, OUR_FRAME_UNKNOWN))
+        self.assertIn("our frame unknown (base_frame)", check.header())
+
     def test_without_our_1005_offsets_wait(self):
         self.base = None
-        check = self.check()
+        check = self.check(frame="ITRF2020")
         check._solution(solution(), "line")
         snap = check.snapshot()
         self.assertIsNone(snap["solution"]["offset_enu"])
@@ -632,19 +773,21 @@ class StateMachine(unittest.TestCase):
         self.assertIsNone(snap["baseline_km"])
         self.assertEqual(snap["session"]["counts"]["fixed"], 1)
         self.assertIn("our 1005 ECEF unknown", check.header())
+        self.assertEqual((snap["expected_enu"], snap["no_expected"]),
+                         (None, "our 1005 position is not known yet"))
         self.base = {"ecef": OURS}
         check._solution(solution(), "line")
         self.assertEqual(check.snapshot()["solution"]["offset_enu"][2], 3.0)
 
     def test_a_changed_1005_restarts_the_statistics(self):
-        check = self.check(expected_enu="0 0 3")
+        check = self.check(frame="ITRF2020")
         check._session_start()
         self.assertIsNone(check.snapshot()["previous_session"])
         for _ in range(5):
-            check._solution(solution(), "line")
+            check._solution(solution(height=0.0), "line")
         self.assertEqual(check.stats.fixed_count, 5)
         self.base = {"ecef": rtcmdec.llh_to_ecef(0.0, 0.0, 1.0)}
-        check._solution(solution(), "line")
+        check._solution(solution(height=0.0), "line")
         snap = check.snapshot()
         self.assertEqual(snap["session"]["counts"]["fixed"], 1)
         previous = snap["previous_session"]
@@ -652,12 +795,12 @@ class StateMachine(unittest.TestCase):
                           previous["ended_because"], previous["residual_enu"],
                           previous["mean_enu"]),
                          (5, 5, "good", "our 1005 position changed", [0.0, 0.0, 0.0],
-                          [0.0, 0.0, 3.0]))
+                          [0.0, 0.0, 0.0]))
         self.assertEqual(previous["started_utc"], "2027-01-01T01:00:00+00:00")
-        self.assertEqual(snap["solution"]["offset_enu"][2], 2.0)
+        self.assertEqual(snap["solution"]["offset_enu"][2], -1.0)
         self.assertEqual(snap["base_changed_age_s"], 0.0)
         self.base = {"ecef": rtcmdec.llh_to_ecef(0.0, 0.0, 1.0001)}
-        check._solution(solution(), "line")
+        check._solution(solution(height=0.0), "line")
         self.assertEqual(check.stats.fixed_count, 2, "a 0.1 mm rounding is no change")
         self.stub.last_exit = {"code": 0, "reason": "restarted: daily reset", "ran_s": 1.0}
         check._session_start()
@@ -671,36 +814,36 @@ class StateMachine(unittest.TestCase):
     def test_a_gap_in_corrections_starts_a_new_session(self):
         check = self.check()
         check._session_start()
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         self.now += GAP_RESTART_S
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         self.assertEqual(self.stub.requests, [], "a gap of exactly the limit is not over it")
         self.now += GAP_RESTART_S + 1
-        check.tap._frame(arp_frame(*CORS))
-        check.tap._frame(frame_1033())
+        check.station._frame(arp_frame(*CORS))
+        check.station._frame(frame_1033())
         self.assertEqual(self.stub.requests, [], "1005 and 1033 are not corrections")
         self.assertEqual(check.state(), "no corrections")
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         self.assertEqual(self.stub.requests, ["corrections resumed after a 5 min gap"])
         self.assertEqual(check.gap_restarts, 1)
         self.stub.accept = False
         self.now += GAP_RESTART_S + 1
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         self.assertEqual(check.gap_restarts, 1, "not counted when the runner declined")
         self.stub.accept = True
         # The station's position: the first one of a session is the reference; a
         # change of more than 0.5 mm ends the session; the same one again does not.
-        check.tap._frame(arp_frame(*CORS))
-        check.tap._frame(arp_frame(*CORS))
+        check.station._frame(arp_frame(*CORS))
+        check.station._frame(arp_frame(*CORS))
         self.assertEqual(check.station_changes, 0)
         moved = rtcmdec.llh_to_ecef(0.225, 0.0, 10.01)
-        check.tap._frame(arp_frame(*moved))
+        check.station._frame(arp_frame(*moved))
         self.assertEqual((check.station_changes, self.stub.requests[-1]),
                          (1, "the station's 1005 position changed"))
         check._session_start()
         self.assertEqual(check.sessions, 2)
         self.now += GAP_RESTART_S + 1
-        check.tap._frame(rtcm(1074, 40))
+        check.station._frame(rtcm(1074, 40))
         self.assertEqual(len(self.stub.requests), 3, "the first frame of a session is no gap")
 
     def test_snapshot_shape(self):
@@ -709,6 +852,8 @@ class StateMachine(unittest.TestCase):
         for key in ("enabled", "state", "reason", "host", "port", "mountpoint", "user_set",
                     "station_changes", "previous_session",
                     "password_set", "expected_enu", "reset_utc", "next_reset_s", "base_ecef",
+                    "station_frame", "station_frame_source", "station_df021", "base_frame",
+                    "epoch", "epoch_source", "no_expected", "client", "cors_feed", "raw_errors",
                     "base_changed_age_s", "baseline_km", "corrections", "solution", "session",
                     "recent", "residual_enu", "verdict", "verdict_reason", "sessions", "resets",
                     "gap_restarts", "pid", "running_s", "restarts", "restarts_today",
@@ -717,46 +862,25 @@ class StateMachine(unittest.TestCase):
                     "retry_in_s"):
             self.assertIn(key, snap, key)
         self.assertEqual((snap["user_set"], snap["password_set"], snap["host"], snap["port"]),
-                         (True, True, "cors.example", 2101))
+                         (True, True, "127.0.0.1", 1))
+        self.assertEqual(snap["client"]["state"], "off", "not started")
+        self.assertEqual(snap["client"]["mountpoint"], "MP_1")
         self.assertNotIn(SENTINEL, json.dumps(snap))
         self.assertEqual(snap["output"], [])
-        self.stub.output.feed(f"path={SENTINEL}\n".encode())
-        self.assertEqual(check.snapshot()["output"], [f"path={SENTINEL}"],
-                         "the stub has no scrub; the real runner's does (Redaction)")
-
-    def test_console_output_never_shows_a_piece_of_the_password(self):
-        secret = Secret(SENTINEL)
-        lines = OutputLines(secret=secret)
-        # An unfinished line is not shown at all (a read can end inside the password).
-        lines.feed(b"rtkrcv> stream path=user:" + SENTINEL.encode()[:9])
-        self.assertEqual(lines.snapshot(), [])
-        lines.feed(SENTINEL.encode()[9:] + b"@host\r\n")
-        self.assertEqual(lines.snapshot(), ["rtkrcv> stream path=user:***@host"])
-        # A line cut for length: the cut lands well before the end, and a trailing
-        # beginning of the password is removed from the kept part.
-        lines = OutputLines(secret=secret)
-        filler = b"x" * (OutputLines.LONG_LINE - 5)
-        lines.feed(filler + b"user:" + SENTINEL.encode()[:4])
-        lines.feed(SENTINEL.encode()[4:] + b"@host\n")
-        text = " | ".join(lines.snapshot())
-        for piece in (SENTINEL, SENTINEL[:4], SENTINEL[4:], SENTINEL[:2]):
-            self.assertNotIn(piece, text, piece)
-        self.assertEqual(len(lines.lines), 2, "the cut part, then the rest")
-        # An escape sequence cut short just before the password cannot eat its start.
-        lines = OutputLines(secret=secret)
-        lines.feed(b"path=\x1b[" + SENTINEL.encode() + b"@host\n")
-        self.assertEqual(lines.snapshot(), ["path=[***@host"])
-        lines.feed(b"a\x1b[0")
-        lines.feed(b"m" + SENTINEL.encode() + b"\n")
-        self.assertEqual(lines.snapshot()[-1], "a***")
-        # Without a secret (the measured instance) the tail still shows, as before.
-        plain = OutputLines()
-        plain.feed(b"rtkrcv> ")
-        self.assertEqual(plain.snapshot(), ["rtkrcv>"])
-        self.assertEqual(secret.strip_prefix("abc" + SENTINEL[:5]), "abc")
-        self.assertEqual(secret.strip_prefix("abc"), "abc")
-        self.assertEqual(secret.strip_prefix(SENTINEL[:3]), "")
-        self.assertEqual(Secret("").strip_prefix("abc"), "abc")
+        # The station's bytes go to the raw log, the decoder and rtkrcv's second input;
+        # a new connection (the client's connect callback) starts a new parse.
+        raw = []
+        check._on_raw = raw.append
+        check._on_data(arp_frame(*CORS)[:10])
+        check.client._on_connect()
+        check._on_data(arp_frame(*CORS))
+        self.assertEqual(b"".join(raw), arp_frame(*CORS)[:10] + arp_frame(*CORS))
+        self.assertEqual(check.station.frames, 1)
+        self.assertEqual(check.cors_feed.frames_sent, 0, "rtkrcv not connected: nothing sent")
+        check._on_raw = mock.Mock(side_effect=OSError("disk"))
+        with self.assertLogs("gnss_base", "ERROR"):
+            check._on_data(rtcm(1074, 40))
+        self.assertEqual((check.raw_errors, check.station.frames), (1, 2))
 
 
 class ResetTimer(unittest.IsolatedAsyncioTestCase):
@@ -935,30 +1059,42 @@ class NoConsole(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await probe_version(str(FAKE)))
 
 
-class NoCorrections(unittest.IsolatedAsyncioTestCase):
-    """rtkrcv keeps sending single solutions while the CORS stream is silent (it is
-    configured with out-outsingle=on): the state is "no corrections", the singles are
-    counted, and the runner does not take the quiet stream for a hang."""
+class WithFakeCaster(unittest.IsolatedAsyncioTestCase):
+    """The check with the fake caster and the fake rtkrcv: the station's bytes reach
+    the raw log, the decoder and rtkrcv's second input; a stream without observations
+    is "no corrections", not a hang; a refused login is the headline; and rtkrcv's
+    config holds no credential."""
 
-    async def test_silent_tap_is_no_corrections_not_a_hang(self):
-        folder = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, folder)
-        sample = folder / "cors.rtcm3"
-        sample.write_bytes(arp_frame(*CORS) + frame_1033())
+    async def asyncSetUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.caster = FakeCaster(data=arp_frame(*CORS) + frame_1033(), period=0.05,
+                                 login=("user", SENTINEL))
+        self.port = await self.caster.start()
+        self.addAsyncCleanup(self.caster.stop)
+
+    def check(self, hub, raw, **fields):
+        made = ReferenceCheck(
+            settings(binary=str(FAKE), work_dir=self.folder / "w", host="127.0.0.1",
+                     port=self.port, **fields),
+            hub, lambda: {"ecef": OURS}, on_raw=raw.append, poll_s=0.05, hang_s=0.5)
+        self.addAsyncCleanup(made.stop)
+        return made
+
+    async def test_station_stream_without_observations_is_no_corrections_not_a_hang(self):
+        record = self.folder / "record.jsonl"
         with mock.patch.dict(os.environ, {"FAKE_RTKRCV_PERIOD": "0.05",
                                           "FAKE_RTKRCV_MODE": "normal",
-                                          "FAKE_RTKRCV_TAP_FILE": str(sample),
-                                          "FAKE_RTKRCV_TAP_SILENT": "1",
+                                          "FAKE_RTKRCV_RECORD": str(record),
                                           "FAKE_RTKRCV_SOLUTION": "0 0 3.0 5 20"}):
             hub = RtcmHub()
-            check = ReferenceCheck(settings(binary=str(FAKE), work_dir=folder / "w"),
-                                   hub, lambda: {"ecef": OURS}, poll_s=0.05, hang_s=0.5)
-            self.addAsyncCleanup(check.stop)
+            raw = []
+            check = self.check(hub, raw)
             check.start()
             for prn in range(1, 6):
                 hub.publish(eph(prn))
             deadline = asyncio.get_running_loop().time() + 10
-            while check.stats.counts["single"] < 5:
+            while check.stats.counts["single"] < 5 or not check.cors_feed.frames_sent:
                 self.assertLess(asyncio.get_running_loop().time(), deadline, check.snapshot())
                 hub.publish(rtcm(1074, 40))
                 hub.publish(eph(1))
@@ -967,104 +1103,50 @@ class NoCorrections(unittest.IsolatedAsyncioTestCase):
             hub.publish(rtcm(1074, 40))
             snap = check.snapshot()
             self.assertEqual(snap["state"], "no corrections", snap)
+            self.assertEqual(snap["client"]["state"], "connected")
             self.assertEqual((snap["restarts"], snap["planned_restarts"]), (0, 0))
             self.assertIsNotNone(snap["corrections"]["position"], "1005 came, MSM did not")
             self.assertIsNone(snap["corrections"]["msm_age_s"])
+            self.assertEqual(snap["corrections"]["descriptors"]["antenna"], "GPPNULLANTENNA")
             self.assertEqual(snap["session"]["counts"]["fixed"], 0)
             self.assertEqual(snap["recent"]["kind"], "all")
             self.assertIsNone(snap["verdict"])
-
-
-class Redaction(unittest.IsolatedAsyncioTestCase):
-    """The whole check against the fake rtkrcv, which echoes its NTRIP path (login
-    included) to its console and stdout: the password reaches the config file (mode
-    0600) and nowhere else."""
-
-    async def test_password_only_in_the_config_file(self):
-        folder = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, folder)
-        sample = folder / "cors.rtcm3"
-        sample.write_bytes(arp_frame(*CORS, antenna_height=0.0) + frame_1033())
-        output = io.StringIO()
-        handler = logging.StreamHandler(output)
-        handler.setLevel(logging.DEBUG)
-        root = logging.getLogger()
-        root.addHandler(handler)
-        self.addCleanup(root.removeHandler, handler)
-        with mock.patch.dict(os.environ, {"FAKE_RTKRCV_PERIOD": "0.05",
-                                          "FAKE_RTKRCV_MODE": "normal",
-                                          "FAKE_RTKRCV_ECHO_PATH": "1",
-                                          "FAKE_RTKRCV_TAP_FILE": str(sample),
-                                          "FAKE_RTKRCV_SOLUTION": "0 0 3.0 1 25"}):
-            hub = RtcmHub()
-            lines = []
-            log = SolutionLog(folder / "reference", lambda: check.header(), suffix=".llh")
-            check = ReferenceCheck(
-                settings(binary=str(FAKE), work_dir=folder / "reference-work",
-                         expected_enu="0 0 3"),
-                hub, lambda: {"ecef": OURS},
-                on_solution=lambda s, line: (lines.append(line), log.write(line)),
-                version="t", poll_s=0.05, stats_s=0.2)
-            self.addAsyncCleanup(check.stop)
-            with self.assertLogs("gnss_base", "INFO"):
-                check.start()
-                hub.publish(rtcm(1074, 40))
-                deadline = asyncio.get_running_loop().time() + 15
-                while check.state() != "fixed" or len(lines) < 3:
-                    self.assertLess(asyncio.get_running_loop().time(), deadline,
-                                    check.snapshot())
-                    hub.publish(rtcm(1074, 40))
-                    await asyncio.sleep(0.1)
-            snap = check.snapshot()
-            texts = [json.dumps(snap), json.dumps(check.runner.snapshot()),
-                     "\n".join(check.runner.output.lines), check.header(),
-                     repr(vars(check)), repr(vars(check.runner)), output.getvalue()]
-            for text in texts:
-                self.assertNotIn(SENTINEL, text)
-            self.assertTrue(any("path=user:***@cors.example:2101/MP_1" in line
-                                for line in check.runner.output.lines),
-                            check.runner.output.lines)
-            config = folder / "reference-work" / CONFIG_NAME
-            self.assertIn(SENTINEL, config.read_text(), "rtkrcv reads it from the file")
-            self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
-            self.assertEqual(snap["state"], "fixed")
-            self.assertEqual(snap["corrections"]["descriptors"]["receiver"], "LEICA GR30")
-            self.assertAlmostEqual(snap["baseline_km"], 24.88, delta=0.05)
-            self.assertEqual(snap["solution"]["offset_enu"], [0.0, 0.0, 3.0])
-            self.assertEqual(snap["verdict"], "good")
-            self.assertEqual(snap["rtkrcv_version"], "2.4.3 b34")
-            self.assertGreaterEqual(snap["corrections"]["msm_frames"], 1)
-            self.assertNotIn("*", snap["corrections"]["position"].__repr__())
+            self.assertTrue(b"".join(raw).startswith(self.caster.data), "the raw log gets it all")
+            self.assertGreater(snap["cors_feed"]["frames_sent"], 0)
+            self.assertEqual(snap["cors_feed"]["connected"], True)
+            self.assertEqual(self.caster.most_open, 1)
+            config = (self.folder / "w" / CONFIG_NAME).read_text()
+            self.assertNotIn(SENTINEL, config)
+            self.assertNotIn("ntripcli", config)
+            self.assertIn(f"inpstr2-path   =127.0.0.1:{check.cors_feed.port}\n", config)
+            self.assertNotEqual(stat.S_IMODE((self.folder / "w" / CONFIG_NAME).stat().st_mode)
+                                & 0o077, 0, "no longer a private file: nothing secret in it")
             await check.stop()
-            await log.flush()
-            (llh,) = (folder / "reference").glob("*.llh")
-            text = llh.read_text()
-            self.assertNotIn(SENTINEL, text)
-            self.assertTrue(text.startswith("% gnss_base t, rtkrcv 2.4.3 b34, RTK static against MP_1, our 1005 ECEF"), text[:120])
-            self.assertIn("CORS 1005 ECEF", text.splitlines()[0])
-            self.assertEqual(parse_solution(text.splitlines()[-1])[1], None)
-            self.assertEqual(check.runner.stop_exit_code, 0)
+            exit_line = json.loads(record.read_text().splitlines()[-1])
+            self.assertEqual(exit_line["event"], "exit")
+            self.assertGreater(exit_line["received2"], 0, "rtkrcv read the station's bytes")
+            self.assertNotIn(SENTINEL, json.dumps(snap))
 
-    async def test_a_config_write_error_names_the_file_not_the_login(self):
-        folder = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, folder)
-        (folder / "work").write_text("a file where the folder should be")
-        with mock.patch.dict(os.environ, {"FAKE_RTKRCV_MODE": "normal"}):
-            check = ReferenceCheck(settings(binary=str(FAKE), work_dir=folder / "work"),
-                                   RtcmHub(), lambda: None, restart_s=0.1, restart_max_s=0.1,
-                                   poll_s=0.05)
-            self.addAsyncCleanup(check.stop)
-            with self.assertLogs("gnss_base", "WARNING") as logs:
-                check.start()
-                check.runner.hub.publish(rtcm(1074, 40))
-                deadline = asyncio.get_running_loop().time() + 5
-                while check.runner.last_exit is None:
-                    self.assertLess(asyncio.get_running_loop().time(), deadline)
-                    await asyncio.sleep(0.05)
-            reason = check.runner.last_exit["reason"]
-            self.assertIn("could not write its config", reason)
-            self.assertIn("FileExistsError", reason)
-            self.assertNotIn(SENTINEL, reason + "\n".join(logs.output) + json.dumps(check.snapshot()))
+    async def test_refused_login_is_the_headline(self):
+        with mock.patch.dict(os.environ, {"FAKE_RTKRCV_PERIOD": "0.05",
+                                          "FAKE_RTKRCV_MODE": "normal"}):
+            hub = RtcmHub()
+            raw = []
+            check = self.check(hub, raw, password=Secret("wrong"))
+            check.start()
+            hub.publish(rtcm(1074, 40))
+            deadline = asyncio.get_running_loop().time() + 10
+            while check.state() != "login refused":
+                self.assertLess(asyncio.get_running_loop().time(), deadline, check.snapshot())
+                await asyncio.sleep(0.05)
+            snap = check.snapshot()
+            self.assertIn("Login refused by the caster (HTTP/1.1 401 Unauthorized)", snap["reason"])
+            self.assertEqual(snap["client"]["retry_in_s"], 300)
+            self.assertEqual(raw, [], "nothing logged")
+            self.assertEqual(self.caster.stream_connections, 0)
+            self.assertNotIn("wrong", json.dumps(snap))
+            # The sourcetable was read, and says what the mountpoint is.
+            self.assertEqual(snap["client"]["sourcetable"]["format"], "RTCM 3.2")
 
 
 def find_rtkrcv():
@@ -1074,9 +1156,9 @@ def find_rtkrcv():
 @unittest.skipUnless(find_rtkrcv(), "no rtkrcv binary (set RTKRCV or put rtkrcv-ex on PATH)")
 class RealRtkrcv(unittest.IsolatedAsyncioTestCase):
     """Smoke test with the real rtkrcv: it takes our reference config (every option
-    name and value), connects to the feed, solution and tap servers (the NTRIP client
-    points at a closed local port, so it never reaches a real caster), and exits with
-    code 0 on SIGTERM."""
+    name and value), connects to the feed, solution and station servers (the app's NTRIP
+    client points at a closed local port, so it never reaches a real caster), and exits
+    with code 0 on SIGTERM."""
 
     async def test_smoke(self):
         folder = Path(tempfile.mkdtemp())
@@ -1094,14 +1176,15 @@ class RealRtkrcv(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 15
         runner = check.runner
-        # The tap connects only once CORS bytes arrive (rtkrcv opens a log stream's
-        # TCP client at its first write), so with no CORS it stays unconnected.
+        # rtkrcv connects both input streams at start, the station's one included.
         while not (runner.feed.connections and runner.solutions.connections
-                   and runner.rss_bytes):
+                   and check.cors_feed.connections and runner.rss_bytes):
             self.assertLess(loop.time(), deadline, check.snapshot())
             await asyncio.sleep(0.1)
-        self.assertIn(check.state(), ("starting", "connecting"))
-        self.assertEqual(check.tap.connections, 0)
+        client = check.snapshot()["client"]
+        self.assertIn(client["state"], ("connecting", "sourcetable", "backoff"), client)
+        if client["state"] == "backoff":
+            self.assertIn("Connection failed", client["reason"])
         version = runner.output.version
         self.assertTrue(version and (version.startswith("2.4.3") or version.startswith("EX")),
                         version)
@@ -1124,8 +1207,10 @@ class EndToEnd(unittest.TestCase):
         from tests.test_app import SimulatedReceiver, free_port
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
-        sample = directory / "cors.rtcm3"
-        sample.write_bytes(arp_frame(*CORS, antenna_height=0.0) + frame_1033())
+        sample = arp_frame(*CORS, antenna_height=0.0) + frame_1033() + rtcm(1074, 40)
+        caster = FakeCaster(data=sample, period=0.2, login=("user", SENTINEL))
+        caster_port = caster.run_in_thread()
+        self.addCleanup(caster.stop_thread)
         master, slave = pty.openpty()
         tty.setraw(master)
         tty.setraw(slave)
@@ -1137,12 +1222,12 @@ class EndToEnd(unittest.TestCase):
         options.write_text(json.dumps({
             "device": os.ttyname(slave), "baud": 460800, "log_dir": str(directory / "logs"),
             "min_free_gb": 0, "caster_enabled": False, "reference_enabled": True,
-            "reference_host": "cors.example", "reference_mountpoint": "MP_1",
+            "reference_host": "127.0.0.1", "reference_port": caster_port,
+            "reference_mountpoint": "MP_1",
             "reference_user": "user", "reference_password": SENTINEL,
-            "reference_expected_enu": "0 0 3"}))
+            "reference_frame": "ITRF2020"}))
         env = dict(os.environ, FAKE_RTKRCV_PERIOD="0.2", FAKE_RTKRCV_MODE="normal",
-                   FAKE_RTKRCV_ECHO_PATH="1", FAKE_RTKRCV_TAP_FILE=str(sample),
-                   FAKE_RTKRCV_SOLUTION="0 0 3.0 1 25")
+                   FAKE_RTKRCV_SOLUTION="0 0 0.01 1 25")
         process = subprocess.Popen(
             [sys.executable, "-m", "gnss_base", "--options", str(options), "--host",
              "127.0.0.1", "--port", str(port), "--allow-any-client", "--by-id-dir",
@@ -1181,13 +1266,28 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(reference["state"], "fixed", reference)
         self.assertEqual((reference["mountpoint"], reference["password_set"],
                           reference["verdict"]), ("MP_1", True, "good"))
-        self.assertEqual(reference["solution"]["offset_enu"], [0.0, 0.0, 3.0])
+        self.assertEqual(reference["client"]["state"], "connected")
+        self.assertEqual(reference["client"]["sourcetable"]["mountpoint"], "MP_1")
+        self.assertEqual([p for p, _ in caster.requests][:2], ["/", "/MP_1"])
+        self.assertIn("authorization", caster.requests[1][1])
+        self.assertEqual(caster.most_open, 1)
+        self.assertEqual(reference["solution"]["offset_enu"], [0.0, 0.0, 0.01])
         self.assertEqual(reference["corrections"]["descriptors"]["antenna"], "GPPNULLANTENNA")
         self.assertEqual(reference["log"]["folder"], "reference")
+        self.assertEqual((reference["station_frame"], reference["expected_enu"]),
+                         ("ITRF2020", [0.0, 0.0, 0.0]))
+        # The CORS stream as received is on disk, and on the Log files table.
+        (raw,) = (directory / "logs" / "reference" / "raw").glob("*.rtcm3")
+        self.assertTrue(raw.read_bytes().startswith(sample), "the stream as sent")
+        self.assertGreater(raw.stat().st_size, len(sample), "and on")
+        self.assertGreater(reference["raw_log"]["bytes_today"], 0)
+        self.assertIn(f"reference/raw/{raw.name}",
+                      [f["file"] for f in status["storage"]["files"]])
+        self.assertIn(raw.name, [f["file"] for f in reference["raw_log"]["files"]])
         self.assertEqual(status["measured"]["state"], "running", "the other instance too")
         config = directory / "reference" / CONFIG_NAME
-        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
-        self.assertIn(SENTINEL, config.read_text())
+        self.assertNotIn(SENTINEL, config.read_text())
+        self.assertNotIn("ntripcli", config.read_text())
         self.assertTrue((directory / "reference" / "rtkrcv.nav").exists(), "SIGTERM, cache saved")
         (llh,) = (directory / "logs" / "reference").glob("*.llh")
         lines = llh.read_text().splitlines()
@@ -1210,6 +1310,12 @@ class Page(unittest.TestCase):
                      "the Measured position card catches a move within seconds",
                      "solution minus our RTCM 1005 position", "within 5 cm horizontal",
                      "Residual (mean − expected)", "Expected offset", "Baseline",
+                     "Station frame", "set reference_frame", "Our frame", "set base_frame",
+                     "computed, station frame minus ours", "reserved by RTCM",
+                     "CORS raw log", '<section class="wide"><h2>Reference check',
+                     "never guessed from the stream", "Caster connection", "Sourcetable entry",
+                     '"login refused":"Login refused by the caster"',
+                     '"mountpoint not found":"Mountpoint not found"', "retry in",
                      "Session mean ± std (fixed)", "Mean ± std, 10 min", "Fixed share",
                      "rtkrcv CPU", "rtkrcv memory", "not applied; see the README",
                      "Previous session", "previous session's residual",
@@ -1218,9 +1324,12 @@ class Page(unittest.TestCase):
         card = html[html.index("function renderReference"):html.index("function render(s)")]
         self.assertNotIn("innerHTML", card, "values reach the card through dl, which escapes")
         self.assertIn("$(\"refout\").textContent=out", card)
+        self.assertIn("clientBusy?null:r.verdict", card, "no residual colour while not connected")
         states = html[html.index("const REF_STATES"):html.index("function renderReference")]
         for state in ("not configured", "connecting", "no corrections", "stale", "fixed",
-                      "float", "single", "starting", "idle", "restarting", "not available"):
+                      "float", "single", "starting", "idle", "restarting", "not available",
+                      "sourcetable", "login refused", "mountpoint not found",
+                      "unsuitable mountpoint", "no data", "backoff"):
             self.assertIn(f"{state}:" if " " not in state else f'"{state}":', states, state)
         self.assertEqual(html.count("<section>"), html.count("</section>") - html.count('<section class="wide">'))
 
@@ -1238,22 +1347,25 @@ class Packaging(unittest.TestCase):
         for line in ("  reference_enabled: false\n", '  reference_host: ""\n',
                      "  reference_port: 2101\n", '  reference_mountpoint: ""\n',
                      '  reference_user: ""\n', '  reference_password: ""\n',
-                     '  reference_expected_enu: "0 0 0"\n', '  reference_reset_utc: "00:00"\n',
+                     '  reference_frame: ""\n', '  reference_reset_utc: "00:00"\n',
+                     "  base_frame: ITRF2020\n", "  base_frame: str\n",
+                     '  base_epoch: ""\n', "  base_epoch: str\n",
                      "  reference_enabled: bool\n", "  reference_host: str\n",
                      "  reference_port: port\n", "  reference_mountpoint: str\n",
                      "  reference_user: str\n", "  reference_password: password\n",
-                     "  reference_expected_enu: str\n", "  reference_reset_utc: match("):
+                     "  reference_frame: str\n", "  reference_reset_utc: match("):
             self.assertIn(line, text, line)
-        self.assertIn('version: "0.6.0"', text)
+        self.assertNotIn("reference_expected_enu", text)
+        self.assertIn('version: "0.6.2"', text)
         import re
         pattern = re.search(r"reference_reset_utc: match\((.*)\)\n", text).group(1)
         for good in ("", "7:05", "00:00", "23:59", "09:30"):
             self.assertTrue(re.fullmatch(pattern, good), good)
         for bad in ("24:00", "7:5", "12:60", "noon", "1:00:00"):
             self.assertFalse(re.fullmatch(pattern, bad), bad)
-        self.assertEqual(__version__, "0.6.0")
+        self.assertEqual(__version__, "0.6.2")
         dockerfile = (ROOT / "Dockerfile").read_text()
-        for text in ("ARG BUILD_FROM", "FROM ${BUILD_FROM} AS rtklib", "FROM ${BUILD_FROM}\n",
+        for text in ("FROM ubuntu:24.04 AS rtklib", "FROM ubuntu:24.04\n",
                      "RTKLIB_TAG=v2.5.1",
                      "RTKLIB_COMMIT=62d4677ed8425a4e2748c6d390b500d1afb493fc",
                      "rev-parse HEAD", "app/consapp/rtkrcv/gcc", "/usr/local/bin/rtkrcv-ex",
@@ -1261,21 +1373,28 @@ class Packaging(unittest.TestCase):
             self.assertIn(text, dockerfile, text)
         self.assertNotIn(" rtklib ", dockerfile, "Ubuntu's rtklib package is not installed")
         self.assertNotIn("gfortran", dockerfile)
-        build = (ROOT / "build.yaml").read_text()
-        self.assertIn("aarch64: ubuntu:24.04", build)
-        self.assertIn("amd64: ubuntu:24.04", build)
+        self.assertFalse((ROOT / "build.yaml").exists(), "0.6.1: the base is in the Dockerfile")
         readme = (ROOT / "README.md").read_text()
-        for text in ("reference_expected_enu", "reference_reset_utc", "GPPNULLANTENNA",
+        for text in ("reference_frame", "base_frame", "reference_reset_utc", "GPPNULLANTENNA",
                      "solution minus our", "rtkrcv-ex", "v2.5.1", "false fix",
-                     "## Reference check"):
+                     "## Reference check", "DF021", "all bits should be set to zero",
+                     "reference/raw/YYYY-MM-DD.rtcm3", "station's frame minus ours",
+                     "Pearson & Snay", "no-store", "ntripclient", "Authorization",
+                     "one connection at a time", "tests.test_ntripclient", "base_epoch",
+                     "hide private mountpoints"):
             self.assertIn(text, readme, text)
+        for stale in ("stays in rtkrcv's private config file", "each rtkrcv restart leaves"):
+            self.assertNotIn(stale, readme, stale)
+        self.assertNotIn("reference_expected_enu", readme.split("## Changes")[0],
+                         "the option is gone; only the changelog may name it")
         self.assertNotIn(SENTINEL, readme)
 
     def test_shutdown_stops_both_instances_then_the_logs(self):
         source = (ROOT / "gnss_base" / "__main__.py").read_text()
         self.assertIn("x.stop() for x in (rtkrcv, reference)", source)
         self.assertIn("reference_log", source)
-        self.assertIn("housekeeping(log, errors, solutions, reference_log)", source)
+        self.assertIn("log, errors, solutions, reference_log,\n            raw_logs=[x for x in (cors_log,) if x is not None]", source)
+        self.assertIn("cors_log.close()", source)
 
 
 class NoPathToTheReceiver(unittest.TestCase):

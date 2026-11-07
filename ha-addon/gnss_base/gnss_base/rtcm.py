@@ -4,14 +4,9 @@ and antenna descriptors) and the headers, masks and signal strengths of MSM1 to 
 
 Frames are whole RTCM3 frames whose CRC the frame parser has already checked.
 """
-import math
-
+from .datums import WGS84, ecef_to_geodetic, geodetic_to_ecef
+from .datums import ecef_to_enu as _ecef_to_enu
 from .frames import rtcm_type
-
-# WGS84
-_A = 6378137.0
-_F = 1 / 298.257223563
-_E2 = _F * (2 - _F)
 
 MSM_SYSTEMS = {107: "GPS", 108: "GLONASS", 109: "Galileo", 111: "QZSS", 112: "BeiDou",
                113: "NavIC"}
@@ -78,42 +73,19 @@ class Bits:
 
 
 def ecef_to_llh(x, y, z):
-    """WGS84 ECEF metres to latitude and longitude in degrees and ellipsoidal height."""
-    p = math.hypot(x, y)
-    lon = math.atan2(y, x)
-    lat = math.atan2(z, p * (1 - _E2))
-    for _ in range(10):
-        sin_lat = math.sin(lat)
-        n = _A / math.sqrt(1 - _E2 * sin_lat * sin_lat)
-        lat = math.atan2(z + _E2 * n * sin_lat, p)
-    sin_lat, cos_lat = math.sin(lat), math.cos(lat)
-    height = p * cos_lat + z * sin_lat - _A * math.sqrt(1 - _E2 * sin_lat * sin_lat)
-    return math.degrees(lat), math.degrees(lon), height
+    """WGS84 ECEF metres to latitude and longitude in degrees and ellipsoidal height
+    (the receiver's own geodetic coordinates are WGS84; datums.py holds the maths)."""
+    return ecef_to_geodetic(x, y, z, WGS84)
 
 
 def llh_to_ecef(lat, lon, height):
-    lat, lon = math.radians(lat), math.radians(lon)
-    sin_lat = math.sin(lat)
-    n = _A / math.sqrt(1 - _E2 * sin_lat * sin_lat)
-    return ((n + height) * math.cos(lat) * math.cos(lon),
-            (n + height) * math.cos(lat) * math.sin(lon),
-            (n * (1 - _E2) + height) * sin_lat)
+    return geodetic_to_ecef(lat, lon, height, WGS84)
 
 
 def ecef_to_enu(origin, point):
-    """East, north and up of `point` seen from `origin` (both ECEF metres): the
-    difference rotated into the local tangent plane at the origin. A rotation, so it
-    is exact at any distance; a mistyped digit can put a position thousands of
-    kilometres away, where a flat approximation would be meaningless."""
-    lat, lon, _height = ecef_to_llh(*origin)
-    lat, lon = math.radians(lat), math.radians(lon)
-    dx, dy, dz = (p - o for p, o in zip(point, origin))
-    sin_lat, cos_lat = math.sin(lat), math.cos(lat)
-    sin_lon, cos_lon = math.sin(lon), math.cos(lon)
-    east = -sin_lon * dx + cos_lon * dy
-    north = -sin_lat * cos_lon * dx - sin_lat * sin_lon * dy + cos_lat * dz
-    up = cos_lat * cos_lon * dx + cos_lat * sin_lon * dy + sin_lat * dz
-    return east, north, up
+    """East, north and up of `point` seen from `origin` (both ECEF metres), exact at
+    any distance (datums.ecef_to_enu)."""
+    return _ecef_to_enu(origin, point, WGS84)
 
 
 def decode_1005(frame):

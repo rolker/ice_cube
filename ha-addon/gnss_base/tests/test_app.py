@@ -31,7 +31,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from yarl import URL
 
-from gnss_base import commands, control, profile, rawlog, receiver
+from gnss_base import __version__, commands, control, profile, rawlog, receiver
 from gnss_base import rtcm as rtcmdec
 from gnss_base import status as status_module
 from gnss_base.__main__ import ErrorReporter, check_device, housekeeping, load_settings
@@ -763,7 +763,7 @@ class Page(unittest.TestCase):
         self.assertIn("vendor/leaflet/leaflet.css", parser.found)
         for link in parser.found:
             self.assertNotRegex(link, r"^(/|[a-z]+:)", "page links must be relative for Ingress")
-            self.assertTrue((STATIC / link).is_file(), link)
+            self.assertTrue((STATIC / link.partition("?")[0]).is_file(), link)
         for url in re.findall(r"""fetch\(["']([^"']+)""", self.html):
             self.assertFalse(url.startswith("/"), url)
 
@@ -775,7 +775,7 @@ class Page(unittest.TestCase):
     # Review 0.2.1, suggestions 5 and 6
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_track_merging_under_node(self):
-        self.assertIn('<script src="track.js"></script>', self.html)
+        self.assertIn(f'<script src="track.js?v={__version__}"></script>', self.html)
         self.assertNotIn("function mergeTrack", self.html, "one copy, in track.js")
         result = subprocess.run(["node", str(ROOT / "tests" / "track_test.js")],
                                 capture_output=True, text=True, timeout=30)
@@ -820,7 +820,7 @@ class Page(unittest.TestCase):
 
     def test_receiver_script_is_served_and_uses_relative_urls(self):
         script = (STATIC / "control.js").read_text()
-        self.assertIn('<script src="control.js"></script>', self.html)
+        self.assertIn(f'<script src="control.js?v={__version__}"></script>', self.html)
         urls = re.findall(r"""(?:fetch|post)\(["']([^"']+)""", script)
         self.assertEqual(set(urls), {"api/commands", "api/command", "api/command/confirm",
                                      "api/profile/check", "api/profile/apply",
@@ -846,6 +846,24 @@ class Page(unittest.TestCase):
         send = script[script.index('$("cyes").onclick'):]
         self.assertIn("performance.now() < pending.armed", send.split("\n", 2)[1])
 
+    def test_page_and_scripts_are_never_cached(self):
+        """0.6.2: after an update a browser kept the old page (the new card was missing).
+        The page and its two scripts say no-store, like the API, and the script tags
+        carry the version, so even a cached page cannot load a stale script."""
+        async def fetch():
+            async with TestClient(TestServer(create_app(lambda: {}, ()))) as client:
+                headers = {}
+                for path in ("/", "/track.js", "/control.js", "/api/status"):
+                    reply = await client.get(path)
+                    headers[path] = (reply.status, reply.headers.get("Cache-Control"))
+                return headers
+
+        headers = asyncio.run(fetch())
+        for path, (code, cache) in headers.items():
+            self.assertEqual((code, cache), (200, "no-store"), path)
+        self.assertEqual(self.html.count(f"?v={__version__}"), 2)
+        self.assertNotRegex(self.html, r'src="(track|control)\.js"')
+
     def test_vendored_files_match_the_notice(self):
         folder = STATIC / "vendor" / "leaflet"
         notice = (folder / "NOTICE").read_text()
@@ -858,10 +876,98 @@ class Page(unittest.TestCase):
 
 
 class Logging(TempDir):
-    def log(self, clock, free=lambda: 100 * GB, min_free_gb=0):
-        log = RawLog(self.dir, min_free_gb, clock=clock, disk_free=free)
+    def log(self, clock, free=lambda: 100 * GB, min_free_gb=0, **fields):
+        log = RawLog(self.dir, min_free_gb, clock=clock, disk_free=free, **fields)
         self.addCleanup(log.close)
         return log
+
+    def test_another_suffix_for_the_cors_stream(self):
+        """0.6.2: the station's stream is logged by the same class under
+        `reference/raw/YYYY-MM-DD.rtcm3`: same day files, rotation, late files,
+        compression and free-space floor."""
+        clock = Clock()
+        log = self.log(clock, suffix=".rtcm3")
+        first = utc_day(clock.now)
+        log.write(b"\xd3\x00\x13" + bytes(22))
+        self.assertEqual((self.dir / "raw" / f"{first}.rtcm3").read_bytes(),
+                         b"\xd3\x00\x13" + bytes(22))
+        self.assertEqual(list((self.dir / "raw").glob("*.raw")), [])
+        self.assertEqual(log.pending_days(), [])
+        clock.now += DAY
+        log.write(b"next day")
+        pending = log.pending_days()
+        self.assertEqual([p.name for p in pending], [f"{first}.rtcm3"])
+        self.assertTrue(log.start_compress(pending[0]))
+        log.write(b"late bytes")   # a clock step back into the day being compressed
+        clock.now -= DAY
+        log.write(b"late bytes")
+        self.assertEqual((self.dir / "raw" / f"{first}-late-1.rtcm3").read_bytes(), b"late bytes")
+        log.end_compress(pending[0])
+        log.close()
+        result = compress(pending[0], disk_free=lambda: 100 * GB)
+        self.assertEqual(result.name, f"{first}.rtcm3.gz")
+        self.assertEqual(gzip.open(result).read(), b"\xd3\x00\x13" + bytes(22))
+        self.assertEqual(log.snapshot()["files"][0]["file"], f"{utc_day(clock.now + DAY)}.rtcm3")
+        # Below the floor nothing is written, and the bytes are counted as dropped.
+        paused = RawLog(self.dir / "other", 10, clock=clock, disk_free=lambda: 1 * GB,
+                        suffix=".rtcm3")
+        self.addCleanup(paused.close)
+        paused.write(b"not written")
+        self.assertTrue(paused.paused)
+        self.assertEqual(paused.dropped_bytes, len(b"not written"))
+        self.assertEqual(list((self.dir / "other" / "raw").iterdir()), [])
+
+    def test_storage_snapshot_merges_the_cors_log(self):
+        from gnss_base.__main__ import merge_storage
+        storage = {"files": [{"file": "2026-11-07.raw", "bytes": 10}],
+                   "stored_bytes": 10, "free_bytes": 30 * GB, "min_free_bytes": 10 * GB,
+                   "compressed_bytes_per_day": 4 * GB, "days_until_limit": 5.0,
+                   "bytes_today": 10, "paused": False}
+        other = {"files": [{"file": "2026-11-07.rtcm3", "bytes": 5}], "stored_bytes": 5,
+                 "compressed_bytes_per_day": 1 * GB, "days_until_limit": 20.0,
+                 "bytes_today": 5, "paused": True}
+        merged = merge_storage(dict(storage), other, "reference/raw/")
+        self.assertEqual(merged["files"], [{"file": "2026-11-07.raw", "bytes": 10},
+                                           {"file": "reference/raw/2026-11-07.rtcm3", "bytes": 5}])
+        self.assertEqual((merged["stored_bytes"], merged["compressed_bytes_per_day"],
+                          merged["days_until_limit"], merged["bytes_today"], merged["paused"]),
+                         (15, 5 * GB, 4.0, 10, False))
+        # Without a per-day figure on either side the estimate is left alone.
+        plain = merge_storage(dict(storage, compressed_bytes_per_day=None, days_until_limit=None),
+                              dict(other, compressed_bytes_per_day=None), "x/")
+        self.assertIsNone(plain["days_until_limit"])
+        other_only = merge_storage(dict(storage, compressed_bytes_per_day=None,
+                                        days_until_limit=None), other, "x/")
+        self.assertEqual((other_only["compressed_bytes_per_day"], other_only["days_until_limit"]),
+                         (1 * GB, 20.0))
+
+    def test_housekeeping_tidies_and_compresses_a_second_raw_log(self):
+        clock = Clock()
+        log = self.log(clock)
+        other = RawLog(self.dir / "reference", 0, clock=clock, disk_free=lambda: 100 * GB,
+                       suffix=".rtcm3")
+        self.addCleanup(other.close)
+        first = utc_day(clock.now)
+        log.write(b"ours")
+        other.write(b"theirs")
+        clock.now += DAY
+        log.write(b"ours 2")
+        other.write(b"theirs 2")
+
+        async def one_pass():
+            task = asyncio.create_task(housekeeping(log, ErrorReporter(), raw_logs=[other]))
+            await asyncio.sleep(0.5)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        with mock.patch("gnss_base.__main__.HOUSEKEEPING_S", 3600):
+            asyncio.run(one_pass())
+        self.assertTrue((self.dir / "raw" / f"{first}.raw.gz").exists())
+        self.assertTrue((self.dir / "reference" / "raw" / f"{first}.rtcm3.gz").exists())
+        self.assertFalse((self.dir / "reference" / "raw" / f"{first}.rtcm3").exists())
+        self.assertFalse((self.dir / "reference" / "storage-usage.csv").exists(),
+                         "the usage record is the receiver log's only")
 
     def test_day_rollover_and_compression(self):
         clock = Clock()
