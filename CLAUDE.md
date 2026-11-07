@@ -12,7 +12,8 @@ Drive. Those go in `private/` (start with `private/drive-index.md`), which is gi
 
 ## Scripts
 
-Published scripts must work for other people's data. Take paths and settings from
-command-line arguments or `config.toml`, with arguments taking priority. Never hardcode
-personal paths, Drive IDs or site-specific values. Keep `config.example.toml` generic,
-and add any new setting there.
+Scripts take site-specific values from `config.toml` or command-line arguments (arguments
+take priority), never hardcoded, so the repo stays free of personal paths, Drive IDs and
+secrets. Add any new setting to `config.example.toml`. Beyond that, write for a reader
+with an agent: clear names, a docstring saying what a script expects and produces, and no
+hidden assumptions. Polished interfaces for other people's data are not a goal.
