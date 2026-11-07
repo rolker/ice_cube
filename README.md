@@ -21,11 +21,12 @@ outlines with the facts and prompts; the writing comes later. The journal in
 | Path | What is there |
 | --- | --- |
 | `docs/story/` | The chapters, in order. Outlines only so far. |
-| `docs/howto/` | Reference: the base station as it stands, the RTK mountpoint test. |
+| `docs/howto/` | Reference: the base station as it stands, the RTK mountpoint test, the Ice-Cube estimator. |
 | `docs/log.md` | Dated journal, one or a few lines per step. |
 | `ha-addon/gnss_base/` | Home Assistant app that runs the base receiver: logging, commands, NTRIP caster, live position. |
 | `ha-addon/ntrip_base/` | Earlier relay draft. Retired, kept for the record. |
 | `analysis/` | Siting and survey-quality scripts. See `analysis/README.md`. |
+| `icecube/` | The surface and ice-growth estimator (CUBE-derived node estimator with a crossover adjustment). See `docs/howto/ice-cube.md`. |
 | `logger/` | Android app that logs the rover over USB with its own NTRIP client and phone IMU. |
 | `config.example.toml` | Template for local paths and settings. |
 | `private/`, `data/`, `config.toml` | Untracked: data, notes, credentials, local settings. |
