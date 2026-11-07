@@ -24,6 +24,26 @@ of its USB serial bridge).
 
 Besides the receiver, data, storage, signal and message status, the page shows:
 
+- **Base station**, first: **Serving** when the receiver is connected and sending
+  (data 5 s old or less), the RTCM 1005/1006 base position is not stale, GPS
+  observations (MSM) are 5 s old or less, and at least one output is up (the local
+  caster listening, or the upload connected). **Degraded** when any of those is stale,
+  RTCM decode errors grew in the last minute (the line says by how many), free space
+  is below `min_free_gb`, logging is paused or failing, an enabled output is down (the
+  local caster also counts as down while its output callback is failing: hub
+  subscriber errors that grew in the last minute), or no output is up. **Down** when the receiver is not connected, has sent nothing, or
+  nothing for more than 30 s, or no 1005/1006 has been received at all or for more
+  than 5 min (not in base mode, a survey-in still running, or just restarted). When the page loses contact with the app the card
+  says "No contact" instead of keeping its last word. The reasons are listed under the
+  word. The receiver's mode comes from `PQTMCFGRCVRMODE` and `PQTMCFGSVIN` as read at
+  the last profile check: a rover is a rover whatever survey-in setting it keeps. The
+  note about rovers on the upload caster is shown only while an upload is set up. The
+  corrections line says whether the 1005 position matches the position the receiver was
+  configured with (from `PQTMCFGSVIN,R`, in fixed mode) or, when that is not known, the
+  first 1005 this page saw; a difference over 1 mm is amber. Storage turns red only below
+  the floor. Rovers using RTK2go are not visible to the app; those on the local caster
+  are in its card.
+
 - **Position**: latitude, longitude and ellipsoidal height (GGA altitude plus geoid
   separation; an empty separation counts as 0), with the receiver's own 1-sigma
   estimates from GST when it sends them. An altitude, separation or height beyond
@@ -491,6 +511,17 @@ the half-written `.gz.partial` is removed then. A log line being written at that
 may be cut short.
 
 ## Changes
+
+**0.5.2**
+
+- A **Base station** card leads the page: one word for the whole chain, Serving,
+  Degraded or Down (`baseSummary` in `static/track.js`, tested under Node), with the
+  reasons, then a line each for the receiver (connected, bytes/s, app uptime, firmware,
+  the mode from `PQTMCFGRCVRMODE` and `PQTMCFGSVIN`), the corrections (1005 age and whether its position
+  matches the receiver's configured one, or the first seen on this page), the
+  observations (satellites per system in MSM and their age), decode errors, the local
+  caster, the upload and storage. The Position fix card moved below Measured position.
+  Page only: no change to `api/status`.
 
 **0.5.1**
 

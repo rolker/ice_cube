@@ -64,8 +64,8 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <body>
 <main>
 <header><h1>GNSS Base</h1><span id="link" class="note">Connecting…</span></header>
-<section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
-<h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
+<section><h2>Base station</h2><div id="station" class="big">—</div><p id="stationnote" class="note"></p><dl id="stationd"></dl>
+<p id="stationrovers" class="note" hidden></p></section>
 <section><h2>Data</h2><div id="rate" class="big">—</div><dl id="data"></dl></section>
 <section><h2>Storage</h2><div id="free" class="big">—</div><dl id="disk"></dl></section>
 <section><h2>NTRIP caster (local network)</h2><div id="caster" class="big">—</div><dl id="casterd"></dl>
@@ -74,6 +74,8 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
 <p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
 <pre id="measout" class="note" hidden></pre></section>
+<section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
+<h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl><p id="svinnote" class="note"></p></section>
 <section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
@@ -129,7 +131,7 @@ const table=(id,head,rows,empty)=>$(id).innerHTML=rows.length?`<tr>${head.map(h=
 const css=name=>getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const metres=v=>v==null?null:Math.abs(v)<1?(v*100).toFixed(1)+" cm":v.toFixed(3)+" m";
 const span=v=>{const a=Math.abs(v),s=a>=1?+v.toFixed(2)+" m":a>=0.01?+(v*100).toFixed(1)+" cm":+(v*1000).toFixed(1)+" mm";return s.replace("-","−")};
-const duration=s=>s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h";
+// duration (seconds in words) is in track.js, shared with the base station summary.
 const hsigma=f=>f.lat_sigma_m==null||f.lon_sigma_m==null?null:Math.hypot(f.lat_sigma_m,f.lon_sigma_m);
 
 // Same local tangent plane approximation as the app (WGS84 radii at the reference).
@@ -360,8 +362,50 @@ function renderMeasured(m){
     ["rtkrcv",m.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
   const out=(m.output||[]).join("\n");$("measout").textContent=out;$("measout").hidden=!out;
 }
+// The base station card: one word for the whole chain (baseSummary in track.js) and
+// why, then a line each for the receiver, the corrections, the outputs and storage.
+// The 1005 position is compared with the receiver's configured position when known,
+// else with the first fresh 1005 this page saw (the app keeps a last 1005 from before a
+// receiver restart, marked stale; that one is not taken as the reference).
+const STATION_CLASS={Serving:"good",Degraded:"warn",Down:"bad"};
+let firstBase=null,errorTrend=null,casterTrend=null,lastStatusAt=null;
+function renderStation(s){
+  const b=s.base_position||{},r=s.receiver||{},c=s.caster||{},u=s.upload||{},d=s.storage||{};
+  if(!firstBase&&Array.isArray(b.ecef)&&!b.stale)firstBase=b.ecef.slice();
+  lastStatusAt=performance.now();
+  errorTrend=riseTrend(errorTrend,s.rtcm_decode_errors,lastStatusAt/1000);
+  // The hub lists a subscriber only once it has errors: absent means 0 (null only for
+  // an older app without the map), so the first error is a rise too.
+  casterTrend=riseTrend(casterTrend,c.subscriber_errors?(c.subscriber_errors.caster||0):null,lastStatusAt/1000);
+  const sum=baseSummary(s,errorTrend,casterTrend);
+  $("station").textContent=sum.word;
+  $("station").className="big "+(STATION_CLASS[sum.word]||"");
+  $("stationnote").textContent=sum.reasons.length?reasonsText(sum.reasons):"Receiver data, RTCM 1005 and GPS observations are fresh, and an output is up.";
+  const rovers=!u.enabled?"":`Rovers using ${uploadLabel(u)==="RTK2go"?"RTK2go":"the upload caster"} are not visible here; the local caster's are listed in its card.`;
+  $("stationrovers").textContent=rovers;$("stationrovers").hidden=!rovers;
+  const shift=baseShift(b.ecef,(r.svin||{}).ecef,firstBase),low=storageLow(d);
+  const casterUp=casterIsUp(c,casterTrend),uploadUp=u.state==="connected";
+  // [label, text, class]: the class marks the row the way the summary counts it.
+  const rows=[["Receiver",`${s.connected?"Connected":"Not connected"}, ${size(s.bytes_per_s)}/s, app up ${duration(s.uptime_s||0)}`,""],
+    ["Firmware, mode",`${r.firmware||"not read"}, ${receiverModeText(r)}`,""],
+    ["Corrections (1005)",b.lat==null?"none received":`${b.age_s==null?"age unknown":duration(b.age_s)+" old"}${b.stale?" (stale)":""}, ${shift.text}`,b.lat==null||b.stale||shift.moved?"warn":""],
+    ["Observations (MSM)",msmText(s.msm)||"none in the last 10 s",""],
+    ["Decode errors",`${s.rtcm_decode_errors??0}${errorTrend.rising?`, ${errorTrend.recent} new in the last minute`:""}`,errorTrend.rising?"warn":""],
+    ["Local caster",casterText(c,casterTrend),c.enabled&&!casterUp?"warn":""],[uploadLabel(u),uploadText(u),u.enabled&&!uploadUp?"warn":""],
+    ["Storage",`${size(d.free_bytes)} free, floor ${size(d.min_free_bytes)}`+(low?" (below the floor)":""),low?"bad":""]];
+  dl("stationd",rows.map(([k,v])=>[k,v]));
+  $("stationd").querySelectorAll("dd").forEach((el,i)=>{el.className=rows[i][2]});
+}
+// Without api/status the card must not keep an old word: say so instead. Not red:
+// the base may be fine while only this browser lost contact.
+function stationLost(){
+  $("station").textContent="No contact";$("station").className="big";
+  $("stationnote").textContent="Lost contact with the app: nothing on this page is current"+(lastStatusAt==null?".":`; last status ${duration((performance.now()-lastStatusAt)/1000)} ago.`);
+}
 function render(s){
-  const live=s.connected&&s.data_age_s!=null&&s.data_age_s<5;
+  // The same 5 s as the card's rule (DATA_FRESH_S in track.js).
+  const live=s.connected&&s.data_age_s!=null&&!(s.data_age_s>DATA_FRESH_S);
+  renderStation(s);
   $("link").className=live?"good":"bad";
   $("link").textContent=live?"Receiving":(s.last_error||"No data from receiver");
   const f=s.fix||{};
@@ -407,8 +451,11 @@ function render(s){
   $("msgs").textContent=s.messages.length?s.messages.join("\n"):"None yet";
 }
 async function tick(){
-  try{const r=await fetch("api/status",{cache:"no-store"});if(!r.ok)throw new Error(r.status);render(await r.json())}
-  catch(e){$("link").className="bad";$("link").textContent="Lost contact with the app"}
+  let s=null;
+  try{const r=await fetch("api/status",{cache:"no-store"});if(!r.ok)throw new Error(r.status);s=await r.json()}
+  catch(e){$("link").className="bad";$("link").textContent="Lost contact with the app";stationLost()}
+  // A status the page cannot render is not lost contact: log it, keep polling.
+  if(s)try{render(s)}catch(e){console.error(e)}
   setTimeout(tick,1000)}
 // The page keeps its own copy of the history (mergeTrack in track.js): after the
 // first load it asks only for points after `cursor`, unless the clocks show that
