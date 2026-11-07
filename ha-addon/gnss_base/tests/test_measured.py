@@ -545,6 +545,15 @@ class Helpers(unittest.TestCase):
         self.assertEqual(read_proc_stats(42, str(folder)), (4.0, 13312 * 1024))
         self.assertIsNone(read_proc_stats(43, str(folder)))
 
+    def test_output_lines_know_rtklib_ex_and_scrub(self):
+        from gnss_base.hub import Secret
+        lines = OutputLines(secret=Secret("hunter2"))
+        lines.feed(b"\x1b[1m** rtkrcv ver.EX 2.5.1 console (h:help) **\x1b[0m\r\n"
+                   b"path=u:hunter2@h\r\n")
+        self.assertEqual(lines.version, "EX 2.5.1")
+        self.assertEqual(list(lines.lines)[-1], "path=u:***@h")
+        self.assertNotIn("hunter2", repr(lines.snapshot()))
+
     def test_output_lines_strip_escapes_and_find_the_version(self):
         lines = OutputLines(size=3)
         lines.feed(b"\r\n\x1b[1m** rtkrcv ver.2.4.3 b34 console (h:help) **\x1b[0m\r\nrtk")
@@ -557,10 +566,10 @@ class Helpers(unittest.TestCase):
 
 
 def find_rtkrcv():
-    return os.environ.get("RTKRCV") or shutil.which("rtkrcv")
+    return (os.environ.get("RTKRCV") or shutil.which("rtkrcv-ex") or shutil.which("rtkrcv"))
 
 
-@unittest.skipUnless(find_rtkrcv(), "no rtkrcv binary (set RTKRCV or put it on PATH)")
+@unittest.skipUnless(find_rtkrcv(), "no rtkrcv binary (set RTKRCV or put rtkrcv-ex on PATH)")
 class RealRtkrcv(unittest.IsolatedAsyncioTestCase):
     """Smoke test with the real rtkrcv and one empty MSM frame (no receiver data): it
     starts with our config on our pty, connects to both servers, and when stopped exits
@@ -582,7 +591,9 @@ class RealRtkrcv(unittest.IsolatedAsyncioTestCase):
             self.assertLess(loop.time(), deadline, runner.snapshot())
             await asyncio.sleep(0.1)
         self.assertEqual(runner.state(), "starting")
-        self.assertTrue(runner.output.version.startswith("2.4.3"), runner.output.version)
+        version = runner.output.version
+        self.assertTrue(version and (version.startswith("2.4.3") or version.startswith("EX")),
+                        version)
         await runner.stop()
         self.assertEqual(runner.last_exit, None)
         self.assertEqual(runner.stop_exit_code, 0, "exited on SIGTERM, not killed")
@@ -778,7 +789,7 @@ class Settings(unittest.TestCase):
         measured = measured_settings(settings)
         self.assertEqual((measured.enabled, measured.binary, measured.elevation_mask,
                           measured.snr_mask, measured.work_dir),
-                         (True, "rtkrcv", 15, 38, folder / "rtkrcv"))
+                         (True, "rtkrcv-ex", 15, 38, folder / "rtkrcv"))
         settings = load_settings(["--options", str(options), "--no-measured",
                                   "--measured-elevation-mask", "10", "--measured-snr-mask",
                                   "0", "--rtkrcv", "/opt/rtklib/rtkrcv", "--data-dir", "/x"])
@@ -817,9 +828,10 @@ class Settings(unittest.TestCase):
                      "  measured_elevation_mask: int(0,45)\n",
                      "  measured_snr_mask: int(0,50)\n"):
             self.assertIn(line, text)
-        self.assertIn(" rtklib ", (ROOT / "Dockerfile").read_text())
+        self.assertIn("/usr/local/bin/rtkrcv-ex", (ROOT / "Dockerfile").read_text())
         source = (ROOT / "gnss_base" / "__main__.py").read_text()
-        self.assertIn("            await rtkrcv.stop()\n        await solutions.stop(", source)
+        self.assertIn("x.stop() for x in (rtkrcv, reference)", source)
+        self.assertIn("x.stop(timeout=left(0.2)) for x in logs", source)
         self.assertIn("SHUTDOWN_BUDGET_S = 9.0", source)
 
 

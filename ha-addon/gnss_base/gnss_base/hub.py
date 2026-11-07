@@ -76,6 +76,15 @@ class Secret:
         """`text` with any copy of the value replaced, for text that came from outside."""
         return text.replace(self._value, "***") if self._value else text
 
+    def strip_prefix(self, text):
+        """`text` without a trailing beginning of the value (the rest may be on its way
+        in the next read of a stream), for text cut at an arbitrary point."""
+        value = self._value
+        for length in range(min(len(value) - 1, len(text)), 0, -1):
+            if text.endswith(value[:length]):
+                return text[:-length]
+        return text
+
 
 class _Subscriber:
     def __init__(self, name, callback):
