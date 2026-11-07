@@ -74,6 +74,9 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
 <p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
 <pre id="measout" class="note" hidden></pre></section>
+<section><h2>Reference check <span id="refmp"></span></h2><div id="ref" class="big">—</div><dl id="refd"></dl>
+<p id="refnote" class="note">RTK against a CORS station, static: the session mean converges over minutes to hours. Offsets are the solution minus our RTCM 1005 position (the CORS frame minus ours); the residual is the mean minus the expected offset: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p>
+<pre id="refout" class="note" hidden></pre></section>
 <section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
 <h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl><p id="svinnote" class="note"></p></section>
@@ -402,6 +405,52 @@ function stationLost(){
   $("station").textContent="No contact";$("station").className="big";
   $("stationnote").textContent="Lost contact with the app: nothing on this page is current"+(lastStatusAt==null?".":`; last status ${duration((performance.now()-lastStatusAt)/1000)} ago.`);
 }
+// The reference check card: a second rtkrcv (RTK static against a CORS station). No
+// password reaches the page: the app sends only whether one is set.
+const REF_STATES={off:"Off","not configured":"Not configured","not available":"Not available",idle:"Idle: no MSM from the receiver yet",restarting:"Restarting",starting:"Starting",connecting:"Connecting to the CORS","no corrections":"No corrections",stale:"No recent solution",fixed:"Fixed",float:"Float",single:"Single: corrections not used yet"};
+const enu=v=>v?`E ${signed3(v[0])}, N ${signed3(v[1])}, U ${signed3(v[2])}`:null;
+const signed3=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v).toFixed(3)+" m";
+const enuStd=(m,s)=>m&&s?`E ${signed3(m[0])} ±${s[0].toFixed(3)}, N ${signed3(m[1])} ±${s[1].toFixed(3)}, U ${signed3(m[2])} ±${s[2].toFixed(3)}`:null;
+function renderReference(r){
+  if(!r)return;
+  const state=r.state||"—",live=!["off","not configured","not available"].includes(state),c=r.corrections||{},cors=c.position,d=c.descriptors,sol=r.solution,ses=r.session||{},rec=r.recent,prev=r.previous_session;
+  // Until this session has a fix, the previous session's verdict colours the card
+  // (a daily reset is not an outage), but only while solutions keep coming.
+  const colour=!live?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
+  $("refmp").textContent=r.mountpoint?`(${r.mountpoint})`:"";
+  const verdictText=r.verdict?{good:"Residual OK",warn:"Residual amber",bad:"Residual red"}[r.verdict]:null;
+  $("ref").textContent=(REF_STATES[state]||state)+(state==="restarting"&&r.retry_in_s!=null?` in ${duration(r.retry_in_s)}`:"")+(live&&verdictText?` · ${verdictText}`:!r.verdict&&colour?" · previous session's residual":"");
+  // Colour: the residual's verdict once there is one (red also after 30 min without a
+  // fix); otherwise amber while waiting for corrections or a fix, red when not available.
+  $("ref").className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:state==="not available"?"bad":["connecting","no corrections","stale","single","restarting"].includes(state)?"warn":"");
+  const eph=r.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
+  const why=(state==="off"?"Off (reference_enabled is false)":null)||r.reason||(state==="connecting"?"No data from the CORS yet: check reference_host, reference_mountpoint and the login (rtkrcv retries on its own)":null)||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
+  const dropped=Object.entries((r.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
+  const log=r.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
+  const counts=ses.counts||{},share=ses.fixed_share==null?null:`${(ses.fixed_share*100).toFixed(0)} % of ${ses.epochs} epochs (${counts.fixed||0} fixed, ${counts.float||0} float, ${counts.single||0} single)`;
+  dl("refd",[["Why",why],["CORS",r.host?`${r.host}:${r.port}, login ${r.user_set?"user set":"no user"}, password ${r.password_set?"set":"not set"}`:null],
+    ["Station",cors?`${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
+    ["Baseline",r.baseline_km==null?null:r.baseline_km.toFixed(2)+" km"],
+    ["CORS antenna height (1006)",cors&&cors.antenna_height_m!=null?cors.antenna_height_m.toFixed(4)+" m"+(cors.antenna_height_m?" (not applied; see the README)":""):null],
+    ["Corrections",c.age_s==null?(live?"none yet":null):`${c.age_s} s ago (${c.frames} frames)`],
+    ["Last solution",sol?`${sol.age_s} s ago, ${sol.satellites} satellites, quality ${sol.quality} (${{1:"fixed",2:"float",5:"single"}[sol.quality]||"other"}), ratio ${sol.ratio}`:null],
+    ["Differential age",sol&&sol.differential_age_s!=null?`${sol.differential_age_s.toFixed(1)} s`:null],
+    ["Current offset",sol?enu(sol.offset_enu):null],
+    ["Mean ± std, 10 min",rec?`${enuStd([rec.e_mean_m,rec.n_mean_m,rec.u_mean_m],[rec.e_std_m,rec.n_std_m,rec.u_std_m])} (${rec.count} ${rec.kind==="fixed"?"fixed":"all"})`:null],
+    ["Session mean ± std (fixed)",enuStd(ses.mean_enu,ses.std_enu)],
+    ["Session",ses.started_utc?`since ${ses.started_utc.replace("T"," ").replace("+00:00"," UTC")}${ses.last_fix_age_s!=null?`, last fix ${duration(ses.last_fix_age_s)} ago`:""}`:null],
+    ["Fixed share",share],
+    ["Expected offset",live?enu(r.expected_enu):null],
+    ["Residual (mean − expected)",!live?null:r.residual_enu?`${enu(r.residual_enu)}: ${r.verdict_reason}`:r.verdict_reason||null],
+    ["Previous session",prev?`${enu(prev.residual_enu)} residual (${prev.verdict_reason}), ${prev.fixed} fixed epochs, ended ${prev.ended_utc.replace("T"," ").replace("+00:00"," UTC")} (${prev.ended_because})`:null],
+    ["Next daily reset",r.next_reset_s==null?(live?"never (reference_reset_utc empty)":null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
+    ["Base position changed",r.base_changed_age_s==null?null:duration(r.base_changed_age_s)+" ago (session statistics restarted)"],
+    ["Sessions, resets, gap restarts, station changes",live?`${r.sessions}, ${r.resets}, ${r.gap_restarts}, ${r.station_changes}`:null],
+    ["rtkrcv CPU",r.cpu_percent==null?null:r.cpu_percent+" % of one core"],["rtkrcv memory",r.rss_bytes==null?null:size(r.rss_bytes)],
+    ["Restarts today",live?r.restarts_today:null],["Feed frames skipped",(r.feed||{}).frames_skipped||null],["Lines dropped",dropped||null],
+    ["rtkrcv",r.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
+  const out=(r.output||[]).join("\n");$("refout").textContent=out;$("refout").hidden=!out;
+}
 function render(s){
   // The same 5 s as the card's rule (DATA_FRESH_S in track.js).
   const live=s.connected&&s.data_age_s!=null&&!(s.data_age_s>DATA_FRESH_S);
@@ -444,6 +493,7 @@ function render(s){
   table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
   renderOutputs(s);
   renderMeasured(s.measured);
+  renderReference(s.reference);
   if(typeof renderReceiver==="function")renderReceiver(s);
   table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
   table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");

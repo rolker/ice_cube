@@ -18,9 +18,10 @@ from .caster import Caster, CasterSettings
 from .control import Controller
 from .frames import FrameParser
 from .hub import ConnectionLog, RtcmHub, Secret
-from .measured import MeasuredSettings, RtkrcvRunner, SolutionLog
+from .measured import DEFAULT_BINARY, MeasuredSettings, RtkrcvRunner, SolutionLog
 from .rawlog import RawLog, compress
 from .receiver import ChunkQueue, SerialReader
+from .reference import ReferenceCheck, ReferenceSettings
 from .status import Status
 from .upload import Uploader, UploadSettings
 from .web import INGRESS_PROXY, create_app
@@ -36,13 +37,18 @@ DEFAULTS = {"device": "", "device_match": "USB_Dual_Serial", "baud": 460800,
             "caster_password": "", "caster_max_clients": 16,
             "upload_host": "rtk2go.com", "upload_port": 2101, "upload_mountpoint": "",
             "upload_password": "", "upload_style": "rev1",
-            "measured_enabled": True, "measured_elevation_mask": 15, "measured_snr_mask": 35}
+            "measured_enabled": True, "measured_elevation_mask": 15, "measured_snr_mask": 35,
+            "reference_enabled": False, "reference_host": "", "reference_port": 2101,
+            "reference_mountpoint": "", "reference_user": "", "reference_password": "",
+            "reference_expected_enu": "0 0 0", "reference_reset_utc": "00:00"}
 # Options that a command-line argument can override. Passwords are options only: on a
 # command line they would show in process lists.
 OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster_enabled",
              "caster_mountpoint", "caster_max_clients", "upload_host", "upload_port",
              "upload_mountpoint", "upload_style", "measured_enabled",
-             "measured_elevation_mask", "measured_snr_mask")
+             "measured_elevation_mask", "measured_snr_mask", "reference_enabled",
+             "reference_host", "reference_port", "reference_mountpoint", "reference_user",
+             "reference_expected_enu", "reference_reset_utc")
 
 
 def load_settings(argv=None):
@@ -81,8 +87,21 @@ def load_settings(argv=None):
     parser.add_argument("--measured-elevation-mask", dest="measured_elevation_mask", type=int)
     parser.add_argument("--measured-snr-mask", dest="measured_snr_mask", type=int,
                         help="dB-Hz; 0 = no SNR mask")
-    parser.add_argument("--rtkrcv", default="rtkrcv",
-                        help="the rtkrcv program (default: rtkrcv on PATH)")
+    parser.add_argument("--reference", dest="reference_enabled", action="store_const",
+                        const=True, help="run the reference check against a CORS station")
+    parser.add_argument("--no-reference", dest="reference_enabled", action="store_const",
+                        const=False, help="do not run the reference check")
+    parser.add_argument("--reference-host", dest="reference_host")
+    parser.add_argument("--reference-port", dest="reference_port", type=int)
+    parser.add_argument("--reference-mountpoint", dest="reference_mountpoint")
+    parser.add_argument("--reference-user", dest="reference_user")
+    parser.add_argument("--reference-expected-enu", dest="reference_expected_enu",
+                        help='expected offset "E N U" in metres (solution minus our 1005)')
+    parser.add_argument("--reference-reset-utc", dest="reference_reset_utc",
+                        help="daily restart of the reference rtkrcv, HH:MM UTC; empty: never")
+    parser.add_argument("--rtkrcv", default=DEFAULT_BINARY,
+                        help=f"the rtkrcv program for both instances (default: "
+                             f"{DEFAULT_BINARY} on PATH, RTKLIB-EX built into the image)")
     args = parser.parse_args(argv)
     settings = dict(DEFAULTS)
     if os.path.exists(args.options):
@@ -113,6 +132,28 @@ def measured_settings(settings):
         work_dir=Path(settings["data_dir"]).absolute() / "rtkrcv",
         elevation_mask=number("measured_elevation_mask"),
         snr_mask=number("measured_snr_mask"))
+
+
+def reference_settings(settings):
+    """The reference check's settings from the options. Its work folder is
+    `<data_dir>/reference`; the masks are the measured position's. The password goes
+    into a Secret and is removed from `settings`."""
+    def number(key):
+        value = settings[key]
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def text(key):
+        return str(settings[key] if settings[key] is not None else "").strip()
+
+    return ReferenceSettings(
+        enabled=bool(settings["reference_enabled"]), host=text("reference_host"),
+        port=settings["reference_port"], mountpoint=text("reference_mountpoint"),
+        user=text("reference_user"),
+        password=Secret(str(settings.pop("reference_password", "") or "")),
+        expected_enu=text("reference_expected_enu"), reset_utc=text("reference_reset_utc"),
+        binary=str(settings["rtkrcv"]),
+        work_dir=Path(settings["data_dir"]).absolute() / "reference",
+        elevation_mask=number("measured_elevation_mask"), snr_mask=number("measured_snr_mask"))
 
 
 def output_settings(settings):
@@ -194,7 +235,7 @@ class ErrorReporter:
         self._last[name] = message
 
 
-async def housekeeping(log, errors, solution_log=None):
+async def housekeeping(log, errors, *solution_logs):
     loop = asyncio.get_running_loop()
     while True:
         try:
@@ -220,7 +261,7 @@ async def housekeeping(log, errors, solution_log=None):
         errors.check("logging", log.write_error)
         errors.check("disk", log.disk_error)
         errors.check("housekeeping", log.housekeeping_error)
-        if solution_log is not None:
+        for solution_log in solution_logs:
             try:
                 await solution_log.housekeep()
             except Exception as error:
@@ -297,7 +338,8 @@ async def run(settings):
                            room=lambda: not log.paused)
     events.start()  # file writes in a background task, never on the serial path
     measured = measured_settings(settings)
-    rtkrcv = caster = uploader = queue = runner = keeper = None
+    reference_options = reference_settings(settings)
+    rtkrcv = caster = uploader = queue = runner = keeper = reference = None
 
     def solution_header():
         version = rtkrcv.output.version if rtkrcv is not None else None
@@ -308,6 +350,11 @@ async def run(settings):
     solutions = SolutionLog(Path(settings["log_dir"]) / "measured", solution_header,
                             room=lambda: not log.paused)
     solutions.start()
+    # The reference check's log: the header names the frames (ReferenceCheck.header).
+    reference_log = SolutionLog(Path(settings["log_dir"]) / "reference",
+                                lambda: reference.header() if reference is not None else "",
+                                room=lambda: not log.paused, suffix=".llh")
+    reference_log.start()
     try:
         caster_settings, upload_settings = output_settings(settings)
         caster = Caster(caster_settings, hub, events, __version__)
@@ -321,6 +368,11 @@ async def run(settings):
 
         # rtkrcv gets the hub only, like the other outputs.
         rtkrcv = RtkrcvRunner(measured, hub, on_solution)
+        # The reference check: a second rtkrcv on the hub, and the receiver's 1005 from
+        # the status (read only) as the reference for its offsets.
+        reference = ReferenceCheck(reference_options, hub, status.current_base,
+                                   on_solution=lambda solution, line: reference_log.write(line),
+                                   version=__version__)
         # The no-measured-GGA texts mention rtkrcv only while it can give a solution.
         status.measured_expected = lambda: rtkrcv.state() not in ("off", "not available")
         queue = ChunkQueue(loop, pipeline.on_data)
@@ -354,6 +406,7 @@ async def run(settings):
             result["upload"] = uploader.snapshot()
             result["measured"] = dict(rtkrcv.snapshot(), **status.measured_summary(),
                                       log=solutions.snapshot())
+            result["reference"] = dict(reference.snapshot(), log=reference_log.snapshot())
             return result
 
         allowed = () if settings["allow_any_client"] else (INGRESS_PROXY,)
@@ -365,26 +418,27 @@ async def run(settings):
         await caster.start()
         uploader.start()
         rtkrcv.start()
+        reference.start()
 
         stop = asyncio.Event()
         for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             loop.add_signal_handler(name, stop.set)
-        keeper = asyncio.create_task(housekeeping(log, errors, solutions))
+        keeper = asyncio.create_task(housekeeping(log, errors, solutions, reference_log))
         await stop.wait()
     finally:
         await shutdown(SHUTDOWN_BUDGET_S, keeper=keeper, rtkrcv=rtkrcv, solutions=solutions,
                        outputs=[x for x in (uploader, caster) if x is not None],
                        events=events, control=control, reader=reader, queue=queue,
-                       log=log, runner=runner)
+                       log=log, runner=runner, reference=reference, reference_log=reference_log)
         executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, reader,
-                   queue, log, runner):
+                   queue, log, runner, reference=None, reference_log=None):
     """Stop everything within `budget` seconds from now (Home Assistant's 10 s stop
     timeout), independent parts at once, each bounded by the time left:
-    - rtkrcv (SIGTERM so it saves its ephemeris cache, SIGKILL after 3 s), then the
-      solution log, so the lines it sent last are written;
+    - both rtkrcv (SIGTERM so each saves its ephemeris cache, SIGKILL after 3 s), then
+      their solution logs, so the lines they sent last are written;
     - the upload and the caster, then the connection log, which records their ends;
     - the startup check, the serial reader, then what it still queued, into the raw log;
     - the status page, with WEB_SHUTDOWN_S for open requests.
@@ -399,9 +453,9 @@ async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, 
         return max(0.1, deadline - loop.time() - margin)
 
     async def measured_part():
-        if rtkrcv is not None:
-            await rtkrcv.stop()
-        await solutions.stop(timeout=left(0.2))
+        await asyncio.gather(*(x.stop() for x in (rtkrcv, reference) if x is not None))
+        logs = [x for x in (solutions, reference_log) if x is not None]
+        await asyncio.gather(*(x.stop(timeout=left(0.2)) for x in logs))
 
     async def outputs_part():
         await asyncio.gather(*(output.stop() for output in outputs), return_exceptions=True)

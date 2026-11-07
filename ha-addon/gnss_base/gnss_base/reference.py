@@ -1,0 +1,779 @@
+"""Reference check: a second rtkrcv (RTKLIB-EX) running RTK against a CORS station, our
+receiver as the rover and the station's NTRIP stream as the base, in static mode, so the
+base antenna's position is measured continuously against an independent reference.
+
+Shape, beside the measured position's rtkrcv (measured.py, whose runner, servers and
+log this reuses):
+
+    hub --RTCM--> FeedServer (127.0.0.1) --> rtkrcv-ex (inpstr1, our receiver)
+                                             rtkrcv-ex <-- ntripcli (inpstr2, the CORS)
+    SolutionServer <-- rtkrcv-ex outstr1 (llh lines, one per epoch, out-solstatic=all)
+    TapServer      <-- rtkrcv-ex logstr2 (a copy of the CORS stream as rtkrcv reads it)
+
+rtkrcv is the only NTRIP client: one login, one connection, its own reconnects. The app
+sees the CORS stream through rtkrcv's log stream (a local TCP client of the tap server),
+which is how it knows whether corrections arrive, the station's 1005/1006 position
+(baseline length) and its 1033 receiver and antenna descriptors. Nothing here can reach
+the receiver: this module never imports the command, control or serial modules (a unit
+test checks).
+
+The CORS login is in rtkrcv's config file (`user:password@host:port/mountpoint`), which is
+written with mode 0600 under the app's data folder. The password is a Secret: its repr
+is hidden, every console line rtkrcv prints is scrubbed with it, and no snapshot, log
+line or error message carries the config text.
+
+Numbers: each solution is turned into an east/north/up offset from our own RTCM 1005
+position (solution minus our 1005, so the offset is the CORS frame minus ours, about a
+metre here between NAD83(2011) and ITRF2020). The session (since the last rtkrcv start)
+keeps the mean and standard deviation of the fixed epochs and the counts by quality;
+a 10-minute window keeps the recent mean. The residual is the session mean minus the
+expected offset entered in the options: green within 5 cm horizontal and 10 cm up,
+amber within 20 cm, red beyond, or when there has been no fix for 30 minutes.
+
+Sessions: static mode accumulates one filter for as long as rtkrcv runs, so each run is
+one static solution. rtkrcv is restarted at `reference_reset_utc` every day (a planned
+restart, without the exit backoff), and when corrections resume after a gap of more
+than GAP_RESTART_S, since the held ambiguities are then stale. A moved antenna shows as
+a slow drift until the next reset; the measured position (single point) catches a move
+within seconds, so that card is the one to watch for moves.
+"""
+import asyncio
+import contextlib
+import logging
+import math
+import re
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .frames import FrameParser, rtcm_type
+from .hub import Secret
+from .measured import (DEFAULT_BINARY, HOST, NAVSYS, SNR_MASK_VALUES, RtkrcvRunner,
+                       _OneClientServer, is_msm)
+from .rtcm import decode_1005, decode_1033, ecef_to_enu, ecef_to_llh, llh_to_ecef
+
+LOG = logging.getLogger("gnss_base")
+
+RECENT_S = 600.0              # the running mean's window
+CORRECTIONS_STALE_S = 30.0    # no CORS frame for this long: "no corrections"
+SOLUTION_STALE_S = 30.0       # no solution for this long: "stale"
+STARTING_S = 30.0             # after a start, "starting" before "connecting"
+GAP_RESTART_S = 300.0         # corrections back after a gap this long: new session
+NO_FIX_RED_S = 1800.0         # fixed once, then none for this long: red
+GOOD_HORIZONTAL_M = 0.05
+GOOD_UP_M = 0.10
+WARN_M = 0.20
+MAX_FIELD = 255               # rtkrcv's limit for each part of the NTRIP path
+MAX_PATH = 1023               # and for the whole path (MAXSTRPATH, with its NUL)
+MAX_EXPECTED_M = 1000.0
+MAX_OFFSET_M = 1_000_000.0    # an offset beyond this is not kept (a corrupt line)
+EARTH_RADIUS_M = 6_371_000.0  # a 1005 nearer the centre than half of this is no position
+QUALITY_KINDS = {1: "fixed", 2: "float", 4: "dgps", 5: "single", 6: "ppp"}
+QUALITY_STATES = {1: "fixed", 2: "float"}
+
+# RTKLIB-EX 2.5.1 (demo5) option spellings, from the reference spike: static, L1+L2,
+# broadcast ionosphere, Saastamoinen troposphere, fix-and-hold with the AR filter,
+# GLONASS ambiguities not resolved (the CORS receiver is another make: autocal blocked
+# every fix), BeiDou resolved, the F9P-derived partial-AR thresholds, no antenna model on
+# either side (our 1005 is the phase centre; MaCORS streams a null antenna), the base
+# position from the stream's 1005/1006. out-solstatic=all makes static mode emit every
+# epoch, and out-outsingle=on a single solution while RTK cannot run (no corrections,
+# or older than maxage): without it rtkrcv writes nothing then, which the runner would
+# take for a hang. Stream 2 is the CORS over NTRIP; log stream 2 copies it to the tap.
+CONFIG_TEMPLATE = """\
+# Written by gnss_base each time it starts the reference rtkrcv; changes here are
+# overwritten. It holds the CORS login: private, mode 0600.
+inpstr1-type   =tcpcli
+inpstr1-path   ={host}:{feed_port}
+inpstr1-format =rtcm3
+inpstr2-type   =ntripcli
+inpstr2-path   ={ntrip_path}
+inpstr2-format =rtcm3
+inpstr2-nmeareq=off
+inpstr3-type   =off
+outstr1-type   =tcpcli
+outstr1-path   ={host}:{solution_port}
+outstr1-format =llh
+outstr2-type   =off
+logstr1-type   =off
+logstr2-type   =tcpcli
+logstr2-path   ={host}:{tap_port}
+logstr3-type   =off
+misc-timeout   =10000
+misc-reconnect =5000
+misc-navmsgsel =all
+misc-svrcycle  =50
+pos1-posmode   =static
+pos1-frequency =l1+l2
+pos1-soltype   =forward
+pos1-elmask    ={elevation_mask}
+pos1-snrmask_r ={snr_on}
+pos1-snrmask_b =off
+pos1-snrmask_L1={snr_values}
+pos1-snrmask_L2={snr_values}
+pos1-dynamics  =off
+pos1-tidecorr  =off
+pos1-ionoopt   =brdc
+pos1-tropopt   =saas
+pos1-sateph    =brdc
+pos1-posopt5   =on
+pos1-navsys    ={navsys}
+pos2-armode    =fix-and-hold
+pos2-gloarmode =off
+pos2-bdsarmode =on
+pos2-arthres   =3
+pos2-arlockcnt =0
+pos2-arelmask  ={elevation_mask}
+pos2-elmaskhold={elevation_mask}
+pos2-minfixsats=4
+pos2-maxage    =30
+pos2-arfilter  =on
+pos2-arthresmin=3
+pos2-arthresmax=3
+pos2-arthres1  =0.1
+pos2-arthres2  =0
+pos2-arthres3  =1e-09
+pos2-arthres4  =1e-05
+pos2-varholdamb=0.1
+pos2-gainholdamb=0.01
+pos2-minholdsats=5
+pos2-mindropsats=10
+pos2-slipthres =0.05
+pos2-dopthres  =0
+pos2-rejphase  =2
+pos2-rejcode   =10
+out-solformat  =llh
+out-outhead    =off
+out-timesys    =gpst
+out-timeform   =hms
+out-degform    =deg
+out-height     =ellipsoidal
+out-solstatic  =all
+out-outsingle  =on
+ant1-postype   =single
+ant1-anttype   =
+ant1-antdele   =0
+ant1-antdeln   =0
+ant1-antdelu   =0
+ant2-postype   =rtcm
+ant2-anttype   =
+ant2-antdele   =0
+ant2-antdeln   =0
+ant2-antdelu   =0
+"""
+
+
+def parse_expected_enu(text):
+    """`reference_expected_enu` ("E N U" in metres, spaces or commas between) as a tuple
+    of three floats. ValueError says what is wrong without repeating the text."""
+    parts = ([str(v) for v in text] if isinstance(text, (list, tuple))
+             else str(text).replace(",", " ").split())
+    if len(parts) != 3:
+        raise ValueError("reference_expected_enu needs three numbers: east north up, metres")
+    try:
+        values = tuple(float(part) for part in parts)
+    except ValueError:
+        raise ValueError("reference_expected_enu must be three numbers (metres)") from None
+    if not all(math.isfinite(v) and abs(v) <= MAX_EXPECTED_M for v in values):
+        raise ValueError(f"reference_expected_enu values must be within "
+                         f"{MAX_EXPECTED_M:.0f} m")
+    return values
+
+
+def parse_reset_utc(text):
+    """`reference_reset_utc` ("HH:MM", UTC) as seconds since midnight; None if empty
+    (no daily reset)."""
+    text = str(text).strip()
+    if not text:
+        return None
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not match or not (int(match.group(1)) < 24 and int(match.group(2)) < 60):
+        raise ValueError("reference_reset_utc must be HH:MM (UTC, 24 h) or empty")
+    return int(match.group(1)) * 3600 + int(match.group(2)) * 60
+
+
+def seconds_to_reset(now_wall, reset_seconds):
+    """Seconds from the wall-clock time `now_wall` to the next daily reset, or None."""
+    if reset_seconds is None:
+        return None
+    return (reset_seconds - now_wall % 86400) % 86400
+
+
+def _field_problem(value, forbidden=""):
+    """Why `value` cannot go into rtkrcv's config as part of the NTRIP path, or "". The
+    text names the problem, never the value."""
+    if len(value) > MAX_FIELD:
+        return f"is longer than {MAX_FIELD} characters"
+    if not value.isascii() or not value.isprintable():
+        return "has a character that is not printable ASCII"
+    if any(c.isspace() for c in value):
+        return "has a space"
+    if "#" in value:
+        return "has a '#' (rtkrcv reads it as a comment)"
+    for c in forbidden:
+        if c in value:
+            return f"has a '{c}'"
+    return ""
+
+
+@dataclass
+class ReferenceSettings:
+    enabled: bool = False
+    host: str = ""
+    port: int = 2101
+    mountpoint: str = ""
+    user: str = ""
+    password: Secret = field(default_factory=lambda: Secret(""))
+    expected_enu: str = "0 0 0"     # metres, solution minus our 1005: E N U
+    reset_utc: str = "00:00"        # HH:MM UTC; empty: never
+    binary: str = DEFAULT_BINARY
+    work_dir: Path = Path("/data/reference")
+    elevation_mask: int = 15        # the measured position's masks, shared
+    snr_mask: int = 35
+
+    def problem(self):
+        """Why the check cannot run with these options ("not configured"), or ""."""
+        missing = [name for name, value in (("reference_host", self.host),
+                                            ("reference_mountpoint", self.mountpoint),
+                                            ("reference_user", self.user)) if not value]
+        if missing:
+            return "set " + ", ".join(missing)
+        if (not isinstance(self.port, int) or isinstance(self.port, bool)
+                or not 1 <= self.port <= 65535):
+            return "reference_port must be 1 to 65535"
+        for name, value, forbidden in (("reference_host", self.host, ":/@"),
+                                       ("reference_mountpoint", self.mountpoint, ":/@"),
+                                       ("reference_user", self.user, ":/@"),
+                                       ("reference_password", self.password.reveal(), "")):
+            why = _field_problem(value, forbidden)
+            if why:
+                return f"{name} {why}"
+        if len(ntrip_path(self)) > MAX_PATH:
+            return "the login, host and mountpoint together are too long for rtkrcv"
+        for name, value, high in (("measured_elevation_mask", self.elevation_mask, 90),
+                                  ("measured_snr_mask", self.snr_mask, 60)):
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= high:
+                return f"{name} must be a whole number from 0 to {high}"
+        try:
+            parse_expected_enu(self.expected_enu)
+            parse_reset_utc(self.reset_utc)
+            build_config(1, 1, 1, self)
+        except ValueError as error:
+            return str(error)
+        return ""
+
+    def expected(self):
+        return parse_expected_enu(self.expected_enu)
+
+    def reset_seconds(self):
+        return parse_reset_utc(self.reset_utc)
+
+
+def ntrip_path(settings):
+    """rtkrcv's `inpstr2-path` for an NTRIP client: it holds the password."""
+    return (f"{settings.user}:{settings.password.reveal()}@{settings.host}:{settings.port}"
+            f"/{settings.mountpoint}")
+
+
+def build_config(feed_port, solution_port, tap_port, settings):
+    """rtkrcv's configuration for the reference check. The text holds the login."""
+    for name, value, low, high in (("feed_port", feed_port, 1, 65535),
+                                   ("solution_port", solution_port, 1, 65535),
+                                   ("tap_port", tap_port, 1, 65535),
+                                   ("elevation_mask", settings.elevation_mask, 0, 90),
+                                   ("snr_mask", settings.snr_mask, 0, 60)):
+        if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+            raise ValueError(f"{name} must be a whole number from {low} to {high}")
+    path = ntrip_path(settings)
+    snr = settings.snr_mask
+    return CONFIG_TEMPLATE.format(
+        host=HOST, feed_port=feed_port, solution_port=solution_port, tap_port=tap_port,
+        ntrip_path=path, elevation_mask=settings.elevation_mask,
+        snr_on="on" if snr else "off", snr_values=",".join([str(snr)] * SNR_MASK_VALUES),
+        navsys=NAVSYS)
+
+
+class TapServer(_OneClientServer):
+    """Takes rtkrcv's log stream 2, a copy of the CORS stream as rtkrcv reads it, and
+    decodes what the check needs: when frames and MSM last came, the station position
+    (1005/1006) and its receiver and antenna descriptors (1033). Nothing is sent back."""
+
+    name = "tap"
+
+    def __init__(self, on_frame=None, clock=time.monotonic):
+        super().__init__()
+        self._on_frame = on_frame
+        self._clock = clock
+        self.unknown_bytes = 0
+        self.frames = 0
+        self.msm_frames = 0
+        self.bytes = 0
+        self.last_frame = None
+        self.last_msm = None
+        self.position = None        # decode_1005 result with lat/lon/height, or None
+        self.position_time = None
+        self.descriptors = None     # decode_1033 result, or None
+        self.decode_errors = 0
+        self.callback_errors = 0
+
+    async def _serve(self, reader):
+        parser = FrameParser()   # per connection: a new one may start inside a frame
+        while data := await reader.read(4096):
+            self.bytes += len(data)
+            before = parser.unknown_bytes
+            for kind, payload in parser.feed(data):
+                if kind == "rtcm":
+                    self._frame(payload)
+            self.unknown_bytes += parser.unknown_bytes - before
+
+    def _frame(self, frame):
+        now = self._clock()
+        self.frames += 1
+        self.last_frame = now
+        number = rtcm_type(frame)
+        try:
+            if number in (1005, 1006):
+                message = decode_1005(frame)
+                x, y, z = message["ecef"]
+                lat, lon, height = ecef_to_llh(x, y, z)
+                if (math.hypot(x, y, z) < EARTH_RADIUS_M / 2
+                        or not all(math.isfinite(v) for v in (lat, lon, height))):
+                    raise ValueError("no position")
+                message.update(lat=lat, lon=lon, height_m=height)
+                self.position, self.position_time = message, now
+            elif number == 1033:
+                self.descriptors = decode_1033(frame)
+            elif is_msm(number):
+                self.msm_frames += 1
+                self.last_msm = now
+        except ValueError:
+            self.decode_errors += 1
+        if self._on_frame is not None:
+            try:
+                self._on_frame(now, number)
+            except Exception:   # the tap keeps reading whatever the check does with it
+                self.callback_errors += 1
+                if self.callback_errors == 1:
+                    LOG.exception("reference check: handling a CORS frame failed")
+
+    def snapshot(self):
+        now = self._clock()
+        position = self.position
+        return {
+            "connected": self.connected, "connections": self.connections,
+            "frames": self.frames, "msm_frames": self.msm_frames, "bytes": self.bytes,
+            "age_s": None if self.last_frame is None else round(now - self.last_frame, 1),
+            "msm_age_s": None if self.last_msm is None else round(now - self.last_msm, 1),
+            "decode_errors": self.decode_errors,
+            "callback_errors": self.callback_errors,
+            "unknown_bytes": self.unknown_bytes,
+            "position": None if position is None else {
+                "message": position["message"], "station_id": position["station_id"],
+                "lat": round(position["lat"], 9), "lon": round(position["lon"], 9),
+                "height_m": round(position["height_m"], 4),
+                "ecef": [round(v, 4) for v in position["ecef"]],
+                "antenna_height_m": None if position["antenna_height_m"] is None
+                else round(position["antenna_height_m"], 4),
+                "age_s": round(now - self.position_time, 1)},
+            "descriptors": None if self.descriptors is None else dict(self.descriptors),
+        }
+
+
+class SessionStats:
+    """Offsets of one session: the fixed epochs' mean and standard deviation (Welford),
+    counts by quality, when the first and last fix came, and a window of recent
+    offsets for the running mean."""
+
+    def __init__(self, recent_s=RECENT_S):
+        self.recent_s = recent_s
+        self.reset(None)
+
+    def reset(self, started_wall):
+        self.started_wall = started_wall
+        self.epochs = 0
+        self.counts = {"fixed": 0, "float": 0, "single": 0, "other": 0}
+        self._n = 0
+        self._mean = [0.0, 0.0, 0.0]
+        self._m2 = [0.0, 0.0, 0.0]
+        self.first_fix = None
+        self.last_fix = None
+        self._recent = deque()      # (clock, e, n, u, quality)
+
+    def add(self, now, quality, enu):
+        self.epochs += 1
+        kind = QUALITY_KINDS.get(quality, "other")
+        self.counts[kind if kind in self.counts else "other"] += 1
+        if enu is None:
+            return
+        self._recent.append((now, *enu, quality))
+        self.prune(now)
+        if quality != 1:
+            return
+        self._n += 1
+        for axis in range(3):
+            delta = enu[axis] - self._mean[axis]
+            self._mean[axis] += delta / self._n
+            self._m2[axis] += delta * (enu[axis] - self._mean[axis])
+        self.last_fix = now
+        if self.first_fix is None:
+            self.first_fix = now
+
+    def prune(self, now):
+        while self._recent and now - self._recent[0][0] > self.recent_s:
+            self._recent.popleft()
+
+    @property
+    def fixed_count(self):
+        return self._n
+
+    def session_mean(self):
+        """(mean E N U, std E N U) of the fixed epochs, or None without any."""
+        if not self._n:
+            return None
+        std = [math.sqrt(m2 / self._n) for m2 in self._m2]
+        return list(self._mean), std
+
+    def recent(self, now):
+        """Mean and std over the last `recent_s`: of the fixed epochs if there are any
+        (`kind` fixed), else of every epoch (`kind` all); None with no offsets."""
+        self.prune(now)
+        if not self._recent:
+            return None
+        fixed = [s for s in self._recent if s[4] == 1]
+        samples, kind = (fixed, "fixed") if fixed else (list(self._recent), "all")
+        result = {"count": len(samples), "kind": kind, "window_s": self.recent_s}
+        for axis, name in ((1, "e"), (2, "n"), (3, "u")):
+            values = [s[axis] for s in samples]
+            mean = sum(values) / len(values)
+            std = math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
+            result[f"{name}_mean_m"] = round(mean, 4)
+            result[f"{name}_std_m"] = round(std, 4)
+        return result
+
+
+def _utc(wall):
+    return None if wall is None else datetime.fromtimestamp(
+        wall, timezone.utc).isoformat(timespec="seconds")
+
+
+def verdict(residual, last_fix_age_s, session_age_s=None):
+    """("good" | "warn" | "bad" | None, why) for a residual (E, N, U metres, the session
+    mean of the fixed epochs minus the expected offset), the age of the last fix, and
+    the age of the session: red after NO_FIX_RED_S without a fix, whether or not there
+    was one before."""
+    if residual is None:
+        if session_age_s is not None and session_age_s > NO_FIX_RED_S:
+            return "bad", f"no fixed solution for {session_age_s / 60:.0f} min"
+        return None, "no fixed solution this session yet"
+    if last_fix_age_s is not None and last_fix_age_s > NO_FIX_RED_S:
+        return "bad", f"no fixed solution for {last_fix_age_s / 60:.0f} min"
+    horizontal, up = math.hypot(residual[0], residual[1]), abs(residual[2])
+    if horizontal <= GOOD_HORIZONTAL_M and up <= GOOD_UP_M:
+        return "good", (f"within {GOOD_HORIZONTAL_M * 100:.0f} cm horizontal and "
+                        f"{GOOD_UP_M * 100:.0f} cm up of the expected offset")
+    if horizontal <= WARN_M and up <= WARN_M:
+        return "warn", f"within {WARN_M * 100:.0f} cm of the expected offset"
+    return "bad", f"more than {WARN_M * 100:.0f} cm from the expected offset"
+
+
+class ReferenceCheck:
+    """The reference check: its rtkrcv runner (RTK static, config above), the tap on
+    the CORS stream, the session statistics, the daily reset and the gap restart.
+
+    `get_base()` returns the receiver's current 1005 position as `{"ecef": (x, y, z),
+    ...}` or None (Status.current_base). `on_solution(solution, line)` gets each solution
+    line (for the log). `version` is the app's version, for the log header."""
+
+    def __init__(self, settings, hub, get_base, on_solution=None, version="",
+                 clock=time.monotonic, wall=time.time, **runner_kwargs):
+        self.settings = settings
+        self._get_base = get_base
+        self._on_solution = on_solution
+        self._version = version
+        self._clock = clock
+        self._wall = wall
+        self.problem = settings.problem()
+        self.tap = TapServer(on_frame=self._corrections, clock=clock)
+        self.runner = RtkrcvRunner(
+            settings, hub, on_solution=self._solution, clock=clock, wall=wall,
+            make_config=self._config, servers={"tap": self.tap}, config_mode=0o600,
+            secret=settings.password, on_start=self._session_start,
+            label="reference check", **runner_kwargs)
+        self.stats = SessionStats()
+        self.latest = None            # the latest solution, with offset_enu
+        self._latest_time = None
+        self._corr_last = None        # last CORS MSM frame of this session (clock)
+        self._tap_any = None          # last CORS frame of any kind this session
+        self._cors_ecef = None        # the station's 1005 this session is relative to
+        self._session_clock = None    # when this session started (clock)
+        self.previous = None          # the last session that had fixed epochs
+        self.station_changes = 0      # sessions ended by a changed CORS position
+        self._base_ecef = None        # our 1005 the offsets are from
+        self._base_changed = None     # when it last changed during a session (clock)
+        self._reset_task = None
+        self.sessions = 0
+        self.resets = 0
+        self.gap_restarts = 0
+        self._reset_seconds = settings.reset_seconds() if not self.problem else None
+        self._expected = settings.expected() if not self.problem else (0.0, 0.0, 0.0)
+
+    # ---- life cycle ----
+
+    def start(self):
+        if not self.settings.enabled:
+            return
+        if self.problem:
+            LOG.info("reference check not configured: %s", self.problem)
+            return
+        self.runner.start()
+        if self._reset_seconds is not None and self._reset_task is None:
+            self._reset_task = asyncio.get_running_loop().create_task(self._reset_loop())
+
+    async def stop(self):
+        task, self._reset_task = self._reset_task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await self.runner.stop()
+
+    def _config(self, ports):
+        return build_config(ports["feed"], ports["solution"], ports["tap"], self.settings)
+
+    async def _reset_loop(self):
+        """Restart rtkrcv at the daily reset time. Sleeps at most an hour at a time, so
+        a wall clock set forward or back (NTP after a boot) is noticed."""
+        while True:
+            wait = seconds_to_reset(self._wall(), self._reset_seconds)
+            await asyncio.sleep(min(wait, 3600))
+            # Fire only at the reset time itself (just before or just after it): after
+            # an hour of a longer wait, or a clock set back or forward (NTP after a
+            # boot), wait again from now.
+            remaining = seconds_to_reset(self._wall(), self._reset_seconds)
+            if 2 < remaining < 86400 - 2:
+                continue
+            if self.runner.request_restart("daily reset"):
+                self.resets += 1
+            await asyncio.sleep(2)
+
+    def seconds_to_reset(self):
+        return seconds_to_reset(self._wall(), self._reset_seconds)
+
+    # ---- events ----
+
+    def _close_session(self, why):
+        """Keep the finished session's result (its fixed mean, residual and verdict)
+        for the card until the next session has one of its own."""
+        session = self.stats.session_mean()
+        if session is None:
+            return
+        residual = self.residual()
+        last_fix_age = None if self.stats.last_fix is None else self._clock() - self.stats.last_fix
+        colour, reason = verdict(residual, last_fix_age)
+        self.previous = {
+            "started_utc": _utc(self.stats.started_wall), "ended_utc": _utc(self._wall()),
+            "ended_because": why, "epochs": self.stats.epochs,
+            "fixed": self.stats.fixed_count,
+            "mean_enu": [round(v, 4) for v in session[0]],
+            "std_enu": [round(v, 4) for v in session[1]],
+            "residual_enu": [round(v, 4) for v in residual],
+            "verdict": colour, "verdict_reason": reason}
+
+    def _session_start(self):
+        exit = self.runner.last_exit
+        self._close_session(exit["reason"] if exit else "rtkrcv started")
+        self.sessions += 1
+        self.stats.reset(self._wall())
+        self.latest = None
+        self._latest_time = None
+        self._corr_last = None
+        self._tap_any = None
+        self._cors_ecef = None
+        self._session_clock = self._clock()
+        self._base_changed = None
+
+    def _corrections(self, now, number):
+        """An MSM frame from the tap (observations; 1005, 1033 and ephemerides alone are
+        not corrections): observations back after a long gap start a new session (the
+        held ambiguities are stale)."""
+        self._tap_any = now
+        if number in (1005, 1006) and self.tap.position is not None:
+            # The station's coordinate is what the solution is relative to: a changed
+            # one (another station behind the mountpoint, a re-coordination) is a new
+            # session, not a mix of two frames.
+            ecef = tuple(self.tap.position["ecef"])
+            if self._cors_ecef is None:
+                self._cors_ecef = ecef
+            elif math.dist(ecef, self._cors_ecef) > 0.0005:
+                if self.runner.request_restart("the station's 1005 position changed"):
+                    self.station_changes += 1
+                    self._cors_ecef = ecef
+            return
+        if not is_msm(number):
+            return
+        last, self._corr_last = self._corr_last, now
+        if last is not None and now - last > GAP_RESTART_S:
+            minutes = (now - last) / 60
+            if self.runner.request_restart(
+                    f"corrections resumed after a {minutes:.0f} min gap"):
+                self.gap_restarts += 1
+
+    def _check_base(self, now):
+        """Keep the offsets' reference, our 1005, current; a changed 1005 (a new fixed
+        position) restarts the session statistics, since the old offsets were from the
+        old position."""
+        base = self._get_base()
+        ecef = None if base is None else tuple(base["ecef"])
+        if ecef is None:
+            return               # keep the last known position
+        if self._base_ecef is None:
+            self._base_ecef = ecef
+            return
+        if math.dist(ecef, self._base_ecef) > 0.0005:
+            self._close_session("our 1005 position changed")
+            self._base_ecef = ecef
+            self._base_changed = now
+            self._session_clock = now    # the statistics start over: so does their age
+            self.stats.reset(self._wall())
+
+    def _solution(self, solution, line):
+        now = self._clock()
+        self._check_base(now)
+        enu = None
+        if self._base_ecef is not None:
+            point = llh_to_ecef(solution["lat"], solution["lon"], solution["height_m"])
+            enu = ecef_to_enu(self._base_ecef, point)
+            if not all(math.isfinite(v) and abs(v) <= MAX_OFFSET_M for v in enu):
+                enu = None
+        # rtkrcv's "age" (of the corrections) keeps its name here; the snapshot's age_s
+        # is the line's age, as on the measured card.
+        self.latest = dict(solution, offset_enu=None if enu is None else list(enu),
+                           differential_age_s=solution["age_s"])
+        self._latest_time = now
+        self.stats.add(now, solution["quality"], enu)
+        if self._on_solution is not None:
+            self._on_solution(solution, line)
+
+    # ---- status ----
+
+    def state(self):
+        if not self.settings.enabled:
+            return "off"
+        if self.problem:
+            return "not configured"
+        state = self.runner.state()
+        if state in ("not available", "idle", "restarting"):
+            return state
+        running = self.runner.running_s()
+        if running is None:
+            return "starting"
+        now = self._clock()
+        if self._corr_last is None:
+            if self._tap_any is not None:   # the stream came, without observations
+                return "no corrections"
+            return "starting" if running < STARTING_S else "connecting"
+        if now - self._corr_last > CORRECTIONS_STALE_S:
+            return "no corrections"
+        if self._latest_time is None:
+            return "starting"
+        if now - self._latest_time > SOLUTION_STALE_S:
+            return "stale"
+        return QUALITY_STATES.get(self.latest["quality"], "single")
+
+    def residual(self):
+        """Session mean of the fixed epochs minus the expected offset, or None."""
+        session = self.stats.session_mean()
+        if session is None:
+            return None
+        return [m - e for m, e in zip(session[0], self._expected)]
+
+    def baseline_m(self):
+        position = self.tap.position
+        if position is None or self._base_ecef is None:
+            return None
+        return math.dist(position["ecef"], self._base_ecef)
+
+    def header(self):
+        """The solution log's `%` line: what frame each number is in."""
+        def ecef(values):
+            return "unknown" if values is None else " ".join(f"{v:.4f}" for v in values)
+
+        position = self.tap.position
+        cors = None if position is None else position["ecef"]
+        height = None if position is None else position["antenna_height_m"]
+        expected = " ".join(f"{v:+.3f}" for v in self._expected)
+        return (f"% gnss_base {self._version}, rtkrcv {self.runner.output.version or 'unknown version'}, "
+                f"RTK static against {self.settings.mountpoint}, our 1005 ECEF {ecef(self._base_ecef)}, "
+                f"CORS 1005 ECEF {ecef(cors)}"
+                f"{'' if height is None else f' antenna height {height:.4f}'}, "
+                f"expected offset E N U {expected} m (solution minus our 1005), "
+                f"elevation mask {self.settings.elevation_mask} deg, SNR mask "
+                f"{self.settings.snr_mask} dB-Hz, time GPST, lines as rtkrcv sent them (llh)")
+
+    def snapshot(self):
+        now = self._clock()
+        self._check_base(now)   # a changed 1005 counts even while no solution comes
+        state = self.state()
+        runner = self.runner.snapshot()
+        session = self.stats.session_mean()
+        residual = self.residual()
+        last_fix_age = None if self.stats.last_fix is None else now - self.stats.last_fix
+        session_age = None if self._session_clock is None else now - self._session_clock
+        colour, why = verdict(residual, last_fix_age, session_age)
+        epochs = self.stats.epochs
+        baseline = self.baseline_m()
+        started = self.stats.started_wall
+        next_reset = self.seconds_to_reset()
+        show_output = state not in ("off", "not configured", "fixed", "float", "single")
+        return {
+            "enabled": self.settings.enabled,
+            "state": state,
+            "reason": self.problem or runner["reason"],
+            "host": self.settings.host or None,
+            "port": self.settings.port,
+            "mountpoint": self.settings.mountpoint or None,
+            "user_set": bool(self.settings.user),
+            "password_set": bool(self.settings.password),
+            "expected_enu": [round(v, 4) for v in self._expected],
+            "reset_utc": self.settings.reset_utc,
+            "next_reset_s": None if next_reset is None else round(next_reset),
+            "base_ecef": None if self._base_ecef is None
+            else [round(v, 4) for v in self._base_ecef],
+            "base_changed_age_s": None if self._base_changed is None
+            else round(now - self._base_changed, 1),
+            "baseline_km": None if baseline is None else round(baseline / 1000, 3),
+            "corrections": self.tap.snapshot(),
+            "solution": None if self.latest is None else dict(
+                self.latest, age_s=round(now - self._latest_time, 1),
+                offset_enu=None if self.latest["offset_enu"] is None
+                else [round(v, 4) for v in self.latest["offset_enu"]]),
+            "session": {
+                "started_utc": _utc(started),
+                "epochs": epochs,
+                "counts": dict(self.stats.counts),
+                "fixed_share": None if not epochs
+                else round(self.stats.counts["fixed"] / epochs, 3),
+                "mean_enu": None if session is None else [round(v, 4) for v in session[0]],
+                "std_enu": None if session is None else [round(v, 4) for v in session[1]],
+                "first_fix_age_s": None if self.stats.first_fix is None
+                else round(now - self.stats.first_fix, 1),
+                "last_fix_age_s": None if last_fix_age is None else round(last_fix_age, 1),
+            },
+            "recent": self.stats.recent(now),
+            "previous_session": self.previous,
+            "residual_enu": None if residual is None else [round(v, 4) for v in residual],
+            "verdict": colour,
+            "verdict_reason": why,
+            "sessions": self.sessions,
+            "resets": self.resets,
+            "gap_restarts": self.gap_restarts,
+            "station_changes": self.station_changes,
+            **{key: runner[key] for key in (
+                "pid", "running_s", "last_solution_age_s", "retry_in_s", "last_exit",
+                "stop_exit_code", "restarts", "restarts_today", "planned_restarts",
+                "cpu_percent", "rss_bytes", "rtkrcv_version", "elevation_mask", "snr_mask",
+                "feed", "solutions", "ephemerides", "error")},
+            "output": self.runner.output.snapshot() if show_output else [],
+        }

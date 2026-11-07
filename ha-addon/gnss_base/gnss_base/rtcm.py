@@ -1,5 +1,6 @@
-"""Decode the RTCM3 messages the page needs: 1005/1006 (base position) and the
-headers, masks and signal strengths of MSM1 to MSM7 (RTCM 10403.3).
+"""Decode the RTCM3 messages the page needs: 1005/1006 (base position), 1033 (receiver
+and antenna descriptors) and the headers, masks and signal strengths of MSM1 to MSM7
+(RTCM 10403.3).
 
 Frames are whole RTCM3 frames whose CRC the frame parser has already checked.
 """
@@ -137,6 +138,37 @@ def decode_1005(frame):
     if number == 1006:
         result["antenna_height_m"] = bits.u(16) * 0.0001
     return result
+
+
+MAX_DESCRIPTOR = 31    # RTCM 1033 strings are at most 31 characters
+
+
+def _descriptor(bits):
+    count = bits.u(8)
+    if count > MAX_DESCRIPTOR:
+        raise ValueError("descriptor too long")
+    data = bytes(bits.u(8) for _ in range(count))
+    return "".join(chr(b) if 32 <= b < 127 else "?" for b in data).strip()
+
+
+def decode_1033(frame):
+    """Receiver and antenna descriptors of a 1033 frame: the antenna descriptor (an IGS
+    name, or GPPNULLANTENNA for observations already reduced to a null antenna), its
+    setup id and serial number, and the receiver type, firmware and serial number."""
+    if rtcm_type(frame) != 1033:
+        raise ValueError(f"not a 1033 message: {rtcm_type(frame)}")
+    bits = Bits(frame[3:-3])
+    bits.skip(12)
+    station = bits.u(12)
+    antenna = _descriptor(bits)
+    setup = bits.u(8)
+    antenna_serial = _descriptor(bits)
+    receiver = _descriptor(bits)
+    firmware = _descriptor(bits)
+    receiver_serial = _descriptor(bits)
+    return {"station_id": station, "antenna": antenna, "antenna_setup": setup,
+            "antenna_serial": antenna_serial, "receiver": receiver,
+            "firmware": firmware, "receiver_serial": receiver_serial}
 
 
 def decode_msm(frame):

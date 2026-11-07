@@ -6,6 +6,9 @@ sends rtkrcv every RTCM frame from the hub, unfiltered; the solution server take
 rtkrcv's solution lines (llh format) back. rtkrcv connects to both as a TCP client, so
 it opens no listening socket of its own. Nothing from rtkrcv can reach the receiver:
 this module never imports the command, control or serial modules (a unit test checks).
+
+The runner, the servers and the solution log are shared with the reference check
+(reference.py), which runs a second rtkrcv with its own config.
 """
 import asyncio
 import contextlib
@@ -15,6 +18,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import threading
 import time
 from collections import deque
@@ -178,6 +182,12 @@ class _OneClientServer:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(server.wait_closed(), 1)
 
+    async def wait_disconnected(self, timeout):
+        """Wait up to `timeout` s for the current connection, if any, to end."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while self.connected and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+
     def _drop(self, writer):
         if writer is None:
             return
@@ -253,9 +263,10 @@ class SolutionServer(_OneClientServer):
 
     name = "solution"
 
-    def __init__(self, on_solution, max_line=MAX_LINE):
+    def __init__(self, on_solution, max_line=MAX_LINE, label="measured position"):
         super().__init__()
         self.on_solution = on_solution
+        self.label = label
         self.max_line = max_line
         self.solutions = 0
         self.dropped = {}       # why -> count
@@ -298,7 +309,7 @@ class SolutionServer(_OneClientServer):
         except Exception:
             self.callback_errors += 1
             if self.callback_errors == 1:
-                LOG.exception("measured position: handling a solution failed")
+                LOG.exception("%s: handling a solution failed", self.label)
 
     def snapshot(self):
         return {"connected": self.connected, "solutions": self.solutions,
@@ -323,7 +334,10 @@ EPHEMERIS_TYPES = {"GPS": (1019,), "GLONASS": (1020,), "Galileo": (1045, 1046),
                    "BeiDou": (1042,)}
 CONFIG_NAME = "rtkrcv.conf"
 CACHE_NAME = "rtkrcv.nav"     # rtkrcv saves its ephemerides here on a clean exit
-_VERSION = re.compile(r"rtkrcv ver\.\s*([0-9A-Za-z.]+(?: b\d+)?)")
+# "rtkrcv ver.2.4.3 b34 console" (RTKLIB 2.4.3) or "rtkrcv ver.EX 2.5.1 console" (RTKLIB-EX).
+_VERSION = re.compile(r"rtkrcv ver\.\s*((?:EX\s+)?[0-9][0-9A-Za-z.]*(?: b\d+)?)")
+_PROBE = re.compile(r"rtkrcv RTKLIB\s+(\S[^\r\n]*)")   # `rtkrcv --version` (RTKLIB-EX)
+PROBE_TIMEOUT_S = 10.0
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 PR_SET_PDEATHSIG = 1
 
@@ -350,6 +364,47 @@ def _parent_death_signal():
     return preexec
 
 
+async def probe_version(binary):
+    """`rtkrcv --version` for a build that has it (RTKLIB-EX: "EX 2.5.1"), or None for
+    one that prints its usage instead (RTKLIB 2.4.3 b34). A build with --version also
+    takes -nc (start with no console), which is how it is run: with a console on a
+    pseudo-terminal (-d), RTKLIB-EX does not exit on SIGTERM (its console thread is
+    joined while it waits on the terminal), so it would be killed at every stop and lose
+    its ephemeris cache. 2.4.3 b34 has neither option and keeps the pseudo-terminal."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            binary, "--version", stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), PROBE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            return None
+    except OSError:
+        return None
+    match = _PROBE.search(output.decode("utf-8", "replace"))
+    return match.group(1).strip() if match else None
+
+
+def _write_private(path, text, mode=None):
+    """Write `text` to `path`, created with permission bits `mode` (and set to them if
+    the file exists already), or with the usual bits when mode is None."""
+    if mode is None:
+        path.write_text(text)
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as stream:
+            fd = None
+            stream.write(text)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def gps_ephemeris_prn(frame):
     """The satellite number of a whole RTCM 1019 frame (the 6 bits after the type)."""
     return ((frame[4] & 0x0F) << 2) | (frame[5] >> 6)
@@ -359,31 +414,63 @@ def is_msm(number):
     return 1071 <= number <= 1127 and 1 <= number % 10 <= 7
 
 
+DEFAULT_BINARY = "rtkrcv-ex"   # RTKLIB-EX, built into the image (see the Dockerfile)
+
+
 @dataclass
 class MeasuredSettings:
     enabled: bool = True
-    binary: str = "rtkrcv"
+    binary: str = DEFAULT_BINARY
     work_dir: Path = Path("/data/rtkrcv")
     elevation_mask: int = 15
     snr_mask: int = 35
 
 
 class OutputLines:
-    """The last lines rtkrcv wrote to its console or its stdout/stderr, for the page."""
+    """The last lines rtkrcv wrote to its console or its stdout/stderr, for the page.
 
-    def __init__(self, size=OUTPUT_LINES):
+    With `secret` (a Secret: a password that may be in rtkrcv's config), every line is
+    scrubbed before it is kept, and nothing cut at an arbitrary point is shown: the
+    unfinished last line is not part of the snapshot (a read can end inside the
+    password), the unfinished text is scrubbed together with the next read (so a
+    password across two reads is still one string), a line longer than LONG_LINE is
+    kept only up to a point at least MAX_SECRET characters before its end (so a
+    password cannot straddle the cut), and a trailing beginning of the password is
+    removed from what is kept."""
+
+    LONG_LINE = 2000
+    MAX_SECRET = 256
+
+    def __init__(self, size=OUTPUT_LINES, secret=None):
         self.lines = deque(maxlen=size)
         self._partial = ""
         self.version = None
+        self._secret = secret
+
+    def _clean(self, line):
+        line = "".join(c for c in line if c.isprintable()).strip()
+        if self._secret is not None:
+            line = self._secret.scrub(line)
+        return line
 
     def feed(self, data):
-        text = self._partial + _ANSI.sub("", data.decode("utf-8", "replace"))
+        text = self._partial + data.decode("utf-8", "replace")
+        if self._secret is not None:   # before the escape strip, which could eat its start
+            text = self._secret.scrub(text)
+        text = _ANSI.sub("", text)
+        if self._secret is not None:
+            text = self._secret.scrub(text)
         *lines, self._partial = text.replace("\r", "\n").split("\n")
-        if len(self._partial) > 400:
-            lines.append(self._partial)
-            self._partial = ""
+        if len(self._partial) > self.LONG_LINE:
+            if self._secret is None:
+                lines.append(self._partial)
+                self._partial = ""
+            else:
+                cut = len(self._partial) - self.MAX_SECRET
+                lines.append(self._secret.strip_prefix(self._partial[:cut]))
+                self._partial = self._partial[cut:]
         for line in lines:
-            line = "".join(c for c in line if c.isprintable()).strip()
+            line = self._clean(line)
             if line:
                 self.lines.append(line[:200])
                 match = _VERSION.search(line)
@@ -391,7 +478,10 @@ class OutputLines:
                     self.version = match.group(1)
 
     def snapshot(self):
-        return list(self.lines) + ([self._partial.strip()] if self._partial.strip() else [])
+        if self._secret is not None:   # cut anywhere: not shown until its end comes
+            return list(self.lines)
+        tail = self._partial.strip()
+        return list(self.lines) + ([tail] if tail else [])
 
 
 def read_proc_stats(pid, proc="/proc"):
@@ -413,8 +503,9 @@ def read_proc_stats(pid, proc="/proc"):
 class RtkrcvRunner:
     """Starts rtkrcv when the first MSM frame arrives and keeps it running.
 
-    - Console on a pseudo-terminal the app owns (`-d /dev/pts/N`): rtkrcv needs one. The
-      app drains it and never writes to it. No telnet (`-p`) or monitor (`-m`) port.
+    - No console (`-nc`) with RTKLIB-EX, found by `--version` (probe_version); with
+      2.4.3 b34, a console on a pseudo-terminal the app owns (`-d /dev/pts/N`), which
+      the app drains and never writes to. No telnet (`-p`) or monitor (`-m`) port.
     - Working folder `work_dir`, kept across restarts: rtkrcv loads its ephemeris cache
       (rtkrcv.nav) there at start and saves it on a clean exit, so it is stopped with
       SIGTERM, and SIGKILL only if it does not exit within STOP_TIMEOUT_S.
@@ -423,24 +514,40 @@ class RtkrcvRunner:
       the same way. A missing binary or no pseudo-terminal: "not available", the rest of
       the app runs.
 
-    `on_solution(solution, line)` gets each good solution line."""
+    `on_solution(solution, line)` gets each good solution line.
+
+    The reference check reuses the runner with: `make_config(ports)`, which returns the
+    config text for a dict of the local ports (`feed`, `solution`, and one per extra
+    server in `servers`, by name); `servers`, extra local servers started and stopped with
+    the feed and solution ones (rtkrcv's log stream connects to one); `config_mode`, the
+    config file's permission bits when it holds a login; `secret`, the Secret scrubbed
+    from every console line kept; `on_start`, called when a new rtkrcv process has
+    started, once the previous one's connections are gone; and
+    `label`, the name used in log messages. `request_restart(reason)` ends the current
+    process (SIGTERM) and starts a new one at once, without the exit backoff."""
 
     def __init__(self, settings, hub, on_solution=None, clock=time.monotonic, wall=time.time,
                  restart_s=RESTART_S, restart_max_s=RESTART_MAX_S, reset_after_s=RESET_AFTER_S,
                  hang_s=HANG_S, no_solution_s=NO_SOLUTION_S, stop_timeout_s=STOP_TIMEOUT_S,
-                 stats_s=STATS_S, poll_s=POLL_S, proc="/proc"):
+                 stats_s=STATS_S, poll_s=POLL_S, proc="/proc", make_config=None, servers=None,
+                 config_mode=None, secret=None, on_start=None, label="measured position"):
         self.settings = settings
         self.hub = hub
         self._on_solution = on_solution
+        self._on_start = on_start
         self._clock = clock
         self._wall = wall
         self.restart_s, self.restart_max_s = restart_s, restart_max_s
         self.reset_after_s, self.hang_s = reset_after_s, hang_s
         self.no_solution_s, self.stop_timeout_s = no_solution_s, stop_timeout_s
         self.stats_s, self.poll_s, self._proc_dir = stats_s, poll_s, proc
+        self.label = label
+        self._make_config = make_config or self._default_config
+        self._config_mode = config_mode
+        self.servers = dict(servers or {})
         self.feed = FeedServer()
-        self.solutions = SolutionServer(self._solution)
-        self.output = OutputLines()
+        self.solutions = SolutionServer(self._solution, label=label)
+        self.output = OutputLines(secret=secret)
         self._subscriber = None
         self._task = None
         self._msm_seen = asyncio.Event()
@@ -451,8 +558,12 @@ class RtkrcvRunner:
         self._retry_at = None
         self._unavailable = ""
         self._stopping = False
+        self._restart_reason = ""     # set by request_restart until the supervisor acts
+        self.console = None           # "none" (-nc, RTKLIB-EX) or "pty" (-d), once probed
         self.last_exit = None         # {code, reason, ran_s}
         self.restarts = 0
+        self.planned_restarts = 0     # by request_restart (not counted as failures)
+        self.runs = 0                 # rtkrcv processes started
         self._restart_days = {}       # UTC day -> restarts
         self.cpu_percent = None
         self.rss_bytes = None
@@ -480,13 +591,22 @@ class RtkrcvRunner:
         if self._on_solution is not None:
             self._on_solution(solution, line)
 
+    def _default_config(self, ports):
+        return build_config(ports["feed"], ports["solution"], self.settings.elevation_mask,
+                            self.settings.snr_mask)
+
+    def _config_text(self, ports=None):
+        if ports is None:   # a check before anything runs: any valid ports
+            ports = {name: 1 for name in ("feed", "solution", *self.servers)}
+        return self._make_config(ports)
+
     # ---- life cycle ----
 
     def start(self):
         if not self.settings.enabled or self._task is not None:
             return
         try:
-            build_config(1, 1, self.settings.elevation_mask, self.settings.snr_mask)
+            self._config_text()
         except ValueError as error:
             self._not_available(f"invalid options: {error}")
             return
@@ -494,8 +614,21 @@ class RtkrcvRunner:
             self._not_available(f"rtkrcv not found ({self.settings.binary})")
             return
         self._stopping = False
-        self._subscriber = self.hub.subscribe("measured", self._on_frame)
+        self._subscriber = self.hub.subscribe(self.label, self._on_frame)
         self._task = asyncio.get_running_loop().create_task(self._supervise())
+
+    def request_restart(self, reason):
+        """End the running rtkrcv (SIGTERM, so it saves its cache) and start a new one
+        at once: a new session for a static solution. False if none is running (the
+        next start is a new session anyway)."""
+        if self._process is None or self._stopping or self._restart_reason:
+            return False
+        self._restart_reason = reason
+        return True
+
+    def running_s(self):
+        """Seconds the current rtkrcv has run, or None without one."""
+        return None if self._process is None else self._clock() - self._started
 
     async def stop(self):
         """Stop rtkrcv (SIGTERM, SIGKILL after stop_timeout_s) and the servers."""
@@ -508,7 +641,8 @@ class RtkrcvRunner:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        await asyncio.gather(self.feed.stop(), self.solutions.stop())
+        await asyncio.gather(self.feed.stop(), self.solutions.stop(),
+                             *(server.stop() for server in self.servers.values()))
 
     async def _supervise(self):
         try:
@@ -520,9 +654,16 @@ class RtkrcvRunner:
                     self._not_available(f"rtkrcv not found ({self.settings.binary})")
                     return
                 binary = os.path.abspath(binary)   # it runs in its work folder
+                if self.console is None:
+                    version = await probe_version(binary)
+                    self.console = "pty" if version is None else "none"
+                    if version is not None:
+                        self.output.version = version
                 try:
                     await self.feed.start()
                     await self.solutions.start()
+                    for server in self.servers.values():
+                        await server.start()
                 except OSError as error:
                     self.error = f"local servers: {error}"
                     reason = self.error
@@ -535,8 +676,15 @@ class RtkrcvRunner:
                     return
                 if ran >= self.reset_after_s:
                     delay = self.restart_s
+                planned, self._restart_reason = self._restart_reason, ""
+                if planned and reason.startswith("restarted:"):
+                    self.planned_restarts += 1
+                    LOG.info("%s: rtkrcv restarted: %s", self.label, planned)
+                    continue
+                # A request that came as rtkrcv exited or hung on its own is a failure
+                # like any other: counted, backed off.
                 self._note_restart()
-                LOG.warning("measured position: rtkrcv %s; restarting in %.0f s", reason, delay)
+                LOG.warning("%s: rtkrcv %s; restarting in %.0f s", self.label, reason, delay)
                 self._retry_at = self._clock() + delay
                 await self._sleep(delay)
                 self._retry_at = None
@@ -544,15 +692,15 @@ class RtkrcvRunner:
         except asyncio.CancelledError:
             raise
         except Exception as error:  # never let the supervisor die silently
-            LOG.exception("measured position: supervisor failed")
-            self._not_available(f"supervisor failed: {type(error).__name__}: {error}")
+            LOG.exception("%s: supervisor failed", self.label)
+            self._not_available(f"supervisor failed: {type(error).__name__}")
 
     async def _sleep(self, seconds):
         await asyncio.sleep(seconds)
 
     def _not_available(self, reason):
         self._unavailable = reason
-        LOG.error("measured position not available: %s", reason)
+        LOG.error("%s not available: %s", self.label, reason)
 
     def _note_restart(self):
         self.restarts += 1
@@ -565,28 +713,40 @@ class RtkrcvRunner:
         work = Path(self.settings.work_dir).absolute()
         try:
             work.mkdir(parents=True, exist_ok=True)
-            (work / CONFIG_NAME).write_text(build_config(
-                self.feed.port, self.solutions.port, self.settings.elevation_mask,
-                self.settings.snr_mask))
+            ports = {"feed": self.feed.port, "solution": self.solutions.port,
+                     **{name: server.port for name, server in self.servers.items()}}
+            _write_private(work / CONFIG_NAME, self._config_text(ports), self._config_mode)
         except (OSError, ValueError) as error:
-            return 0.0, f"could not write its config: {error}"
-        try:
-            master, slave = os.openpty()
-        except OSError as error:
-            self._not_available(f"no pseudo-terminal for its console: {error}")
-            return 0.0, ""
+            # The error names the file, never its content (a login may be in it).
+            reason = f"could not write its config: {type(error).__name__}: {error}"
+            self.last_exit = {"code": None, "reason": reason, "ran_s": 0.0}
+            return 0.0, reason
+        master = slave = None
+        if self.console == "pty":
+            try:
+                master, slave = os.openpty()
+            except OSError as error:
+                self._not_available(f"no pseudo-terminal for its console: {error}")
+                return 0.0, ""
         loop = asyncio.get_running_loop()
         reading = False
         drain = None
         process = None
         try:
-            os.set_blocking(master, False)
-            tty = os.ttyname(slave)
-            loop.add_reader(master, self._read_console, master)
-            reading = True
+            if master is not None:
+                os.set_blocking(master, False)
+                loop.add_reader(master, self._read_console, master)
+                reading = True
+                args = ["-s", "-o", str(work / CONFIG_NAME), "-d", os.ttyname(slave)]
+            else:
+                args = ["-nc", "-o", str(work / CONFIG_NAME)]
+            # The last process's connections end before the next starts, so lines still
+            # in a socket buffer from it are handled under the old session.
+            for server in (self.feed, self.solutions, *self.servers.values()):
+                await server.wait_disconnected(1.0)
             try:
                 process = await asyncio.create_subprocess_exec(
-                    binary, "-s", "-o", str(work / CONFIG_NAME), "-d", tty, cwd=str(work),
+                    binary, *args, cwd=str(work),
                     stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT, start_new_session=True,
                     preexec_fn=_parent_death_signal())
@@ -600,7 +760,10 @@ class RtkrcvRunner:
             self._eph_ready = None
             self._stats_mark = None
             self.cpu_percent = self.rss_bytes = None
-            LOG.info("measured position: rtkrcv started (pid %s)", process.pid)
+            self.runs += 1
+            LOG.info("%s: rtkrcv started (pid %s)", self.label, process.pid)
+            if self._on_start is not None:
+                self._on_start()
             drain = loop.create_task(self._drain(process.stdout))
             reason = await self._watch(process)
             if process.returncode is None:      # hang: stop it, then restart
@@ -621,8 +784,9 @@ class RtkrcvRunner:
             if reading:
                 loop.remove_reader(master)
             for fd in (master, slave):
-                with contextlib.suppress(OSError):
-                    os.close(fd)
+                if fd is not None:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
             self._process = None
 
     def _read_console(self, master):
@@ -660,6 +824,8 @@ class RtkrcvRunner:
         now = self._clock()
         if self._stats_mark is None or now - self._stats_mark[0] >= self.stats_s:
             self._read_stats(process.pid)
+        if self._restart_reason:
+            return f"restarted: {self._restart_reason}"
         # A cold start waits for orbits: no hang until enough GPS ephemerides came in.
         if self._eph_ready is None and self._last_solution is None:
             return ""
@@ -693,7 +859,7 @@ class RtkrcvRunner:
             return
         except asyncio.TimeoutError:
             pass
-        LOG.warning("measured position: rtkrcv ignored SIGTERM; killing it")
+        LOG.warning("%s: rtkrcv ignored SIGTERM; killing it", self.label)
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         await process.wait()
@@ -736,9 +902,11 @@ class RtkrcvRunner:
             "stop_exit_code": self.stop_exit_code,
             "restarts": self.restarts,
             "restarts_today": self._restart_days.get(day, 0),
+            "planned_restarts": self.planned_restarts,
             "cpu_percent": self.cpu_percent,
             "rss_bytes": self.rss_bytes,
             "rtkrcv_version": self.output.version,
+            "console": self.console,
             "elevation_mask": self.settings.elevation_mask,
             "snr_mask": self.settings.snr_mask,
             "feed": self.feed.snapshot(),
@@ -763,7 +931,7 @@ def _last_header(stream):
 
 
 class SolutionLog:
-    """`<directory>/YYYY-MM-DD.pos` (UTC day of arrival): a `%` header line per file, then
+    """`<directory>/YYYY-MM-DD<suffix>` (UTC day of arrival): a `%` header line per file, then
     rtkrcv's llh lines as received. They hold positions: keep them private, like the raw
     log.
 
@@ -784,8 +952,9 @@ class SolutionLog:
     RETRY_S = 3600
 
     def __init__(self, directory, header=lambda: "", wall=time.time, room=None,
-                 queue_size=QUEUE):
+                 queue_size=QUEUE, suffix=".pos"):
         self.directory = Path(directory)
+        self.suffix = suffix
         self._header = header
         self._wall = wall
         self._room = room or (lambda: True)
@@ -910,7 +1079,7 @@ class SolutionLog:
             with self._lock:
                 self.directory.mkdir(parents=True, exist_ok=True)
                 for day, header, lines in runs:
-                    path = self.directory / f"{day}.pos"
+                    path = self.directory / f"{day}{self.suffix}"
                     with open(path, "a+", encoding="ascii", errors="replace") as stream:
                         if stream.tell() == 0:
                             self._headers.pop(path.name, None)
@@ -942,7 +1111,7 @@ class SolutionLog:
         today = utc_day(now)
         due = []
         try:
-            paths = sorted(self.directory.glob("*.pos"))
+            paths = sorted(self.directory.glob(f"*{self.suffix}"))
         except OSError:
             return due
         for path in paths:

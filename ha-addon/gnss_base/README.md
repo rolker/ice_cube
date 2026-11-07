@@ -19,6 +19,9 @@ of its USB serial bridge).
   rover on cellular data can use them too
 - **Stage 3c (0.5.0):** shows a live measured position in base mode, from RTKLIB's
   `rtkrcv` running on a copy of the receiver's RTCM (single point, metre level)
+- **Stage 6 (0.6.0):** checks the base antenna's position continuously against a CORS
+  station by RTK (a second `rtkrcv`, static, our receiver as the rover and the
+  station's NTRIP stream as the base), centimetre level, as an offset from our RTCM 1005
 
 ## Status page
 
@@ -455,8 +458,9 @@ The caster card shows any lines held back, dropped or not written.
 
 In base mode the receiver only repeats the position it was given (GGA quality 7, or no
 GGA at all), so the page would have no measured position. The app runs RTKLIB's `rtkrcv`
-(Ubuntu's `rtklib` package, 2.4.3 b34) on a copy of the receiver's RTCM and shows its
-solution on the map and the drift plot, as offsets from the RTCM 1005 base position.
+(RTKLIB-EX 2.5.1, built into the image as `rtkrcv-ex`; see Install) on a copy of the
+receiver's RTCM and shows its solution on the map and the drift plot, as offsets from the
+RTCM 1005 base position.
 
 What to expect: this is **single point positioning** on L1 (GPS, GLONASS, Galileo,
 BeiDou), with broadcast orbits and RTKLIB's default ionosphere model, because RTCM
@@ -472,8 +476,11 @@ How it runs:
 - It reads the RTCM from a small server of the app on `127.0.0.1` and sends its solution
   back to another; both use a port the system picks. rtkrcv opens no listening port of
   its own, and nothing from it can reach the receiver.
-- Its console is a pseudo-terminal the app keeps (rtkrcv needs one); there is no telnet
-  console.
+- It runs without a console (`-nc`): with a console on a pseudo-terminal, RTKLIB-EX does
+  not exit on SIGTERM (it waits for its console thread), so it would be killed at every
+  stop and lose its orbit cache. A 2.4.3 b34 build (`--rtkrcv /usr/bin/rtkrcv`, which has
+  no `-nc`; the app tells the two apart with `--version`) gets a pseudo-terminal the app
+  keeps, as before. There is no telnet console either way.
 - Its working folder is `<data dir>/rtkrcv/` (`/data/rtkrcv/` in Home Assistant), kept
   across restarts. rtkrcv saves the satellite orbits it knows there (`rtkrcv.nav`) when it
   stops cleanly and loads them when it starts, so after a restart it has a solution at
@@ -502,16 +509,144 @@ memory, restarts, and its last output lines when something is wrong.
 Solutions are logged to `<log_dir>/measured/YYYY-MM-DD.pos` (see Logs).
 
 Stopping: Home Assistant kills an app 10 s after asking it to stop, so the app aims to be
-done in under 9 s. Everything stops at once, each part bounded by the time left: rtkrcv
-(SIGTERM, SIGKILL after 3 s) and then the solution log, the outputs and then the
+done in under 9 s. Everything stops at once, each part bounded by the time left: both
+rtkrcv (SIGTERM, SIGKILL after 3 s) and then their solution logs, the outputs and then the
 connection log, the receiver and the raw log, the status page (1.5 s for open requests).
 File work still running at the deadline is abandoned, not waited for. A day being
 compressed then keeps its original file and is compressed again after the next start;
 the half-written `.gz.partial` is removed then. A log line being written at that moment
 may be cut short.
 
+## Reference check (stage 6)
+
+The measured position above is metre level. To check the base antenna's position at
+centimetre level, every day, without walking outside, the app can run a second `rtkrcv`
+in **RTK static mode** with our receiver as the rover and a CORS station's live RTCM
+stream (over NTRIP) as the base. The solution is the position of our antenna in the
+station's frame; the card shows it as an offset from our own RTCM 1005 position.
+
+What it answers: is the coordinate we gave the receiver right, and does it stay right;
+and what is the real offset between our frame and the network's frame, measured. What it
+does not do: react to a move within seconds (static mode smears a move into a slow drift
+until the next session; the Measured position card is the one that catches a move) or
+work without internet and a CORS login.
+
+**Options** (all in the app configuration; nothing on the command line carries the
+password):
+
+- `reference_enabled`: true to run it. Off by default.
+- `reference_host`, `reference_port` (2101), `reference_mountpoint`, `reference_user`,
+  `reference_password`: the NTRIP caster and login of your network (MaCORS, a state DOT
+  network, ...). Pick a **single-station** mountpoint in RTCM 3 with MSM and 1005/1006,
+  within a few tens of kilometres, not a VRS/iMAX/network one (those need a GGA uplink and
+  give a synthetic station). The card is empty ("not configured") until host,
+  mountpoint and user are set. One login means one connection: rtkrcv is the only NTRIP
+  client and reconnects on its own (5 s); check your network's terms before leaving a
+  single-station connection up for days.
+- `reference_expected_enu`: the offset you expect, in metres, **east north up**, with the
+  convention **solution minus our 1005** (the station's frame minus ours). For a base in
+  ITRF2020 at the epoch of observation and a network in NAD83(2011) epoch 2010.00, that is
+  the ITRF2020 to NAD83(2011) transformation at your site (NGS HTDP), about
+  `0.56 -1.20 1.18` in New Hampshire (east +0.56, north -1.20, up +1.18). Leave it at
+  `0 0 0` to read the raw offset off the card first and enter it later. The sign matters:
+  the residual is the measured mean minus this value.
+- `reference_reset_utc`: the time of day (UTC, `HH:MM`) when rtkrcv is restarted so
+  each day is one static solution; `00:00` by default; empty means never.
+- The masks are the measured position's (`measured_elevation_mask`, `measured_snr_mask`,
+  applied to our side; the station's observations are not masked by SNR).
+
+**The card ("Reference check (<mountpoint>)")**:
+
+- State: *off*, *not configured*, *idle* (no MSM from our receiver yet), *starting*
+  (rtkrcv just started, or no solution yet),
+  *connecting* (no data from the station since the start: check host, mountpoint and
+  login; rtkrcv keeps retrying), *no corrections* (the stream stopped for 30 s),
+  *fixed*, *float*, *single* (corrections arrive but are not used yet, usually the first
+  seconds), *stale* (no solution for 30 s while corrections arrive), *restarting*, *not
+  available*. The station line shows what its RTCM 1033 says (receiver and antenna).
+- Baseline length, from the station's 1005/1006 and our 1005. Corrections age.
+- The last solution: satellites, quality, AR ratio, differential age; its offset E/N/U
+  from our 1005.
+- Mean ± std over the last 10 minutes (of the fixed epochs, or of all epochs while
+  nothing is fixed), the **session mean ± std of the fixed epochs**, and the fixed share
+  of the session's epochs.
+- The expected offset, and the **residual** (session mean minus expected), with a colour:
+  green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30
+  minutes without a fix (whether or not there was one before). A fixed solution can still be a **false fix**
+  (the spike that led to this design saw one in kinematic mode): trust a residual that
+  holds for hours and across days, not one that just appeared. The previous session's
+  residual (and why that session ended) stays on the card, and colours it until the new
+  session has a fix of its own, so the daily reset does not look like an outage.
+- rtkrcv's CPU and memory, restarts, and its last output lines when something is wrong,
+  as on the measured card. RTK with ambiguity resolution costs more than single point;
+  check the CPU figure on your device after a day before leaving both instances on.
+
+**Sessions.** Static mode accumulates one filter for as long as rtkrcv runs, so each run
+is one solution: it converges over minutes (the spike fixed at 25 km in 2 minutes and held
+81 % of the hour) and improves for hours. rtkrcv is restarted at `reference_reset_utc`
+(a planned restart, not counted as a failure), and when corrections resume after a gap of
+more than 5 minutes (the held ambiguities are stale by then), and when the station's
+own 1005/1006 position changes (another station behind the mountpoint, a
+re-coordination: the solution is relative to it). A changed 1005 position on our side
+(a new fixed position typed in) restarts the session statistics, not rtkrcv. If rtkrcv
+exits or hangs, the same rules as for the measured position apply.
+
+**Settings** (the exact rtkrcv config is `tests/reference_golden.conf`): static, L1+L2,
+broadcast ionosphere and Saastamoinen troposphere (`est-stec` never fixed in the
+spike), fix-and-hold with RTKLIB-EX's AR filter and partial ambiguity resolution,
+GLONASS ambiguities left float (the station's receiver is another make: `autocal`
+blocked every fix), BeiDou resolved, ratio threshold 3, max age 30 s, no antenna model on
+either side. The last point matters: our 1005 is the phase-centre position from PPP with
+no antenna model, and rtkrcv with no rover model solves for the phase centre, so the two
+compare directly. On the station side MaCORS streams RTCM 1033 with antenna
+`GPPNULLANTENNA` (observations already reduced to a null antenna), so no ANTEX lookup is
+needed; if your network's 1033 names a real antenna, its phase-centre offset (up to a
+decimetre in Up) is **not** applied in this version. A non-zero 1006 antenna height is
+shown on the card and not applied either: RTCM defines the 1005/1006 position as the
+antenna reference point (the height is the ARP above the survey marker, for information),
+while rtkrcv adds the height only when it has an antenna model (`ant2-anttype=*`); with
+MaCORS it is 0, so nothing is lost. Decide with your network's documentation if yours
+streams a non-zero value.
+
+While RTK cannot run (no corrections, or corrections older than 30 s) rtkrcv emits a
+single solution each epoch (`out-outsingle=on`), so the card says *no corrections* or
+*single* with live numbers, instead of the runner mistaking the silence for a hang.
+"Corrections" means the station's observations (MSM): a stream that still sends 1005
+and 1033 but no observations counts as none.
+
+**Frames.** The solution is in the station's frame, because rtkrcv takes the base
+coordinate from its 1005/1006. The log header and the card record the station's 1005
+ECEF, our 1005 ECEF and the expected offset, so a later reader knows what each number is
+in. A residual of a few centimetres confirms three things at once: our coordinate, the
+station's, and the transformation; if it is not small the check cannot say which is off.
+
+**Password.** It is written into rtkrcv's config file (`<data dir>/reference/rtkrcv.conf`,
+mode 0600, private to the app) because rtkrcv reads the NTRIP login from there, and
+nowhere else: not the add-on log, `api/status`, the page, the command log or the
+solution log. rtkrcv's output lines are scrubbed before they are kept, an unfinished
+line is never shown (a read can end inside the password), and a line cut for length is
+cut well before its end, so no piece of the password can appear. Characters that
+rtkrcv could not read back (`#`, spaces, non-ASCII) are refused with a message that
+names the option, not the value.
+
+NTRIP as rtkrcv speaks it is version 1 over plain TCP: the login goes to the caster as
+HTTP Basic in clear, like every NTRIP v1 client, and the corrections come back
+unsigned. Use a login made for this purpose, and treat the check as a comparison with a
+network you trust, not as a defence against someone tampering with that network's stream.
+
+Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
+
 ## Changes
 
+**0.6.0**
+
+- Reference check: a second rtkrcv in RTK static mode against a CORS station (options
+  `reference_*`), with its card, its daily log `reference/YYYY-MM-DD.llh`, a daily reset
+  and the residual colour rule above.
+- The image builds RTKLIB-EX 2.5.1 (rtklibexplorer's RTKLIB, tag `v2.5.1`, commit
+  pinned) from source and runs both rtkrcv instances on it as `rtkrcv-ex`; Ubuntu's
+  `rtklib` package is no longer installed. `--rtkrcv` defaults to `rtkrcv-ex`.
+- RTCM 1033 (receiver and antenna descriptors) is decoded.
 **0.5.2**
 
 - A **Base station** card leads the page: one word for the whole chain, Serving,
@@ -662,7 +797,9 @@ may be cut short.
 ## Install
 
 1. Copy this whole `gnss_base` folder to the `local_apps` share. The older `addons` share
-   is the same folder. Keep the LF line endings.
+   is the same folder. Keep the LF line endings. The image build clones RTKLIB-EX from
+   GitHub (`build.yaml` keeps the Ubuntu base; the Dockerfile checks the tag's commit) and
+   compiles `rtkrcv`, which takes a few minutes on the device and needs internet access.
 2. Settings → Apps → Install app → ⋮ → **Check for updates**, then install it from the
    local apps. If it doesn't appear, hard-refresh the page and repeat.
 3. On the Configuration tab, pick the receiver under `device`.
@@ -692,7 +829,15 @@ start manually for now.
 | upload_style | rev1 | NTRIP style of the reservation. Only rev1 works so far |
 | measured_enabled | true | Run rtkrcv for the live measured position |
 | measured_elevation_mask | 15 | rtkrcv's elevation mask, degrees (0 to 45) |
-| measured_snr_mask | 35 | rtkrcv's SNR mask, dB-Hz (0 to 50; 0 = no mask) |
+| measured_snr_mask | 35 | rtkrcv's SNR mask, dB-Hz (0 to 50; 0 = no mask); both instances |
+| reference_enabled | false | Run the reference check (RTK against a CORS station) |
+| reference_host | empty | The CORS network's NTRIP caster |
+| reference_port | 2101 | Its port |
+| reference_mountpoint | empty | A single-station RTCM 3 mountpoint (MSM + 1005/1006) |
+| reference_user | empty | Your login |
+| reference_password | empty | Its password (stays in rtkrcv's private config file) |
+| reference_expected_enu | 0 0 0 | Expected offset, metres east north up, solution minus our 1005 (the station's frame minus ours) |
+| reference_reset_utc | 00:00 | Daily restart of the reference rtkrcv (UTC, HH:MM); empty: never |
 
 Command-line arguments override options (`--device`, `--baud`, `--caster-mountpoint`,
 `--upload-host`, ...; `--no-caster`, and `--caster-host`/`--caster-port` for where the
@@ -700,7 +845,11 @@ caster listens). Passwords can be set only in the options. `--data-dir` sets whe
 upload keeps `upload-state.json` (default: the options file's folder, `/data` in Home
 Assistant) and rtkrcv its working folder `rtkrcv/`. `--no-measured`,
 `--measured-elevation-mask` and `--measured-snr-mask` override the measured options;
-`--rtkrcv PATH` runs another rtkrcv build (default: `rtkrcv` on the path).
+`--reference`/`--no-reference`, `--reference-host`, `--reference-port`,
+`--reference-mountpoint`, `--reference-user`, `--reference-expected-enu` and
+`--reference-reset-utc` the reference ones (the password is an option only); `--rtkrcv
+PATH` runs another rtkrcv build for both instances (default: `rtkrcv-ex` on the path, the
+RTKLIB-EX build in the image).
 
 ## Logs
 
@@ -719,11 +868,19 @@ other settings or another rtkrcv version. About 13 MB a day, 3 to 4 MB compresse
 days become `.pos.gz`. They hold positions too, so keep them private. Nothing is written
 below `min_free_gb`. They can be made again by replaying the raw log through rtkrcv.
 
+`<log_dir>/reference/YYYY-MM-DD.llh` is the reference check's equivalent, same writer,
+same compression and disk floor. Its `%` header names the mountpoint, our 1005 ECEF, the
+station's 1005 ECEF (and 1006 antenna height), the expected offset and its sign
+convention, and the masks; a new header line is written when any of them changes (a
+new session's rtkrcv version, a new 1005). The lines are rtkrcv's: quality 1 is fixed,
+2 float, 5 single; the last two fields are the age of the corrections and the AR ratio.
+It holds absolute positions in the station's frame: private, like the others.
+
 ## Tests
 
 From this folder, with `aiohttp` and `pyserial` installed (Python 3.11 or later):
 
-    python -m unittest tests.test_app tests.test_outputs tests.test_measured
+    python -m unittest tests.test_app tests.test_outputs tests.test_measured tests.test_reference
 
 `tests.test_outputs` covers the hub, the filter, the caster and the upload, against a fake
 caster on localhost; nothing connects outside the machine. If RTKLIB's `str2str` is on
@@ -733,6 +890,14 @@ runs if `node` is installed and skips otherwise. Tests use synthetic positions o
 a simulated receiver on a pseudo-terminal.
 
 `tests.test_measured` covers the rtkrcv runner against a fake rtkrcv
-(`tests/fake_rtkrcv.py`), and the whole app with it. If a real `rtkrcv` is on the path
-(or named by the `RTKRCV` environment variable), a smoke test starts it with no data: it
-must connect to both local servers and exit cleanly on SIGTERM. No real RTCM is used.
+(`tests/fake_rtkrcv.py`), and the whole app with it. If a real `rtkrcv-ex` or `rtkrcv`
+is on the path (or named by the `RTKRCV` environment variable), a smoke test starts it
+with no data: it must connect to both local servers and exit cleanly on SIGTERM. No real
+RTCM is used.
+
+`tests.test_reference` covers the reference check: the config's option spellings
+(`tests/reference_golden.conf`), the option checks, the password staying in the config
+file (the fake rtkrcv echoes its NTRIP path and the app must redact it), the states, the
+session statistics and the residual rule, the daily reset, planned restarts, the 1033
+decoder, and the whole app with both instances. The smoke test with a real binary points
+its NTRIP client at a closed local port: no CORS is ever contacted by the tests.
