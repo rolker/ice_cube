@@ -1,5 +1,0 @@
-# Home Assistant builds this app on the device. The Dockerfile takes its base image from
-# BUILD_FROM, as add-ons do; without this file the builder would pass its Alpine base.
-build_from:
-  aarch64: ubuntu:24.04
-  amd64: ubuntu:24.04

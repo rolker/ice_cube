@@ -5,9 +5,10 @@
 # reference check) run it. The tag's commit is pinned and checked, so the image is the
 # same wherever it is built (Home Assistant builds it on the device: arm64 or amd64).
 # Plain C, no Fortran: rtkrcv's makefile links only libm and libpthread.
-ARG BUILD_FROM=ubuntu:24.04
+# The base image is fixed here, as in 0.5.x: the Home Assistant supervisor passes its own
+# Alpine base as BUILD_FROM (and build.yaml is deprecated), and this image needs apt.
 
-FROM ${BUILD_FROM} AS rtklib
+FROM ubuntu:24.04 AS rtklib
 ARG RTKLIB_REPO=https://github.com/rtklibexplorer/RTKLIB.git
 ARG RTKLIB_TAG=v2.5.1
 ARG RTKLIB_COMMIT=62d4677ed8425a4e2748c6d390b500d1afb493fc
@@ -19,7 +20,7 @@ RUN git clone --quiet --depth 1 --branch "${RTKLIB_TAG}" "${RTKLIB_REPO}" /rtkli
  && make -C /rtklib/app/consapp/rtkrcv/gcc -j"$(nproc)" \
  && /rtklib/app/consapp/rtkrcv/gcc/rtkrcv --version 2>&1 | grep -q "2.5.1"
 
-FROM ${BUILD_FROM}
+FROM ubuntu:24.04
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-aiohttp python3-serial \
  && rm -rf /var/lib/apt/lists/*

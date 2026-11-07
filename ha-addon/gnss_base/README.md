@@ -638,6 +638,12 @@ Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
 
 ## Changes
 
+**0.6.1**
+
+- Build fix: the Dockerfile names its Ubuntu base directly. 0.6.0's `build.yaml` was
+  rejected by the supervisor (image name without a registry path), which then passed its
+  Alpine base, where `apt-get` does not exist. No functional change.
+
 **0.6.0**
 
 - Reference check: a second rtkrcv in RTK static mode against a CORS station (options
@@ -798,7 +804,8 @@ Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
 
 1. Copy this whole `gnss_base` folder to the `local_apps` share. The older `addons` share
    is the same folder. Keep the LF line endings. The image build clones RTKLIB-EX from
-   GitHub (`build.yaml` keeps the Ubuntu base; the Dockerfile checks the tag's commit) and
+   GitHub (the Dockerfile fixes the Ubuntu base itself, because the supervisor would pass
+   its Alpine base; it checks the tag's commit) and
    compiles `rtkrcv`, which takes a few minutes on the device and needs internet access.
 2. Settings → Apps → Install app → ⋮ → **Check for updates**, then install it from the
    local apps. If it doesn't appear, hard-refresh the page and repeat.
