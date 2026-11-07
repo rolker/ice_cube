@@ -1985,7 +1985,10 @@ class Packaging(unittest.TestCase):
         def keys(block):
             return [line.split(":")[0].strip() for line in block.splitlines()]
 
-        self.assertEqual(set(keys(options)) - {"device"}, set(DEFAULTS) - {"device"})
+        # reference_frame is a drop-down that is unset until chosen (0.6.3): optional in
+        # the schema and absent from the options defaults, so the app's DEFAULTS supply "".
+        self.assertEqual(set(keys(options)) - {"device"},
+                         set(DEFAULTS) - {"device", "reference_frame"})
         self.assertEqual(set(keys(schema)), set(DEFAULTS))
         self.assertIn("upload_password: password", schema)
         self.assertIn("caster_password: password", schema)
@@ -1995,7 +1998,7 @@ class Packaging(unittest.TestCase):
         self.assertEqual(DEFAULTS["caster_password"], "")
         self.assertEqual(DEFAULTS["base_frame"], "ITRF2020")
         self.assertIn("  base_frame: ITRF2020\n", options)
-        self.assertIn("  base_frame: str\n", schema)
+        self.assertIn("  base_frame: list(ITRF2020|ITRF2014|ITRF2008|NAD83(2011))?\n", schema)
         caster, _ = output_settings(load_settings(["--options", "/nonexistent/options.json"]))
         self.assertEqual((caster.base_frame, caster.frame()), ("ITRF2020", "ITRF2020"))
         caster, _ = output_settings(load_settings(["--options", "/nonexistent/options.json",
