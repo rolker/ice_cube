@@ -8,6 +8,10 @@ private/
 # Local paths; config.example.toml is the committed template
 config.toml
 
+# Siting scripts: yard location, data paths and generated site-plan pages
+analysis/site_config.json
+analysis/out/
+
 # Survey and GIS data
 *.geojson
 *.gpkg
@@ -48,3 +52,10 @@ base_position.*
 __pycache__/
 *.pyc
 .venv/
+
+# Android build output
+logger/.gradle/
+logger/build/
+logger/app/build/
+logger/local.properties
+logger/.idea/
