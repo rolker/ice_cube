@@ -1347,23 +1347,26 @@ class Packaging(unittest.TestCase):
         for line in ("  reference_enabled: false\n", '  reference_host: ""\n',
                      "  reference_port: 2101\n", '  reference_mountpoint: ""\n',
                      '  reference_user: ""\n', '  reference_password: ""\n',
-                     '  reference_frame: ""\n', '  reference_reset_utc: "00:00"\n',
-                     "  base_frame: ITRF2020\n", "  base_frame: str\n",
+                     '  reference_reset_utc: "00:00"\n',
+                     "  base_frame: ITRF2020\n",
+                     "  base_frame: list(ITRF2020|ITRF2014|ITRF2008|NAD83(2011))?\n",
                      '  base_epoch: ""\n', "  base_epoch: str\n",
                      "  reference_enabled: bool\n", "  reference_host: str\n",
                      "  reference_port: port\n", "  reference_mountpoint: str\n",
                      "  reference_user: str\n", "  reference_password: password\n",
-                     "  reference_frame: str\n", "  reference_reset_utc: match("):
+                     "  reference_frame: list(NAD83(2011)|ITRF2020|ITRF2014|ITRF2008)?\n",
+                     "  reference_reset_utc: match("):
             self.assertIn(line, text, line)
         self.assertNotIn("reference_expected_enu", text)
-        self.assertIn('version: "0.6.2"', text)
+        self.assertIn('version: "0.6.3"', text)
+        self.assertNotIn('  reference_frame: ""\n', text, "optional: absent until chosen")
         import re
         pattern = re.search(r"reference_reset_utc: match\((.*)\)\n", text).group(1)
         for good in ("", "7:05", "00:00", "23:59", "09:30"):
             self.assertTrue(re.fullmatch(pattern, good), good)
         for bad in ("24:00", "7:5", "12:60", "noon", "1:00:00"):
             self.assertFalse(re.fullmatch(pattern, bad), bad)
-        self.assertEqual(__version__, "0.6.2")
+        self.assertEqual(__version__, "0.6.3")
         dockerfile = (ROOT / "Dockerfile").read_text()
         for text in ("FROM ubuntu:24.04 AS rtklib", "FROM ubuntu:24.04\n",
                      "RTKLIB_TAG=v2.5.1",

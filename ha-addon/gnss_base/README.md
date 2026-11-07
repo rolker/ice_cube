@@ -552,14 +552,14 @@ password):
   mountpoint and user are set. One login means one connection: the app opens exactly
   one at a time and waits between attempts (below); check your network's terms before
   leaving a single-station connection up for days.
-- `reference_frame`: the reference frame the station's coordinates are in, as its
-  network documents it: `NAD83(2011)` (MaCORS and the state networks of the United
-  States), `ITRF2020`, `ITRF2014` or `ITRF2008`. Empty by default, which means
+- `reference_frame`: a drop-down: the reference frame the station's coordinates are in,
+  as its network documents it: `NAD83(2011)` (MaCORS and the state networks of the United
+  States), `ITRF2020`, `ITRF2014` or `ITRF2008`. Unset by default, which means
   **unknown**: the card then shows the raw offset only, with no expected offset, no
   residual and no colour from a residual, and says "station frame unknown: set
   reference_frame". The app never guesses the frame (see Frames below). A name outside
   that list is refused at startup with a message naming the option.
-- `base_frame`: the frame of our own 1005 position, `ITRF2020` by default (what a
+- `base_frame`: a drop-down: the frame of our own 1005 position, `ITRF2020` by default (what a
   CSRS-PPP or OPUS ITRF coordinate is in). It goes into the local caster's sourcetable
   and the expected offset; empty means not declared (no expected offset either). A name
   outside the list stops the reference check with a message naming the option; the
@@ -740,6 +740,11 @@ against someone tampering with that network's stream.
 Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
 
 ## Changes
+
+**0.6.3**
+
+- The two frame options are drop-downs (ITRF2020, ITRF2014, ITRF2008, NAD83(2011));
+  `reference_frame` is unset until chosen. No other change.
 
 **0.6.2**
 

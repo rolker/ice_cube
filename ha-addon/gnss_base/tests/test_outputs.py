@@ -1976,7 +1976,7 @@ class Packaging(unittest.TestCase):
     def test_config_yaml_version_options_and_ports(self):
         text = (ROOT / "config.yaml").read_text()
         self.assertIn(f'version: "{__version__}"', text)
-        self.assertEqual(__version__, "0.6.2")
+        self.assertEqual(__version__, "0.6.3")
         self.assertIn("ports:\n  2101/tcp: 2101\n", text)
         self.assertIn("ports_description:\n  2101/tcp: ", text)
         options = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)
