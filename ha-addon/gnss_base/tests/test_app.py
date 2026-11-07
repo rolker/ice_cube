@@ -780,8 +780,43 @@ class Page(unittest.TestCase):
         result = subprocess.run(["node", str(ROOT / "tests" / "track_test.js")],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "), 14,
-                         result.stdout)
+        passed = re.search(r"passed (\d+) of (\d+) checks", result.stdout)
+        self.assertIsNotNone(passed, result.stdout)
+        self.assertEqual(passed.group(1), passed.group(2), result.stdout)
+        self.assertEqual(result.stdout.count("\nok ") + result.stdout.startswith("ok "),
+                         int(passed.group(2)), result.stdout)
+        self.assertGreaterEqual(int(passed.group(2)), 22)
+
+    def test_page_leads_with_the_base_station_card(self):
+        """0.5.2: the summary card is the first section, Position fix sits below
+        Measured position, and the summary comes from track.js, where Node tests it."""
+        html = self.html
+        order = [html.index(f"<h2>{title}</h2>") for title in
+                 ("Base station", "Data", "Measured position (rtkrcv)", "Position fix",
+                  "Survey-in")]
+        self.assertEqual(order, sorted(order))
+        self.assertTrue(html[html.index("<section"):].startswith("<section><h2>Base station</h2>"),
+                        "the card is the first section")
+        self.assertEqual(html.count("<section"), html.count("</section>"))
+        card = html[html.index("<h2>Base station</h2>"):]
+        card = card[:card.index("</section>")]
+        for text in ('id="station"', 'id="stationnote"', 'id="stationd"', 'id="stationrovers"'):
+            self.assertIn(text, card)
+        self.assertIn("Rovers using ${uploadLabel(u)===\"RTK2go\"?\"RTK2go\":\"the upload caster\"} are not visible here",
+                      html, "the note is gated on the upload")
+        self.assertIn("renderStation(s);", html)
+        self.assertIn("c.subscriber_errors?(c.subscriber_errors.caster||0):null", html,
+                      "a subscriber the hub does not list yet has 0 errors, so its first error counts")
+        lost = next(x for x in html.splitlines() if "Lost contact with the app\"" in x)
+        self.assertIn("stationLost()", lost, "the card must not keep an old word without api/status")
+        self.assertNotIn("render(await r.json())", html,
+                         "a status the page cannot render is not lost contact")
+        script = (STATIC / "track.js").read_text()
+        self.assertIn("function baseSummary(", script, "the rule lives in track.js, tested under Node")
+        self.assertIn("function duration(s)", script)
+        self.assertNotIn("const duration=", html, "duration lives in track.js now")
+        test = (ROOT / "tests" / "track_test.js").read_text()
+        self.assertIn("down without receiver data or a 1005", test)
 
     def test_receiver_script_is_served_and_uses_relative_urls(self):
         script = (STATIC / "control.js").read_text()

@@ -4,7 +4,8 @@
 const assert = require("assert");
 const path = require("path");
 const {mergeTrack, clockJumped, baseCentring, sentText, roverPoints, runningMean,
-  trackLabel} = require(
+  trackLabel, duration, age, reasonsText, baseSummary, storageLow, riseTrend, receiverModeText, msmText,
+  baseShift, casterIsUp, casterText, uploadLabel, uploadText} = require(
   path.join(__dirname, "..", "gnss_base", "static", "track.js"));
 
 const REF = {lat: 0, lon: 0, height_m: 0};
@@ -164,6 +165,237 @@ const checks = {
     assert.ok(/rtkrcv/.test(trackLabel({source: "measured"}).title));
   },
 
+  // ---- 0.5.2: the base station card ----
+  "serving only when the whole chain is fresh and an output is up"() {
+    const ok = () => ({connected: true, data_age_s: 0.3, last_error: null,
+      base_position: {lat: 1, lon: 2, ecef: [1, 2, 3], age_s: 1.2, stale: false},
+      msm: {GPS: {satellites: 9, age_s: 0.5}, GLONASS: {satellites: 6, age_s: 0.5}},
+      storage: {free_bytes: 50e9, min_free_bytes: 10e9, paused: false},
+      caster: {enabled: true, listening: true, error: null, clients: []},
+      upload: {enabled: true, state: "connected", host: "rtk2go.com", connected_s: 100}});
+    assert.deepStrictEqual(baseSummary(ok(), false), {word: "Serving", reasons: []});
+    const degraded = (change, pattern) => {
+      const s = ok(); change(s);
+      const out = baseSummary(s, false);
+      assert.strictEqual(out.word, "Degraded", pattern);
+      assert.ok(out.reasons.some(r => pattern.test(r)), `${pattern}: ${out.reasons}`);
+    };
+    degraded(s => { s.data_age_s = 7; }, /No data from the receiver for 7\.0 s/);
+    degraded(s => { s.data_age_s = 5.1; }, /No data from the receiver for 5\.1 s/);
+    degraded(s => { s.base_position.stale = true; s.base_position.age_s = 45; }, /1005 is stale \(45 s old\)/);
+    degraded(s => { s.base_position.stale = true; delete s.base_position.age_s; }, /1005 is stale \(age unknown\)/);
+    degraded(s => { delete s.msm.GPS; }, /No GPS observations/);
+    degraded(s => { s.msm = {}; }, /No GPS observations/);
+    degraded(s => { s.msm.GPS.age_s = 12; }, /GPS observations are 12 s old/);
+    degraded(s => { s.msm.GPS.age_s = 5.4; }, /GPS observations are 5\.4 s old/);
+    assert.strictEqual(baseSummary(Object.assign(ok(), {data_age_s: 5}), null).word, "Serving", "5.0 s is still fresh");
+    degraded(s => { s.storage.free_bytes = 9e9; }, /below the floor/);
+    degraded(s => { s.storage.paused = true; }, /Logging is paused/);
+    degraded(s => { s.storage.last_error = "disk: I/O error"; }, /Logging error: disk: I\/O error/);
+    const both = ok(); both.storage.free_bytes = 1; both.storage.paused = true; both.storage.last_error = "x";
+    assert.strictEqual(baseSummary(both, false).reasons.length, 3, "every storage reason is listed");
+    degraded(s => { s.caster.listening = false; }, /Local caster not listening/);
+    degraded(s => { s.caster.error = "port in use"; }, /Local caster not running: port in use/);
+    degraded(s => { s.upload.state = "waiting"; s.upload.retry_in_s = 240; s.upload.reason = "refused"; },
+      /RTK2go retrying in 4 min \(refused\)/);
+    degraded(s => { s.upload.state = "off"; s.upload.last_error = "rev2 is not supported"; },
+      /RTK2go off: rev2 is not supported/);
+    // Both outputs off: not a failure of either, but nothing serves corrections.
+    degraded(s => { s.caster.enabled = false; s.upload = {enabled: false, state: "off"}; }, /No output is up/);
+    // One output is enough.
+    const one = ok(); one.upload = {enabled: false, state: "off"};
+    assert.strictEqual(baseSummary(one, false).word, "Serving");
+    const other = ok(); other.caster.enabled = false;
+    assert.strictEqual(baseSummary(other, false).word, "Serving");
+    // Other systems stale or missing do not count; GPS does.
+    const noGlo = ok(); noGlo.msm.GLONASS.age_s = 30;
+    assert.strictEqual(baseSummary(noGlo, false).word, "Serving");
+    assert.deepStrictEqual(baseSummary(ok(), {rising: true, recent: 1}).reasons, ["1 new RTCM decode error in the last minute"]);
+    assert.deepStrictEqual(baseSummary(ok(), {rising: true, recent: 3}).reasons, ["3 new RTCM decode errors in the last minute"]);
+    assert.strictEqual(baseSummary(ok(), {rising: false, recent: 0}).word, "Serving");
+    assert.strictEqual(baseSummary(ok(), null).word, "Serving");
+    // The caster's output callback failing (hub subscriber errors rising): the caster is
+    // not up, even though it listens; with the upload connected the station is Degraded,
+    // and with the upload off nothing serves.
+    const failing = {rising: true, recent: 2};
+    assert.deepStrictEqual(baseSummary(ok(), null, failing).reasons,
+      ["Local caster listening, 0 clients, output failing: 2 errors in the last minute"]);
+    const only = ok(); only.upload = {enabled: false, state: "off"};
+    assert.deepStrictEqual(baseSummary(only, null, failing).reasons.slice(-1), ["No output is up"]);
+    assert.strictEqual(baseSummary(ok(), null, {rising: false, recent: 0}).word, "Serving");
+    // Up to BASE_DOWN_S a stale 1005 is Degraded; past it, Down (see the Down checks):
+    // the app never clears the last 1005, it only marks it stale.
+    const gone = ok(); gone.base_position.stale = true; gone.base_position.age_s = 300;
+    assert.strictEqual(baseSummary(gone, null).word, "Degraded");
+    gone.base_position.age_s = 300.1;
+    assert.strictEqual(baseSummary(gone, null).word, "Down");
+    // Several reasons, in the order checked.
+    const many = ok(); many.data_age_s = 6; many.base_position.stale = true; many.caster.enabled = false;
+    assert.deepStrictEqual(baseSummary(many, false).reasons.map(r => r.split(" ")[0]), ["No", "RTCM"]);
+    // Storage and outputs missing from an older app: not reasons on their own.
+    const old = ok(); delete old.storage; delete old.caster; delete old.upload;
+    assert.deepStrictEqual(baseSummary(old, false).reasons, ["No output is up"]);
+  },
+
+  "down without receiver data or a 1005"() {
+    const base = {connected: true, data_age_s: 1, base_position: {lat: 1, lon: 2, age_s: 1, stale: false},
+      msm: {GPS: {satellites: 9, age_s: 1}}, caster: {enabled: true, listening: true}};
+    const down = (change, pattern) => {
+      const s = JSON.parse(JSON.stringify(base)); change(s);
+      const out = baseSummary(s, false);
+      assert.strictEqual(out.word, "Down", pattern);
+      assert.strictEqual(out.reasons.length, 1);
+      assert.ok(pattern.test(out.reasons[0]), out.reasons[0]);
+    };
+    down(s => { s.connected = false; s.last_error = "no such device"; }, /not connected: no such device/);
+    down(s => { s.connected = false; }, /^Receiver not connected$/);
+    down(s => { s.data_age_s = null; }, /No data from the receiver yet/);
+    down(s => { s.data_age_s = 31; }, /No data from the receiver for 31 s/);
+    down(s => { s.data_age_s = 5400; }, /for 1\.5 h/);
+    down(s => { s.base_position = {}; }, /No RTCM 1005\/1006 received/);
+    down(s => { delete s.base_position; }, /No RTCM 1005\/1006 received/);
+    down(s => { s.base_position.stale = true; s.base_position.age_s = 301; }, /No RTCM 1005\/1006 for 5 min/);
+    down(s => { s.base_position.stale = true; s.base_position.age_s = 7200; }, /No RTCM 1005\/1006 for 2\.0 h/);
+    // Down comes before any Degraded reason, even with everything else stale.
+    down(s => { s.connected = false; s.msm = {}; s.caster.listening = false; }, /not connected/);
+    assert.strictEqual(baseSummary({}, false).word, "Down");
+  },
+
+  "an error count is rising for a minute after it grows, and says by how many"() {
+    const brief = t => [t.rising, t.recent];
+    let t = riseTrend(null, 0, 100);
+    assert.deepStrictEqual(t, {count: 0, rises: [], rising: false, recent: 0});
+    t = riseTrend(t, 0, 110);
+    assert.deepStrictEqual(brief(t), [false, 0]);
+    t = riseTrend(t, 2, 120);
+    assert.deepStrictEqual(t, {count: 2, rises: [{at: 120, before: 0}], rising: true, recent: 2});
+    // More within the minute add up from the count before the first rise in the window.
+    t = riseTrend(t, 3, 150);
+    assert.deepStrictEqual(brief(t), [true, 3]);
+    // The first rise leaves the window: only what grew in the last minute counts.
+    t = riseTrend(t, 3, 181);
+    assert.deepStrictEqual(brief(t), [true, 1]);
+    t = riseTrend(t, 3, 211);
+    assert.deepStrictEqual(brief(t), [false, 0]);
+    // A new rise after a quiet spell counts from the count before it, not from zero.
+    t = riseTrend(t, 4, 300);
+    assert.deepStrictEqual(brief(t), [true, 1]);
+    // The app restarted while rising: the lower count starts afresh, nothing kept.
+    t = riseTrend(t, 0, 310);
+    assert.deepStrictEqual(t, {count: 0, rises: [], rising: false, recent: 0});
+    assert.deepStrictEqual(brief(riseTrend(t, 1, 311)), [true, 1]);
+    // The first count seen is not a rise, even if large; a missing count is nothing,
+    // and the count after it is a first count again.
+    assert.strictEqual(riseTrend(null, 500, 0).rising, false);
+    // The first error ever (0 -> 1) is a rise: the page passes 0 for a subscriber the
+    // hub does not list yet, not null.
+    assert.deepStrictEqual(brief(riseTrend(riseTrend(null, 0, 100), 1, 110)), [true, 1]);
+    assert.deepStrictEqual(riseTrend(t, null, 500), {count: null, rises: [], rising: false, recent: 0});
+    assert.strictEqual(riseTrend(riseTrend(t, null, 500), 1, 501).rising, false);
+  },
+
+  "the receiver's mode in words"() {
+    assert.strictEqual(receiverModeText({svin: {mode: 2}}), "fixed position");
+    assert.strictEqual(receiverModeText({svin: {mode: 1}, mode: "Base station"}), "survey-in");
+    assert.strictEqual(receiverModeText({svin: {mode: 0}, mode: "Rover"}), "rover");
+    assert.strictEqual(receiverModeText({svin: {mode: 0}, mode: null}), "survey-in off, receiver mode not read");
+    // A rover is a rover, whatever survey-in configuration it keeps.
+    assert.strictEqual(receiverModeText({svin: {mode: 2}, mode: "Rover"}), "rover (fixed position configured, unused)");
+    assert.strictEqual(receiverModeText({svin: {mode: 1}, mode: "Rover"}), "rover (survey-in configured, unused)");
+    assert.strictEqual(receiverModeText({svin: {mode: null, reason: "x"}, mode: "Rover"}), "rover");
+    assert.strictEqual(receiverModeText({svin: {mode: 2}, mode: "Base station"}), "fixed position");
+    assert.strictEqual(receiverModeText({svin: {mode: 0}, mode: "Unknown (3)"}), "survey-in off, receiver mode unknown (3)");
+    assert.strictEqual(receiverModeText({svin: {mode: 0}, mode: "Base station"}), "base, survey-in off");
+    assert.strictEqual(receiverModeText({svin: {mode: null, reason: "not read yet"}}), "mode unknown (not read yet)");
+    assert.strictEqual(receiverModeText({}), "mode unknown");
+    assert.strictEqual(receiverModeText(null), "mode unknown");
+  },
+
+  "satellites per system from MSM, GPS first, newest age"() {
+    assert.strictEqual(msmText({BeiDou: {satellites: 10, age_s: 1.4}, GPS: {satellites: 11, age_s: 0.6},
+      Galileo: {satellites: 9, age_s: 0.6}, GLONASS: {satellites: 7, age_s: 8.9}}),
+      "GPS 11, GLONASS 7, Galileo 9, BeiDou 10 sats, 0.6 s old");
+    assert.strictEqual(msmText({GPS: {satellites: 3, age_s: 100}}), "GPS 3 sats, 2 min old");
+    assert.strictEqual(msmText({Other: {satellites: 1, age_s: 1}, QZSS: {satellites: 2, age_s: 1}}),
+      "QZSS 2, Other 1 sats, 1.0 s old");
+    assert.strictEqual(msmText({GPS: {satellites: 3}}), "GPS 3 sats");
+    assert.strictEqual(msmText({GPS: {age_s: 1}}), "GPS ? sats, 1.0 s old");
+    assert.strictEqual(msmText({GPS: {satellites: 3, age_s: 12.4}}), "GPS 3 sats, 12 s old");
+    assert.strictEqual(msmText({}), null);
+    assert.strictEqual(msmText(undefined), null);
+  },
+
+  "a moved 1005 is measured from the configured position, else from page load"() {
+    const here = [1000, 2000, 3000];
+    assert.deepStrictEqual(baseShift(null, null, null), {text: "none received", moved: false});
+    assert.deepStrictEqual(baseShift(here, null, null), {text: "first seen now", moved: false});
+    assert.deepStrictEqual(baseShift(here, null, [1000, 2000, 3000.0005]),
+      {text: "unchanged since page load", moved: false});
+    assert.deepStrictEqual(baseShift(here, [1000.0004, 2000, 3000], [0, 0, 0]),
+      {text: "matches the configured position", moved: false});
+    assert.deepStrictEqual(baseShift(here, [1000, 2000, 3000.0015], here),
+      {text: "moved 1.5 mm from the configured position", moved: true});
+    assert.deepStrictEqual(baseShift(here, null, [1000.03, 2000.04, 3000]),
+      {text: "moved 5.0 cm from page load", moved: true});
+    assert.deepStrictEqual(baseShift(here, null, [1001, 2001, 3001]),
+      {text: "moved 1.73 m from page load", moved: true});
+    // The configured position wins over page load when both are known.
+    assert.strictEqual(baseShift(here, here, [0, 0, 0]).moved, false);
+    // Anything that is not a number is not "matches".
+    assert.deepStrictEqual(baseShift(here, ["x", 2000, 3000], null), {text: "not comparable", moved: false});
+    assert.deepStrictEqual(baseShift([1, 2], here, null), {text: "not comparable", moved: false});
+  },
+
+  "the outputs in a few words"() {
+    assert.strictEqual(casterText({enabled: false}), "off (caster_enabled)");
+    assert.strictEqual(casterText(undefined), "off (caster_enabled)");
+    assert.strictEqual(casterText({enabled: true, error: "port in use"}), "not running: port in use");
+    assert.strictEqual(casterText({enabled: true, listening: false}), "not listening");
+    assert.strictEqual(casterText({enabled: true, listening: true, clients: []}), "listening, 0 clients");
+    assert.strictEqual(casterText({enabled: true, listening: true, clients: [{}]}), "listening, 1 client");
+    assert.strictEqual(casterText({enabled: true, listening: true, clients: [{}, {}]}), "listening, 2 clients");
+    assert.strictEqual(casterText({enabled: true, listening: true, clients: [{}]}, {rising: true, recent: 1}),
+      "listening, 1 client, output failing: 1 error in the last minute");
+    assert.strictEqual(casterText({enabled: true, listening: true, clients: []}, {rising: false, recent: 0}),
+      "listening, 0 clients");
+    assert.strictEqual(casterIsUp({enabled: true, listening: true}, null), true);
+    assert.strictEqual(casterIsUp({enabled: true, listening: true}, {rising: true, recent: 1}), false);
+    assert.strictEqual(casterIsUp({enabled: true, listening: true, error: "x"}, null), false);
+    assert.strictEqual(casterIsUp({enabled: true, listening: false}, null), false);
+    assert.strictEqual(casterIsUp(undefined, null), false);
+    assert.strictEqual(uploadLabel({host: "rtk2go.com"}), "RTK2go");
+    assert.strictEqual(uploadLabel({host: "RTK2GO.COM"}), "RTK2go");
+    assert.strictEqual(uploadLabel({host: "caster.example.net"}), "Upload");
+    assert.strictEqual(uploadLabel({}), "Upload");
+    assert.strictEqual(uploadText({enabled: false, state: "off"}), "off");
+    assert.strictEqual(uploadText(undefined), "off");
+    assert.strictEqual(uploadText({enabled: true, state: "off", last_error: "bad style"}), "off: bad style");
+    assert.strictEqual(uploadText({enabled: true, state: "connected", connected_s: 7200}), "connected for 2.0 h");
+    assert.strictEqual(uploadText({enabled: true, state: "connected"}), "connected");
+    assert.strictEqual(uploadText({enabled: true, state: "waiting", retry_in_s: 30}), "retrying in 30 s");
+    assert.strictEqual(uploadText({enabled: true, state: "waiting", reason: "banned"}), "retrying (banned)");
+    assert.strictEqual(uploadText({enabled: true, state: "connecting"}), "connecting");
+    assert.strictEqual(uploadText({enabled: true, state: "waiting for RTCM"}), "waiting for RTCM");
+    assert.strictEqual(uploadText({enabled: true, state: "stopped for today", reason: "400 MB sent"}),
+      "stopped for today (400 MB sent)");
+    assert.strictEqual(uploadText({enabled: true, state: "stopped"}), "stopped");
+    assert.strictEqual(uploadText({enabled: true, state: "odd"}), "odd");
+  },
+
+  "storage is low below the floor only, and durations read as before"() {
+    assert.strictEqual(storageLow({free_bytes: 9, min_free_bytes: 10}), true);
+    assert.strictEqual(storageLow({free_bytes: 10, min_free_bytes: 10}), false);
+    assert.strictEqual(storageLow({free_bytes: 5}), false);
+    assert.strictEqual(storageLow(undefined), false);
+    assert.deepStrictEqual([duration(42.4), duration(89), duration(90), duration(5399), duration(5400), duration(36000)],
+      ["42 s", "89 s", "2 min", "90 min", "1.5 h", "10.0 h"]);
+    assert.deepStrictEqual([age(0), age(4.6), age(5.4), age(9.96), age(10), age(100)],
+      ["0.0 s", "4.6 s", "5.4 s", "10.0 s", "10 s", "2 min"]);
+    // Reasons that already end with a full stop do not get a second one.
+    assert.strictEqual(reasonsText(["A", "B ends here.", "C..."]), "A. B ends here. C.");
+    assert.strictEqual(reasonsText(["only"]), "only.");
+  },
+
   "notices a clock jump"() {
     assert.strictEqual(clockJumped(null, 1e6, 500), false);
     assert.strictEqual(clockJumped({wall: 1e6, mono: 500}, 1e6 + 10000, 10500), false);
@@ -208,6 +440,7 @@ const checks = {
 };
 
 let failed = 0;
+const total = Object.keys(checks).length;
 for (const [name, check] of Object.entries(checks)) {
   try {
     check();
@@ -217,4 +450,5 @@ for (const [name, check] of Object.entries(checks)) {
     console.log("FAIL", name, error.message);
   }
 }
+console.log(`passed ${total - failed} of ${total} checks`);
 process.exit(failed ? 1 : 0);

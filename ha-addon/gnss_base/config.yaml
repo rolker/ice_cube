@@ -1,5 +1,5 @@
 name: GNSS Base Station
-version: "0.5.1"
+version: "0.5.2"
 slug: gnss_base
 description: Logs a GNSS base receiver, shows its status and a live measured position, configures it as a base with confirmed commands, and serves its corrections.
 arch:
