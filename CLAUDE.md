@@ -17,6 +17,8 @@ Drive. Those go in `private/` (start with `private/drive-index.md`), which is gi
   survey wander, u-blox log quality). See `analysis/README.md`. Site-specific values for
   these scripts (the yard's location, data paths) live in the gitignored
   `analysis/site_config.json`; `analysis/site_config.example.json` is the template.
+- `icecube/`: the surface and ice-growth estimator, `python -m icecube run <config.toml>`;
+  template `icecube.example.toml`, tests in `icecube/tests/`. See `docs/howto/ice-cube.md`.
 - `logger/`: Ice Cube Logger, an Android app that logs the rover over USB with its own
   NTRIP client and phone IMU data. See `logger/README.md`.
 - `ha-addon/gnss_base/`: the Home Assistant app that runs the base receiver.
