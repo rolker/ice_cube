@@ -545,14 +545,12 @@ class Helpers(unittest.TestCase):
         self.assertEqual(read_proc_stats(42, str(folder)), (4.0, 13312 * 1024))
         self.assertIsNone(read_proc_stats(43, str(folder)))
 
-    def test_output_lines_know_rtklib_ex_and_scrub(self):
-        from gnss_base.hub import Secret
-        lines = OutputLines(secret=Secret("hunter2"))
+    def test_output_lines_know_rtklib_ex(self):
+        lines = OutputLines()
         lines.feed(b"\x1b[1m** rtkrcv ver.EX 2.5.1 console (h:help) **\x1b[0m\r\n"
-                   b"path=u:hunter2@h\r\n")
+                   b"stream 2 path=127.0.0.1:40003\r\n")
         self.assertEqual(lines.version, "EX 2.5.1")
-        self.assertEqual(list(lines.lines)[-1], "path=u:***@h")
-        self.assertNotIn("hunter2", repr(lines.snapshot()))
+        self.assertEqual(list(lines.lines)[-1], "stream 2 path=127.0.0.1:40003")
 
     def test_output_lines_strip_escapes_and_find_the_version(self):
         lines = OutputLines(size=3)

@@ -16,6 +16,7 @@ from aiohttp import web
 from . import __version__, profile
 from .caster import Caster, CasterSettings
 from .control import Controller
+from .datums import FRAMES
 from .frames import FrameParser
 from .hub import ConnectionLog, RtcmHub, Secret
 from .measured import DEFAULT_BINARY, MeasuredSettings, RtkrcvRunner, SolutionLog
@@ -40,7 +41,8 @@ DEFAULTS = {"device": "", "device_match": "USB_Dual_Serial", "baud": 460800,
             "measured_enabled": True, "measured_elevation_mask": 15, "measured_snr_mask": 35,
             "reference_enabled": False, "reference_host": "", "reference_port": 2101,
             "reference_mountpoint": "", "reference_user": "", "reference_password": "",
-            "reference_expected_enu": "0 0 0", "reference_reset_utc": "00:00"}
+            "reference_frame": "", "reference_reset_utc": "00:00", "base_frame": "ITRF2020",
+            "base_epoch": ""}
 # Options that a command-line argument can override. Passwords are options only: on a
 # command line they would show in process lists.
 OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster_enabled",
@@ -48,7 +50,7 @@ OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster
              "upload_mountpoint", "upload_style", "measured_enabled",
              "measured_elevation_mask", "measured_snr_mask", "reference_enabled",
              "reference_host", "reference_port", "reference_mountpoint", "reference_user",
-             "reference_expected_enu", "reference_reset_utc")
+             "reference_frame", "reference_reset_utc", "base_frame", "base_epoch")
 
 
 def load_settings(argv=None):
@@ -95,8 +97,15 @@ def load_settings(argv=None):
     parser.add_argument("--reference-port", dest="reference_port", type=int)
     parser.add_argument("--reference-mountpoint", dest="reference_mountpoint")
     parser.add_argument("--reference-user", dest="reference_user")
-    parser.add_argument("--reference-expected-enu", dest="reference_expected_enu",
-                        help='expected offset "E N U" in metres (solution minus our 1005)')
+    parser.add_argument("--reference-frame", dest="reference_frame",
+                        help="the CORS station's reference frame, for the expected offset: "
+                             f"one of {', '.join(FRAMES)}; empty: unknown, no residual")
+    parser.add_argument("--base-frame", dest="base_frame",
+                        help="the frame of our own base position (default ITRF2020, the "
+                             "frame of a PPP coordinate); empty: not declared")
+    parser.add_argument("--base-epoch", dest="base_epoch",
+                        help="when our base position was observed, YYYY-MM-DD or a decimal "
+                             "year; empty: today's date")
     parser.add_argument("--reference-reset-utc", dest="reference_reset_utc",
                         help="daily restart of the reference rtkrcv, HH:MM UTC; empty: never")
     parser.add_argument("--rtkrcv", default=DEFAULT_BINARY,
@@ -150,7 +159,8 @@ def reference_settings(settings):
         port=settings["reference_port"], mountpoint=text("reference_mountpoint"),
         user=text("reference_user"),
         password=Secret(str(settings.pop("reference_password", "") or "")),
-        expected_enu=text("reference_expected_enu"), reset_utc=text("reference_reset_utc"),
+        frame=text("reference_frame"), base_frame=text("base_frame"),
+        base_epoch=text("base_epoch"), reset_utc=text("reference_reset_utc"),
         binary=str(settings["rtkrcv"]),
         work_dir=Path(settings["data_dir"]).absolute() / "reference",
         elevation_mask=number("measured_elevation_mask"), snr_mask=number("measured_snr_mask"))
@@ -164,7 +174,9 @@ def output_settings(settings):
         port=settings["caster_port"], mountpoint=str(settings["caster_mountpoint"]),
         user=str(settings["caster_user"]),
         password=Secret(str(settings.pop("caster_password", "") or "")),
-        max_clients=settings["caster_max_clients"])
+        max_clients=settings["caster_max_clients"],
+        base_frame=str(settings["base_frame"] if settings["base_frame"] is not None else "").strip(),
+        base_epoch=str(settings["base_epoch"] if settings["base_epoch"] is not None else "").strip())
     upload = UploadSettings(
         host=str(settings["upload_host"]).strip(), port=settings["upload_port"],
         mountpoint=str(settings["upload_mountpoint"]).strip(),
@@ -235,32 +247,61 @@ class ErrorReporter:
         self._last[name] = message
 
 
-async def housekeeping(log, errors, *solution_logs):
+def merge_storage(storage, other, prefix):
+    """Add another RawLog's snapshot (the CORS stream) to the receiver log's for the
+    page: its files, named under `prefix`, join the list; the stored bytes and the
+    compressed bytes per day add up, so "days until limit" counts both; its own numbers
+    (paused, errors, bytes today, dropped) stay on its card."""
+    storage["files"] = (storage["files"]
+                        + [dict(f, file=prefix + f["file"]) for f in other["files"]])
+    storage["stored_bytes"] += other["stored_bytes"]
+    per_day = [x["compressed_bytes_per_day"] for x in (storage, other)
+               if x["compressed_bytes_per_day"]]
+    if per_day:
+        total = sum(per_day)
+        room = max(storage["free_bytes"] - storage["min_free_bytes"], 0)
+        storage["compressed_bytes_per_day"] = total
+        storage["days_until_limit"] = round(room / total, 1)
+    return storage
+
+
+async def _raw_housekeeping(log, loop):
+    """One round for a RawLog: close a finished day, compress finished days."""
+    try:
+        log.tidy()
+        for path in log.pending_days():
+            if not log.start_compress(path):
+                continue
+            LOG.info("compressing %s", path.name)
+            try:
+                await loop.run_in_executor(None, compress, path)
+                log.compress_done(path)
+            except Exception as error:
+                LOG.exception("compressing %s failed", path.name)
+                log.compress_failed(path, error)
+            finally:
+                log.end_compress(path)
+        if not log.has_compress_failures():
+            log.housekeeping_error = ""
+    except Exception as error:
+        LOG.exception("housekeeping failed")
+        log.housekeeping_error = f"housekeeping: {error}"
+
+
+async def housekeeping(log, errors, *solution_logs, raw_logs=()):
+    """`log` is the receiver's raw log (its usage record and errors are the app's);
+    `raw_logs` other RawLogs (the CORS stream) that get the same tidy and compression."""
     loop = asyncio.get_running_loop()
     while True:
-        try:
-            log.tidy()
-            for path in log.pending_days():
-                if not log.start_compress(path):
-                    continue
-                LOG.info("compressing %s", path.name)
-                try:
-                    await loop.run_in_executor(None, compress, path)
-                    log.compress_done(path)
-                except Exception as error:
-                    LOG.exception("compressing %s failed", path.name)
-                    log.compress_failed(path, error)
-                finally:
-                    log.end_compress(path)
+        await _raw_housekeeping(log, loop)
+        with contextlib.suppress(Exception):
             log.record_usage()
-            if not log.has_compress_failures():
-                log.housekeeping_error = ""
-        except Exception as error:
-            LOG.exception("housekeeping failed")
-            log.housekeeping_error = f"housekeeping: {error}"
         errors.check("logging", log.write_error)
         errors.check("disk", log.disk_error)
         errors.check("housekeeping", log.housekeeping_error)
+        for raw_log in raw_logs:
+            await _raw_housekeeping(raw_log, loop)
+            errors.check("CORS raw log", raw_log.write_error or raw_log.housekeeping_error)
         for solution_log in solution_logs:
             try:
                 await solution_log.housekeep()
@@ -355,6 +396,12 @@ async def run(settings):
                                 lambda: reference.header() if reference is not None else "",
                                 room=lambda: not log.paused, suffix=".llh")
     reference_log.start()
+    # The CORS stream as received, `reference/raw/YYYY-MM-DD.rtcm3`, with the raw log's
+    # rotation, compression and free-space floor; only when the check can run.
+    cors_log = None
+    if reference_options.enabled and not reference_options.problem():
+        cors_log = RawLog(Path(settings["log_dir"]) / "reference", settings["min_free_gb"],
+                          suffix=".rtcm3")
     try:
         caster_settings, upload_settings = output_settings(settings)
         caster = Caster(caster_settings, hub, events, __version__)
@@ -372,7 +419,8 @@ async def run(settings):
         # the status (read only) as the reference for its offsets.
         reference = ReferenceCheck(reference_options, hub, status.current_base,
                                    on_solution=lambda solution, line: reference_log.write(line),
-                                   version=__version__)
+                                   version=__version__,
+                                   on_raw=None if cors_log is None else cors_log.write)
         # The no-measured-GGA texts mention rtkrcv only while it can give a solution.
         status.measured_expected = lambda: rtkrcv.state() not in ("off", "not available")
         queue = ChunkQueue(loop, pipeline.on_data)
@@ -398,6 +446,8 @@ async def run(settings):
         def snapshot():
             result = status.snapshot()
             result["storage"] = log.snapshot()
+            if cors_log is not None:
+                merge_storage(result["storage"], cors_log.snapshot(), "reference/raw/")
             result["parser"] = {"unknown_bytes": pipeline.parser.unknown_bytes,
                                 "bad_frames": pipeline.parser.bad_frames,
                                 "queue_dropped_bytes": queue.dropped_bytes}
@@ -406,7 +456,8 @@ async def run(settings):
             result["upload"] = uploader.snapshot()
             result["measured"] = dict(rtkrcv.snapshot(), **status.measured_summary(),
                                       log=solutions.snapshot())
-            result["reference"] = dict(reference.snapshot(), log=reference_log.snapshot())
+            result["reference"] = dict(reference.snapshot(), log=reference_log.snapshot(),
+                                       raw_log=None if cors_log is None else cors_log.snapshot())
             return result
 
         allowed = () if settings["allow_any_client"] else (INGRESS_PROXY,)
@@ -423,18 +474,21 @@ async def run(settings):
         stop = asyncio.Event()
         for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             loop.add_signal_handler(name, stop.set)
-        keeper = asyncio.create_task(housekeeping(log, errors, solutions, reference_log))
+        keeper = asyncio.create_task(housekeeping(
+            log, errors, solutions, reference_log,
+            raw_logs=[x for x in (cors_log,) if x is not None]))
         await stop.wait()
     finally:
         await shutdown(SHUTDOWN_BUDGET_S, keeper=keeper, rtkrcv=rtkrcv, solutions=solutions,
                        outputs=[x for x in (uploader, caster) if x is not None],
                        events=events, control=control, reader=reader, queue=queue,
-                       log=log, runner=runner, reference=reference, reference_log=reference_log)
+                       log=log, runner=runner, reference=reference, reference_log=reference_log,
+                       cors_log=cors_log)
         executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, reader,
-                   queue, log, runner, reference=None, reference_log=None):
+                   queue, log, runner, reference=None, reference_log=None, cors_log=None):
     """Stop everything within `budget` seconds from now (Home Assistant's 10 s stop
     timeout), independent parts at once, each bounded by the time left:
     - both rtkrcv (SIGTERM so each saves its ephemeris cache, SIGKILL after 3 s), then
@@ -454,6 +508,8 @@ async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, 
 
     async def measured_part():
         await asyncio.gather(*(x.stop() for x in (rtkrcv, reference) if x is not None))
+        if cors_log is not None:
+            cors_log.close()   # after the client stopped: its last bytes are in
         logs = [x for x in (solutions, reference_log) if x is not None]
         await asyncio.gather(*(x.stop(timeout=left(0.2)) for x in logs))
 

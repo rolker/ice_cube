@@ -4,7 +4,10 @@ Plain asyncio TCP rather than aiohttp: NTRIP v1 answers `ICY 200 OK`, which is n
 and its clients send loose requests. Requests handled:
 
 - `GET /` or an unknown mountpoint: the sourcetable, one STR line for our mountpoint, with
-  latitude and longitude 0.00 (the stream's 1005 carries the real position).
+  latitude and longitude 0.00 (the stream's 1005 carries the real position) and, in the
+  misc field, the frame our position is in and the epoch ("ITRF2020 epoch 2026.85"):
+  NTRIP's STR record has no datum field, and RTCM's 1005 field for it (DF021) is
+  reserved, so the sourcetable is where a rover's owner can read it.
 - `GET /<mountpoint>`: `ICY 200 OK`, then RTCM from the output filter. With a password
   set, the Basic login must match (401 otherwise); too many clients get 503.
 
@@ -38,6 +41,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
+from .datums import decimal_year, parse_epoch, parse_frame
 from .hub import OutputFilter, Secret
 
 LOG = logging.getLogger("gnss_base")
@@ -70,6 +74,8 @@ class CasterSettings:
     user: str = ""
     password: Secret = field(default_factory=lambda: Secret(""))
     max_clients: int = 16
+    base_frame: str = "ITRF2020"    # the frame of our 1005 position, for the sourcetable
+    base_epoch: str = ""            # its observation epoch; empty: today's date
 
     @property
     def login(self):
@@ -83,6 +89,23 @@ class CasterSettings:
         if not isinstance(self.max_clients, int) or not 1 <= self.max_clients <= 16:
             return "caster_max_clients must be 1 to 16."
         return ""
+
+    def frame_problem(self):
+        """Why the frame cannot be announced, or "". Not a reason to refuse rovers:
+        the caster runs, with an empty misc field and this text on its card."""
+        try:
+            parse_frame(self.base_frame, "base_frame")
+            parse_epoch(self.base_epoch, "base_epoch")
+        except ValueError as error:
+            return str(error)
+        return ""
+
+    def frame(self):
+        """The declared frame of our position (canonical), or "" when not declared or
+        when the frame options are wrong."""
+        if self.frame_problem():
+            return ""
+        return parse_frame(self.base_frame, "base_frame")
 
 
 def _text(value, limit=100):
@@ -392,12 +415,13 @@ class Client:
 
 class Caster:
     def __init__(self, settings, hub, events, version="", clock=time.monotonic,
-                 check_s=CHECK_S):
+                 check_s=CHECK_S, wall=time.time):
         self.settings = settings
         self.hub = hub
         self.events = events
         self.version = version
         self._clock = clock
+        self._wall = wall
         self._check_s = check_s
         self.clients = []
         self.server = None
@@ -419,6 +443,8 @@ class Caster:
             if self.error:
                 LOG.error("caster: %s", self.error)
             return False
+        if self.settings.frame_problem():
+            LOG.error("caster: %s; the sourcetable announces no frame", self.settings.frame_problem())
         try:
             self.server = await asyncio.start_server(
                 self._handle, self.settings.host, self.settings.port, limit=HEADER_LIMIT)
@@ -626,6 +652,19 @@ class Caster:
             self._prune(now)
         return reason
 
+    def frame_text(self):
+        """What the sourcetable's misc field says about our position's frame: the
+        declared frame and its epoch (`base_epoch`, or today's date, which is said), or
+        "" when `base_frame` is empty or wrong."""
+        settings = self.settings
+        frame = settings.frame() if not self.error else ""
+        if not frame:
+            return ""
+        epoch = parse_epoch(settings.base_epoch, "base_epoch")
+        if epoch is None:   # no ';': it is the STR record's field separator
+            return f"{frame} epoch {decimal_year(self._wall()):.2f} (today, base_epoch not set)"
+        return f"{frame} epoch {epoch:.2f}"
+
     def sourcetable(self):
         settings = self.settings
         types = sorted(self.hub.frames)
@@ -633,8 +672,11 @@ class Caster:
         systems = "+".join(dict.fromkeys(SYSTEMS[n // 10] for n in types
                                          if n // 10 in SYSTEMS and 1 <= n % 10 <= 7))
         mp = settings.mountpoint
+        # STR fields: mountpoint, identifier, format, format details, carrier, nav
+        # systems, network, country, latitude, longitude, nmea, solution, generator,
+        # compression, authentication, fee, bitrate, misc.
         line = (f"STR;{mp};{mp};RTCM 3.3;{details};2;{systems};none;;0.00;0.00;0;0;"
-                f"gnss_base;none;{'B' if settings.login else 'N'};N;0;\r\n")
+                f"gnss_base;none;{'B' if settings.login else 'N'};N;0;{self.frame_text()}\r\n")
         body = (line + "ENDSOURCETABLE\r\n").encode("ascii")
         head = (f"SOURCETABLE 200 OK\r\nServer: NTRIP gnss_base/{self.version}\r\n"
                 f"Content-Type: text/plain\r\nContent-Length: {len(body)}\r\n\r\n")
@@ -648,6 +690,8 @@ class Caster:
         return {"enabled": settings.enabled, "listening": self.server is not None,
                 "error": self.error, "port": settings.port, "mountpoint": settings.mountpoint,
                 "login": settings.login, "max_clients": settings.max_clients,
+                "frame": self.frame_text() or None,
+                "frame_error": settings.frame_problem() or None,
                 "connections": self.connections, "refused": self.refused,
                 "auth_failures": self.auth_failures, "sourcetables": self.sourcetables,
                 "clients": [client.snapshot(now) for client in self.clients]}

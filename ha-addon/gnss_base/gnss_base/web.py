@@ -18,6 +18,9 @@ from .control import RequestError
 
 STATIC = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
+# On the API, and on the page and its scripts too: a browser that kept an old copy of
+# the page after an update showed the old cards. The script tags also carry the
+# version (`track.js?v=...`), so a cached page can never load a stale script.
 NO_STORE = {"Cache-Control": "no-store"}
 # Strict JSON: a NaN or infinity is an error here, never sent to the page.
 STRICT_JSON = functools.partial(json.dumps, allow_nan=False)
@@ -45,13 +48,13 @@ def create_app(get_status, allowed_clients=(INGRESS_PROXY,), get_track=None, con
         return web.json_response(data, status=status, headers=NO_STORE, dumps=STRICT_JSON)
 
     async def index(_request):
-        return web.FileResponse(STATIC / "index.html")
+        return web.FileResponse(STATIC / "index.html", headers=NO_STORE)
 
     async def track_script(_request):
-        return web.FileResponse(STATIC / "track.js")
+        return web.FileResponse(STATIC / "track.js", headers=NO_STORE)
 
     async def page_script(_request):
-        return web.FileResponse(STATIC / "control.js")
+        return web.FileResponse(STATIC / "control.js", headers=NO_STORE)
 
     async def status(_request):
         return reply(get_status())

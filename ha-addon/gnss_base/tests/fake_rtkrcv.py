@@ -2,7 +2,8 @@
 """A stand-in for RTKLIB's rtkrcv, for the runner tests. Same command line:
 `fake_rtkrcv.py -s -o CONF -d TTY`. Like rtkrcv 2.4.3 b34 it refuses to run unless TTY is
 a terminal, prints a console banner there, reads its streams from CONF (inpstr1-path,
-outstr1-path, both tcpcli), and writes `rtkrcv.nav` in its working folder on SIGTERM.
+inpstr2-path if tcpcli, outstr1-path, all tcpcli), and writes `rtkrcv.nav` in its working
+folder on SIGTERM.
 It sends a `%` header and then made-up llh solution lines near 0/0. With
 FAKE_RTKRCV_VERSION set it behaves like RTKLIB-EX instead: `--version` prints
 `rtkrcv RTKLIB <that>` and `-nc -o CONF` runs without a console; without it `--version`
@@ -16,15 +17,10 @@ Environment:
   FAKE_RTKRCV_PERIOD  seconds between solutions (default 0.1)
   FAKE_RTKRCV_EXIT_AFTER  exit with code 4 after this many seconds (default: never)
   FAKE_RTKRCV_RECORD  a file to append one JSON line to at start (argv, cwd, tty, config)
-                      and one at exit (feed bytes received)
+                      and one at exit (bytes received on each input stream)
   FAKE_RTKRCV_RECORD_SENT  1: also one line per solution sent (its time)
   FAKE_RTKRCV_SOLUTION  "lat lon height quality satellites": the solution line's values
                       (default: near 0/0, 3 m up, quality 5, 20 satellites)
-  FAKE_RTKRCV_TAP_FILE  with logstr2-type=tcpcli in CONF: connect to logstr2-path too and
-                      send this file's bytes there at once (a CORS stream sample), then one
-                      made-up MSM frame per period, unless FAKE_RTKRCV_TAP_SILENT is 1
-  FAKE_RTKRCV_ECHO_PATH  1: print inpstr2-path (which holds a login) to the console and to
-                      stdout, as a careless rtkrcv might; the app must redact it
 """
 import json
 import os
@@ -40,30 +36,8 @@ RECORD = os.environ.get("FAKE_RTKRCV_RECORD")
 RECORD_SENT = os.environ.get("FAKE_RTKRCV_RECORD_SENT") == "1"
 EXIT_AFTER = float(os.environ.get("FAKE_RTKRCV_EXIT_AFTER", "0")) or None
 SOLUTION = os.environ.get("FAKE_RTKRCV_SOLUTION", "0.000001 0.000002 3.0 5 20").split()
-TAP_FILE = os.environ.get("FAKE_RTKRCV_TAP_FILE")
-TAP_SILENT = os.environ.get("FAKE_RTKRCV_TAP_SILENT") == "1"
-ECHO_PATH = os.environ.get("FAKE_RTKRCV_ECHO_PATH") == "1"
 VERSION = os.environ.get("FAKE_RTKRCV_VERSION", "")
-received = 0
-# A made-up MSM4 frame (1074, empty), CRC-24Q computed below.
-_POLY = 0x1864CFB
-
-
-def crc24q(data):
-    crc = 0
-    for byte in data:
-        crc ^= byte << 16
-        for _ in range(8):
-            crc <<= 1
-            if crc & 0x1000000:
-                crc ^= _POLY
-    return crc & 0xFFFFFF
-
-
-def msm_frame(number=1074, size=40):
-    payload = bytes([number >> 4, (number & 15) << 4]) + bytes(size - 2)
-    head = bytes([0xD3, size >> 8, size & 255]) + payload
-    return head + crc24q(head).to_bytes(3, "big")
+received = {1: 0, 2: 0}     # bytes read on inpstr1 and inpstr2
 
 
 def record(**fields):
@@ -90,8 +64,7 @@ def connect(path):
     sys.exit("could not connect to " + path)
 
 
-def read_feed(sock):
-    global received
+def read_feed(sock, stream):
     while True:
         try:
             data = sock.recv(65536)
@@ -99,13 +72,13 @@ def read_feed(sock):
             return
         if not data:
             return
-        received += len(data)
+        received[stream] += len(data)
 
 
 def stop(*_):
     with open("rtkrcv.nav", "w") as stream:
         stream.write("fake navigation data\n")
-    record(event="exit", received=received)
+    record(event="exit", received=received[1], received2=received[2])
     os._exit(0)
 
 
@@ -141,11 +114,6 @@ def main():
            stdin_tty=os.isatty(0), config=conf)
     if fd is not None:
         os.write(fd, b"\r\n\x1b[1m** rtkrcv ver.2.4.3 b34 console (h:help) **\x1b[0m\r\nrtkrcv> ")
-    if ECHO_PATH:
-        path = option(conf, "inpstr2-path") or ""
-        if fd is not None:
-            os.write(fd, f"stream 2 path={path}\r\n".encode())
-        print(f"ntrip: {path}", flush=True)
     if not os.path.exists("rtkrcv.nav"):
         print("no navigation data: rtkrcv.nav", flush=True)
     signal.signal(signal.SIGTERM, signal.SIG_IGN if MODE == "ignore-term" else stop)
@@ -153,22 +121,19 @@ def main():
         print("fake rtkrcv: exiting early", flush=True)
         sys.exit(3)
     feed = connect(option(conf, "inpstr1-path"))
-    threading.Thread(target=read_feed, args=(feed,), daemon=True).start()
+    threading.Thread(target=read_feed, args=(feed, 1), daemon=True).start()
+    if option(conf, "inpstr2-type") == "tcpcli":
+        second = connect(option(conf, "inpstr2-path"))
+        threading.Thread(target=read_feed, args=(second, 2), daemon=True).start()
     out = connect(option(conf, "outstr1-path"))
     out.sendall(b"% (lat/lon/height=WGS84/ellipsoidal,Q=1:fix,5:single,ns=# of satellites)\n")
-    tap = None
-    if option(conf, "logstr2-type") == "tcpcli":
-        tap = connect(option(conf, "logstr2-path"))
-        if TAP_FILE:
-            with open(TAP_FILE, "rb") as stream:
-                tap.sendall(stream.read())
     lat, lon, height, quality, satellites = SOLUTION
     second = 0
     started = time.monotonic()
     while True:
         time.sleep(PERIOD)
         if EXIT_AFTER is not None and time.monotonic() - started >= EXIT_AFTER:
-            record(event="exit", received=received)
+            record(event="exit", received=received[1], received2=received[2])
             os._exit(4)
         if MODE == "hang":
             continue
@@ -177,11 +142,6 @@ def main():
         line = (f"2026/01/01 {hms}.000   {float(lat):.9f}    {float(lon):.9f}   "
                 f"{float(height):.4f}   {int(quality)}  {int(satellites)}"
                 f"   1.2000   0.9000   2.5000   0.1000   0.2000   0.3000   1.00    3.5\n")
-        if tap is not None and not TAP_SILENT:
-            try:
-                tap.sendall(msm_frame())
-            except OSError:
-                tap = None
         if MODE == "garbage":
             line = "\x00junk \xff line\n" + "z" * 900 + "\n" + line
         try:

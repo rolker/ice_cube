@@ -6,21 +6,23 @@
 <title>GNSS Base</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <script src="vendor/leaflet/leaflet.js"></script>
-<script src="track.js"></script>
+<script src="track.js?v=0.6.2"></script>
 <style>
 :root{--bg:#f6f7f8;--card:#fff;--text:#1c2024;--muted:#60676f;--line:#dfe3e7;--good:#16794a;--warn:#a15c00;--bad:#b3261e;--accent:#2a78d6;--age-old:#b7d3f6;--age-new:#0d366b}
 @media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2125;--text:#eceff1;--muted:#9aa3ab;--line:#30363c;--good:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--accent:#6da7ec;--age-old:#184f95;--age-new:#cde2fb}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}
-main{max-width:980px;margin:auto;padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+main{max-width:1700px;margin:auto;padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
 header{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 h1{font-size:20px;margin:0}
 h2{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
 .wide{grid-column:1/-1;overflow-x:auto}
 .big{font-size:24px;font-weight:600}
-dl{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;margin:8px 0 0}
-dt{color:var(--muted)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+dl{display:grid;grid-template-columns:minmax(auto,45%) 1fr;gap:3px 14px;margin:8px 0 0}
+dt{color:var(--muted);min-width:0}dd{margin:0;min-width:0;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+#refd{grid-template-columns:minmax(auto,22%) 1fr minmax(auto,22%) 1fr;column-gap:24px}
+@media (max-width:1100px){#refd{grid-template-columns:minmax(auto,45%) 1fr}}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 th{color:var(--muted);font-weight:500;text-align:right}th:first-child,td:first-child{text-align:left}
 th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
@@ -74,8 +76,8 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
 <p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
 <pre id="measout" class="note" hidden></pre></section>
-<section><h2>Reference check <span id="refmp"></span></h2><div id="ref" class="big">—</div><dl id="refd"></dl>
-<p id="refnote" class="note">RTK against a CORS station, static: the session mean converges over minutes to hours. Offsets are the solution minus our RTCM 1005 position (the CORS frame minus ours); the residual is the mean minus the expected offset: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p>
+<section class="wide"><h2>Reference check <span id="refmp"></span></h2><div id="ref" class="big">—</div><dl id="refd"></dl>
+<p id="refnote" class="note">The app logs in to the caster itself and shows what it answers; rtkrcv reads the station's stream from the app. RTK against a CORS station, static: the session mean converges over minutes to hours. Offsets are the solution minus our RTCM 1005 position (the CORS frame minus ours); the expected offset is computed from the declared frames (reference_frame, base_frame) and today's epoch, never guessed from the stream; the residual is the mean minus the expected offset: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. With no station frame declared there is no residual and no colour from it. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p>
 <pre id="refout" class="note" hidden></pre></section>
 <section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
 <h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
@@ -323,7 +325,7 @@ function renderOutputs(s){
   $("caster").textContent=!c.enabled?"Off":c.error?"Not running":clients.length+(clients.length===1?" client":" clients");
   $("caster").className="big "+(c.error?"bad":c.enabled&&(age==null||age>10)?"warn":"");
   dl("casterd",[["Status",c.error||(!c.enabled?"Off (caster_enabled)":c.listening?"Listening":"Not listening")],["Port in the container",c.port],
-    ["Mountpoint",c.mountpoint],["Login",c.login?"user and password":"none: any login works"],
+    ["Mountpoint",c.mountpoint],["Login",c.login?"user and password":"none: any login works"],["Frame (sourcetable)",c.frame_error?`not announced: ${c.frame_error}`:c.frame||(c.enabled?"not declared: set base_frame":null)],
     ["Last RTCM",age==null?"none yet":age>10?`${age} s ago: no corrections now`:`${age} s ago`],
     ["Connections since start",c.connections],["Refused, failed logins",`${c.refused??0}, ${c.auth_failures??0}`],["Connection log",logNote(c)]]);
   // "Sent to us" is amber when a client sends anything but GGA (the first lines of it
@@ -407,7 +409,8 @@ function stationLost(){
 }
 // The reference check card: a second rtkrcv (RTK static against a CORS station). No
 // password reaches the page: the app sends only whether one is set.
-const REF_STATES={off:"Off","not configured":"Not configured","not available":"Not available",idle:"Idle: no MSM from the receiver yet",restarting:"Restarting",starting:"Starting",connecting:"Connecting to the CORS","no corrections":"No corrections",stale:"No recent solution",fixed:"Fixed",float:"Float",single:"Single: corrections not used yet"};
+const REF_STATES={off:"Off","not configured":"Not configured","not available":"Not available",idle:"Idle: no MSM from the receiver yet",restarting:"Restarting",starting:"Starting",connecting:"Connecting to the caster",sourcetable:"Reading the caster's sourcetable","login refused":"Login refused by the caster","mountpoint not found":"Mountpoint not found","unsuitable mountpoint":"Mountpoint not usable","no data":"No data from the caster",backoff:"Connection failed","client stopped":"NTRIP client stopped","no corrections":"No corrections",stale:"No recent solution",fixed:"Fixed",float:"Float",single:"Single: corrections not used yet"};
+const CLIENT_WAITING=["login refused","mountpoint not found","unsuitable mountpoint","no data","backoff"];
 const enu=v=>v?`E ${signed3(v[0])}, N ${signed3(v[1])}, U ${signed3(v[2])}`:null;
 const signed3=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v).toFixed(3)+" m";
 const enuStd=(m,s)=>m&&s?`E ${signed3(m[0])} ±${s[0].toFixed(3)}, N ${signed3(m[1])} ±${s[1].toFixed(3)}, U ${signed3(m[2])} ±${s[2].toFixed(3)}`:null;
@@ -416,23 +419,33 @@ function renderReference(r){
   const state=r.state||"—",live=!["off","not configured","not available"].includes(state),c=r.corrections||{},cors=c.position,d=c.descriptors,sol=r.solution,ses=r.session||{},rec=r.recent,prev=r.previous_session;
   // Until this session has a fix, the previous session's verdict colours the card
   // (a daily reset is not an outage), but only while solutions keep coming.
-  const colour=!live?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
+  const clientBusy=["connecting","sourcetable",...CLIENT_WAITING,"client stopped"].includes(state);
+  const colour=!live||clientBusy?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
   $("refmp").textContent=r.mountpoint?`(${r.mountpoint})`:"";
   const verdictText=r.verdict?{good:"Residual OK",warn:"Residual amber",bad:"Residual red"}[r.verdict]:null;
-  $("ref").textContent=(REF_STATES[state]||state)+(state==="restarting"&&r.retry_in_s!=null?` in ${duration(r.retry_in_s)}`:"")+(live&&verdictText?` · ${verdictText}`:!r.verdict&&colour?" · previous session's residual":"");
+  const cl=r.client||{},clientWaiting=CLIENT_WAITING.includes(state),retry=clientWaiting&&cl.retry_in_s!=null?` · retry in ${duration(cl.retry_in_s)}`:"";
+  // While the caster connection is not up, the headline is the client's alone: no
+  // residual verdict (it may be hours old) and no colour from it.
+  $("ref").textContent=(REF_STATES[state]||state)+(state==="restarting"&&r.retry_in_s!=null?` in ${duration(r.retry_in_s)}`:"")+retry+(live&&!clientBusy&&verdictText?` · ${verdictText}`:!r.verdict&&colour?" · previous session's residual":"");
   // Colour: the residual's verdict once there is one (red also after 30 min without a
-  // fix); otherwise amber while waiting for corrections or a fix, red when not available.
-  $("ref").className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:state==="not available"?"bad":["connecting","no corrections","stale","single","restarting"].includes(state)?"warn":"");
+  // fix); otherwise red when the caster refused or nothing can run, amber while
+  // connecting or waiting for corrections or a fix.
+  $("ref").className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:["not available","login refused","mountpoint not found","unsuitable mountpoint","client stopped"].includes(state)?"bad":["connecting","sourcetable","no data","backoff","no corrections","stale","single","restarting"].includes(state)?"warn":"");
   const eph=r.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
-  const why=(state==="off"?"Off (reference_enabled is false)":null)||r.reason||(state==="connecting"?"No data from the CORS yet: check reference_host, reference_mountpoint and the login (rtkrcv retries on its own)":null)||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
+  const why=(state==="off"?"Off (reference_enabled is false)":null)||r.reason||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
+  const st=cl.sourcetable,stText=st==null?null:!Object.keys(st).length?(cl.listed===false?`not listed in the caster's sourcetable of ${cl.sourcetable_size} mountpoints (the caster's answer to the stream request decides)`:"the caster gave no sourcetable at /"):`${st.format||"?"} ${st.format_details||""}, ${st.nav_system||"?"}, nmea ${st.nmea||"?"}, solution ${st.solution||"?"}${st.identifier?`, "${st.identifier}"`:""}${st.misc?` (${st.misc})`:""}`;
+  const connText=cl.connected_s==null?(cl.last_reply?`not connected (last reply: ${cl.last_reply})`:null):`${duration(cl.connected_s)}, ${cl.bytes_per_s==null?"?":size(cl.bytes_per_s)+"/s"}, ${size(cl.bytes)} this connection, last byte ${cl.last_byte_age_s} s ago`;
   const dropped=Object.entries((r.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
   const log=r.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
   const counts=ses.counts||{},share=ses.fixed_share==null?null:`${(ses.fixed_share*100).toFixed(0)} % of ${ses.epochs} epochs (${counts.fixed||0} fixed, ${counts.float||0} float, ${counts.single||0} single)`;
   dl("refd",[["Why",why],["CORS",r.host?`${r.host}:${r.port}, login ${r.user_set?"user set":"no user"}, password ${r.password_set?"set":"not set"}`:null],
+    ["Caster connection",live?connText||"none yet":null],
+    ["Connections, attempts today",live?`${cl.connections??0}, ${cl.attempts_today??0}`:null],
+    ["Sourcetable entry",live?stText:null],
     ["Station",cors?`${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
     ["Baseline",r.baseline_km==null?null:r.baseline_km.toFixed(2)+" km"],
     ["CORS antenna height (1006)",cors&&cors.antenna_height_m!=null?cors.antenna_height_m.toFixed(4)+" m"+(cors.antenna_height_m?" (not applied; see the README)":""):null],
-    ["Corrections",c.age_s==null?(live?"none yet":null):`${c.age_s} s ago (${c.frames} frames)`],
+    ["Corrections",c.age_s==null?(live?"none yet":null):`${c.age_s} s ago (${c.frames} frames, ${size(c.bytes)})`],
     ["Last solution",sol?`${sol.age_s} s ago, ${sol.satellites} satellites, quality ${sol.quality} (${{1:"fixed",2:"float",5:"single"}[sol.quality]||"other"}), ratio ${sol.ratio}`:null],
     ["Differential age",sol&&sol.differential_age_s!=null?`${sol.differential_age_s.toFixed(1)} s`:null],
     ["Current offset",sol?enu(sol.offset_enu):null],
@@ -440,14 +453,17 @@ function renderReference(r){
     ["Session mean ± std (fixed)",enuStd(ses.mean_enu,ses.std_enu)],
     ["Session",ses.started_utc?`since ${ses.started_utc.replace("T"," ").replace("+00:00"," UTC")}${ses.last_fix_age_s!=null?`, last fix ${duration(ses.last_fix_age_s)} ago`:""}`:null],
     ["Fixed share",share],
-    ["Expected offset",live?enu(r.expected_enu):null],
+    ["Station frame",!live?null:r.station_frame?`${r.station_frame} (from ${r.station_frame_source})`:"unknown: set reference_frame"+(r.station_df021!=null?` (the stream's DF021 is ${r.station_df021}: reserved by RTCM, not read as a frame)`:"")],
+    ["Our frame",!live?null:r.base_frame?`${r.base_frame} (base_frame), epoch ${r.epoch.toFixed(2)} (${r.epoch_source==="base_epoch"?"base_epoch":"today's date; set base_epoch"})`:"unknown: set base_frame"],
+    ["Expected offset",!live?null:r.expected_enu?`${enu(r.expected_enu)} (computed, station frame minus ours, epoch ${r.epoch.toFixed(2)})`:`none: ${r.no_expected||"not computed"}`],
     ["Residual (mean − expected)",!live?null:r.residual_enu?`${enu(r.residual_enu)}: ${r.verdict_reason}`:r.verdict_reason||null],
-    ["Previous session",prev?`${enu(prev.residual_enu)} residual (${prev.verdict_reason}), ${prev.fixed} fixed epochs, ended ${prev.ended_utc.replace("T"," ").replace("+00:00"," UTC")} (${prev.ended_because})`:null],
+    ["Previous session",prev?`${prev.residual_enu?enu(prev.residual_enu)+" residual":"no residual"} (${prev.verdict_reason}), ${prev.fixed} fixed epochs, ended ${prev.ended_utc.replace("T"," ").replace("+00:00"," UTC")} (${prev.ended_because})`:null],
     ["Next daily reset",r.next_reset_s==null?(live?"never (reference_reset_utc empty)":null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
     ["Base position changed",r.base_changed_age_s==null?null:duration(r.base_changed_age_s)+" ago (session statistics restarted)"],
-    ["Sessions, resets, gap restarts, station changes",live?`${r.sessions}, ${r.resets}, ${r.gap_restarts}, ${r.station_changes}`:null],
+    ["Sessions",live?`${r.sessions} (${r.resets} daily resets, ${r.gap_restarts} gap restarts, ${r.station_changes} station changes)`:null],
+    ["CORS raw log",r.raw_log?`${size(r.raw_log.bytes_today)} today`+(r.raw_log.paused?", paused (disk limit)":"")+(r.raw_log.last_error?`: ${r.raw_log.last_error}`:""):null],
     ["rtkrcv CPU",r.cpu_percent==null?null:r.cpu_percent+" % of one core"],["rtkrcv memory",r.rss_bytes==null?null:size(r.rss_bytes)],
-    ["Restarts today",live?r.restarts_today:null],["Feed frames skipped",(r.feed||{}).frames_skipped||null],["Lines dropped",dropped||null],
+    ["Restarts today",live?r.restarts_today:null],["Feed skipped",((r.feed||{}).frames_skipped||0)+(r.cors_feed||{}).frames_skipped?`${(r.feed||{}).frames_skipped||0} of our frames, ${(r.cors_feed||{}).frames_skipped||0} station chunks`:null],["Lines dropped",dropped||null],
     ["rtkrcv",r.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
   const out=(r.output||[]).join("\n");$("refout").textContent=out;$("refout").hidden=!out;
 }
@@ -525,6 +541,6 @@ drawDrift();
 tick();
 trackTick();
 </script>
-<script src="control.js"></script>
+<script src="control.js?v=0.6.2"></script>
 </body>
 </html>

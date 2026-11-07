@@ -317,6 +317,13 @@ client):
 | User, password | anything, or none, unless you set `caster_password` |
 | NTRIP version | 1 (version 2 is planned) |
 
+- **Sourcetable**: one `STR` record for the mountpoint, with the RTCM message types and
+  rates, the constellations, latitude and longitude `0.00` (the stream's 1005 carries
+  the position) and, in the last field (misc), the frame our position is in and the
+  epoch: `ITRF2020 epoch 2026.85` (from `base_frame` and `base_epoch`, or today's date,
+  which is then said; see Frames under Reference check). NTRIP's record has no datum
+  field, so that is where it goes. A wrong `base_frame` or `base_epoch` leaves the field
+  empty and puts the message on the caster's card; rovers are still served.
 - **Login**: off by default, so any login or none is accepted. Set `caster_password`
   (and optionally `caster_user`) to require one; a wrong or missing login gets
   `401 Unauthorized`, and 5 failures from one address in a minute lock it out for 60 s.
@@ -522,7 +529,9 @@ may be cut short.
 The measured position above is metre level. To check the base antenna's position at
 centimetre level, every day, without walking outside, the app can run a second `rtkrcv`
 in **RTK static mode** with our receiver as the rover and a CORS station's live RTCM
-stream (over NTRIP) as the base. The solution is the position of our antenna in the
+stream (over NTRIP) as the base. The app itself is the NTRIP client: it logs in to the
+caster, shows what the caster answers, and hands the station's stream to rtkrcv over a
+local socket, like our receiver's. The solution is the position of our antenna in the
 station's frame; the card shows it as an offset from our own RTCM 1005 position.
 
 What it answers: is the coordinate we gave the receiver right, and does it stay right;
@@ -540,39 +549,85 @@ password):
   network, ...). Pick a **single-station** mountpoint in RTCM 3 with MSM and 1005/1006,
   within a few tens of kilometres, not a VRS/iMAX/network one (those need a GGA uplink and
   give a synthetic station). The card is empty ("not configured") until host,
-  mountpoint and user are set. One login means one connection: rtkrcv is the only NTRIP
-  client and reconnects on its own (5 s); check your network's terms before leaving a
-  single-station connection up for days.
-- `reference_expected_enu`: the offset you expect, in metres, **east north up**, with the
-  convention **solution minus our 1005** (the station's frame minus ours). For a base in
-  ITRF2020 at the epoch of observation and a network in NAD83(2011) epoch 2010.00, that is
-  the ITRF2020 to NAD83(2011) transformation at your site (NGS HTDP), about
-  `0.56 -1.20 1.18` in New Hampshire (east +0.56, north -1.20, up +1.18). Leave it at
-  `0 0 0` to read the raw offset off the card first and enter it later. The sign matters:
-  the residual is the measured mean minus this value.
+  mountpoint and user are set. One login means one connection: the app opens exactly
+  one at a time and waits between attempts (below); check your network's terms before
+  leaving a single-station connection up for days.
+- `reference_frame`: the reference frame the station's coordinates are in, as its
+  network documents it: `NAD83(2011)` (MaCORS and the state networks of the United
+  States), `ITRF2020`, `ITRF2014` or `ITRF2008`. Empty by default, which means
+  **unknown**: the card then shows the raw offset only, with no expected offset, no
+  residual and no colour from a residual, and says "station frame unknown: set
+  reference_frame". The app never guesses the frame (see Frames below). A name outside
+  that list is refused at startup with a message naming the option.
+- `base_frame`: the frame of our own 1005 position, `ITRF2020` by default (what a
+  CSRS-PPP or OPUS ITRF coordinate is in). It goes into the local caster's sourcetable
+  and the expected offset; empty means not declared (no expected offset either). A name
+  outside the list stops the reference check with a message naming the option; the
+  local caster still runs, announces no frame, and shows the message on its card.
+- `base_epoch`: when that coordinate was observed, as the PPP date `YYYY-MM-DD` or a
+  decimal year (`2026.85`). It is the epoch the sourcetable announces and the expected
+  offset is computed at. Empty (the default) means today's date, which is right only
+  for a coordinate kept current (see Frames below); set it when you apply a coordinate.
+  Anything else (not a date, or a year outside 1990 to 2100) stops the reference check
+  with a message naming the option, like `base_frame`.
 - `reference_reset_utc`: the time of day (UTC, `HH:MM`) when rtkrcv is restarted so
   each day is one static solution; `00:00` by default; empty means never.
 - The masks are the measured position's (`measured_elevation_mask`, `measured_snr_mask`,
   applied to our side; the station's observations are not masked by SNR).
 
+**The NTRIP connection.** The app connects to the caster as soon as the check starts.
+Each attempt: TCP connect (15 s); if the mountpoint has not been checked yet, or the
+last attempt failed, `GET /` for the caster's **sourcetable** first (advisory: a caster that gives none, or
+does not finish it in time, is asked for the stream anyway), to see what the
+mountpoint's `STR` record says (format, constellations, whether it wants a GGA
+position: a network or VRS stream, `nmea` 1 or `solution` 1, or a format that is not
+RTCM 3, is refused, since the app sends no position and a single RTCM 3 station is what
+the check needs; a mountpoint missing from the table is still asked for, because
+casters hide private mountpoints from it, and the caster's answer decides); then
+`GET /<mountpoint>` with the login (HTTP Basic, `Ntrip-Version: Ntrip/2.0`, HTTP/1.0, so a
+version 2 caster answers plainly; chunked replies are decoded anyway). The caster's
+status line decides: `ICY 200 OK` or `HTTP/1.x 200` streams; `401` (or any line saying
+"Unauthorized" or "Bad Password") is **login refused**; `404`, or a sourcetable in
+reply (version 1 casters), is **mountpoint not found** (the reason says whether the
+table listed it); anything else is shown as it came. The stream is read until the caster closes it or no
+byte arrives for 30 s (**no data**). Exactly one connection at a time (a CORS login
+usually allows one, and a second attempt would get the first refused): attempts run one
+after the other, the socket is closed before the next is scheduled, and the waits are
+10 s doubling to 10 min, reset after a connection that streamed for a minute; 5 min
+after a refused login or a missing or unsuitable mountpoint, so a wrong password is not
+hammered against the caster; a minute after an internal error (a bug), which is logged
+and shown as the reason rather than stopping the client. The password is used in the
+`Authorization` header and nowhere else (see Password below).
+
 **The card ("Reference check (<mountpoint>)")**:
 
-- State: *off*, *not configured*, *idle* (no MSM from our receiver yet), *starting*
-  (rtkrcv just started, or no solution yet),
-  *connecting* (no data from the station since the start: check host, mountpoint and
-  login; rtkrcv keeps retrying), *no corrections* (the stream stopped for 30 s),
-  *fixed*, *float*, *single* (corrections arrive but are not used yet, usually the first
-  seconds), *stale* (no solution for 30 s while corrections arrive), *restarting*, *not
-  available*. The station line shows what its RTCM 1033 says (receiver and antenna).
+- State, the client's first: *off*, *not configured*, *connecting to the caster*,
+  *reading the caster's sourcetable*, *login refused by the caster* (the status line and
+  "check reference_user and reference_password"; red), *mountpoint not found* (red),
+  *mountpoint not usable* (red, with the STR field that says why), *no data from the
+  caster* and *connection failed* (amber, with the error and "retry in ..."); then
+  rtkrcv's: *idle* (no MSM from our receiver yet), *starting* (rtkrcv just started, or no
+  solution yet), *no corrections* (the station's stream carries no observations, or
+  stopped for 30 s), *fixed*, *float*, *single* (corrections arrive but are not used
+  yet, usually the first seconds), *stale* (no solution for 30 s while corrections
+  arrive), *restarting*, *not available*. The caster connection line shows how long it
+  has been up, the rate, the bytes and the last byte's age; the sourcetable entry line
+  the mountpoint's STR fields; the station line what its RTCM 1033 says (receiver and
+  antenna).
 - Baseline length, from the station's 1005/1006 and our 1005. Corrections age.
 - The last solution: satellites, quality, AR ratio, differential age; its offset E/N/U
   from our 1005.
 - Mean ± std over the last 10 minutes (of the fixed epochs, or of all epochs while
   nothing is fixed), the **session mean ± std of the fixed epochs**, and the fixed share
   of the session's epochs.
-- The expected offset, and the **residual** (session mean minus expected), with a colour:
+- The station's frame and where it came from ("NAD83(2011) (from reference_frame)", or
+  unknown, with the stream's DF021 value when it is not zero), our frame and the epoch,
+  the **expected offset** ("computed, station frame minus ours, epoch 2026.85") and the
+  **residual** (session mean minus expected), with a colour:
   green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30
-  minutes without a fix (whether or not there was one before). A fixed solution can still be a **false fix**
+  minutes without a fix (whether or not there was one before). Without a declared
+  station frame there is no residual: the card says why, and only the no-fix part of
+  the rule colours it. A fixed solution can still be a **false fix**
   (the spike that led to this design saw one in kinematic mode): trust a residual that
   holds for hours and across days, not one that just appeared. The previous session's
   residual (and why that session ended) stays on the card, and colours it until the new
@@ -591,7 +646,9 @@ re-coordination: the solution is relative to it). A changed 1005 position on our
 (a new fixed position typed in) restarts the session statistics, not rtkrcv. If rtkrcv
 exits or hangs, the same rules as for the measured position apply.
 
-**Settings** (the exact rtkrcv config is `tests/reference_golden.conf`): static, L1+L2,
+**Settings** (the exact rtkrcv config is `tests/reference_golden.conf`; both inputs are
+local sockets the app serves, `inpstr1` our receiver and `inpstr2` the station's stream,
+and the file holds no login): static, L1+L2,
 broadcast ionosphere and Saastamoinen troposphere (`est-stec` never fixed in the
 spike), fix-and-hold with RTKLIB-EX's AR filter and partial ambiguity resolution,
 GLONASS ambiguities left float (the station's receiver is another make: `autocal`
@@ -614,29 +671,103 @@ single solution each epoch (`out-outsingle=on`), so the card says *no correction
 "Corrections" means the station's observations (MSM): a stream that still sends 1005
 and 1033 but no observations counts as none.
 
-**Frames.** The solution is in the station's frame, because rtkrcv takes the base
-coordinate from its 1005/1006. The log header and the card record the station's 1005
-ECEF, our 1005 ECEF and the expected offset, so a later reader knows what each number is
+**Frames: declared, computed, announced; never guessed.** The solution is in the
+station's frame, because rtkrcv takes the base coordinate from its 1005/1006. Our 1005
+is in ours. The offset between the two frames at our antenna is what the raw offset
+should show, and the app computes it (`gnss_base/datums.py`) from three declared
+things: the station's frame (`reference_frame`), our frame (`base_frame`) and the epoch
+(`base_epoch`, the coordinate's observation date, or today's date as a decimal year
+when it is not set, since the app cannot know when the coordinate was observed). The
+epoch matters: an ITRF2020 coordinate moves with the plate, about 2 cm a year in the
+eastern United States, and the computed offset moves with the epoch by the same amount,
+so the two cancel only at the coordinate's own epoch. Set `base_epoch` when you apply a
+coordinate; without it, keep the coordinate current (a yearly PPP, as planned), since a
+coordinate a year old then makes the expected offset about 2 cm wrong, which the
+residual shows.
+The maths: ITRF2020 to ITRF2008 with the IERS parameters (epoch 2015.0), then ITRF2008 to
+NAD83(2011) with the NGS 14 parameters of Pearson & Snay 2013 as HTDP uses them (epoch
+1997.00); ITRF2014 likewise through IERS parameters; ITRF2020 to ITRF2020 is the
+identity. NAD83(2011) coordinates are quoted at epoch 2010.00, and the point's own
+NAD83 velocity (millimetres a year in the stable interior of the continent) is not
+modelled: expect a few centimetres of that in the residual over the years since 2010,
+which HTDP's velocity model would remove. The **sign convention** everywhere is the
+station's frame minus ours, the same as the measured offset (solution minus our 1005):
+in New England, NAD83(2011) minus ITRF2020 is about east +0.56, north -1.19, up +1.18 m.
+
+Why declared and not read from the stream: RTCM 1005/1006 do have a field for it, DF021
+"ITRF realization year" (6 bits, after the station id), but RTCM 10403 says of it "Since
+this field is reserved, all bits should be set to zero for now. However, since the value
+is subject to change in future versions, decoding should not rely on a zero value", and
+no edition defines how a year would be encoded in six bits. Nearly every caster sends 0,
+RTKLIB's encoder writes 0, and the LG290P sends 0 with no command to change it (Quectel
+protocol specification v1.3: `PQTMCFGRTCM` sets the MSM type and ephemeris output,
+`PQTMCFGRSID` the station id; nothing sets DF021). So the app leaves DF021 as the
+receiver sends it, and shows a station's non-zero DF021 on the card as a number, not as
+a frame. The RTCM messages for datum transformations (1021 to 1027) are not sent by
+any network the author has seen either. What is announced instead: the local caster's
+sourcetable `STR` record carries `ITRF2020 epoch 2026.85` in its misc field (with
+`base_epoch` set; without it `ITRF2020 epoch 2026.85 (today, base_epoch not set)`, so a
+reader does not take today's date for the observation epoch).
+RTK2go has no field for it in the stream; its sourcetable entry is set on its
+registration page, so put the frame and epoch in the mountpoint's description (the
+"misc" or "identifier" text) when registering or updating the reservation.
+
+The log header and the card record the station's 1005 ECEF, our 1005 ECEF, both frames,
+the epoch and the computed expected offset, so a later reader knows what each number is
 in. A residual of a few centimetres confirms three things at once: our coordinate, the
 station's, and the transformation; if it is not small the check cannot say which is off.
 
-**Password.** It is written into rtkrcv's config file (`<data dir>/reference/rtkrcv.conf`,
-mode 0600, private to the app) because rtkrcv reads the NTRIP login from there, and
-nowhere else: not the add-on log, `api/status`, the page, the command log or the
-solution log. rtkrcv's output lines are scrubbed before they are kept, an unfinished
-line is never shown (a read can end inside the password), and a line cut for length is
-cut well before its end, so no piece of the password can appear. Characters that
-rtkrcv could not read back (`#`, spaces, non-ASCII) are refused with a message that
-names the option, not the value.
+**The station's stream on disk.** Everything the app's NTRIP client receives from the
+station is written as received to `<log_dir>/reference/raw/YYYY-MM-DD.rtcm3` (RTCM3 without any
+header, about 1 kB/s), with the receiver raw log's rotation at midnight UTC, compression
+of finished days and free-space floor; the files are on the Log files table as
+`reference/raw/...`, and the card has a "CORS raw log" line. Nothing is written while
+the check is off or not configured. The bytes are the NTRIP client's, so a gap in the
+file is a gap in the connection (shown on the card), not an rtkrcv restart.
 
-NTRIP as rtkrcv speaks it is version 1 over plain TCP: the login goes to the caster as
-HTTP Basic in clear, like every NTRIP v1 client, and the corrections come back
-unsigned. Use a login made for this purpose, and treat the check as a comparison with a
-network you trust, not as a defence against someone tampering with that network's stream.
+**Password.** It goes into the `Authorization` header of the stream request and
+nowhere else: not rtkrcv's config (which holds only local ports and masks), the add-on
+log, `api/status`, the page, the command log or the solution log. The caster's replies
+and any error text are scrubbed of it before they are shown. Characters that cannot go
+into a request (spaces, non-ASCII, a `:` in the user name) are refused with a message
+that names the option, not the value.
+
+NTRIP is HTTP over plain TCP: the login goes to the caster as HTTP Basic in clear, like
+every NTRIP client, and the corrections come back unsigned. Use a login made for this
+purpose, and treat the check as a comparison with a network you trust, not as a defence
+against someone tampering with that network's stream.
 
 Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
 
 ## Changes
+
+**0.6.2**
+
+- The app is the NTRIP client for the reference check (`gnss_base/ntripclient.py`):
+  sourcetable check, login, the caster's status line on the card ("Login refused by the
+  caster (HTTP/1.1 401 Unauthorized)", "Mountpoint not found", "No data from the
+  caster", with the retry time), one connection at a time with backoff. rtkrcv reads the
+  station's stream from a local socket (`inpstr2-type=tcpcli`); its config holds no
+  login, the 0600 config file, the console scrubbing and rtkrcv's log-stream tap are
+  gone. 0.6.1 sat in "connecting" with nothing to say when a login was refused.
+- Reference frames are declared, computed and announced, never guessed. `reference_frame`
+  (empty: unknown) replaces `reference_expected_enu`; the expected offset is computed
+  from it, `base_frame` (default `ITRF2020`) and the epoch (`base_epoch`, else today's) with the IERS and NGS
+  transformation parameters (`gnss_base/datums.py`, pure Python). Without a declared
+  station frame the card shows the raw offset only, no residual and no residual colour.
+  The card and the log header say the frames, their sources, the epoch and the computed
+  offset. The local caster's sourcetable carries `ITRF2020 epoch YYYY.YY` in its misc
+  field. DF021 in 1005/1006 is left as the receiver sends it (0): RTCM reserves the field
+  and defines no encoding; a station's non-zero value is shown, not interpreted.
+- The CORS stream is logged as received: `<log_dir>/reference/raw/YYYY-MM-DD.rtcm3`, with
+  the raw log's rotation, compression and disk floor; listed on the Log files table.
+- The page and its scripts are served with `Cache-Control: no-store`, and the script tags
+  carry the version (`track.js?v=0.6.2`), so an update is never shown through a cached
+  page.
+- The page uses the width of a wide screen (cards from 320 px, up to 1700 px in all),
+  values wrap instead of being clipped, the Reference check card spans the page, and
+  its longest labels are shorter.
+- Fixed: a packaging test still expected 0.6.0 and `build.yaml`.
 
 **0.6.1**
 
@@ -842,9 +973,11 @@ start manually for now.
 | reference_port | 2101 | Its port |
 | reference_mountpoint | empty | A single-station RTCM 3 mountpoint (MSM + 1005/1006) |
 | reference_user | empty | Your login |
-| reference_password | empty | Its password (stays in rtkrcv's private config file) |
-| reference_expected_enu | 0 0 0 | Expected offset, metres east north up, solution minus our 1005 (the station's frame minus ours) |
+| reference_password | empty | Its password (used in the request's Authorization header only; not in rtkrcv's config) |
+| reference_frame | empty | The station's frame: NAD83(2011), ITRF2020, ITRF2014 or ITRF2008. Empty: unknown, no expected offset or residual |
 | reference_reset_utc | 00:00 | Daily restart of the reference rtkrcv (UTC, HH:MM); empty: never |
+| base_frame | ITRF2020 | The frame of our own base position: in the sourcetable and the expected offset. Empty: not declared |
+| base_epoch | empty | When the base position was observed (the PPP date), `YYYY-MM-DD` or a decimal year: the epoch announced and used for the expected offset. Empty: today's date |
 
 Command-line arguments override options (`--device`, `--baud`, `--caster-mountpoint`,
 `--upload-host`, ...; `--no-caster`, and `--caster-host`/`--caster-port` for where the
@@ -853,8 +986,8 @@ upload keeps `upload-state.json` (default: the options file's folder, `/data` in
 Assistant) and rtkrcv its working folder `rtkrcv/`. `--no-measured`,
 `--measured-elevation-mask` and `--measured-snr-mask` override the measured options;
 `--reference`/`--no-reference`, `--reference-host`, `--reference-port`,
-`--reference-mountpoint`, `--reference-user`, `--reference-expected-enu` and
-`--reference-reset-utc` the reference ones (the password is an option only); `--rtkrcv
+`--reference-mountpoint`, `--reference-user`, `--reference-frame`, `--base-frame`,
+`--base-epoch` and `--reference-reset-utc` the reference ones (the password is an option only); `--rtkrcv
 PATH` runs another rtkrcv build for both instances (default: `rtkrcv-ex` on the path, the
 RTKLIB-EX build in the image).
 
@@ -877,17 +1010,27 @@ below `min_free_gb`. They can be made again by replaying the raw log through rtk
 
 `<log_dir>/reference/YYYY-MM-DD.llh` is the reference check's equivalent, same writer,
 same compression and disk floor. Its `%` header names the mountpoint, our 1005 ECEF, the
-station's 1005 ECEF (and 1006 antenna height), the expected offset and its sign
-convention, and the masks; a new header line is written when any of them changes (a
-new session's rtkrcv version, a new 1005). The lines are rtkrcv's: quality 1 is fixed,
+station's 1005 ECEF (and 1006 antenna height), both frames and where they came from, the
+epoch, the computed expected offset and its sign convention, and the masks; a new header
+line is written when any of them changes (a new session's rtkrcv version, a new 1005,
+the epoch's second decimal). The lines are rtkrcv's: quality 1 is fixed,
 2 float, 5 single; the last two fields are the age of the corrections and the AR ratio.
 It holds absolute positions in the station's frame: private, like the others.
+
+`<log_dir>/reference/raw/YYYY-MM-DD.rtcm3` is the station's stream as the app's NTRIP
+client received it
+(header-less RTCM3, about 1 kB/s, 100 to 170 MB a day before compression), written with
+the receiver raw log's rules: UTC days, `.rtcm3.gz` when finished, `-late-<n>` files,
+nothing below `min_free_gb`. Only while the reference check is enabled and configured,
+and only while the app's NTRIP client is connected: a gap in the file is a gap in the
+connection, shown on the card; rtkrcv's restarts do not touch it. It holds the
+station's position (its 1005), which is public, and nothing of ours.
 
 ## Tests
 
 From this folder, with `aiohttp` and `pyserial` installed (Python 3.11 or later):
 
-    python -m unittest tests.test_app tests.test_outputs tests.test_measured tests.test_reference
+    python -m unittest tests.test_app tests.test_outputs tests.test_measured tests.test_reference tests.test_ntripclient tests.test_datums
 
 `tests.test_outputs` covers the hub, the filter, the caster and the upload, against a fake
 caster on localhost; nothing connects outside the machine. If RTKLIB's `str2str` is on
@@ -902,9 +1045,20 @@ is on the path (or named by the `RTKRCV` environment variable), a smoke test sta
 with no data: it must connect to both local servers and exit cleanly on SIGTERM. No real
 RTCM is used.
 
+`tests.test_datums` covers the frame transformations: it reproduces, to the millimetre,
+the numbers of the earlier private numpy script at synthetic points, checks the sign of
+the New England offset, the identity for ITRF2020, the rotation sign of each convention
+and the inverse.
+
+`tests.test_ntripclient` covers the app's NTRIP client against a fake caster on
+localhost (`tests/fake_caster.py`): `ICY`, HTTP and chunked streams, 401, 404 and a
+sourcetable in reply, the sourcetable check and unsuitable mountpoints, no data, one
+connection at a time, the backoff schedule, and that the password appears only in the
+`Authorization` header.
+
 `tests.test_reference` covers the reference check: the config's option spellings
-(`tests/reference_golden.conf`), the option checks, the password staying in the config
-file (the fake rtkrcv echoes its NTRIP path and the app must redact it), the states, the
-session statistics and the residual rule, the daily reset, planned restarts, the 1033
-decoder, and the whole app with both instances. The smoke test with a real binary points
-its NTRIP client at a closed local port: no CORS is ever contacted by the tests.
+(`tests/reference_golden.conf`, with no credential in it), the option checks, the
+states, the session statistics and the residual rule, the daily reset, planned
+restarts, the station decoder, the raw log, and the whole app with both instances and
+the fake caster. The smoke test with a real binary points the client at a closed local
+port: no CORS is ever contacted by the tests.
