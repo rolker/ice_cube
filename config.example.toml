@@ -6,3 +6,27 @@
 data_dir = "data"
 # Where generated figures and results are written
 output_dir = "output"
+
+# Season GeoPackage for QGIS: analysis/qgis/import_sessions.py, export_labels.py and
+# build_project.py (see docs/howto/qgis.md). The outputs hold positions: keep them out of
+# the repository (your Drive season folder, or a local folder).
+[season]
+name = "2026-2027"
+# Folder with the logger's session zips (IceCubeLogger_<session>.zip) and/or extracted
+# session folders; searched recursively. Session zips or folders given on the command
+# line are used instead.
+input_dir = "data/sessions/2026-2027"
+# Output GeoPackage; photos are extracted next to it in photos/<session>/
+gpkg = "data/qgis/2026-2027.gpkg"
+# Map-layer GeoJSON files (the logger's layers) imported as layer_<file>_<points|lines|polygons>
+layers = ["data/layers/base.geojson", "data/layers/lot-boundary.geojson"]
+# CSV written by export_labels.py (default: <gpkg stem>-captures.csv next to the gpkg)
+# labels_csv = "data/qgis/2026-2027-captures.csv"
+
+[site]
+# Local frame (E/N/U columns and the QGIS local CRS: transverse Mercator at the base).
+# First found wins: base, base_geojson, a kind=base Point in the layers above, then (if
+# true) the first RTCM 1005 logged in the sessions. Never commit real values.
+# base = [0.0, 0.0, 0.0]                     # lat, lon (degrees), ellipsoidal h (m)
+base_geojson = "data/layers/base.geojson"    # a GeoJSON with a kind=base Point [lon, lat, h]
+base_from_sessions = false

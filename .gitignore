@@ -30,6 +30,10 @@ analysis/out/
 *.prj
 *.swmz
 *.ods
+# QGIS projects made by analysis/qgis/build_project.py hold the local CRS (base position)
+*.qgz
+*.qgs
+*.qgd
 *.csv
 *.zip
 
