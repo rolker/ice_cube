@@ -48,14 +48,19 @@ final class Survey {
     static final long WINDOW_NS = 1_000_000_000L, MAX_AGE_NS = 2_000_000_000L, KEEP_NS = 10_000_000_000L;
     static final long NOTICE_MS = 10_000;
 
-    /** A short message for the map, green (ok), amber (warn) or red, shown until untilMs (uptime). */
+    /**
+     * A short message for the map, green (ok), amber (warn) or red, shown until untilMs
+     * (uptime). at is the capture it reports, or null; the map adds its x/y/z in the map frame.
+     */
     static final class Notice {
         final String text;
         final boolean ok, warn;
         final long untilMs;
+        final PointRow at;
         Notice(String text, boolean ok) { this(text, ok, false); }
-        Notice(String text, boolean ok, boolean warn) {
-            this.text = text; this.ok = ok; this.warn = warn; untilMs = SystemClock.uptimeMillis() + NOTICE_MS;
+        Notice(String text, boolean ok, boolean warn) { this(text, ok, warn, null); }
+        Notice(String text, boolean ok, boolean warn, PointRow at) {
+            this.text = text; this.ok = ok; this.warn = warn; this.at = at; untilMs = SystemClock.uptimeMillis() + NOTICE_MS;
         }
     }
 
@@ -294,10 +299,10 @@ final class Survey {
                 fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
         if (r.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
-            notice = new Notice(text + "  fix may be false (jumped " + jumpText(r.fixJump) + ")", false, true);
+            notice = new Notice(text + "  fix may be false (jumped " + jumpText(r.fixJump) + ")", false, true, r);
         } else {
             cue(mode == SurveyMode.SURFACE ? Feedback.Cue.SURFACE : Feedback.Cue.OBJECT);
-            notice = new Notice(text, r.fix == 4);
+            notice = new Notice(text, r.fix == 4, false, r);
         }
         return new Outcome(true, null);
     }
@@ -405,7 +410,7 @@ final class Survey {
         boolean warn = !r.warnings.isEmpty() || row.fixSuspect;
         if (row.fixSuspect) text += "  fix may be false (jumped " + jumpText(row.fixJump) + ")";
         else if (!r.warnings.isEmpty()) text += "  (accepted with warnings)";
-        notice = new Notice(text, !warn, warn);
+        notice = new Notice(text, !warn, warn, row);
         if (PointRow.REF.equals(row.cls)) {
             PointRow f = row;
             run(() -> poleCheck(f));
@@ -488,7 +493,7 @@ final class Survey {
         if (c == null) {
             text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
                     : "Ref R" + r.n + " saved: first visit to this mark";
-            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect);
+            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
             poleWarning = null;
             svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
             return;
@@ -498,11 +503,11 @@ final class Survey {
                 r.n, text, c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
         if (c.ok) {
             poleWarning = null;
-            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect);
+            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
             if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
         } else {
             poleWarning = text + " (R" + r.n + "; check the pole height)";
-            notice = new Notice(text + sus, false);
+            notice = new Notice(text + sus, false, false, r);
             cue(Feedback.Cue.POLE_ALARM);
         }
     }
@@ -530,7 +535,7 @@ final class Survey {
             target.photo = PhotoRule.add(target.photo, name);
             svc.event("photo file=photos/" + name + " bytes=" + p.file.length() + " attached to n=" + target.n);
             savePoints();
-            notice = new Notice("Photo on " + label(target.cls) + target.n, true);
+            notice = new Notice("Photo on " + label(target.cls) + target.n, true, false, target);
         } else {
             EpochAverage a = average(SystemClock.elapsedRealtimeNanos());
             PointRow r = PointRow.of(++counter, PointRow.PHOTO, p.pressNs, a, svc.poleHeight(), System.currentTimeMillis());
@@ -539,7 +544,7 @@ final class Survey {
             svc.event("photo file=photos/" + name + " bytes=" + p.file.length() + " own row n=" + r.n);
             svc.event("capture " + r.toCsv());
             savePoints();
-            notice = new Notice("Photo saved" + (a == null ? " (no fix)" : ""), a != null);
+            notice = new Notice("Photo saved" + (a == null ? " (no fix)" : ""), a != null, false, r);
         }
         cue(Feedback.Cue.PHOTO);
     }

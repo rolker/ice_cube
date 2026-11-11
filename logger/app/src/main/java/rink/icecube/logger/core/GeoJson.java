@@ -12,8 +12,9 @@ import java.util.Locale;
  * Parser for the map layer files: a GeoJSON FeatureCollection (a single Feature or a bare
  * geometry is accepted too) with Point, MultiPoint, LineString, MultiLineString, Polygon
  * or MultiPolygon geometries. Positions are [lon, lat] or [lon, lat, h] in WGS84 degrees,
- * h ellipsoidal metres. Feature properties used: name (label), kind (free text; "base"
- * marks the map origin), stroke (#rrggbb or #aarrggbb), fill (#rrggbb or #aarrggbb).
+ * h ellipsoidal metres. Feature properties used: name (label), kind (free text; "origin"
+ * and "base" points set the map origin, see {@link MapOrigin}, and "base" is used for the
+ * base check), stroke (#rrggbb or #aarrggbb), fill (#rrggbb or #aarrggbb).
  *
  * A file that is not JSON or not GeoJSON throws {@link GeoJsonException}. A single bad
  * feature is skipped and described in {@link Layer#warnings}.

@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.6
+# Ice Cube Logger 0.6.1
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -93,7 +93,8 @@ Under the strip, only when present: a red bar with warnings (frame mismatch, bas
 layers don't match base, failed pole check, GPS or caster link lost, GPS silent; tap it
 for Details), and for 10 s after a capture, ref or pole check a green (or red) notice,
 e.g. `S12  FIXED  5 ep  ±0.4 cm`; amber with dark text when the capture is flagged, e.g.
-`S12  FIXED  5 ep  ±0.4 cm  fix may be false (jumped 2.2 m)`.
+`S12  FIXED  5 ep  ±0.4 cm  fix may be false (jumped 2.2 m)`. A notice about a capture has
+a second line with its ground position in the map frame (see Map), e.g. `G x 12.345 y -3.210 z -0.452`.
 
 Four large buttons, a column on the right edge in landscape, a row along the bottom in
 portrait (each at least 64 dp):
@@ -116,8 +117,9 @@ once. The key presses are consumed, so the media volume
 does not change on this screen; set it elsewhere (e.g. on Details) before going out.
 
 Details (fix chip or MENU) is the former main screen: every status line (links, byte and
-message counts, caster statistics, heights, frame, capture count, folder) with the link,
-session, Settings, Share and Sessions buttons.
+message counts, caster statistics, heights, frame, map frame with the current ground
+position in it, capture count, folder) with the link, session, Settings, Share and Sessions
+buttons.
 
 ## Captures
 Each MARK is written at once to `points.csv` in the session folder and as a `capture` event
@@ -401,10 +403,22 @@ replaced by Ref captures.)
 ## Map
 North up, in metres east and north on a local tangent plane (WGS84 ellipsoid, ENU), with
 no basemap and no network.
-- Origin: the first point of a feature with `kind` "base" in the switched-on layers; else
-  the first GPS fix of the session; else (layers only, no fix yet) the first vertex of the
-  first layer, until a fix arrives.
+- Origin, the first of these that exists (layer files in name order, features in file order):
+  1. the first point of a feature with `kind` "origin" in the switched-on layers (the
+     project frame: for the Ice Cube yard, lot monument G, from `origin.geojson`);
+  2. else the first point of a feature with `kind` "base";
+  3. else the first GPS fix of the session;
+  4. else (layers only, no fix yet) the first vertex of the first layer, until a fix arrives.
   The info box at the bottom right says which, with satellites and the ground height.
+- Map frame: exact ENU about the origin (geodetic -> ECEF -> rotation at the origin, no
+  flat-earth step): x east, y north, z up, metres. z is the height above the origin's
+  ellipsoidal height less the earth-curvature drop (0.8 mm at 100 m), the same as the
+  session importer's z; an origin point without `h` gives x and y only. The frame's name is
+  the origin feature's `name` (`G`), else the base's name, else `first fix` / `first vertex`.
+- Readout: the info box shows the current ground position (antenna minus pole) as
+  `G x 12.345 y -3.210 z -0.452 (ground)`; Details shows the map frame's name and source
+  and the same readout; capture notices add the capture's ground position. This is display
+  only: `points.csv` keeps lat/lon/h (the importer computes x/y/z in the project frame).
 - Live: the position dot is coloured by fix quality (red single, blue DGPS, amber float,
   green fixed, grey other; legend top left, with the capture classes), with a 2-minute
   trail and this session's captures (see Captures).
@@ -430,7 +444,7 @@ Properties, all optional:
 | property | meaning |
 |---|---|
 | `name` | label drawn next to the feature |
-| `kind` | free text, e.g. `boundary`, `base`, `rink`, `survey`. `base` (any case) on a Point sets the map origin and is used for the base check below; give it `h` |
+| `kind` | free text, e.g. `boundary`, `base`, `rink`, `survey`. `origin` (any case) on a Point sets the map origin and frame (see Map; give it `name` and `h`). `base` (any case) on a Point is used for the base check below and is the map origin when no `origin` point is on; give it `h` |
 | `stroke` | line, outline or point colour, `#rrggbb` or `#aarrggbb` (alpha first, Android order) |
 | `fill` | polygon fill (or point colour), `#rrggbb` or `#aarrggbb` |
 

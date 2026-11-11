@@ -47,7 +47,7 @@ import java.util.Set;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.LinkState;
-import rink.icecube.logger.core.LocalFrame;
+import rink.icecube.logger.core.MapOrigin;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.PoleHeight;
@@ -72,9 +72,11 @@ import rink.icecube.logger.core.TrackPoint;
  *   takes a lean), MARK or volume up finishes (asking first if a gate warns), and back or
  *   MENU > Cancel tilt capture drops it. The map shows a compass rose of the leans.
  *
- * Map origin: the first point of a kind="base" feature in the switched-on layers; else the
- * session's first GPS fix; else, so layers can still be viewed, the first vertex of the
- * first layer (the map moves to the fix origin once one arrives). The screen stays on.
+ * Map origin ({@link MapOrigin}): the first point of a kind="origin" feature in the
+ * switched-on layers (the project frame, e.g. monument G); else of a kind="base" feature;
+ * else the session's first GPS fix; else, so layers can still be viewed, the first vertex
+ * of the first layer (the map moves to the fix origin once one arrives). The info box and
+ * the capture notices give positions as x/y/z in that frame. The screen stays on.
  *
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
@@ -93,10 +95,12 @@ public final class MainActivity extends Activity {
     private List<Layers.LayerFile> files = new ArrayList<>();
     private String layerKey = "";
     private int layerErrors;
-    private double[] baseOrigin;          // lon, lat, h of the base point in switched-on layers
-    private String baseName;
-    private double[] firstVertex;
-    private String originKind = "";
+    private MapOrigin.Candidate originPoint, basePoint, firstVertex;   // from the switched-on layers
+    private String originKey = "";
+    /** The origin the map shows, for Details. */
+    private static volatile MapOrigin shownOrigin;
+
+    static MapOrigin shownOrigin() { return shownOrigin; }
 
     private int refsLoadedGen = -1;
     private String refsLoadedFor = "";
@@ -752,34 +756,24 @@ public final class MainActivity extends Activity {
     private void applyLayers() {
         Set<String> off = Settings.layersOff(Settings.prefs(this));
         List<GeoJson.Feature> fs = new ArrayList<>();
+        List<GeoJson.Layer> on = new ArrayList<>();
+        List<String> names = new ArrayList<>();
         StringBuilder key = new StringBuilder().append(Layers.generation()).append('|');
-        baseOrigin = null;
-        baseName = null;
-        firstVertex = null;
         layerErrors = 0;
         for (Layers.LayerFile lf : files) {
             if (lf.layer == null) { layerErrors++; continue; }
             if (off.contains(lf.name())) continue;
             key.append(lf.name()).append('|');
             fs.addAll(lf.layer.features);
-            if (baseOrigin == null) {
-                for (GeoJson.Feature f : lf.layer.features) {
-                    if (f.isBase()) {
-                        double[] p = f.parts.get(0);
-                        baseOrigin = new double[] {p[0], p[1], p[2]};
-                        baseName = (f.name != null ? "'" + f.name + "' in " : "") + lf.name();
-                        break;
-                    }
-                }
-            }
-            if (firstVertex == null && !lf.layer.features.isEmpty()) {
-                double[] p = lf.layer.features.get(0).parts.get(0);
-                firstVertex = new double[] {p[0], p[1], p[2]};
-            }
+            on.add(lf.layer);
+            names.add(lf.name());
         }
+        originPoint = MapOrigin.find(on, names, "origin");
+        basePoint = MapOrigin.find(on, names, "base");
+        firstVertex = MapOrigin.firstVertex(on, names);
         if (!key.toString().equals(layerKey)) {
             layerKey = key.toString();
-            originKind = "";   // forces the origin to be chosen again
+            originKey = "";   // forces the origin to be chosen again
             chooseOrigin(LoggerService.current);
             map.setFeatures(fs);
         }
@@ -787,24 +781,11 @@ public final class MainActivity extends Activity {
 
     private void chooseOrigin(LoggerService s) {
         TrackPoint first = s == null ? null : s.firstFix();
-        String kind;
-        double lat, lon, h;
-        String note;
-        if (baseOrigin != null) {
-            kind = "base"; lon = baseOrigin[0]; lat = baseOrigin[1]; h = baseOrigin[2];
-            note = "origin: base point " + baseName;
-        } else if (first != null) {
-            kind = "fix" + first.elapsedMs; lat = first.lat; lon = first.lon; h = first.h;
-            note = "origin: first fix of this session";
-        } else if (firstVertex != null) {
-            kind = "vertex"; lon = firstVertex[0]; lat = firstVertex[1]; h = firstVertex[2];
-            note = "origin: first layer vertex (no base point, no fix yet)";
-        } else {
-            return;
-        }
-        if (kind.equals(originKind)) return;
-        originKind = kind;
-        map.setFrame(new LocalFrame(lat, lon, h), note);
+        MapOrigin o = MapOrigin.choose(originPoint, basePoint, first, firstVertex);
+        if (o == null || o.key.equals(originKey)) return;
+        originKey = o.key;
+        shownOrigin = o;
+        map.setFrame(o.frame, o.note);
     }
 
     /** Earlier refs from refs.csv (other sessions), when Settings > Survey asks for them. */
@@ -896,7 +877,9 @@ public final class MainActivity extends Activity {
         Survey.Notice nt = sv == null ? null : sv.notice();
         noticeBar.setVisibility(nt == null ? View.GONE : View.VISIBLE);
         if (nt != null) {
-            noticeBar.setText(nt.text);
+            MapOrigin o = shownOrigin;
+            String at = o == null || nt.at == null ? null : o.readout(nt.at.lat, nt.at.lon, nt.at.hGround);
+            noticeBar.setText(at == null ? nt.text : nt.text + "\n" + at);
             noticeBar.setBackgroundColor(nt.warn ? AMBER : nt.ok ? 0xFF2E7D32 : 0xFFC62828);
             noticeBar.setTextColor(nt.warn ? TEXT : Color.WHITE);
         }
@@ -905,6 +888,9 @@ public final class MainActivity extends Activity {
         if (fix != null && g != null) {
             t.append(String.format(Locale.US, "sats %d", g.sats));
             if (!Double.isNaN(fix.h)) t.append(String.format(Locale.US, "  ground %.3f m", fix.h - pole));
+            MapOrigin o = shownOrigin;
+            String xyz = o == null ? null : o.readout(fix.lat, fix.lon, Double.isNaN(fix.h) ? Double.NaN : fix.h - pole);
+            if (xyz != null) t.append('\n').append(xyz).append(" (ground)");
             t.append('\n');
         }
         t.append(map.frame() == null ? "origin: none yet" : map.originNote());
