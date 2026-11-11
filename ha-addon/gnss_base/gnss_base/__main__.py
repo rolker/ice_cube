@@ -8,7 +8,9 @@ import logging
 import os
 import signal
 import sys
+import re
 import threading
+import urllib.request
 from pathlib import Path
 
 from aiohttp import web
@@ -22,7 +24,9 @@ from .hub import ConnectionLog, RtcmHub, Secret
 from .measured import DEFAULT_BINARY, MeasuredSettings, RtkrcvRunner, SolutionLog
 from .rawlog import RawLog, compress
 from .receiver import ChunkQueue, SerialReader
-from .reference import ReferenceCheck, ReferenceSettings, compare, login_clash
+from .reference import (ReferenceCheck, ReferenceSettings, block_clashes, slugify,
+                        summary)
+from .refhistory import WINDOWS, ReferenceHistory
 from .status import Status
 from .upload import Uploader, UploadSettings
 from .web import INGRESS_PROXY, create_app
@@ -33,38 +37,31 @@ HOUSEKEEPING_S = 60
 SHUTDOWN_BUDGET_S = 9.0   # Home Assistant kills the app 10 s after asking it to stop
 WEB_SHUTDOWN_S = 1.5      # open page requests get this long at shutdown
 DEFAULTS = {"device": "", "device_match": "USB_Dual_Serial", "baud": 460800,
-            "log_dir": "/share/gnss_base", "min_free_gb": 10,
+            "base_frame": "ITRF2020", "base_epoch": "",
             "caster_enabled": True, "caster_mountpoint": "BASE", "caster_user": "",
             "caster_password": "", "caster_max_clients": 16,
             "upload_host": "rtk2go.com", "upload_port": 2101, "upload_mountpoint": "",
             "upload_password": "", "upload_style": "rev1",
             "measured_enabled": True, "measured_elevation_mask": 15, "measured_snr_mask": 35,
-            "reference_enabled": False, "reference_host": "", "reference_port": 2101,
-            "reference_mountpoint": "", "reference_user": "", "reference_password": "",
-            "reference_frame": "", "reference_reset_utc": "00:00",
-            "reference_send_gga": False, "reference_gga_position": "",
-            "reference_expect_station": None,
-            "reference2_enabled": False, "reference2_host": "", "reference2_port": 2101,
-            "reference2_mountpoint": "", "reference2_user": "", "reference2_password": "",
-            "reference2_frame": "", "reference2_reset_utc": "00:00",
-            "reference2_send_gga": False, "reference2_gga_position": "",
-            "reference2_expect_station": None,
-            "base_frame": "ITRF2020", "base_epoch": ""}
-REFERENCES = ("reference", "reference2")   # the reference checks' option prefixes
+            "references": [],
+            "log_dir": "/share/gnss_base", "min_free_gb": 10}
+# One entry of `references`: its fields and their defaults when absent. `name`, `host`
+# and `mountpoint` have none (required in the schema); `user` is required by the check.
+REFERENCE_FIELDS = {"name": "", "enabled": True, "host": "", "port": 2101,
+                    "mountpoint": "", "user": "", "password": "", "frame": "",
+                    "epoch": "", "send_gga": False, "gga_position": "",
+                    "expect_station": None, "reset_utc": "00:00"}
+# The 0.7 options the migration reads (reference_* and reference2_*), field by field.
+LEGACY_PREFIXES = ("reference", "reference2")
+LEGACY_FIELDS = ("enabled", "host", "port", "mountpoint", "user", "password", "frame",
+                 "reset_utc", "send_gga", "gga_position", "expect_station")
+SUPERVISOR_INFO = "http://supervisor/addons/self/info"
 # Options that a command-line argument can override. Passwords are options only: on a
-# command line they would show in process lists.
+# command line they would show in process lists. The references are options only.
 OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster_enabled",
              "caster_mountpoint", "caster_max_clients", "upload_host", "upload_port",
              "upload_mountpoint", "upload_style", "measured_enabled",
-             "measured_elevation_mask", "measured_snr_mask", "reference_enabled",
-             "reference_host", "reference_port", "reference_mountpoint", "reference_user",
-             "reference_frame", "reference_reset_utc", "reference_send_gga",
-             "reference_gga_position", "reference_expect_station", "reference2_enabled",
-             "reference2_host",
-             "reference2_port", "reference2_mountpoint", "reference2_user",
-             "reference2_frame", "reference2_reset_utc", "reference2_send_gga",
-             "reference2_gga_position", "reference2_expect_station", "base_frame",
-             "base_epoch")
+             "measured_elevation_mask", "measured_snr_mask", "base_frame", "base_epoch")
 
 
 def load_settings(argv=None):
@@ -103,50 +100,15 @@ def load_settings(argv=None):
     parser.add_argument("--measured-elevation-mask", dest="measured_elevation_mask", type=int)
     parser.add_argument("--measured-snr-mask", dest="measured_snr_mask", type=int,
                         help="dB-Hz; 0 = no SNR mask")
-    parser.add_argument("--reference", dest="reference_enabled", action="store_const",
-                        const=True, help="run the reference check against a CORS station")
-    parser.add_argument("--no-reference", dest="reference_enabled", action="store_const",
-                        const=False, help="do not run the reference check")
-    parser.add_argument("--reference-host", dest="reference_host")
-    parser.add_argument("--reference-port", dest="reference_port", type=int)
-    parser.add_argument("--reference-mountpoint", dest="reference_mountpoint")
-    parser.add_argument("--reference-user", dest="reference_user")
-    parser.add_argument("--reference-frame", dest="reference_frame",
-                        help="the CORS station's reference frame, for the expected offset: "
-                             f"one of {', '.join(FRAMES)}; empty: unknown, no residual")
     parser.add_argument("--base-frame", dest="base_frame",
                         help="the frame of our own base position (default ITRF2020, the "
-                             "frame of a PPP coordinate); empty: not declared")
+                             "frame of a PPP coordinate); empty: not declared; one of "
+                             f"{', '.join(FRAMES)}")
     parser.add_argument("--base-epoch", dest="base_epoch",
                         help="when our base position was observed, YYYY-MM-DD or a decimal "
                              "year; empty: today's date")
-    parser.add_argument("--reference-reset-utc", dest="reference_reset_utc",
-                        help="daily restart of the reference rtkrcv, HH:MM UTC; empty: never")
-    # The GGA uplink of both checks, and the second check's options, spelt like the
-    # first's (--reference2-host, ...).
-    for prefix in REFERENCES:
-        dash = prefix.replace("_", "-")
-        if prefix != "reference":
-            parser.add_argument(f"--{dash}", dest=f"{prefix}_enabled", action="store_const",
-                                const=True, help=f"run the {prefix} check")
-            parser.add_argument(f"--no-{dash}", dest=f"{prefix}_enabled",
-                                action="store_const", const=False,
-                                help=f"do not run the {prefix} check")
-            for name in ("host", "mountpoint", "user", "frame"):
-                parser.add_argument(f"--{dash}-{name}", dest=f"{prefix}_{name}")
-            parser.add_argument(f"--{dash}-port", dest=f"{prefix}_port", type=int)
-            parser.add_argument(f"--{dash}-reset-utc", dest=f"{prefix}_reset_utc")
-        parser.add_argument(f"--{dash}-send-gga", dest=f"{prefix}_send_gga",
-                            action="store_const", const=True,
-                            help=f"send a GGA to the {prefix} caster (nmea 1 mountpoints)")
-        parser.add_argument(f"--no-{dash}-send-gga", dest=f"{prefix}_send_gga",
-                            action="store_const", const=False)
-        parser.add_argument(f"--{dash}-gga-position", dest=f"{prefix}_gga_position",
-                            help='the GGA\'s position, "lat,lon" in decimal degrees; '
-                                 "empty: our base's 1005 position")
-        parser.add_argument(f"--{dash}-expect-station", dest=f"{prefix}_expect_station",
-                            type=int, help="the station ID (0 to 4095) the stream must "
-                                           "carry; other IDs show as a wrong station")
+    parser.add_argument("--no-supervisor", dest="supervisor", action="store_false",
+                        help="do not ask the Supervisor for 0.7 reference options to migrate")
     parser.add_argument("--rtkrcv", default=DEFAULT_BINARY,
                         help=f"the rtkrcv program for both instances (default: "
                              f"{DEFAULT_BINARY} on PATH, RTKLIB-EX built into the image)")
@@ -164,7 +126,7 @@ def load_settings(argv=None):
     settings.update(host=args.host, port=args.port, allow_any_client=args.allow_any_client,
                     by_id_dir=args.by_id_dir, profile=args.profile, data_dir=data_dir,
                     caster_host=args.caster_host, caster_port=args.caster_port,
-                    rtkrcv=args.rtkrcv)
+                    rtkrcv=args.rtkrcv, supervisor=args.supervisor)
     return settings
 
 
@@ -182,48 +144,162 @@ def measured_settings(settings):
         snr_mask=number("measured_snr_mask"))
 
 
-def reference_settings(settings, prefix="reference"):
-    """A reference check's settings from the options `<prefix>_*` ("reference" or
-    "reference2"). Its work folder is `<data_dir>/<prefix>`; the masks, base_frame and
-    base_epoch are shared. The password goes into a Secret and is removed from
-    `settings`."""
+def _text(value):
+    return str(value if value is not None else "").strip()
+
+
+def _station(value):
+    """An expected station ID: None when empty; a whole number as given, or as digits in
+    a text; anything else as is, for problem() to refuse."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
+
+
+def reference_settings(settings, entry, index):
+    """One check's settings from an entry of `references` (a dict; absent fields take
+    REFERENCE_FIELDS' defaults), `index` its place from 1. Its work folder is
+    `<data_dir>/reference-<slug>`; the masks, base_frame and base_epoch are shared. The
+    password goes into a Secret and is removed from the entry."""
     def number(key):
         value = settings[key]
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
-    def text(key):
-        return str(settings[key] if settings[key] is not None else "").strip()
-
-    def station(key):
-        """An expected station ID: None when empty; a whole number as given, or as
-        digits in a text; anything else as is, for problem() to refuse."""
-        value = settings.get(key)
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        if isinstance(value, str) and value.strip().isdigit():
-            return int(value.strip())
-        return value
-
-    return ReferenceSettings(
-        enabled=bool(settings[f"{prefix}_enabled"]), host=text(f"{prefix}_host"),
-        port=settings[f"{prefix}_port"], mountpoint=text(f"{prefix}_mountpoint"),
-        user=text(f"{prefix}_user"),
-        password=Secret(str(settings.pop(f"{prefix}_password", "") or "")),
-        frame=text(f"{prefix}_frame"), base_frame=text("base_frame"),
-        base_epoch=text("base_epoch"), reset_utc=text(f"{prefix}_reset_utc"),
-        send_gga=settings[f"{prefix}_send_gga"] is True,
-        gga_position=text(f"{prefix}_gga_position"),
-        expect_station=station(f"{prefix}_expect_station"), prefix=prefix,
-        binary=str(settings["rtkrcv"]),
-        work_dir=Path(settings["data_dir"]).absolute() / prefix,
-        elevation_mask=number("measured_elevation_mask"), snr_mask=number("measured_snr_mask"))
+    if not isinstance(entry, dict):
+        entry = {}
+    values = dict(REFERENCE_FIELDS, **{k: v for k, v in entry.items() if v is not None
+                                       or k == "expect_station"})
+    password = Secret(str(entry.pop("password", "") or ""))
+    reset = values["reset_utc"]
+    made = ReferenceSettings(
+        enabled=values["enabled"] is not False, host=_text(values["host"]),
+        port=values["port"], mountpoint=_text(values["mountpoint"]),
+        user=_text(values["user"]), password=password, frame=_text(values["frame"]),
+        epoch=_text(values["epoch"]), base_frame=_text(settings["base_frame"]),
+        base_epoch=_text(settings["base_epoch"]),
+        reset_utc=_text(reset), send_gga=values["send_gga"] is True,
+        gga_position=_text(values["gga_position"]),
+        expect_station=_station(values["expect_station"]),
+        name=values["name"].strip() if isinstance(values["name"], str) else values["name"],
+        index=index, binary=str(settings["rtkrcv"]),
+        elevation_mask=number("measured_elevation_mask"),
+        snr_mask=number("measured_snr_mask"))
+    made.work_dir = Path(settings["data_dir"]).absolute() / f"reference-{made.slug}"
+    return made
 
 
 def all_reference_settings(settings):
-    """Both checks' settings, the second blocked if it would share the first's login."""
-    first, second = (reference_settings(settings, prefix) for prefix in REFERENCES)
-    second.blocked = login_clash(first, second)
-    return first, second
+    """Every entry's settings, in order; an entry that clashes with an earlier one (the
+    same folder name, or the same login while both are on) is blocked, with why. The
+    passwords are removed from `settings`."""
+    entries = settings.get("references") or []
+    if not isinstance(entries, list):
+        entries = []
+    return block_clashes([reference_settings(settings, entry, index)
+                          for index, entry in enumerate(entries, 1)])
+
+
+def legacy_name(mountpoint, index, taken):
+    """A migrated entry's name: the mountpoint in lower case when it is a short plain
+    name ("ABCD" -> "abcd"), else "reference<index>"; never one already taken."""
+    text = _text(mountpoint)
+    name = text.lower() if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,15}", text) else ""
+    if not name or slugify(name) in taken:
+        name = f"reference{index}"
+    while slugify(name) in taken:
+        name += "x"
+    return name
+
+
+def legacy_references(options):
+    """The 0.7 options (`reference_*`, `reference2_*`) found in `options` as `references`
+    entries: one per prefix that has a host or mountpoint set, or is enabled."""
+    entries, taken = [], set()
+    for index, prefix in enumerate(LEGACY_PREFIXES, 1):
+        old = {field: options[f"{prefix}_{field}"] for field in LEGACY_FIELDS
+               if f"{prefix}_{field}" in options}
+        if not (_text(old.get("host")) or _text(old.get("mountpoint")) or old.get("enabled")):
+            continue
+        name = legacy_name(old.get("mountpoint"), index, taken)
+        taken.add(slugify(name))
+        entry = {"name": name}
+        for field in LEGACY_FIELDS:
+            if field in old and old[field] is not None:
+                entry[field] = old[field]
+        entry["enabled"] = old.get("enabled") is True
+        entries.append(entry)
+    return entries
+
+
+def has_legacy(options):
+    return any(key.startswith(f"{prefix}_") for key in options for prefix in LEGACY_PREFIXES)
+
+
+def supervisor_options(token, url=SUPERVISOR_INFO, timeout=5):
+    """This app's saved options as the Supervisor keeps them (`/addons/self/info`), which
+    still hold the options a new version dropped from its schema until the
+    configuration is saved again; the token is the app's SUPERVISOR_TOKEN. None when
+    there is no answer."""
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as reply:
+            data = json.load(reply)
+    except (OSError, ValueError):
+        return None
+    options = (data.get("data") or {}).get("options") if isinstance(data, dict) else None
+    return options if isinstance(options, dict) else None
+
+
+def migrate_references(settings, fetch=None):
+    """0.8.0: the reference checks moved from flat options (`reference_*`,
+    `reference2_*`) to the `references` list. When `references` is empty, the old values
+    are looked for in the options file and, in Home Assistant, in the Supervisor's saved
+    options (`fetch()`, which returns them or None; Home Assistant drops options a new
+    schema no longer has from options.json, but keeps the saved ones until the
+    configuration is saved again). Found ones become `settings["references"]`.
+
+    Returns a notice for the log and the page: {"kind": "migrated" | "none" | None,
+    "source", "names", "text", "yaml"} (`yaml`: the entries to paste into the
+    configuration, without passwords). The old keys are removed from `settings`.
+    Nothing here logs or returns a password."""
+    legacy_here = {k: settings.pop(k) for k in list(settings)
+                   if any(k.startswith(f"{p}_") for p in LEGACY_PREFIXES)}
+    if settings.get("references"):
+        if legacy_here:
+            return {"kind": None, "source": None, "names": [], "yaml": None,
+                    "text": "0.7 options reference_* in the options are ignored: the "
+                            "references list is set."}
+        return {"kind": None, "source": None, "names": [], "yaml": None, "text": None}
+    source, options = None, None
+    if legacy_here:
+        source, options = "the options file", legacy_here
+    elif fetch is not None:
+        fetched = fetch()
+        if fetched and has_legacy(fetched):
+            source, options = "the Supervisor's saved options", fetched
+    entries = legacy_references(options) if options else []
+    if not entries:
+        return {"kind": "none", "source": None, "names": [], "yaml": None,
+                "text": "No reference stations are configured (the references list is "
+                        "empty). If you used reference_* options in 0.7.x, enter them "
+                        "again as references entries: Home Assistant drops options "
+                        "that a new version no longer has. See the README, Migration."}
+    settings["references"] = entries
+    names = [e["name"] for e in entries]
+    yaml = "references:\n" + "".join(
+        "  - " + "\n    ".join(f"{k}: {json.dumps(v)}" for k, v in e.items()
+                               if k != "password")
+        + ("\n    password: \"<the same as before>\"" if "password" in e else "") + "\n"
+        for e in entries)
+    return {"kind": "migrated", "source": source, "names": names, "yaml": yaml,
+            "text": f"The references list is empty, so the 0.7 reference options from "
+                    f"{source} are used for now as {len(entries)} "
+                    f"reference{'s' if len(entries) > 1 else ''} "
+                    f"({', '.join(names)}). Add them as references entries in the app "
+                    "configuration and save: Home Assistant forgets the old options the "
+                    "next time the configuration is saved."}
 
 
 def output_settings(settings):
@@ -348,9 +424,10 @@ async def _raw_housekeeping(log, loop):
         log.housekeeping_error = f"housekeeping: {error}"
 
 
-async def housekeeping(log, errors, *solution_logs, raw_logs=()):
+async def housekeeping(log, errors, *solution_logs, raw_logs=(), histories=()):
     """`log` is the receiver's raw log (its usage record and errors are the app's);
-    `raw_logs` other RawLogs (the CORS stream) that get the same tidy and compression."""
+    `raw_logs` other RawLogs (the CORS stream) that get the same tidy and compression;
+    `histories` the reference plots' history (refhistory.py), written each round."""
     loop = asyncio.get_running_loop()
     while True:
         await _raw_housekeeping(log, loop)
@@ -359,11 +436,17 @@ async def housekeeping(log, errors, *solution_logs, raw_logs=()):
         errors.check("logging", log.write_error)
         errors.check("disk", log.disk_error)
         errors.check("housekeeping", log.housekeeping_error)
-        for index, raw_log in enumerate(raw_logs):
+        for raw_log in raw_logs:
             await _raw_housekeeping(raw_log, loop)
             # One name per log, so the reporter tells their errors apart.
-            errors.check("CORS raw log" + (f" {index + 1}" if index else ""),
+            errors.check(f"CORS raw log {raw_log.directory.name}",
                          raw_log.write_error or raw_log.housekeeping_error)
+        for history in histories:
+            try:
+                await loop.run_in_executor(None, history.write, history.take())
+            except Exception:
+                LOG.exception("plot history failed")
+            errors.check(f"plot history {history.path.name}", history.error)
         for solution_log in solution_logs:
             try:
                 await solution_log.housekeep()
@@ -441,6 +524,15 @@ async def run(settings):
                            room=lambda: not log.paused)
     events.start()  # file writes in a background task, never on the serial path
     measured = measured_settings(settings)
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    fetch = (lambda: supervisor_options(token)) if token and settings.get("supervisor", True) else None
+    notice = await loop.run_in_executor(None, migrate_references, settings, fetch)
+    if notice["kind"] == "migrated":
+        LOG.warning("references: %s Entries: %s.", notice["text"], ", ".join(
+            f"{name} ({e.get('mountpoint') or '?'})"
+            for name, e in zip(notice["names"], settings["references"])))
+    elif notice["text"]:
+        LOG.info("references: %s", notice["text"])
     reference_options = all_reference_settings(settings)
     rtkrcv = caster = uploader = queue = runner = keeper = None
     references = []
@@ -454,22 +546,29 @@ async def run(settings):
     solutions = SolutionLog(Path(settings["log_dir"]) / "measured", solution_header,
                             room=lambda: not log.paused)
     solutions.start()
-    # Each reference check's log, `<prefix>/YYYY-MM-DD.llh`: the header names the
-    # frames (ReferenceCheck.header). The CORS stream as received,
-    # `<prefix>/raw/YYYY-MM-DD.rtcm3`, with the raw log's rotation, compression and
-    # free-space floor; only when the check can run.
-    reference_logs, cors_logs = [], []
+    # Each reference check's log, `reference-<slug>/YYYY-MM-DD.llh`: the header names
+    # the frames (ReferenceCheck.header). The CORS stream as received,
+    # `reference-<slug>/raw/YYYY-MM-DD.rtcm3`, with the raw log's rotation, compression
+    # and free-space floor. Both only for a check that can run (enabled, no problem), so
+    # a blocked duplicate name never writes into another entry's folder. The plots'
+    # history is in `<data_dir>/history/` (refhistory.py).
+    reference_logs, cors_logs, histories = [], [], []
     for options in reference_options:
+        runs = options.enabled and not options.problem()
+
         def header(index=len(reference_logs)):
             return references[index].header() if len(references) > index else ""
 
-        reference_log = SolutionLog(Path(settings["log_dir"]) / options.prefix, header,
-                                    room=lambda: not log.paused, suffix=".llh")
-        reference_log.start()
+        folder = Path(settings["log_dir"]) / f"reference-{options.slug}"
+        reference_log = SolutionLog(folder, header, room=lambda: not log.paused,
+                                    suffix=".llh") if runs else None
+        if reference_log is not None:
+            reference_log.start()
         reference_logs.append(reference_log)
-        cors_logs.append(RawLog(Path(settings["log_dir"]) / options.prefix,
-                                settings["min_free_gb"], suffix=".rtcm3")
-                         if options.enabled and not options.problem() else None)
+        cors_logs.append(RawLog(folder, settings["min_free_gb"], suffix=".rtcm3")
+                         if runs else None)
+        histories.append(ReferenceHistory(Path(settings["data_dir"]) / "history",
+                                          options.slug).load() if runs else None)
     try:
         caster_settings, upload_settings = output_settings(settings)
         caster = Caster(caster_settings, hub, events, __version__)
@@ -485,13 +584,19 @@ async def run(settings):
         rtkrcv = RtkrcvRunner(measured, hub, on_solution)
         # The reference checks: one more rtkrcv each on the hub, and the receiver's 1005
         # from the status (read only) as the reference for their offsets.
-        for index, (options, reference_log, cors_log) in enumerate(
-                zip(reference_options, reference_logs, cors_logs)):
-            references.append(ReferenceCheck(
+        for options, reference_log, cors_log, history in zip(
+                reference_options, reference_logs, cors_logs, histories):
+            check = ReferenceCheck(
                 options, hub, status.current_base,
-                on_solution=lambda solution, line, out=reference_log: out.write(line),
+                on_solution=None if reference_log is None
+                else (lambda solution, line, out=reference_log: out.write(line)),
                 version=__version__, on_raw=None if cors_log is None else cors_log.write,
-                label="reference check" + (f" {index + 1}" if index else "")))
+                on_fixed=None if history is None else history.add,
+                label=f"reference check {options.name}")
+            if history is not None:
+                history.expected = check.expected
+                history.station = lambda c=check: c._cors_id
+            references.append(check)
         # The no-measured-GGA texts mention rtkrcv only while it can give a solution.
         status.measured_expected = lambda: rtkrcv.state() not in ("off", "not available")
         queue = ChunkQueue(loop, pipeline.on_data)
@@ -520,7 +625,7 @@ async def run(settings):
             for options, cors_log in zip(reference_options, cors_logs):
                 if cors_log is not None:
                     merge_storage(result["storage"], cors_log.snapshot(),
-                                  f"{options.prefix}/raw/")
+                                  f"reference-{options.slug}/raw/")
             result["parser"] = {"unknown_bytes": pipeline.parser.unknown_bytes,
                                 "bad_frames": pipeline.parser.bad_frames,
                                 "queue_dropped_bytes": queue.dropped_bytes}
@@ -529,16 +634,49 @@ async def run(settings):
             result["upload"] = uploader.snapshot()
             result["measured"] = dict(rtkrcv.snapshot(), **status.measured_summary(),
                                       log=solutions.snapshot())
-            for options, reference, reference_log, cors_log in zip(
-                    reference_options, references, reference_logs, cors_logs):
-                result[options.prefix] = dict(
-                    reference.snapshot(), log=reference_log.snapshot(),
-                    raw_log=None if cors_log is None else cors_log.snapshot())
-            result["reference_comparison"] = compare(*references)
+            result["references"] = [
+                dict(reference.snapshot(),
+                     log=None if reference_log is None else reference_log.snapshot(),
+                     raw_log=None if cors_log is None else cors_log.snapshot(),
+                     history_error=None if history is None else history.error or None)
+                for reference, reference_log, cors_log, history in zip(
+                    references, reference_logs, cors_logs, histories)]
+            result["reference_summary"] = dict(summary(references), notice={
+                key: notice[key] for key in ("kind", "source", "names", "text", "yaml")})
+            return result
+
+        def plots(window):
+            """The page's reference plots (refhistory.py): each check's residual bins of
+            the last `window` (1h, 24h, 7d), its session mean and east-north covariance,
+            and its daily means."""
+            window_s = WINDOWS[window]
+            result = {"window": window, "window_s": window_s, "references": []}
+            for reference, history in zip(references, histories):
+                if not reference.settings.enabled:
+                    continue
+                residual = reference.residual()
+                session = reference.stats.session_mean()
+                result["references"].append({
+                    "name": reference.settings.name, "slug": reference.settings.slug,
+                    "index": reference.settings.index,
+                    "station_frame": reference._station_frame or None,
+                    "no_residual": None if residual is not None
+                    else reference.no_expected() or "no fixed solution this session yet",
+                    "points": [] if history is None else history.points(window_s),
+                    "days": [] if history is None else history.days(),
+                    "session_mean": None if residual is None
+                    else [round(v, 4) for v in residual],
+                    "session_std": None if session is None
+                    else [round(v, 4) for v in session[1]],
+                    "covariance_en": None if residual is None
+                    else [[round(v, 8) for v in row]
+                          for row in reference.stats.covariance_en()],
+                    "fixed": reference.stats.fixed_count})
             return result
 
         allowed = () if settings["allow_any_client"] else (INGRESS_PROXY,)
-        app = create_app(snapshot, allowed, get_track=status.track, control=control)
+        app = create_app(snapshot, allowed, get_track=status.track, control=control,
+                         get_plots=plots)
         runner = web.AppRunner(app, shutdown_timeout=WEB_SHUTDOWN_S)
         await runner.setup()
         await web.TCPSite(runner, settings["host"], settings["port"]).start()
@@ -553,20 +691,23 @@ async def run(settings):
         for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             loop.add_signal_handler(name, stop.set)
         keeper = asyncio.create_task(housekeeping(
-            log, errors, solutions, *reference_logs,
-            raw_logs=[x for x in cors_logs if x is not None]))
+            log, errors, solutions, *[x for x in reference_logs if x is not None],
+            raw_logs=[x for x in cors_logs if x is not None],
+            histories=[x for x in histories if x is not None]))
         await stop.wait()
     finally:
         await shutdown(SHUTDOWN_BUDGET_S, keeper=keeper, rtkrcv=rtkrcv, solutions=solutions,
                        outputs=[x for x in (uploader, caster) if x is not None],
                        events=events, control=control, reader=reader, queue=queue,
                        log=log, runner=runner, references=references,
-                       reference_logs=reference_logs, cors_logs=cors_logs)
+                       reference_logs=reference_logs, cors_logs=cors_logs,
+                       histories=histories)
         executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, reader,
-                   queue, log, runner, references=(), reference_logs=(), cors_logs=()):
+                   queue, log, runner, references=(), reference_logs=(), cors_logs=(),
+                   histories=()):
     """Stop everything within `budget` seconds from now (Home Assistant's 10 s stop
     timeout), independent parts at once, each bounded by the time left:
     - every rtkrcv (SIGTERM so each saves its ephemeris cache, SIGKILL after 3 s), and
@@ -591,6 +732,10 @@ async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, 
             if cors_log is not None:
                 cors_log.close()   # after the client stopped: its last bytes are in
         logs = [x for x in (solutions, *reference_logs) if x is not None]
+        for history in histories:
+            if history is not None:
+                history.close_bin()
+                await loop.run_in_executor(None, history.write, history.take())
         await asyncio.gather(*(x.stop(timeout=left(0.2)) for x in logs))
 
     async def outputs_part():

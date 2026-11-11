@@ -253,8 +253,9 @@ class ChunkDecoder:
 
 class NtripClient:
     """See the module docstring. `settings` has host, port, mountpoint, user and
-    password (a Secret), and may have `prefix` (the options' prefix, for the texts that
-    name an option: "reference" by default) and `send_gga` (the GGA uplink, off by
+    password (a Secret), and may have `option(field)` (an option's name as the texts
+    give it, "references[1].user"; without it `prefix` + "_" + field, "reference_user"
+    by default) and `send_gga` (the GGA uplink, off by
     default); `on_data(bytes)` gets the stream as received. `gga_position()` returns
     the GGA's (lat, lon, height) or None. `label` names this client in the log ("NTRIP
     client (label)"). `clock` (monotonic), `wall`, `sleep`, `connect`, `rand`,
@@ -271,6 +272,8 @@ class NtripClient:
         self._on_connect = on_connect   # on_connect(): a stream has just been accepted
         self.name = f"NTRIP client ({label})" if label else "NTRIP client"
         self.prefix = getattr(settings, "prefix", "reference")
+        option = getattr(settings, "option", None)
+        self._option = option if callable(option) else (lambda f: f"{self.prefix}_{f}")
         self.send_gga = bool(getattr(settings, "send_gga", False))
         self._gga_position = gga_position
         self._gga_sleep = gga_sleep
@@ -474,7 +477,7 @@ class NtripClient:
                 self.attempts_today -= 1       # a wait, not an attempt on the caster
                 kind, reason = "no position", (
                     "Waiting for a position to send in the GGA (our base's RTCM 1005, or "
-                    f"{self.prefix}_gga_position) before connecting.")
+                    f"{self._option('gga_position')}) before connecting.")
                 return
             kind, reason = await self._stream()
         except asyncio.CancelledError:
@@ -749,12 +752,12 @@ class NtripClient:
                           f"; {'listed' if self.listed else 'not listed'} in the caster's "
                           f"sourcetable of {self.sourcetable_size} mountpoints")
                 reason = {"refused": f"Login refused by the caster ({self.last_reply}): check "
-                                     f"{self.prefix}_user and {self.prefix}_password; or the caster "
+                                     f"{self._option('user')} and {self._option('password')}; or the caster "
                                      "still counts this login's previous connection (one at "
                                      f"a time), in which case the try in {REFUSED_WAIT_S / 60:.0f} "
                                      "min will do.",
                           "not found": f"Mountpoint not found ({self.last_reply}{listed}): "
-                                       f"check {self.prefix}_mountpoint (case matters).",
+                                       f"check {self._option('mountpoint')} (case matters).",
                           "failed": f"Unexpected reply: {self.last_reply or '(none)'}"}[kind]
                 LOG.warning("%s: %s", self.name, reason)
                 return kind, reason

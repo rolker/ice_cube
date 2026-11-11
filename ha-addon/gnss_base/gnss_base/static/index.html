@@ -6,7 +6,7 @@
 <title>GNSS Base</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <script src="vendor/leaflet/leaflet.js"></script>
-<script src="track.js?v=0.7.0"></script>
+<script src="track.js?v=0.8.0"></script>
 <style>
 :root{--bg:#f6f7f8;--card:#fff;--text:#1c2024;--muted:#60676f;--line:#dfe3e7;--good:#16794a;--warn:#a15c00;--bad:#b3261e;--accent:#2a78d6;--age-old:#b7d3f6;--age-new:#0d366b}
 @media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2125;--text:#eceff1;--muted:#9aa3ab;--line:#30363c;--good:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--accent:#6da7ec;--age-old:#184f95;--age-new:#cde2fb}}
@@ -21,8 +21,18 @@ section{background:var(--card);border:1px solid var(--line);border-radius:8px;pa
 .big{font-size:24px;font-weight:600}
 dl{display:grid;grid-template-columns:minmax(auto,45%) 1fr;gap:3px 14px;margin:8px 0 0}
 dt{color:var(--muted);min-width:0}dd{margin:0;min-width:0;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
-#refd,#ref2d{grid-template-columns:minmax(auto,22%) 1fr minmax(auto,22%) 1fr;column-gap:24px}
-@media (max-width:1100px){#refd,#ref2d{grid-template-columns:minmax(auto,45%) 1fr}}
+dl.refd{grid-template-columns:minmax(auto,22%) 1fr minmax(auto,22%) 1fr;column-gap:24px}
+@media (max-width:1100px){dl.refd{grid-template-columns:minmax(auto,45%) 1fr}}
+:root{--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;--s5:#e87ba4}
+@media (prefers-color-scheme:dark){:root{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181}}
+.sk{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.sk.s1{background:var(--s1)}.sk.s2{background:var(--s2)}.sk.s3{background:var(--s3)}.sk.s4{background:var(--s4)}.sk.s5{background:var(--s5)}
+#rscatter{display:block;width:100%;max-width:460px;aspect-ratio:1;margin:8px auto 0}
+#rup{display:block;width:100%;height:120px;margin-top:10px}
+#rdaily{display:block;width:100%;height:300px;margin-top:10px}
+.seg button.on{background:var(--accent);border-color:var(--accent);color:var(--card)}
+#sumt td.wrap{max-width:420px}
+.spread{font-weight:600;margin:10px 0 0}
 details.mps{margin-top:8px}details.mps summary{cursor:pointer;color:var(--muted);font-size:13px}
 details.mps td{font-size:13px}tr.sel td{font-weight:600;color:var(--accent)}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
@@ -78,23 +88,27 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
 <p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
 <pre id="measout" class="note" hidden></pre></section>
-<section class="wide"><h2>Reference check <span id="refmp"></span></h2><div id="ref" class="big">—</div><dl id="refd"></dl>
-<p id="refnote" class="note">The app logs in to the caster itself and shows what it answers; rtkrcv reads the station's stream from the app. RTK against a CORS station, static: the session mean converges over minutes to hours. Offsets are the solution minus our RTCM 1005 position (the CORS frame minus ours); the expected offset is computed from the declared frames (reference_frame, base_frame) and today's epoch, never guessed from the stream; the residual is the mean minus the expected offset: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. With no station frame declared there is no residual and no colour from it. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p>
-<details id="refmpl" class="mps" hidden><summary id="refmps">Caster mountpoints</summary><table id="refmpt"></table><pre id="refcas" class="note"></pre></details>
-<pre id="refout" class="note" hidden></pre></section>
-<section class="wide" id="ref2card" hidden><h2>Reference check 2 <span id="ref2mp"></span></h2><div id="ref2" class="big">—</div><dl id="ref2d"></dl>
-<p id="ref2note" class="note">A second reference check, against another station (options reference2_*), with its own NTRIP client, rtkrcv, session, daily reset and logs; the same rules as the card above. With reference2_send_gga on, the app sends the caster a GGA with our base's position, or reference2_gga_position, so a "nearest station" mountpoint can pick a station; the station ID and position from its 1005 say which one it picked.</p>
-<details id="ref2mpl" class="mps" hidden><summary id="ref2mps">Caster mountpoints</summary><table id="ref2mpt"></table><pre id="ref2cas" class="note"></pre></details>
-<pre id="ref2out" class="note" hidden></pre></section>
-<section class="wide" id="cmpcard" hidden><h2>Reference comparison</h2><div id="cmp" class="big">—</div><dl id="cmpd"></dl>
-<p class="note">Session means of the fixed epochs, in cm at our antenna. Each reference minus ours carries the offset between that station's frame and ours; reference 2 minus reference 1 does not depend on our coordinate at all. It is judged only when both stations' frames are declared and the same: green within 3 cm horizontal and 6 cm up, amber within 10 cm, red beyond. Otherwise it is shown raw, with the reason; the frames are never guessed.</p></section>
+<section class="wide" id="refsum"><h2>Our antenna against the references</h2><div id="sum" class="big">—</div>
+<p id="sumnote" class="note" hidden></p><pre id="sumyaml" class="mono" hidden></pre>
+<table id="sumt"></table><p id="spread" class="spread"></p><p id="spreadout" class="note"></p>
+<p class="note">Each reference station's RTK solution of our antenna, turned into our frame: the session mean (fixed epochs, station frame minus ours) minus the expected offset computed from the declared frames (each entry's frame, base_frame) at our epoch, never guessed from the stream. A consistent reference sits at 0, 0, 0: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. A reference whose station frame is unknown is shown raw (station frame minus ours, about a metre between NAD83(2011) and ITRF2020), with the reason, and is not in the spread. The spread is max − min per axis over the current references (streaming, a fix in the last 30 min, the expected station): green within 3 cm horizontal and 6 cm up, amber within 10 cm. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p></section>
+<section class="wide" id="refplots"><div class="row"><h2>Reference solutions (residual in our frame)</h2><span class="seg" id="rwin"><button type="button" data-w="1h">1 h</button> <button type="button" data-w="24h" class="on">24 h</button> <button type="button" data-w="7d">7 d</button></span></div>
+<p id="rplotnote" class="note">Loading…</p>
+<canvas id="rscatter" role="img" aria-label="East and north residuals of each reference's fixed solutions, in centimetres around our base position"></canvas>
+<div id="rlegend" class="note legend"></div>
+<div class="note legend"><span id="rhover">Point at a dot for details</span></div>
+<canvas id="rup" role="img" aria-label="Up residual of each reference over time"></canvas>
+<h3>Daily means</h3>
+<canvas id="rdaily" role="img" aria-label="Daily mean east, north and up residual of each reference"></canvas>
+<p class="note">30-second means of the fixed epochs (merged further for long windows), each the station's solution of our antenna minus our RTCM 1005 and the expected offset: the crosshair is our coordinate. The large dot is the session mean, the ring its 1-sigma ellipse. Daily means are per UTC day, so a drift of the antenna shows in every reference at once, while one station's problem shows in that one only.</p>
+<table id="rtable" class="note" hidden></table></section>
 <section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
 <h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl><p id="svinnote" class="note"></p></section>
-<section class="wide"><div class="row"><h2>Position</h2><button id="centre" type="button">Centre map</button></div>
+<section class="wide"><div class="row"><h2>Position</h2><span><button id="fitrefs" type="button" hidden>Show reference stations</button> <button id="centre" type="button">Centre map</button></span></div>
 <div id="map" role="img" aria-label="Map of the current position"></div>
 <p id="mapnote" class="note">Waiting for a position fix</p>
-<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005) <span class="key rover"></span>Rover on the caster (its GGA) <span class="key meas"></span>rtkrcv solution (latest)</div>
+<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005) <span class="key rover"></span>Rover on the caster (its GGA) <span class="key meas"></span>rtkrcv solution (latest)<span id="refkey" hidden> · reference stations (RTCM 1005) with their baseline</span></div>
 <dl id="posd" class="posd"></dl></section>
 <section class="wide"><h2 id="drifth">Drift around the median position</h2>
 <div id="drifttxt" class="note">No positions yet</div>
@@ -425,12 +439,12 @@ const signed3=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v).toFixed(3)+" m";
 const enuStd=(m,s)=>m&&s?`E ${signed3(m[0])} ±${s[0].toFixed(3)}, N ${signed3(m[1])} ±${s[1].toFixed(3)}, U ${signed3(m[2])} ±${s[2].toFixed(3)}`:null;
 function renderReference(r,id="ref"){
   if(!r)return;
-  const o=r.option||"reference";
+  const o=r.option||"references[1]";
   const state=r.state||"—",live=!["off","not configured","not available"].includes(state),c=r.corrections||{},cors=c.position,d=c.descriptors,sol=r.solution,ses=r.session||{},rec=r.recent,prev=r.previous_session;
   // Until this session has a fix, the previous session's verdict colours the card
   // (a daily reset is not an outage), but only while solutions keep coming.
   const clientBusy=["connecting","sourcetable",...CLIENT_WAITING,"client stopped"].includes(state);
-  // A station other than <option>_expect_station: no colour from any residual.
+  // A station other than <option>.expect_station: no colour from any residual.
   const wrong=r.station_mismatch;
   const colour=!live||clientBusy||wrong?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
   $(id+"mp").textContent=r.mountpoint?`(${r.mountpoint})`:"";
@@ -447,19 +461,19 @@ function renderReference(r,id="ref"){
   const red=["not available","login refused","mountpoint not found","unsuitable mountpoint","client stopped"].includes(state);
   $(id).className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:red?"bad":live&&wrong?"warn":["connecting","sourcetable","no data","no position","backoff","no corrections","stale","single","restarting"].includes(state)?"warn":"");
   const eph=r.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
-  const why=(state==="off"?`Off (${o}_enabled is false)`:null)||r.reason||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
+  const why=(state==="off"?`Off (${o}.enabled is false)`:null)||r.reason||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
   const st=cl.sourcetable,stText=st==null?null:!Object.keys(st).length?(cl.listed===false?`not listed in the caster's sourcetable of ${cl.sourcetable_size} mountpoints (the caster's answer to the stream request decides)`:"the caster gave no sourcetable at /"):`${st.format||"?"} ${st.format_details||""}, ${st.nav_system||"?"}, nmea ${st.nmea||"?"}, solution ${st.solution||"?"}${st.identifier?`, "${st.identifier}"`:""}${st.misc?` (${st.misc})`:""}`;
   const connText=cl.connected_s==null?(cl.last_reply?`not connected (last reply: ${cl.last_reply})`:null):`${duration(cl.connected_s)}, ${cl.bytes_per_s==null?"?":size(cl.bytes_per_s)+"/s"}, ${size(cl.bytes)} this connection, last byte ${cl.last_byte_age_s} s ago`;
   const dropped=Object.entries((r.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
   const log=r.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
   const counts=ses.counts||{},share=ses.fixed_share==null?null:`${(ses.fixed_share*100).toFixed(0)} % of ${ses.epochs} epochs (${counts.fixed||0} fixed, ${counts.float||0} float, ${counts.single||0} single)`;
-  const gga=!r.send_gga?null:`on (${o}_send_gga): position ${r.gga_source==="our 1005"?"our base's 1005":r.gga_source}, ${cl.gga_sent??0} sent${cl.gga_sent_connection?` (${cl.gga_sent_connection} this connection)`:""}${cl.gga_last_age_s!=null?`, last ${cl.gga_last_age_s} s ago`:""}${cl.gga_skipped?`, ${cl.gga_skipped} skipped (no position)`:""}`;
+  const gga=!r.send_gga?null:`on (${o}.send_gga): position ${r.gga_source==="our 1005"?"our base's 1005":r.gga_source}, ${cl.gga_sent??0} sent${cl.gga_sent_connection?` (${cl.gga_sent_connection} this connection)`:""}${cl.gga_last_age_s!=null?`, last ${cl.gga_last_age_s} s ago`:""}${cl.gga_skipped?`, ${cl.gga_skipped} skipped (no position)`:""}`;
   dl(id+"d",[["Why",why],["CORS",r.host?`${r.host}:${r.port}, login ${r.user_set?"user set":"no user"}, password ${r.password_set?"set":"not set"}`:null],
     ["Caster connection",live?connText||"none yet":null],
     ["Connections, attempts today",live?`${cl.connections??0}, ${cl.attempts_today??0}`:null],
     ["Sourcetable entry",live?stText:null],
     ["GGA uplink",live?gga:null],
-    ["Station",cors?`ID ${r.station_id} (${cors.message})${r.expect_station!=null?(wrong?`: ${wrong} (${o}_expect_station)`:`, as expected (${o}_expect_station)`):""}, ${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
+    ["Station",cors?`ID ${r.station_id} (${cors.message})${r.expect_station!=null?(wrong?`: ${wrong} (${o}.expect_station)`:`, as expected (${o}.expect_station)`):""}, ${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
     ["Station changed",sc?`ID ${sc.from_id} → ${sc.to_id}, ${(sc.moved_m/1000).toFixed(2)} km from the last 1005, ${duration(sc.age_s)} ago (${sc.utc.replace("T"," ").replace("+00:00"," UTC")}); rtkrcv restarted`:null],
     ["Baseline",r.baseline_km==null?null:r.baseline_km.toFixed(2)+" km"],
     ["CORS antenna height (1006)",cors&&cors.antenna_height_m!=null?cors.antenna_height_m.toFixed(4)+" m"+(cors.antenna_height_m?" (not applied; see the README)":""):null],
@@ -471,18 +485,18 @@ function renderReference(r,id="ref"){
     ["Session mean ± std (fixed)",enuStd(ses.mean_enu,ses.std_enu)],
     ["Session",ses.started_utc?`since ${ses.started_utc.replace("T"," ").replace("+00:00"," UTC")}${ses.last_fix_age_s!=null?`, last fix ${duration(ses.last_fix_age_s)} ago`:""}`:null],
     ["Fixed share",share],
-    ["Station frame",!live?null:r.station_frame?`${r.station_frame} (from ${r.station_frame_source})`:"unknown: set "+o+"_frame"+(r.station_df021!=null?` (the stream's DF021 is ${r.station_df021}: reserved by RTCM, not read as a frame)`:"")],
+    ["Station frame",!live?null:r.station_frame?`${r.station_frame} (from ${r.station_frame_source})${r.station_epoch!=null?`, coordinates at epoch ${r.station_epoch.toFixed(2)} (${o}.epoch; not modelled)`:""}`:"unknown: set "+o+".frame"+(r.station_df021!=null?` (the stream's DF021 is ${r.station_df021}: reserved by RTCM, not read as a frame)`:"")],
     ["Our frame",!live?null:r.base_frame?`${r.base_frame} (base_frame), epoch ${r.epoch.toFixed(2)} (${r.epoch_source==="base_epoch"?"base_epoch":"today's date; set base_epoch"})`:"unknown: set base_frame"],
     ["Expected offset",!live?null:r.expected_enu?`${enu(r.expected_enu)} (computed, station frame minus ours, epoch ${r.epoch.toFixed(2)})`:`none: ${r.no_expected||"not computed"}`],
     ["Residual (mean − expected)",!live?null:r.residual_enu?`${enu(r.residual_enu)}: ${r.verdict_reason}`:r.verdict_reason||null],
     ["Previous session",prev?`${prev.residual_enu?enu(prev.residual_enu)+" residual":"no residual"} (${prev.verdict_reason}), ${prev.fixed} fixed epochs, ended ${prev.ended_utc.replace("T"," ").replace("+00:00"," UTC")} (${prev.ended_because})`:null],
-    ["Next daily reset",r.next_reset_s==null?(live?`never (${o}_reset_utc empty)`:null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
+    ["Next daily reset",r.next_reset_s==null?(live?`never (${o}.reset_utc)`:null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
     ["Base position changed",r.base_changed_age_s==null?null:duration(r.base_changed_age_s)+" ago (session statistics restarted)"],
     ["Sessions",live?`${r.sessions} (${r.resets} daily resets, ${r.gap_restarts} gap restarts, ${r.station_changes} station changes)`:null],
     ["CORS raw log",r.raw_log?`${size(r.raw_log.bytes_today)} today`+(r.raw_log.paused?", paused (disk limit)":"")+(r.raw_log.last_error?`: ${r.raw_log.last_error}`:""):null],
     ["rtkrcv CPU",r.cpu_percent==null?null:r.cpu_percent+" % of one core"],["rtkrcv memory",r.rss_bytes==null?null:size(r.rss_bytes)],
     ["Restarts today",live?r.restarts_today:null],["Feed skipped",((r.feed||{}).frames_skipped||0)+(r.cors_feed||{}).frames_skipped?`${(r.feed||{}).frames_skipped||0} of our frames, ${(r.cors_feed||{}).frames_skipped||0} station chunks`:null],["Lines dropped",dropped||null],
-    ["rtkrcv",r.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
+    ["rtkrcv",r.rtkrcv_version],["Solution log",logNote],["Plot history",r.history_error||null]].filter(([,v])=>v!=null&&v!==""));
   const out=(r.output||[]).join("\n");$(id+"out").textContent=out;$(id+"out").hidden=!out;
   renderMountpoints(id,cl);
 }
@@ -528,11 +542,7 @@ function render(s){
   table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
   renderOutputs(s);
   renderMeasured(s.measured);
-  renderReference(s.reference);
-  // The second check's card only while it is on.
-  $("ref2card").hidden=!s.reference2||s.reference2.state==="off";
-  if(s.reference2&&s.reference2.state!=="off")renderReference(s.reference2,"ref2");
-  renderComparison(s.reference_comparison);
+  renderReferences(s.references||[],s.reference_summary||{});
   if(typeof renderReceiver==="function")renderReceiver(s);
   table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
   table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");
@@ -554,22 +564,150 @@ function renderMountpoints(id,cl){
   $(id+"mpt").innerHTML=`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(([sel,r])=>`<tr class="${esc(sel)}">${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("");
   $(id+"cas").textContent=(cl.caster_records||[]).join("\n");
 }
-// The two reference checks side by side (the app's `compare`): centimetres, the
-// colour only when both frames are declared and the same, both checks stream, each
-// has a fix in the last 30 min, and neither is on a wrong station.
-const cm=v=>v?["E","N","U"].map((a,i)=>`${a} ${v[i]<0?"−":"+"}${Math.abs(v[i]*100).toFixed(1)}`).join(", ")+" cm":null;
-function renderComparison(c){
-  $("cmpcard").hidden=!c||!c.shown;
-  if(!c||!c.shown)return;
-  const frame=f=>f||"frame unknown",id=v=>v==null?"station ID ?":`station ID ${v}`;
-  const fix=a=>a==null?"no fix":`last fix ${duration(a)} ago`;
-  // Judged only while current: a stale or wrong-station comparison has no colour.
-  $("cmp").textContent=c.station_mismatch?`Wrong station: ${c.station_mismatch}`:c.stale?`Stale: ${c.stale_reason}`:c.residual?{good:"Stations agree",warn:"Stations differ (amber)",bad:"Stations disagree"}[c.verdict]:"Raw difference only";
-  $("cmp").className="big "+(!c.station_mismatch&&!c.stale&&c.residual?{good:"good",warn:"warn",bad:"bad"}[c.verdict]:"");
-  dl("cmpd",[["Reference 1 minus ours",`${cm(c.first_minus_ours)} (${id(c.first_station_id)}, ${frame(c.first_frame)} minus ours, ${c.first_fixed} fixed epochs, ${fix(c.first_last_fix_age_s)})`],
-    ["Reference 2 minus ours",`${cm(c.second_minus_ours)} (${id(c.second_station_id)}, ${frame(c.second_frame)} minus ours, ${c.second_fixed} fixed epochs, ${fix(c.second_last_fix_age_s)})`],
-    [c.residual?"Reference 2 minus reference 1 (residual)":"Reference 2 minus reference 1 (raw)",`${cm(c.second_minus_first)}: ${c.verdict_reason}`]]);
+// ---- the reference checks: one card each, the summary, the map, the plots ----
+// Each reference keeps its colour by its place in the configuration (never by rank).
+const SERIES=["--s1","--s2","--s3","--s4","--s5"];
+const seriesColour=i=>css(SERIES[(i-1)%SERIES.length]);
+const sk=i=>"s"+((i-1)%SERIES.length+1);
+const cm=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v*100).toFixed(1);
+// A card per entry, created on first sight, after the plots card, in the list's order.
+function refCard(r){
+  const id="ref-"+r.slug;
+  if(!$(id+"card")){
+    const el=document.createElement("section");el.className="wide refcard";el.id=id+"card";
+    el.innerHTML=`<h2>Reference check: <span id="${esc(id)}name"></span> <span id="${esc(id)}mp"></span></h2><div id="${esc(id)}" class="big">—</div><dl id="${esc(id)}d" class="refd"></dl><details id="${esc(id)}mpl" class="mps" hidden><summary id="${esc(id)}mps">Caster mountpoints</summary><table id="${esc(id)}mpt"></table><pre id="${esc(id)}cas" class="note"></pre></details><pre id="${esc(id)}out" class="note" hidden></pre>`;
+    const cards=document.querySelectorAll("section.refcard");
+    (cards.length?cards[cards.length-1]:$("refplots")).insertAdjacentElement("afterend",el);
+  }
+  $(id+"name").textContent=r.name;
+  return id;
 }
+function renderReferences(refs,sum){
+  const keep=new Set();
+  for(const r of refs){const id=refCard(r);keep.add(id+"card");renderReference(r,id)}
+  document.querySelectorAll("section.refcard").forEach(el=>{if(!keep.has(el.id))el.remove()});
+  renderSummary(sum,refs);
+  updateRefMap(refs);
+}
+const SPREAD_WORD={good:"References agree",warn:"References differ (amber)",bad:"References disagree"};
+function renderSummary(sum,refs){
+  const rows=sum.rows||[],sp=sum.spread||{},n=sum.notice||{};
+  $("sumnote").textContent=n.text||"";$("sumnote").hidden=!n.text;
+  $("sumnote").className="note"+(n.kind==="migrated"?" warn":"");
+  $("sumyaml").textContent=n.yaml?"Paste into the configuration (Edit in YAML), with the passwords:\n"+n.yaml:"";$("sumyaml").hidden=!n.yaml;
+  const any=rows.some(r=>r.residual_enu);
+  $("sum").textContent=!rows.length?"No reference stations":sp.enu?SPREAD_WORD[sp.verdict]:any?`${rows.filter(r=>r.residual_enu).length} of ${rows.length} with a residual`:"No residual yet";
+  $("sum").className="big "+(sp.enu?{good:"good",warn:"warn",bad:"bad"}[sp.verdict]:"");
+  const head=["Reference","Station","Baseline","E cm","N cm","U cm","Fixed share","Session","Verdict"];
+  const cls=v=>v?{good:"good",warn:"warn",bad:"bad"}[v]:"";
+  $("sumt").innerHTML=!rows.length?"":`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(r=>{
+    const v=r.residual_enu||r.raw_enu,raw=!r.residual_enu&&r.raw_enu,c=cls(r.verdict);
+    const value=i=>v?(raw?(v[i]<0?"−":"+")+Math.abs(v[i]).toFixed(3)+" m":cm(v[i])):"—";
+    const why=r.problem||(raw?`raw (station frame minus ours): ${r.no_residual}`:r.residual_enu?r.verdict_reason+(r.not_current?` · not current: ${r.not_current}`:""):r.no_residual||r.verdict_reason);
+    return `<tr><td><span class="sk ${esc(sk(r.index))}"></span>${esc(r.name)}</td><td>${esc(r.station_id==null?null:"ID "+r.station_id)}</td><td>${esc(r.baseline_km==null?null:r.baseline_km.toFixed(1)+" km")}</td>`+
+      [0,1,2].map(i=>`<td class="${esc(c)}">${esc(value(i))}</td>`).join("")+
+      `<td>${esc(r.fixed_share==null?null:(r.fixed_share*100).toFixed(0)+" %")}</td><td>${esc(r.session_age_s==null?null:duration(r.session_age_s))}</td><td class="wrap ${esc(c)}">${esc(why)}</td></tr>`}).join("");
+  $("spread").textContent=sp.enu?`Spread between references (max − min): E ${(sp.enu[0]*100).toFixed(1)}, N ${(sp.enu[1]*100).toFixed(1)}, U ${(sp.enu[2]*100).toFixed(1)} cm over ${sp.names.join(", ")}: ${sp.verdict_reason}`:rows.length?`Spread between references: ${sp.verdict_reason||"—"}`:"";
+  $("spread").className="spread "+(sp.enu?cls(sp.verdict):"");
+  $("spreadout").textContent=(sp.left_out||[]).length&&rows.length>1?"Not in the spread: "+sp.left_out.map(x=>`${x.name} (${x.why})`).join("; "):"";
+}
+// Each reference station on the map: its 1005 position, a line from our base, and the
+// station ID and baseline. The view is not moved for them: "Show reference stations" fits.
+const refMarks=new Map();
+function updateRefMap(refs){
+  const shown=refs.filter(r=>r.station_position&&basePos);
+  $("fitrefs").hidden=!map||!shown.length;$("refkey").hidden=!map||!shown.length;
+  if(!map)return;
+  const keep=new Set();
+  for(const r of shown){
+    keep.add(r.slug);
+    const p=[r.station_position.lat,r.station_position.lon],colour=seriesColour(r.index);
+    let m=refMarks.get(r.slug);
+    if(!m){m={dot:L.circleMarker(p,{radius:7,weight:2,fillOpacity:0.9}).bindTooltip("",{permanent:true,direction:"right"}),line:L.polyline([basePos,p],{weight:2,dashArray:"6 6",interactive:false})};
+      m.dot.addTo(map);m.line.addTo(map);refMarks.set(r.slug,m)}
+    m.dot.setLatLng(p);m.line.setLatLngs([basePos,p]);
+    m.dot.setStyle({color:css("--card"),fillColor:colour});m.line.setStyle({color:colour});
+    m.dot.setTooltipContent(esc(`${r.name}: ID ${r.station_id??"?"}, ${r.baseline_km==null?"?":r.baseline_km.toFixed(1)} km`));
+  }
+  for(const [k,m] of refMarks)if(!keep.has(k)){m.dot.remove();m.line.remove();refMarks.delete(k)}
+}
+$("fitrefs").onclick=()=>{if(!map||!basePos)return;follow=false;const pts=[basePos];for(const m of refMarks.values())pts.push(m.dot.getLatLng());map.fitBounds(L.latLngBounds(pts),{padding:[30,30]})};
+
+// Plots: api/references/plots (window 1h, 24h or 7d), redrawn on resize and theme change.
+let plots=null,plotWindow="24h",rdots=[];
+document.querySelectorAll("#rwin button").forEach(b=>b.onclick=()=>{plotWindow=b.dataset.w;document.querySelectorAll("#rwin button").forEach(x=>x.classList.toggle("on",x===b));plotTick(true)});
+function ellipse(cov){
+  // 1-sigma ellipse of a 2x2 covariance: semi-axes, and the major axis's angle from east.
+  const a=cov[0][0],b=cov[0][1],d=cov[1][1],t=(a+d)/2,q=Math.sqrt(((a-d)/2)**2+b*b);
+  return {r1:Math.sqrt(Math.max(t+q,0)),r2:Math.sqrt(Math.max(t-q,0)),angle:0.5*Math.atan2(2*b,a-d)};
+}
+const legendText=r=>r.name+(r.points.length||r.session_mean?` (${r.points.length})`:` (not plotted: ${r.no_residual||"no fixed solution in this window"})`);
+function drawPlots(){
+  const refs=plots&&plots.references||[],muted=css("--muted"),line=css("--line"),text=css("--text"),card=css("--card");
+  const shown=refs.filter(r=>r.points.length||r.session_mean);
+  $("rplotnote").textContent=!plots?"Loading…":!refs.length?"No reference stations configured.":!shown.length?"No fixed solutions with a residual in this window yet.":`${shown.reduce((n,r)=>n+r.points.length,0)} points over the last ${duration(plots.window_s)}.`;
+  $("rlegend").innerHTML=refs.map(r=>`<span class="sk ${esc(sk(r.index))}"></span>${esc(legendText(r))}`).join(" · ");
+  // East/north: square, centred on our coordinate, at least ±5 cm.
+  let [c,w]=prep($("rscatter"));
+  const pad=30,mid=w/2;let half=0.05;
+  for(const r of shown){for(const p of r.points)half=Math.max(half,Math.abs(p[1]),Math.abs(p[2]));if(r.session_mean)half=Math.max(half,Math.abs(r.session_mean[0]),Math.abs(r.session_mean[1]))}
+  const step=nice(half/2);half=2*step;const k=(w-2*pad)/2/half;
+  c.strokeStyle=line;c.fillStyle=muted;c.textAlign="center";c.textBaseline="top";
+  for(let i=-2;i<=2;i++){const x=mid+i*step*k;c.beginPath();c.moveTo(x,pad);c.lineTo(x,w-pad);c.moveTo(pad,x);c.lineTo(w-pad,x);c.stroke();if(i)c.fillText(span(i*step),x,w-pad+4)}
+  c.textAlign="right";c.textBaseline="middle";for(let i=-2;i<=2;i++)if(i)c.fillText(span(i*step),pad+22,mid-i*step*k-7);
+  c.textAlign="left";c.textBaseline="top";c.fillText("N ↑",mid+4,pad-16);c.textAlign="right";c.fillText("E →",w-pad,w-pad+16);
+  // The crosshair: our 1005.
+  c.strokeStyle=text;c.lineWidth=1.5;c.beginPath();c.moveTo(mid-12,mid);c.lineTo(mid+12,mid);c.moveTo(mid,mid-12);c.lineTo(mid,mid+12);c.stroke();c.lineWidth=1;
+  rdots=[];
+  for(const r of shown){const col=seriesColour(r.index);c.fillStyle=col;c.globalAlpha=0.55;
+    for(const p of r.points){const x=mid+p[1]*k,y=mid-p[2]*k;rdots.push([x,y,r,p]);c.beginPath();c.arc(x,y,2,0,7);c.fill()}c.globalAlpha=1}
+  for(const r of shown){if(!r.session_mean)continue;const col=seriesColour(r.index),x=mid+r.session_mean[0]*k,y=mid-r.session_mean[1]*k;
+    if(r.covariance_en){const e=ellipse(r.covariance_en);c.strokeStyle=col;c.lineWidth=2;c.beginPath();c.ellipse(x,y,Math.max(e.r1*k,1),Math.max(e.r2*k,1),-e.angle,0,7);c.stroke();c.lineWidth=1}
+    c.fillStyle=col;c.strokeStyle=card;c.lineWidth=2;c.beginPath();c.arc(x,y,6,0,7);c.fill();c.stroke();c.lineWidth=1}
+  if(!shown.length){c.fillStyle=muted;c.textAlign="center";c.fillText("No residuals yet",mid,mid-24)}
+  // Up over time.
+  [c,w]=prep($("rup"),120);
+  const h=120,left=48,top=8,bottom=h-18,win=plots?plots.window_s:86400;
+  let uh=0.05;for(const r of shown)for(const p of r.points)uh=Math.max(uh,Math.abs(p[3]));
+  const ustep=nice(uh),ky=(bottom-top)/2/ustep,ymid=(top+bottom)/2,tx=age=>left+(1-age/win)*(w-left-6);
+  c.strokeStyle=line;c.beginPath();for(const y of[top,ymid,bottom]){c.moveTo(left,y);c.lineTo(w-6,y)}c.stroke();
+  c.fillStyle=muted;c.textAlign="right";c.textBaseline="middle";c.fillText("+"+span(ustep),left-4,top+4);c.fillText("Up 0",left-4,ymid);c.fillText("−"+span(ustep),left-4,bottom-4);
+  c.textBaseline="top";c.fillText("now",w-6,bottom+4);c.textAlign="left";c.fillText("−"+duration(win),left,bottom+4);
+  for(const r of shown){c.fillStyle=seriesColour(r.index);for(const p of r.points)c.fillRect(tx(p[0])-1,ymid-p[3]*ky-1,2,2)}
+  // Daily means: E, N and U strips over the days any reference has.
+  [c,w]=prep($("rdaily"),300);
+  const days=[...new Set(refs.flatMap(r=>r.days.map(d=>d[0])))].sort().slice(-60);
+  const strip=96,gap=6,dl0=48;
+  let dh=0.02;for(const r of refs)for(const d of r.days)if(days.includes(d[0]))for(let i=1;i<=3;i++)dh=Math.max(dh,Math.abs(d[i]));
+  const dstep=nice(dh),dx=i=>dl0+(days.length<2?0.5:i/(days.length-1))*(w-dl0-12);
+  ["E","N","U"].forEach((axis,a)=>{
+    const y0=a*(strip+gap),ym=y0+strip/2,kd=(strip/2-6)/dstep;
+    c.strokeStyle=line;c.beginPath();for(const y of[y0+6,ym,y0+strip-6]){c.moveTo(dl0,y);c.lineTo(w-6,y)}c.stroke();
+    c.fillStyle=muted;c.textAlign="right";c.textBaseline="middle";c.fillText(axis+" 0",dl0-4,ym);c.fillText("+"+span(dstep),dl0-4,y0+8);c.fillText("−"+span(dstep),dl0-4,y0+strip-8);
+    for(const r of refs){const col=seriesColour(r.index),pts=r.days.filter(d=>days.includes(d[0])).map(d=>[dx(days.indexOf(d[0])),ym-d[1+a]*kd]);
+      c.strokeStyle=col;c.fillStyle=col;c.lineWidth=2;c.beginPath();pts.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.stroke();c.lineWidth=1;
+      for(const [x,y] of pts){c.beginPath();c.arc(x,y,4,0,7);c.fill()}}
+  });
+  c.fillStyle=muted;c.textBaseline="top";
+  if(days.length){c.textAlign="left";c.fillText(days[0],dl0,3*(strip+gap)-2);c.textAlign="right";c.fillText(days[days.length-1],w-6,3*(strip+gap)-2)}
+  else{c.textAlign="center";c.fillText("No daily means yet",w/2,strip/2)}
+  // The same numbers as a table, for reading values exactly.
+  const rowsT=refs.flatMap(r=>r.days.filter(d=>days.includes(d[0])).map(d=>[r.name,d[0],cm(d[1]),cm(d[2]),cm(d[3]),d[4]]));
+  $("rtable").hidden=!rowsT.length;table("rtable",["Reference","Day (UTC)","E cm","N cm","U cm","Fixed epochs"],rowsT.slice(-40),"");
+}
+function rpick(ev){
+  const b=$("rscatter").getBoundingClientRect(),x=ev.clientX-b.left,y=ev.clientY-b.top;let best=null,d=144;
+  for(const [px,py,r,p] of rdots){const q=(px-x)**2+(py-y)**2;if(q<d){d=q;best=[r,p]}}
+  $("rhover").textContent=best?`${best[0].name}, ${duration(best[1][0])} ago: E ${cm(best[1][1])}, N ${cm(best[1][2])}, U ${cm(best[1][3])} cm (${best[1][4]} fixed epochs)`:"Point at a dot for details";
+}
+$("rscatter").addEventListener("pointermove",rpick);$("rscatter").addEventListener("pointerdown",rpick);
+let plotTimer=null;
+async function plotTick(now){
+  clearTimeout(plotTimer);
+  try{const r=await fetch("api/references/plots?window="+plotWindow,{cache:"no-store"});if(!r.ok)throw new Error(r.status);plots=await r.json();drawPlots()}catch(e){}
+  plotTimer=setTimeout(plotTick,30000)}
+window.addEventListener("resize",()=>{if(plots)drawPlots()});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{if(plots)drawPlots()});
 async function tick(){
   let s=null;
   try{const r=await fetch("api/status",{cache:"no-store"});if(!r.ok)throw new Error(r.status);s=await r.json()}
@@ -594,7 +732,8 @@ async function trackTick(){
 drawDrift();
 tick();
 trackTick();
+plotTick();
 </script>
-<script src="control.js?v=0.7.0"></script>
+<script src="control.js?v=0.8.0"></script>
 </body>
 </html>
