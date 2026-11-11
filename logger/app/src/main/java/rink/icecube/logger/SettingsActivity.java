@@ -45,6 +45,7 @@ import java.util.Locale;
 import java.util.Set;
 
 import rink.icecube.logger.core.GeoJson;
+import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
 import rink.icecube.logger.core.ScreenOrientation;
@@ -73,6 +74,8 @@ public final class SettingsActivity extends Activity {
     private Spinner orientationSpinner;
     private EditText refSeconds, poleTolerance;
     private TextView refError, toleranceError;
+    private final EditText[] limitFields = new EditText[Settings.LIMITS.length];
+    private final TextView[] limitErrors = new TextView[Settings.LIMITS.length];
     private CheckBox volumeKeys, sound, vibration, earlierRefs, labelCaptures;
     private static final int IMPORT_LAYERS = 7;
 
@@ -171,6 +174,19 @@ public final class SettingsActivity extends Activity {
                 p.getString(Settings.POLE_TOLERANCE_CM, "3"), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
         toleranceError = error(c);
         poleTolerance.addTextChangedListener(watcher(() -> toleranceError.setText(problem(false))));
+        label(c, "False-fix guard: after a new RTK fix (or a jump inside one) captures wait for the settle time;"
+                + " a fix that began with a jump over the warning is flagged (amber, fix_suspect).");
+        for (int i = 0; i < Settings.LIMITS.length; i++) {
+            if (i == 2) label(c, "Tilt capture gates (see README, Tilt capture): leans outside the tilt range are refused;"
+                    + " the others warn before saving.");
+            Limit l = Settings.LIMITS[i];
+            int k = i;
+            limitFields[i] = field(c, l.name + ", " + l.unit + " (" + l.range() + ", default " + l.format(l.def) + ")",
+                    p.getString(Settings.LIMIT_KEYS[i], l.format(l.def)),
+                    InputType.TYPE_CLASS_NUMBER | (l.decimals > 0 ? InputType.TYPE_NUMBER_FLAG_DECIMAL : 0));
+            limitErrors[i] = error(c);
+            limitFields[i].addTextChangedListener(watcher(() -> limitErrors[k].setText(limitProblem(k))));
+        }
         volumeKeys = check(c, "Volume keys: Mark / Mode (down = MARK, up = MODE on the map)", Settings.volumeKeys(p));
         sound = check(c, "Sound for captures, modes, refs and errors", Settings.sound(p));
         vibration = check(c, "Vibration for captures, modes, refs and errors", Settings.vibration(p));
@@ -265,6 +281,12 @@ public final class SettingsActivity extends Activity {
             else SurveyLimits.parseToleranceCm(poleTolerance.getText().toString());
             return "";
         } catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
+    }
+
+    /** The problem with limit field i, or "". */
+    private String limitProblem(int i) {
+        try { Settings.LIMITS[i].parse(limitFields[i].getText().toString()); return ""; }
+        catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
     }
 
     private boolean poleIsOther() { return poleSpinner.getSelectedItemPosition() >= PoleHeight.PRESETS.length; }
@@ -476,6 +498,13 @@ public final class SettingsActivity extends Activity {
         else Toast.makeText(this, "Ref duration not saved: " + problem(true), Toast.LENGTH_LONG).show();
         if (problem(false).isEmpty()) e.putString(Settings.POLE_TOLERANCE_CM, text(poleTolerance).replace(',', '.'));
         else Toast.makeText(this, "Pole check tolerance not saved: " + problem(false), Toast.LENGTH_LONG).show();
+        for (int k = 0; k < Settings.LIMITS.length; k++) {
+            if (limitProblem(k).isEmpty()) {
+                e.putString(Settings.LIMIT_KEYS[k], Settings.LIMITS[k].format(Settings.LIMITS[k].parse(text(limitFields[k]))));
+            } else {
+                Toast.makeText(this, Settings.LIMITS[k].name + " not saved: " + limitProblem(k), Toast.LENGTH_LONG).show();
+            }
+        }
         int i = device.getSelectedItemPosition();
         if (i >= 0 && i < addresses.size()) {
             e.putString(Settings.BT_ADDRESS, addresses.get(i)).putString(Settings.BT_NAME, names.get(i).replace(" (saved)", ""));

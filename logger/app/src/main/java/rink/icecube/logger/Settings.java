@@ -7,10 +7,12 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
+import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
 import rink.icecube.logger.core.SurveyLimits;
 import rink.icecube.logger.core.SurveyMode;
+import rink.icecube.logger.core.TiltSet;
 
 /** SharedPreferences keys and defaults shared by the screens and the service. */
 final class Settings {
@@ -30,6 +32,16 @@ final class Settings {
     static final String VOLUME_KEYS = "volume_keys", SOUND = "sound", VIBRATION = "vibration";   // default on
     static final String SHOW_EARLIER_REFS = "show_earlier_refs";   // default off
     static final String LABEL_CAPTURES = "label_captures";         // default on
+    // 0.6, all text checked by a core.Limit: false-fix guard and tilt capture gates
+    static final String SETTLE_S = "fix_settle_s", JUMP_M = "fix_jump_m";
+    static final String TILT_COVER_DEG = "tilt_cover_deg", TILT_RMS_CM = "tilt_rms_cm", TILT_MIN_DEG = "tilt_min_deg",
+            TILT_MAX_DEG = "tilt_max_deg", TILT_SIGMA_CM = "tilt_sigma_cm", TILT_IMU_DEG = "tilt_imu_deg",
+            LEAN_SCATTER_CM = "lean_scatter_cm";
+    /** The 0.6 numeric settings: key and its limit, in Settings screen order. */
+    static final String[] LIMIT_KEYS = {SETTLE_S, JUMP_M, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
+            TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM};
+    static final Limit[] LIMITS = {Limit.SETTLE_S, Limit.JUMP_M, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
+            Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM};
 
     private Settings() { }
 
@@ -87,4 +99,21 @@ final class Settings {
     static boolean vibration(SharedPreferences p) { return p.getBoolean(VIBRATION, true); }
     static boolean showEarlierRefs(SharedPreferences p) { return p.getBoolean(SHOW_EARLIER_REFS, false); }
     static boolean labelCaptures(SharedPreferences p) { return p.getBoolean(LABEL_CAPTURES, true); }
+
+    static double limit(SharedPreferences p, String key, Limit l) { return l.orDefault(p.getString(key, l.format(l.def))); }
+
+    static long settleNs(SharedPreferences p) { return Math.round(limit(p, SETTLE_S, Limit.SETTLE_S) * 1e9); }
+    static double jumpM(SharedPreferences p) { return limit(p, JUMP_M, Limit.JUMP_M); }
+
+    static TiltSet.Gates tiltGates(SharedPreferences p) {
+        TiltSet.Gates g = new TiltSet.Gates();
+        g.minCoverDeg = limit(p, TILT_COVER_DEG, Limit.TILT_COVER_DEG);
+        g.maxRms = limit(p, TILT_RMS_CM, Limit.TILT_RMS_CM) / 100;
+        g.minTiltDeg = limit(p, TILT_MIN_DEG, Limit.TILT_MIN_DEG);
+        g.maxTiltDeg = limit(p, TILT_MAX_DEG, Limit.TILT_MAX_DEG);
+        g.maxSigma = limit(p, TILT_SIGMA_CM, Limit.TILT_SIGMA_CM) / 100;
+        g.imuDeg = limit(p, TILT_IMU_DEG, Limit.TILT_IMU_DEG);
+        g.maxLeanScatter = limit(p, LEAN_SCATTER_CM, Limit.LEAN_SCATTER_CM) / 100;
+        return g;
+    }
 }

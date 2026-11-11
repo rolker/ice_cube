@@ -57,6 +57,7 @@ final class MapView extends View {
     private PointRow[] captures = new PointRow[0];
     private List<PointRow> earlierRefs = new ArrayList<>();
     private Survey.RefView ref;
+    private Survey.TiltView tilt;
     private boolean labels = true;
     static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
 
@@ -146,11 +147,12 @@ final class MapView extends View {
         project();
     }
 
-    void setLive(TrackPoint fix, TrackPoint[] trail, PointRow[] captures, Survey.RefView ref) {
+    void setLive(TrackPoint fix, TrackPoint[] trail, PointRow[] captures, Survey.RefView ref, Survey.TiltView tilt) {
         this.fix = fix;
         this.trail = trail;
         this.captures = captures;
         this.ref = ref;
+        this.tilt = tilt;
         invalidate();
     }
 
@@ -333,6 +335,7 @@ final class MapView extends View {
         drawLegend(c);
         drawScale(c, w, h);
         drawRefRing(c, w);
+        drawTiltRose(c, w);
     }
 
     private void drawTriangle(Canvas c, float x, float y, float r, int color) {
@@ -460,12 +463,69 @@ final class MapView extends View {
         c.drawText(t, cx0 - text.measureText(t) / 2, cy0 + 8 * dp, text);
         text.setTextSize(size);
         text.setFakeBoldText(false);
-        String sub = r.paused ? "PAUSED: not fixed" : r.epochs + " fixed epochs";
+        String sub = r.settling ? "PAUSED: fix settling" : r.paused ? "PAUSED: not fixed" : r.epochs + " fixed epochs";
         float tw = text.measureText(sub);
         c.drawRoundRect(cx0 - tw / 2 - 4 * dp, cy0 + rad + 8 * dp, cx0 + tw / 2 + 4 * dp, cy0 + rad + 12 * dp + size,
                 4 * dp, 4 * dp, box);
         text.setColor(r.paused ? 0xFFC62828 : 0xFF212121);
         c.drawText(sub, cx0 - tw / 2, cy0 + rad + 8 * dp + size, text);
+        text.setColor(0xFF212121);
+    }
+
+    /**
+     * During a tilt capture: a compass rose at the top centre (north up) with a spoke per
+     * lean toward its azimuth, longer for more tilt (the ring is 30°), red where the IMU
+     * check disagrees; a hollow dot where the antenna leans now; and below it the count,
+     * coverage, RMS, sigmas and IMU disagreement of the provisional solution.
+     */
+    private void drawTiltRose(Canvas c, int w) {
+        Survey.TiltView t = tilt;
+        if (t == null) return;
+        float rad = 48 * dp, cx0 = w / 2f, cy0 = 14 * dp + rad;
+        dot.setColor(0xEEFFFFFF);
+        c.drawCircle(cx0, cy0, rad + 10 * dp, dot);
+        stroke.setStrokeWidth(1.5f * dp);
+        stroke.setColor(0xFFB0BEC5);
+        c.drawCircle(cx0, cy0, rad, stroke);
+        c.drawCircle(cx0, cy0, rad * 15 / 30f, stroke);
+        c.drawLine(cx0 - rad, cy0, cx0 + rad, cy0, stroke);
+        c.drawLine(cx0, cy0 - rad, cx0, cy0 + rad, stroke);
+        float size = text.getTextSize();
+        text.setFakeBoldText(true);
+        c.drawText("N", cx0 - text.measureText("N") / 2, cy0 - rad - 1 * dp, text);
+        text.setFakeBoldText(false);
+        stroke.setStrokeWidth(4 * dp);
+        for (int i = 0; i < t.count; i++) {
+            if (Double.isNaN(t.azimuth[i])) continue;
+            double a = Math.toRadians(t.azimuth[i]);
+            float len = (float) (rad * Math.min(1, t.tilt[i] / 30));
+            stroke.setColor(t.imuBad[i] ? 0xFFC62828 : 0xFF00897B);
+            c.drawLine(cx0, cy0, cx0 + (float) Math.sin(a) * len, cy0 - (float) Math.cos(a) * len, stroke);
+        }
+        if (!Double.isNaN(t.nowAzimuth)) {
+            double a = Math.toRadians(t.nowAzimuth);
+            float len = (float) (rad * Math.min(1, t.nowTilt / 30));
+            stroke.setStrokeWidth(2.5f * dp);
+            stroke.setColor(0xFF263238);
+            c.drawCircle(cx0 + (float) Math.sin(a) * len, cy0 - (float) Math.cos(a) * len, 5 * dp, stroke);
+        }
+        String l1 = String.format(Locale.US, "TILT %s  %d lean%s  pole %.3f", t.cls, t.count, t.count == 1 ? "" : "s", t.pole);
+        String l2 = Double.isNaN(t.rms) ? (t.count < 3 ? "need 3 leans for directions, 4 to finish" : "no solution yet")
+                : String.format(Locale.US, "cover %.0f°  rms %.1f cm", t.coverage, t.rms * 100);
+        String l3 = t.sd == null ? null : String.format(Locale.US, "σ E %.1f N %.1f U %.1f cm%s", t.sd[0] * 100,
+                t.sd[1] * 100, t.sd[2] * 100, Double.isNaN(t.maxImu) ? "" : String.format(Locale.US, "  IMU %.1f°", t.maxImu));
+        String l4 = t.settleS > 0 ? "fix settling " + t.settleS + " s" : null;
+        String[] lines = l3 == null ? (l4 == null ? new String[] {l1, l2} : new String[] {l1, l2, l4})
+                : (l4 == null ? new String[] {l1, l2, l3} : new String[] {l1, l2, l3, l4});
+        float tw = 0;
+        for (String x : lines) tw = Math.max(tw, text.measureText(x));
+        float top = cy0 + rad + 12 * dp, row = size + 3 * dp;
+        c.drawRoundRect(cx0 - tw / 2 - 5 * dp, top, cx0 + tw / 2 + 5 * dp, top + row * lines.length + 4 * dp, 4 * dp,
+                4 * dp, box);
+        for (int i = 0; i < lines.length; i++) {
+            text.setColor(l4 != null && i == lines.length - 1 ? 0xFFC62828 : 0xFF212121);
+            c.drawText(lines[i], cx0 - tw / 2, top + row * (i + 1), text);
+        }
         text.setColor(0xFF212121);
     }
 
