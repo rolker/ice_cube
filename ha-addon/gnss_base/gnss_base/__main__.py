@@ -25,7 +25,7 @@ from .measured import DEFAULT_BINARY, MeasuredSettings, RtkrcvRunner, SolutionLo
 from .rawlog import RawLog, compress
 from .receiver import ChunkQueue, SerialReader
 from .reference import (ReferenceCheck, ReferenceSettings, block_clashes, slugify,
-                        summary)
+                        summary, unresolved_secret)
 from .refhistory import WINDOWS, ReferenceHistory
 from .status import Status
 from .upload import Uploader, UploadSettings
@@ -262,8 +262,13 @@ def migrate_references(settings, fetch=None):
 
     Returns a notice for the log and the page: {"kind": "migrated" | "none" | None,
     "source", "names", "text", "yaml"} (`yaml`: the entries to paste into the
-    configuration, without passwords). The old keys are removed from `settings`.
-    Nothing here logs or returns a password."""
+    configuration, without passwords, GGA positions or !secret references, each
+    replaced by a placeholder). The old keys are removed from `settings`. Nothing here
+    logs or returns a password or a GGA position.
+
+    The Supervisor's saved options hold a `!secret <name>` as that text (it is resolved
+    only into options.json): such an entry is blocked by ReferenceSettings.problem, and
+    the notice names its fields, never their values."""
     legacy_here = {k: settings.pop(k) for k in list(settings)
                    if any(k.startswith(f"{p}_") for p in LEGACY_PREFIXES)}
     if settings.get("references"):
@@ -288,18 +293,32 @@ def migrate_references(settings, fetch=None):
                         "that a new version no longer has. See the README, Migration."}
     settings["references"] = entries
     names = [e["name"] for e in entries]
+    secrets = [f"references[{index}].{k}" for index, e in enumerate(entries, 1)
+               for k, v in e.items() if unresolved_secret(v)]
+
+    def shown(key, value):
+        if unresolved_secret(value):
+            return '"<your !secret, as before>"'
+        if key in ("password", "gga_position") and value != "":
+            return '"<the same as before>"'
+        return json.dumps(value)
+
     yaml = "references:\n" + "".join(
-        "  - " + "\n    ".join(f"{k}: {json.dumps(v)}" for k, v in e.items()
-                               if k != "password")
-        + ("\n    password: \"<the same as before>\"" if "password" in e else "") + "\n"
+        "  - " + "\n    ".join(f"{k}: {shown(k, v)}" for k, v in e.items()) + "\n"
         for e in entries)
+    text = (f"The references list is empty, so the 0.7 reference options from "
+            f"{source} are used for now as {len(entries)} "
+            f"reference{'s' if len(entries) > 1 else ''} "
+            f"({', '.join(names)}). Add them as references entries in the app "
+            "configuration and save: Home Assistant forgets the old options the "
+            "next time the configuration is saved.")
+    if secrets:
+        text += (f" {', '.join(secrets)} {'is a' if len(secrets) == 1 else 'are'} "
+                 f"!secret{'' if len(secrets) == 1 else 's'}, which the app cannot read "
+                 "from the saved options, so that entry does not run: in the new "
+                 "references entry, enter the real value or keep using !secret.")
     return {"kind": "migrated", "source": source, "names": names, "yaml": yaml,
-            "text": f"The references list is empty, so the 0.7 reference options from "
-                    f"{source} are used for now as {len(entries)} "
-                    f"reference{'s' if len(entries) > 1 else ''} "
-                    f"({', '.join(names)}). Add them as references entries in the app "
-                    "configuration and save: Home Assistant forgets the old options the "
-                    "next time the configuration is saved."}
+            "text": text}
 
 
 def output_settings(settings):
@@ -443,7 +462,7 @@ async def housekeeping(log, errors, *solution_logs, raw_logs=(), histories=()):
                          raw_log.write_error or raw_log.housekeeping_error)
         for history in histories:
             try:
-                await loop.run_in_executor(None, history.write, history.take())
+                await history.flush(loop)
             except Exception:
                 LOG.exception("plot history failed")
             errors.check(f"plot history {history.path.name}", history.error)
@@ -735,7 +754,7 @@ async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, 
         for history in histories:
             if history is not None:
                 history.close_bin()
-                await loop.run_in_executor(None, history.write, history.take())
+                await history.flush(loop)
         await asyncio.gather(*(x.stop(timeout=left(0.2)) for x in logs))
 
     async def outputs_part():

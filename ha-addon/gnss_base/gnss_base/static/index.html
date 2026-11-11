@@ -91,7 +91,7 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <section class="wide" id="refsum"><h2>Our antenna against the references</h2><div id="sum" class="big">—</div>
 <p id="sumnote" class="note" hidden></p><pre id="sumyaml" class="mono" hidden></pre>
 <table id="sumt"></table><p id="spread" class="spread"></p><p id="spreadout" class="note"></p>
-<p class="note">Each reference station's RTK solution of our antenna, turned into our frame: the session mean (fixed epochs, station frame minus ours) minus the expected offset computed from the declared frames (each entry's frame, base_frame) at our epoch, never guessed from the stream. A consistent reference sits at 0, 0, 0: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. A reference whose station frame is unknown is shown raw (station frame minus ours, about a metre between NAD83(2011) and ITRF2020), with the reason, and is not in the spread. The spread is max − min per axis over the current references (streaming, a fix in the last 30 min, the expected station): green within 3 cm horizontal and 6 cm up, amber within 10 cm. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p></section>
+<p class="note">Each reference station's RTK solution of our antenna, turned into our frame: the session mean (fixed epochs, station frame minus ours) minus the expected offset computed from the declared frames (each entry's frame, base_frame) at our epoch, never guessed from the stream. A consistent reference sits at 0, 0, 0: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. A reference whose station frame is unknown is shown raw (station frame minus ours, about a metre between NAD83(2011) and ITRF2020), with the reason, and is not in the spread. A row is coloured only while it is current (streaming, rtkrcv running, a fix in the last 30 min, the expected station, a session from our current 1005). The spread is over the current references: the largest horizontal distance between two of them and the largest difference up, green within 3 cm horizontal and 6 cm up, amber within 10 cm. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p></section>
 <section class="wide" id="refplots"><div class="row"><h2>Reference solutions (residual in our frame)</h2><span class="seg" id="rwin"><button type="button" data-w="1h">1 h</button> <button type="button" data-w="24h" class="on">24 h</button> <button type="button" data-w="7d">7 d</button></span></div>
 <p id="rplotnote" class="note">Loading…</p>
 <canvas id="rscatter" role="img" aria-label="East and north residuals of each reference's fixed solutions, in centimetres around our base position"></canvas>
@@ -571,8 +571,10 @@ const seriesColour=i=>css(SERIES[(i-1)%SERIES.length]);
 const sk=i=>"s"+((i-1)%SERIES.length+1);
 const cm=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v*100).toFixed(1);
 // A card per entry, created on first sight, after the plots card, in the list's order.
+// Keyed by the entry's place in the list: two entries may have the same name (the later
+// one blocked), and each keeps its own card.
 function refCard(r){
-  const id="ref-"+r.slug;
+  const id="ref-"+r.index;
   if(!$(id+"card")){
     const el=document.createElement("section");el.className="wide refcard";el.id=id+"card";
     el.innerHTML=`<h2>Reference check: <span id="${esc(id)}name"></span> <span id="${esc(id)}mp"></span></h2><div id="${esc(id)}" class="big">—</div><dl id="${esc(id)}d" class="refd"></dl><details id="${esc(id)}mpl" class="mps" hidden><summary id="${esc(id)}mps">Caster mountpoints</summary><table id="${esc(id)}mpt"></table><pre id="${esc(id)}cas" class="note"></pre></details><pre id="${esc(id)}out" class="note" hidden></pre>`;
@@ -596,19 +598,21 @@ function renderSummary(sum,refs){
   $("sumnote").className="note"+(n.kind==="migrated"?" warn":"");
   $("sumyaml").textContent=n.yaml?"Paste into the configuration (Edit in YAML), with the passwords:\n"+n.yaml:"";$("sumyaml").hidden=!n.yaml;
   const any=rows.some(r=>r.residual_enu);
-  $("sum").textContent=!rows.length?"No reference stations":sp.enu?SPREAD_WORD[sp.verdict]:any?`${rows.filter(r=>r.residual_enu).length} of ${rows.length} with a residual`:"No residual yet";
-  $("sum").className="big "+(sp.enu?{good:"good",warn:"warn",bad:"bad"}[sp.verdict]:"");
+  $("sum").textContent=!rows.length?"No reference stations":sp.horizontal_m!=null?SPREAD_WORD[sp.verdict]:any?`${rows.filter(r=>r.residual_enu).length} of ${rows.length} with a residual`:"No residual yet";
+  $("sum").className="big "+(sp.horizontal_m!=null?{good:"good",warn:"warn",bad:"bad"}[sp.verdict]:"");
   const head=["Reference","Station","Baseline","E cm","N cm","U cm","Fixed share","Session","Verdict"];
   const cls=v=>v?{good:"good",warn:"warn",bad:"bad"}[v]:"";
   $("sumt").innerHTML=!rows.length?"":`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(r=>{
     const v=r.residual_enu||r.raw_enu,raw=!r.residual_enu&&r.raw_enu,c=cls(r.verdict);
     const value=i=>v?(raw?(v[i]<0?"−":"+")+Math.abs(v[i]).toFixed(3)+" m":cm(v[i])):"—";
-    const why=r.problem||(raw?`raw (station frame minus ours): ${r.no_residual}`:r.residual_enu?r.verdict_reason+(r.not_current?` · not current: ${r.not_current}`:""):r.no_residual||r.verdict_reason);
+    // No colour unless current (the app sets verdict null then, as on the card).
+    const why=r.problem||(raw?`raw (station frame minus ours): ${r.no_residual}`:r.residual_enu?r.verdict_reason:r.no_residual||r.verdict_reason);
     return `<tr><td><span class="sk ${esc(sk(r.index))}"></span>${esc(r.name)}</td><td>${esc(r.station_id==null?null:"ID "+r.station_id)}</td><td>${esc(r.baseline_km==null?null:r.baseline_km.toFixed(1)+" km")}</td>`+
       [0,1,2].map(i=>`<td class="${esc(c)}">${esc(value(i))}</td>`).join("")+
       `<td>${esc(r.fixed_share==null?null:(r.fixed_share*100).toFixed(0)+" %")}</td><td>${esc(r.session_age_s==null?null:duration(r.session_age_s))}</td><td class="wrap ${esc(c)}">${esc(why)}</td></tr>`}).join("");
-  $("spread").textContent=sp.enu?`Spread between references (max − min): E ${(sp.enu[0]*100).toFixed(1)}, N ${(sp.enu[1]*100).toFixed(1)}, U ${(sp.enu[2]*100).toFixed(1)} cm over ${sp.names.join(", ")}: ${sp.verdict_reason}`:rows.length?`Spread between references: ${sp.verdict_reason||"—"}`:"";
-  $("spread").className="spread "+(sp.enu?cls(sp.verdict):"");
+  const has=sp.horizontal_m!=null;
+  $("spread").textContent=has?`Spread between references (the two farthest apart): ${(sp.horizontal_m*100).toFixed(1)} cm horizontal, ${(sp.up_m*100).toFixed(1)} cm up over ${sp.names.join(", ")}: ${sp.verdict_reason}`:rows.length?`Spread between references: ${sp.verdict_reason||"—"}`:"";
+  $("spread").className="spread "+(has?cls(sp.verdict):"");
   $("spreadout").textContent=(sp.left_out||[]).length&&rows.length>1?"Not in the spread: "+sp.left_out.map(x=>`${x.name} (${x.why})`).join("; "):"";
 }
 // Each reference station on the map: its 1005 position, a line from our base, and the
@@ -620,11 +624,11 @@ function updateRefMap(refs){
   if(!map)return;
   const keep=new Set();
   for(const r of shown){
-    keep.add(r.slug);
+    keep.add(r.index);   // by place in the list, as the cards
     const p=[r.station_position.lat,r.station_position.lon],colour=seriesColour(r.index);
-    let m=refMarks.get(r.slug);
+    let m=refMarks.get(r.index);
     if(!m){m={dot:L.circleMarker(p,{radius:7,weight:2,fillOpacity:0.9}).bindTooltip("",{permanent:true,direction:"right"}),line:L.polyline([basePos,p],{weight:2,dashArray:"6 6",interactive:false})};
-      m.dot.addTo(map);m.line.addTo(map);refMarks.set(r.slug,m)}
+      m.dot.addTo(map);m.line.addTo(map);refMarks.set(r.index,m)}
     m.dot.setLatLng(p);m.line.setLatLngs([basePos,p]);
     m.dot.setStyle({color:css("--card"),fillColor:colour});m.line.setStyle({color:colour});
     m.dot.setTooltipContent(esc(`${r.name}: ID ${r.station_id??"?"}, ${r.baseline_km==null?"?":r.baseline_km.toFixed(1)} km`));

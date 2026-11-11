@@ -46,7 +46,8 @@ from gnss_base.reference import (COMPARE_FRESH_S, CORRECTIONS_STALE_S, GAP_RESTA
                                  OUR_FRAME_UNKNOWN, SOLUTION_STALE_S, STATION_FRAME_UNKNOWN,
                                  ReferenceCheck, ReferenceSettings, SessionStats,
                                  StationDecoder, block_clashes, build_config, login_clash,
-                                 NAME_PATTERN, name_clash, slugify, spread_verdict, summary, parse_gga_position, parse_reset_utc,
+                                 NAME_PATTERN, name_clash, slugify, spread_verdict, summary,
+                                 largest_spread, unresolved_secret, SAME_BASE_M, parse_gga_position, parse_reset_utc,
                                  seconds_to_reset, verdict)
 from tests import miniyaml
 from tests.fake_caster import FakeCaster
@@ -1334,6 +1335,51 @@ class Migration(unittest.TestCase):
             self.assertNotIn(SENTINEL, text)
         self.check_entries(settings_)
 
+    def test_a_gga_position_is_never_shown(self):
+        """R1-1: like the password, the GGA position is a placeholder in the notice."""
+        position = "12.3456789,-45.6789123"          # made up
+        settings_ = self.loaded(dict(self.OLD, reference_gga_position=position))
+        notice = migrate_references(settings_)
+        self.assertIn('gga_position: "<the same as before>"', notice["yaml"])
+        self.assertIn('gga_position: ""', notice["yaml"], "an empty one is shown as empty")
+        for text in (notice["text"], notice["yaml"], json.dumps(notice)):
+            self.assertNotIn("12.345", text)
+            self.assertNotIn("45.678", text)
+        first, _ = all_reference_settings(settings_)
+        self.assertEqual(first.gga_position, position, "still used")
+
+    def test_a_secret_blocks_its_entry_and_is_named_not_shown(self):
+        """R1-2: the Supervisor's saved options hold "!secret <name>" as text; the app
+        cannot resolve it, so the entry does not run, and the notice says which field."""
+        saved = dict(DEFAULTS, **dict(self.OLD, reference_password="!secret cors_pw_name",
+                                      reference2_user="!secret other_user_name"))
+        settings_ = self.loaded({"references": []})
+        notice = migrate_references(settings_, fetch=lambda: saved)
+        self.assertIn("references[1].password, references[2].user are !secrets",
+                      notice["text"])
+        self.assertIn("enter the real value or keep using !secret", notice["text"])
+        for text in (notice["text"], notice["yaml"], json.dumps(notice)):
+            self.assertNotIn("cors_pw_name", text)
+            self.assertNotIn("other_user_name", text)
+        self.assertIn('user: "<your !secret, as before>"', notice["yaml"])
+        first, second = all_reference_settings(settings_)
+        self.assertTrue(first.problem().startswith(
+            "references[1].password is a !secret the app cannot read"), first.problem())
+        self.assertTrue(second.problem().startswith("references[2].user is a !secret"))
+        self.assertNotIn("cors_pw_name", first.problem())
+        self.assertNotIn("other_user_name", second.problem())
+        # One secret alone: singular.
+        settings_ = self.loaded({"references": []})
+        saved = dict(DEFAULTS, **dict(self.OLD, reference_password="!secret x"))
+        self.assertIn("references[1].password is a !secret,",
+                      migrate_references(settings_, fetch=lambda: saved)["text"])
+
+    def test_unresolved_secret(self):
+        for value in ("!secret x", "  !secret x", "!secret"):
+            self.assertTrue(unresolved_secret(value), value)
+        for value in ("", "secret", "a!secret x", "!secretive", None, 5):
+            self.assertFalse(unresolved_secret(value), value)
+
     def test_from_the_supervisors_saved_options(self):
         """Home Assistant strips options the schema no longer has from options.json, but
         /addons/self/info still returns the saved ones (with the new defaults merged)."""
@@ -1559,9 +1605,10 @@ class Summary(unittest.TestCase):
                                        (0.0, 0.0, 0.03))):
             self.feed(check, enu)
         spread = summary(checks)["spread"]
-        self.assertEqual((spread["count"], spread["names"], spread["enu"], spread["verdict"],
-                          spread["left_out"]),
-                         (3, ["r1", "r2", "r3"], [0.02, 0.01, 0.03], "good", []))
+        self.assertEqual((spread["count"], spread["names"], spread["horizontal_m"],
+                          spread["up_m"], spread["verdict"], spread["left_out"]),
+                         (3, ["r1", "r2", "r3"], round(math.hypot(0.02, 0.01), 4), 0.03,
+                          "good", []))
         self.feed(checks[2], (-0.05, 0.0, 0.03), count=30)    # mean moves about 4.5 cm east
         spread = summary(checks)["spread"]
         self.assertEqual(spread["verdict"], "warn", spread)
@@ -1569,12 +1616,29 @@ class Summary(unittest.TestCase):
         self.assertEqual(summary(checks)["spread"]["verdict"], "bad")
 
     def test_spread_verdict_limits(self):
-        self.assertEqual(spread_verdict([0.03, 0.0, 0.06])[0], "good", "the limits count")
-        self.assertEqual(spread_verdict([0.025, 0.025, 0.0])[0], "warn", "3.5 cm horizontal")
-        self.assertEqual(spread_verdict([0.0, 0.0, 0.07])[0], "warn")
-        self.assertEqual(spread_verdict([0.1, 0.0, 0.1])[0], "warn")
-        self.assertEqual(spread_verdict([0.08, 0.08, 0.0])[0], "bad", "11 cm horizontal")
-        self.assertEqual(spread_verdict([0.0, 0.0, 0.11]), ("bad", "more than 10 cm apart"))
+        self.assertEqual(spread_verdict(0.03, 0.06)[0], "good", "the limits count")
+        self.assertEqual(spread_verdict(0.035, 0.0)[0], "warn", "3.5 cm horizontal")
+        self.assertEqual(spread_verdict(0.0, -0.07)[0], "warn")
+        self.assertEqual(spread_verdict(0.1, 0.1)[0], "warn")
+        self.assertEqual(spread_verdict(0.11, 0.0)[0], "bad", "11 cm horizontal")
+        self.assertEqual(spread_verdict(0.0, 0.11), ("bad", "more than 10 cm apart"))
+
+    def test_spread_is_the_largest_pair_not_the_bounding_box(self):
+        """R1-9: residuals at (0, 0), (2.5, 1) and (1, 2.5) cm: every pair within 2.7 cm
+        (green), while the box's diagonal is 3.5 cm (amber)."""
+        checks = self.make(["ITRF2020"] * 3)
+        for check, enu in zip(checks, ((0.0, 0.0, 0.0), (0.025, 0.01, 0.0),
+                                       (0.01, 0.025, 0.0))):
+            self.feed(check, enu)
+        self.assertEqual(largest_spread([(0, 0, 0), (0.025, 0.01, 0), (0.01, 0.025, 0)])[0],
+                         math.hypot(0.025, 0.01))
+        spread = summary(checks)["spread"]
+        self.assertEqual((spread["horizontal_m"], spread["up_m"], spread["verdict"]),
+                         (round(math.hypot(0.025, 0.01), 4), 0.0, "good"))
+        self.assertLess(spread["horizontal_m"], 0.027)
+        # Up: the largest minus the smallest, from another pair than the horizontal.
+        self.assertEqual(largest_spread([(0, 0, 0.05), (0.02, 0, 0.0), (0, 0, -0.02)]),
+                         (0.02, 0.07))
 
     def test_unknown_frame_is_raw_with_the_reason_and_left_out(self):
         known, unknown = self.make(["ITRF2020", ""])
@@ -1586,7 +1650,8 @@ class Summary(unittest.TestCase):
                          (None, [0.55, -1.15, 1.2], None))
         self.assertEqual(row["no_residual"], "station frame unknown: set references[2].frame")
         spread = result["spread"]
-        self.assertEqual((spread["count"], spread["enu"], spread["verdict"]), (1, None, None))
+        self.assertEqual((spread["count"], spread["horizontal_m"], spread["verdict"]),
+                         (1, None, None))
         self.assertEqual(spread["left_out"],
                          [{"name": "r2", "why": "station frame unknown: set references[2].frame"}])
         self.assertIn("needs two current references", spread["verdict_reason"])
@@ -1610,9 +1675,88 @@ class Summary(unittest.TestCase):
                           "rtkrcv is restarting (a new session)",
                           f"no fix in the last {COMPARE_FRESH_S / 60:.0f} min"])
         self.assertEqual(rows[0]["verdict"], None, "no colour on a wrong station")
+        self.assertEqual([r["verdict"] for r in rows[1:]], [None, None, None],
+                         "no colour while not current")
         self.assertEqual(summary(checks)["spread"]["count"], 0)
         checks[3].settings.enabled = False
         self.assertEqual(len(summary(checks)["rows"]), 3, "an entry that is off is not shown")
+
+    def test_a_row_is_coloured_only_while_current(self):
+        """R1-4: a good residual that is not current loses its colour, as on the card."""
+        checks = self.make(["ITRF2020"] * 3)
+        for check in checks:
+            self.feed(check, (0.01, 0.0, 0.0))
+        checks[1].client.state = "backoff"
+        checks[2].runner.pending = True
+        rows = summary(checks)["rows"]
+        self.assertEqual([r["verdict"] for r in rows], ["good", None, None])
+        self.assertEqual(rows[1]["verdict_reason"],
+                         "not current, no verdict: not streaming (backoff)")
+        self.assertEqual(rows[2]["verdict_reason"],
+                         "not current, no verdict: rtkrcv is restarting (a new session)")
+        self.assertEqual(rows[1]["residual_enu"], [0.01, 0.0, 0.0], "still shown")
+
+    def test_a_session_from_an_older_1005_is_left_out(self):
+        """R1-3: our 1005 changes; A's session restarts on it, B has had no solution
+        since. B's old-base session must not be compared with A's."""
+        base = {"ecef": OURS}
+        checks = self.make(["ITRF2020"] * 2)
+        for check in checks:
+            check._get_base = lambda: base
+        a, b = checks
+        self.feed(a, (0.01, 0.0, 0.0))
+        self.feed(b, (0.01, 0.0, 0.0))
+        self.assertEqual(summary(checks)["spread"]["count"], 2)
+        moved = tuple(p + d for p, d in zip(OURS, _enu_to_ecef_delta(OURS, (0.0, 0.3, 0.0))))
+        base = {"ecef": moved}
+        # A sees a solution: its session restarts on the new 1005 (same antenna place,
+        # so the offset is 30 cm south of the new base).
+        self.feed(a, (0.01, -0.3, 0.0))
+        self.assertEqual(a._base_ecef, moved)
+        self.assertNotEqual(b._base_ecef, moved, "B has seen nothing yet")
+        result = summary(checks)
+        rows = result["rows"]
+        self.assertEqual(b._base_ecef, moved, "summary brings B to the current 1005")
+        self.assertEqual((rows[1]["residual_enu"], rows[1]["verdict"], rows[1]["current"]),
+                         (None, None, False))
+        self.assertEqual(result["spread"]["count"], 1)
+        self.assertEqual(result["spread"]["left_out"],
+                         [{"name": "r2", "why": "no fix in the last 30 min"}])
+        self.assertEqual(rows[1]["no_residual"], "no fixed solution this session yet")
+        # With no current 1005 to ask (None), the one a check saw change last counts.
+        checks = self.make(["ITRF2020"] * 2)
+        a, b = checks
+        base = {"ecef": OURS}
+        for check in checks:
+            check._get_base = lambda: base
+        self.feed(a, (0.01, 0.0, 0.0))
+        self.feed(b, (0.01, 0.0, 0.0))
+        base = {"ecef": moved}
+        self.now += 1
+        self.feed(a, (0.01, -0.3, 0.0))
+        base = None
+        result = summary(checks)
+        rows = result["rows"]
+        self.assertEqual(rows[1]["not_current"],
+                         "its session is from an older 1005 position of ours")
+        self.assertEqual((rows[1]["verdict"], rows[1]["current"]), (None, False))
+        self.assertIsNotNone(rows[1]["residual_enu"], "shown, not compared")
+        self.assertEqual((rows[0]["current"], result["spread"]["count"]), (True, 1))
+        self.assertEqual(SAME_BASE_M, 0.001)
+
+    def test_the_same_name_twice_is_two_rows(self):
+        """Two entries with the same name (the later one blocked) keep their own rows;
+        the spread's left_out goes by place, not by name."""
+        checks = self.make(["ITRF2020"] * 2)
+        checks[1].settings.name = "r1"
+        for check in checks:
+            self.feed(check, (0.01, 0.0, 0.0))
+        checks[1].client.state = "backoff"
+        result = summary(checks)
+        self.assertEqual([r["index"] for r in result["rows"]], [1, 2])
+        self.assertEqual(result["spread"]["names"], ["r1"])
+        self.assertEqual(result["spread"]["left_out"],
+                         [{"name": "r1", "why": "not streaming (backoff)"}])
 
     def test_covariance_for_the_ellipse(self):
         stats = SessionStats()
@@ -1652,8 +1796,8 @@ class History(unittest.TestCase):
         self.wall += 90
         job = history.take()                         # closes the third bin
         self.assertEqual(len(history.bins), 3)
-        start, count, raw, res = history.bins[0]
-        self.assertEqual((start, count), (1_798_761_600, 30))
+        start, count, raw, res, sid = history.bins[0]
+        self.assertEqual((start, count, sid), (1_798_761_600, 30, 19))
         self.assertEqual([round(v, 4) for v in res], [0.01, 0.01, 0.03])
         points = history.points(3600)
         self.assertEqual([p[1:] for p in points], [[0.01, 0.01, 0.03, 30]] * 3)
@@ -1675,8 +1819,129 @@ class History(unittest.TestCase):
                                      "res": [0, 0, 0]}) + "\n")
         again = self.history().load()
         self.assertEqual(len(again.bins), 3)
+        self.assertEqual([b[4] for b in again.bins], [19] * 3, "the station ID read back")
         self.assertEqual(again.days(), history.days())
         self.assertEqual(again.error, "")
+
+    def test_the_rewrite_keeps_the_station_id(self):
+        """R1-7: the lines written at start and once a day keep "sid"."""
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertTrue(job["rewrite"])
+        history.write(job)
+        again = self.history().load()
+        job = again.take()
+        self.assertTrue(job["rewrite"])
+        again.write(job)
+        (line,) = again.path.read_text().splitlines()
+        self.assertEqual(json.loads(line)["sid"], 19)
+        self.assertEqual(again.bins[0][4], 19)
+        nothing = ReferenceHistory(self.folder, "x", wall=lambda: self.wall)
+        nothing.add(self.wall, (0, 0, 0))
+        nothing.close_bin()
+        self.assertIsNone(json.loads(nothing.take()["lines"][0])["sid"])
+
+    def test_a_failed_write_is_kept_for_the_next(self):
+        """R1-5: a failed write puts its lines back (before newer ones), and its daily
+        file and rewrite are done at the next write."""
+        history = self.history()
+        history.write(history.take())                # the first rewrite, done
+        history.add(self.wall, (0.51, -1.19, 1.13))
+        history.close_bin()
+        job = history.take()
+        self.assertEqual((len(job["lines"]), job["rewrite"], job["daily"] is None),
+                         (1, False, False))
+        from unittest import mock
+        with mock.patch("builtins.open", side_effect=OSError(28, "No space left")):
+            self.assertFalse(history.write(job))
+        self.assertIn("No space left", history.error)
+        history.restore(job)
+        self.wall += 30
+        history.add(self.wall, (0.52, -1.19, 1.13))
+        history.close_bin()
+        again = history.take()
+        self.assertEqual(again["lines"][0], job["lines"][0], "the failed line first")
+        self.assertEqual(len(again["lines"]), 2)
+        self.assertIsNotNone(again["daily"])
+        self.assertTrue(history.write(again))
+        self.assertEqual(history.error, "")
+        self.assertEqual(len(history.path.read_text().splitlines()), 2)
+        self.assertEqual(json.loads(history.daily_path.read_text())["2027-01-01"][0], 2)
+        # A failed rewrite is done again, from the bins.
+        self.wall += 2 * 86400
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertTrue(job["rewrite"])
+        with mock.patch("os.replace", side_effect=OSError(5, "EIO")):
+            self.assertFalse(history.write(job))
+        history.restore(job)
+        job = history.take()
+        self.assertTrue(job["rewrite"], "tried again")
+        self.assertEqual(len(job["lines"]), 3)
+        self.assertIsNotNone(job["daily"])
+
+    def test_flush_restores_on_failure(self):
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        (self.folder / "reference-abcd.jsonl.tmp").mkdir()   # the rewrite cannot write
+
+        async def go():
+            return await history.flush(asyncio.get_running_loop())
+        self.assertFalse(asyncio.run(go()))
+        self.assertIsNone(history._rewritten, "the rewrite is due again")
+        self.assertTrue(history._daily_dirty)
+        (self.folder / "reference-abcd.jsonl.tmp").rmdir()
+        self.assertTrue(asyncio.run(go()))
+        self.assertEqual(len(history.path.read_text().splitlines()), 1)
+
+    def test_a_damaged_daily_file_is_moved_aside(self):
+        """R1-6: the only record of the past daily means is not overwritten: the damaged
+        file is moved aside, and the error stays until the next start."""
+        self.folder.joinpath("reference-abcd-daily.json").write_text('{"2026-12-30": [5, 0.')
+        history = self.history().load()
+        aside = self.folder / "reference-abcd-daily.json.corrupt-20270101T000000Z"
+        self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.')
+        self.assertFalse(history.daily_path.exists())
+        self.assertIn("moved to reference-abcd-daily.json.corrupt-20270101T000000Z",
+                      history.error)
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        self.assertTrue(history.write(history.take()))
+        self.assertIn("was damaged", history.error, "kept after a good write")
+        self.assertEqual(list(json.loads(history.daily_path.read_text())), ["2027-01-01"])
+        self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.', "untouched")
+        self.assertEqual(self.history().load().error, "", "the next start reads it fine")
+
+    def test_a_daily_file_that_cannot_be_moved_is_not_overwritten(self):
+        self.folder.joinpath("reference-abcd-daily.json").write_text("[1, 2")
+        from unittest import mock
+        with mock.patch("os.replace", side_effect=OSError(30, "Read-only")):
+            history = self.history().load()
+        self.assertIn("could not be moved aside", history.error)
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertIsNone(job["daily"])
+        history.write(job)
+        self.assertEqual(history.daily_path.read_text(), "[1, 2")
+
+    def test_files_are_flushed_to_disk_before_the_rename(self):
+        from unittest import mock
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        calls = []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch("os.fsync", side_effect=lambda fd: (calls.append("fsync"),
+                                                            real_fsync(fd))), \
+                mock.patch("os.replace", side_effect=lambda a, b: (calls.append("replace"),
+                                                                   real_replace(a, b))):
+            self.assertTrue(history.write(history.take()))
+        self.assertEqual(calls, ["fsync", "replace", "fsync", "replace"])
 
     def test_no_expected_offset_keeps_the_raw_offset_only(self):
         self.expected = None
@@ -1917,7 +2182,8 @@ class EndToEnd(unittest.TestCase):
             "reference_host": "127.0.0.1", "reference_port": caster_port,
             "reference_mountpoint": "MP_1",
             "reference_user": "user", "reference_password": SENTINEL,
-            "reference_frame": "ITRF2020"}))
+            "reference_frame": "ITRF2020",
+            "reference_gga_position": "12.3456789,-45.6789123"}))   # made up, not sent
         env = dict(os.environ, FAKE_RTKRCV_PERIOD="0.2", FAKE_RTKRCV_MODE="normal",
                    FAKE_RTKRCV_SOLUTION="0 0 0.01 1 25")
         process = subprocess.Popen(
@@ -1954,6 +2220,11 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(process.returncode, 0, app_output)
         self.assertNotIn(SENTINEL, text)
         self.assertNotIn(SENTINEL, app_output)
+        for part in ("12.345", "45.678"):
+            self.assertNotIn(part, text, "no GGA position in api/status")
+            self.assertNotIn(part, app_output, "nor in the log")
+        self.assertIn('gga_position: "<the same as before>"',
+                      status["reference_summary"]["notice"]["yaml"])
         (reference,) = status["references"]
         self.assertEqual(reference["state"], "fixed", reference)
         self.assertEqual((reference["name"], reference["slug"], reference["option"]),
@@ -2103,8 +2374,8 @@ class EndToEndThree(unittest.TestCase):
         self.assertEqual(rows[2]["no_residual"], "station frame unknown: set references[3].frame")
         self.assertEqual(rows[1]["baseline_km"], round(math.dist(OURS, CORS) / 1000, 3))
         spread = summary_["spread"]
-        self.assertEqual((spread["names"], spread["enu"], spread["verdict"]),
-                         (["ABCD", "nearest"], [0.0, 0.0, 0.0], "good"))
+        self.assertEqual((spread["names"], spread["horizontal_m"], spread["up_m"],
+                          spread["verdict"]), (["ABCD", "nearest"], 0.0, 0.0, "good"))
         self.assertEqual(summary_["notice"]["kind"], None)
         self.assertEqual([r["name"] for r in plots["references"]], ["ABCD", "nearest", "Third one"])
         self.assertEqual(plots["window_s"], 3600)
@@ -2162,7 +2433,8 @@ class Page(unittest.TestCase):
                      "rtkrcv CPU", "rtkrcv memory", "not applied; see the README",
                      "Previous session", "previous session's residual", "; not modelled)",
                      "password ${r.password_set?\"set\":\"not set\"}",
-                     "Spread between references (max − min)", "Not in the spread",
+                     "Spread between references (the two farthest apart)",
+                     "Not in the spread",
                      "raw (station frame minus ours)", "Plot history"):
             self.assertIn(text, html, text)
         self.assertNotIn("reference_comparison", html, "the 0.7 comparison card is gone")
@@ -2187,11 +2459,21 @@ class Page(unittest.TestCase):
     def test_summary_and_cards_are_built_from_the_list(self):
         html = self.html
         part = html[html.index("function refCard"):html.index("const refMarks")]
-        for text in ('"ref-"+r.slug', 'insertAdjacentElement("afterend",el)',
+        for text in ('"ref-"+r.index', 'insertAdjacentElement("afterend",el)',
                      "section.refcard", "el.remove()", "renderSummary(sum,refs)",
                      "r.residual_enu||r.raw_enu", "sp.left_out", "n.yaml"):
             self.assertIn(text, part, text)
         self.assertNotRegex(part, r"\.password\b(?!_set)")
+        self.assertNotIn("r.slug", part, "cards are keyed by the entry's place")
+        marks = html[html.index("const refMarks"):html.index('$("fitrefs").onclick')]
+        for text in ("keep.add(r.index)", "refMarks.get(r.index)", "refMarks.set(r.index,m)"):
+            self.assertIn(text, marks, text)
+        self.assertNotIn("r.slug", marks, "map markers too")
+        summary_ = html[html.index("function renderSummary"):html.index("const refMarks")]
+        self.assertIn("c=cls(r.verdict)", summary_, "colour only from the app's verdict")
+        self.assertNotIn("not current: ${r.not_current}", summary_)
+        self.assertIn("sp.horizontal_m", summary_)
+        self.assertNotIn("sp.enu", summary_)
 
     def test_plots_and_map(self):
         html = self.html

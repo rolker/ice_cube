@@ -869,15 +869,19 @@ residual E, N, U in centimetres coloured by the bands above (green within 5 cm
 horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix),
 the fixed share, the session's age and the reason. A reference whose station frame is
 unknown is shown **raw** (station frame minus ours, in metres) with the reason, and no
-colour.
+colour. A row is coloured only while the reference is current (below); otherwise it
+says "not current, no verdict" and why, as its own card drops its colour.
 
-Below the table, the **spread between references**: the maximum minus the minimum of
-the residuals, per axis, over the references that are current: a residual, the NTRIP
-client streaming, rtkrcv running with no restart pending (after a nearest-station
-switch the session mean is still the old station's until rtkrcv restarts), a fix in the
-last 30 min, and the expected station. Green within 3 cm horizontal (the length of the
-east and north spreads) and 6 cm up, amber within 10 cm, red beyond; it needs two
-current references. The others are listed under it with why. The spread compares the
+Below the table, the **spread between references**, over the references that are
+current: a residual, the NTRIP client streaming, rtkrcv running with no restart pending
+(after a nearest-station switch the session mean is still the old station's until
+rtkrcv restarts), a fix in the last 30 min, the expected station, and a session from
+our current 1005 (after our 1005 changes, a reference counts again once its session
+has restarted on the new position). The spread is the largest horizontal distance
+between any two of the residuals and the largest difference up (max minus min), which
+may come from different pairs. Green within 3 cm horizontal and 6 cm up, amber within
+10 cm, red beyond: the bands are for a pair, so the colour is the worst pair's. It
+needs two current references. The others are listed under it with why. The spread compares the
 stations with each other, independent of our coordinate: a large spread says a station
 (or its frame, or a short session) is off; a small spread with all residuals away from
 zero says our coordinate is.
@@ -913,7 +917,10 @@ other service is loaded.
 The history behind them is the app's own: `<data_dir>/history/reference-<slug>.jsonl`
 (one line per 30 s bin: start, fixed epochs, mean offset and residual in metres,
 station ID; the last 8 days) and `reference-<slug>-daily.json` (the daily sums, kept
-for good), written once a minute and at shutdown. A bin keeps the residual computed for
+for good), written once a minute and at shutdown, each through a temporary file flushed
+to disk; a failed write is tried again at the next minute. A daily file that cannot be
+read at start is moved aside as `reference-<slug>-daily.json.corrupt-<UTC time>` (the
+page shows the error until the next start), and the daily means start afresh. A bin keeps the residual computed for
 the frames and epoch of its time, so changing an entry's frame later does not rewrite
 history. Bins with no residual (frame unknown) keep the raw offset only.
 `api/references/plots?window=1h|24h|7d` returns, per entry that is on, `points` as
@@ -925,6 +932,17 @@ history. Bins with no residual (frame unknown) keep the raw offset only.
 dashed line from our base, labelled with its name, station ID and baseline. The map
 does not move for them; **Show reference stations** fits our base and all of them.
 The stations' positions are public; they come from their streams.
+
+The history follows the entry's name (its slug): **renaming an entry starts its plots
+from empty**. The old `history/reference-<old slug>.jsonl` and
+`reference-<old slug>-daily.json` stay in `<data_dir>/history/` (and its logs in
+`<log_dir>/reference-<old slug>/`), shown nowhere; they are a few MB at most. Rename
+back to see them again. To remove them: the log folder is in the share (Samba or the
+File editor); `<data_dir>` is the app's private `/data`, which the share does not show,
+so delete `history/reference-<old slug>.jsonl` and `history/reference-<old
+slug>-daily.json` from a host shell (on Home Assistant OS, under
+`/mnt/data/supervisor/addons/data/<app id>/`), or with `rm` inside the app's container
+(`docker exec`).
 
 ### Migration from 0.7
 
@@ -944,8 +962,16 @@ short plain name (`ABCD` gives `abcd`), else `reference1` or `reference2`. The a
 log says so once ("references: The references list is empty, so the 0.7 reference
 options ... are used for now ..."), naming the entries and their mountpoints, never a
 password, and the summary card shows the same notice with the entries as YAML to paste
-into the configuration (the passwords left out: copy them from the old keys, which the
-YAML editor still shows until you save). **Save the list in the configuration**: the
+into the configuration (the passwords and GGA positions left out as "<the same as
+before>": copy them from the old keys, which the YAML editor still shows until you
+save). The YAML shows host, user and mountpoint as they were.
+
+A 0.7 value that was a `!secret` (for example `reference_password: "!secret cors"`)
+reaches the app from the Supervisor's saved options as that text: the Supervisor
+resolves secrets only into the options file. The app cannot read the secret, so that
+entry does not run ("references[1].password is a !secret the app cannot read ..."),
+and the notice names the field, never its value: in the new `references` entry, enter
+the real value, or keep using `!secret` there (the Supervisor resolves it in the list). **Save the list in the configuration**: the
 next save makes Home Assistant forget the old keys, and the migration then has nothing
 to read.
 
@@ -1386,10 +1412,13 @@ GGA position from the current 1005; and (0.8.0) the `references` list (defaults 
 absent fields, messages naming `references[<n>].<field>`, names and their folder slugs,
 the name and login clashes), the migration from 0.7 (from the options file, from the
 Supervisor's saved options over a local HTTP stand-in, not when the list is set,
-nothing to migrate, names from mountpoints, no password in the notice), the residual
-in our frame for a NAD83(2011) and an ITRF2020 station, colours, the spread and which
-references count, the east-north covariance, the plots' history (bins, residuals,
-decimation, daily means, files, pruning, a write error), the plots endpoint, three
+nothing to migrate, names from mountpoints, no password or GGA position in the notice,
+a `!secret` value blocking its entry by field name), the residual in our frame for a
+NAD83(2011) and an ITRF2020 station, colours only while current, the spread (the
+largest pair) and which references count (not a session from an older 1005), the
+east-north covariance, the plots' history (bins, residuals, station IDs kept through
+the rewrite, decimation, daily means, files, pruning, a failed write kept for the next,
+a damaged daily file moved aside, flushed before the rename), the plots endpoint, three
 checks running side by side (one refused, one streaming with a GGA, one plain), the
 page's cards, plots and the ellipse maths (under Node), the schema of the list and that
 `translations/en.yaml` names and describes every option and field, and the whole app

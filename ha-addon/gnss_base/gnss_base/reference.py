@@ -102,6 +102,7 @@ COMPARE_GOOD_HORIZONTAL_M = 0.03  # the spread between the references' residuals
 COMPARE_GOOD_UP_M = 0.06
 COMPARE_WARN_M = 0.10
 COMPARE_FRESH_S = 1800.0      # a check's last fix at most this old to count as current
+SAME_BASE_M = 0.001           # a session counts in the summary only from our current 1005
 MAX_FIELD = 255               # host, mountpoint, user and password: at most this long
 MAX_OFFSET_M = 1_000_000.0    # an offset beyond this is not kept (a corrupt line)
 EARTH_RADIUS_M = 6_371_000.0  # a 1005 nearer the centre than half of this is no position
@@ -254,6 +255,13 @@ def seconds_to_reset(now_wall, reset_seconds):
     return (reset_seconds - now_wall % 86400) % 86400
 
 
+def unresolved_secret(value):
+    """True when `value` is a Home Assistant `!secret <name>` reference as text: the
+    Supervisor resolves it only when it writes the options file, so a value read from
+    its saved options (the 0.7 migration) still holds the reference, not the secret."""
+    return isinstance(value, str) and re.match(r"\s*!secret(\s|$)", value) is not None
+
+
 def _field_problem(value, forbidden=""):
     """Why `value` cannot go into the NTRIP request (the request line, a header), or
     "". The text names the problem, never the value."""
@@ -310,6 +318,16 @@ class ReferenceSettings:
     def problem(self):
         """Why the check cannot run with these options ("not configured"), or ""."""
         o = self.option
+        for name, value in (("name", self.name), ("host", self.host),
+                            ("mountpoint", self.mountpoint), ("user", self.user),
+                            ("password", self.password.reveal()), ("frame", self.frame),
+                            ("epoch", self.epoch), ("reset_utc", self.reset_utc),
+                            ("gga_position", self.gga_position),
+                            ("expect_station", self.expect_station)):
+            if unresolved_secret(value):
+                return (f"{o(name)} is a !secret the app cannot read (Home Assistant "
+                        "resolves it only in the configuration it saves): enter this "
+                        "entry in the references list, with the real value or !secret")
         if not isinstance(self.name, str) or not re.fullmatch(NAME_PATTERN, self.name):
             return (f"{o('name')} must be 1 to 24 letters, digits, spaces, '_', '.' or "
                     "'-', starting with a letter or digit")
@@ -1120,11 +1138,14 @@ class ReferenceCheck:
         }
 
 
-def spread_verdict(spread):
+def spread_verdict(horizontal, up):
     """("good" | "warn" | "bad", why) for the spread between the references' residuals
-    (max minus min per axis, E N U metres): green within 3 cm horizontal and 6 cm up,
-    amber within 10 cm, red beyond (the 0.7 comparison's bands)."""
-    horizontal, up = math.hypot(spread[0], spread[1]), abs(spread[2])
+    (metres: the largest horizontal distance between two of them, the largest
+    difference in up): green within 3 cm horizontal and 6 cm up, amber within 10 cm,
+    red beyond (the 0.7 comparison's bands, for a pair). The bands need both axes
+    within their limit, so this is the worst pair's colour even when the largest
+    horizontal and the largest up distance come from different pairs."""
+    horizontal, up = abs(horizontal), abs(up)
     if horizontal <= COMPARE_GOOD_HORIZONTAL_M and up <= COMPARE_GOOD_UP_M:
         return "good", (f"within {COMPARE_GOOD_HORIZONTAL_M * 100:.0f} cm horizontal and "
                         f"{COMPARE_GOOD_UP_M * 100:.0f} cm up")
@@ -1156,19 +1177,57 @@ def not_current(check):
     return check.wrong_station()
 
 
+def older_bases(checks):
+    """{check: why} for each check whose session is relative to another 1005 of ours
+    than the current one (Status.current_base, else the one a check saw change last):
+    its residual is from an older position, so it cannot be compared with the others.
+    `_check_base` runs first, so a check that has seen the current 1005 has its session
+    restarted on it."""
+    bases = {}
+    for check in checks:
+        check._check_base(check._clock())
+        bases[check] = check._base_ecef
+    current = None
+    for check in checks:
+        base = check._get_base()
+        if base is not None:
+            current = tuple(base["ecef"])
+            break
+    if current is None:
+        known = [c for c in checks if bases[c] is not None]
+        if known:
+            latest = max(known, key=lambda c: (c._base_changed is not None,
+                                               c._base_changed or 0.0))
+            current = bases[latest]
+    return {check: "its session is from an older 1005 position of ours"
+            for check, base in bases.items()
+            if current is not None and (base is None or math.dist(base, current) > SAME_BASE_M)}
+
+
+def largest_spread(values):
+    """(horizontal, up) metres over the residuals `values` (E, N, U): the largest
+    horizontal distance between any two, and the largest minus the smallest up."""
+    horizontal = max(math.hypot(a[0] - b[0], a[1] - b[1])
+                     for i, a in enumerate(values) for b in values[i + 1:])
+    up = max(v[2] for v in values) - min(v[2] for v in values)
+    return horizontal, up
+
+
 def summary(checks):
     """The "Our antenna against the references" card: one row per enabled check with
     its residual (the station's solution of our antenna in our frame: session mean minus
     the expected offset, so a consistent reference sits at 0, 0, 0), verdict, fixed
     share, session age, station ID and baseline; a check whose station frame is unknown
-    gives its raw offset (station frame minus ours) with the reason. `spread` is the max
-    minus min of the current residuals per axis (at least two: each with a residual and
-    `not_current` empty), coloured by `spread_verdict`; the others are listed in
-    `spread["left_out"]` with why."""
+    gives its raw offset (station frame minus ours) with the reason. A row is coloured
+    only while it is current (`not_current` empty and its session from our current 1005,
+    as the card). `spread` is over the current residuals (at least two):
+    `horizontal_m`, the largest horizontal distance between two of them, and `up_m`,
+    the largest minus the smallest up, coloured by `spread_verdict`; the others are
+    listed in `spread["left_out"]` with why."""
     rows, current = [], []
+    checks = [check for check in checks if check.settings.enabled]
+    older = older_bases(checks)
     for check in checks:
-        if not check.settings.enabled:
-            continue
         snap_session = check.stats.session_mean()
         residual = check.residual()
         epochs = check.stats.epochs
@@ -1179,7 +1238,9 @@ def summary(checks):
         wrong = check.wrong_station()
         if wrong:
             colour, why = None, f"{wrong}: no verdict"
-        stale = "" if check.problem else not_current(check)
+        stale = "" if check.problem else (not_current(check) or older.get(check, ""))
+        if stale and not wrong:
+            colour, why = None, f"not current, no verdict: {stale}"
         baseline = check.baseline_m()
         row = {"name": check.settings.name, "slug": check.settings.slug,
                "index": check.settings.index, "state": check.state(),
@@ -1204,17 +1265,19 @@ def summary(checks):
                "current": not check.problem and not stale, "not_current": stale or None}
         rows.append(row)
         if residual is not None and row["current"]:
-            current.append((check.settings.name, residual))
+            current.append((check.settings.index, check.settings.name, residual))
+    counted = {index for index, _, _ in current}
     left_out = [{"name": r["name"], "why": r["problem"] or r["not_current"]
                  or r["no_residual"] or "no residual"}
-                for r in rows if r["name"] not in {n for n, _ in current}]
-    spread = {"count": len(current), "names": [n for n, _ in current], "enu": None,
+                for r in rows if r["index"] not in counted]
+    spread = {"count": len(current), "names": [n for _, n, _ in current],
+              "horizontal_m": None, "up_m": None,
               "verdict": None, "verdict_reason": None, "left_out": left_out}
     if len(current) >= 2:
-        values = [v for _, v in current]
-        enu = [max(v[a] for v in values) - min(v[a] for v in values) for a in range(3)]
-        colour, why = spread_verdict(enu)
-        spread.update(enu=[round(v, 4) for v in enu], verdict=colour, verdict_reason=why)
+        horizontal, up = largest_spread([v for _, _, v in current])
+        colour, why = spread_verdict(horizontal, up)
+        spread.update(horizontal_m=round(horizontal, 4), up_m=round(up, 4), verdict=colour,
+                      verdict_reason=why)
     else:
         spread["verdict_reason"] = ("needs two current references with a residual "
                                     f"({len(current)} now)")
