@@ -6,8 +6,18 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.OpenableColumns;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.widget.AdapterView;
+import android.widget.Button;
+import android.widget.Toast;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -23,12 +33,26 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+import rink.icecube.logger.core.GeoJson;
+import rink.icecube.logger.core.PoleHeight;
+import rink.icecube.logger.core.ReferenceFrame;
 
 /**
- * Caster and GPS link settings, saved to SharedPreferences when the screen is left.
- * Changes take effect at the next Connect. The password is only shown as dots.
+ * Caster, GPS link, survey and map settings, saved to SharedPreferences when the screen is
+ * left (layer checkboxes save at once). Caster and link changes take effect at the next
+ * Connect; pole height and Frame changes apply at once and are logged in a running session.
+ * The password is only shown as dots.
  */
 public final class SettingsActivity extends Activity {
     private EditText host, port, mount, user, pass;
@@ -38,6 +62,11 @@ public final class SettingsActivity extends Activity {
     private TextView deviceNote;
     private final List<String> addresses = new ArrayList<>(), names = new ArrayList<>();
     private boolean configureUsb, configureBt;
+    private Spinner frameSpinner, poleSpinner;
+    private EditText frameEpoch, poleOther;
+    private TextView frameError, poleError, layersHeader;
+    private LinearLayout layerList;
+    private static final int IMPORT_LAYERS = 7;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -56,6 +85,15 @@ public final class SettingsActivity extends Activity {
         pass = field(c, "Password", p.getString(Settings.PASS, ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         logCorrections = check(c, "Log corrections", Settings.logCorrections(p));
         casterAtLaunch = check(c, "Connect caster at app launch", p.getBoolean(Settings.CASTER_AT_LAUNCH, false));
+        label(c, "Frame of the base coordinates (used when the sourcetable names none)");
+        frameSpinner = spinner(c, ReferenceFrame.SETTING_NAMES);
+        int fi = java.util.Arrays.asList(ReferenceFrame.SETTING_NAMES).indexOf(p.getString(Settings.FRAME, ReferenceFrame.SETTING_NAMES[0]));
+        frameSpinner.setSelection(Math.max(0, fi));
+        frameEpoch = field(c, "Frame epoch (decimal year, optional)", p.getString(Settings.FRAME_EPOCH, ""),
+                InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        frameError = error(c);
+        frameEpoch.addTextChangedListener(watcher(() -> frameError.setText(epochProblem())));
+        frameError.setText(epochProblem());
 
         header(c, "GPS link", pad);
         RadioGroup g = new RadioGroup(this);
@@ -86,6 +124,43 @@ public final class SettingsActivity extends Activity {
         help.setPadding(0, pad / 2, 0, 0);
         c.addView(help);
 
+        header(c, "Survey", pad);
+        label(c, "Pole height (ground mark to antenna reference point)");
+        String[] poles = new String[PoleHeight.PRESETS.length + 1];
+        for (int i = 0; i < PoleHeight.PRESETS.length; i++) poles[i] = String.format(Locale.US, "%.1f m", PoleHeight.PRESETS[i]);
+        poles[poles.length - 1] = "Other\u2026";
+        poleSpinner = spinner(c, poles);
+        double pole = Settings.poleHeight(p);
+        int pi = PoleHeight.presetIndex(pole);
+        poleOther = field(c, "Pole height, m (0 to 5, up to 3 decimals)", pi >= 0 ? "" : PoleHeight.format(pole),
+                InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        poleError = error(c);
+        poleSpinner.setSelection(pi >= 0 ? pi : poles.length - 1);
+        poleSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> a, View v, int pos, long id) { updatePoleVisibility(); }
+            @Override public void onNothingSelected(AdapterView<?> a) { }
+        });
+        poleOther.addTextChangedListener(watcher(this::updatePoleVisibility));
+        updatePoleVisibility();
+
+        header(c, "Map", pad);
+        layersHeader = new TextView(this);
+        c.addView(layersHeader);
+        layerList = new LinearLayout(this);
+        layerList.setOrientation(LinearLayout.VERTICAL);
+        c.addView(layerList);
+        LinearLayout row = new LinearLayout(this);
+        Button imp = new Button(this);
+        imp.setText("Import layer files\u2026");
+        imp.setOnClickListener(v -> pickLayers());
+        row.addView(imp, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button reload = new Button(this);
+        reload.setText("Reload layers");
+        reload.setOnClickListener(v -> { Layers.reload(); loadLayers(); });
+        row.addView(reload, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        c.addView(row);
+        loadLayers();
+
         g.setOnCheckedChangeListener((grp, id) -> {
             // Each link remembers its own Configure choice.
             boolean nowBt = id == bluetooth.getId();
@@ -103,6 +178,141 @@ public final class SettingsActivity extends Activity {
     }
 
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) { loadDevices(); }
+
+    private void label(LinearLayout c, String text) {
+        TextView l = new TextView(this);
+        l.setText(text);
+        c.addView(l);
+    }
+
+    private Spinner spinner(LinearLayout c, String[] items) {
+        Spinner sp = new Spinner(this);
+        ArrayAdapter<String> ad = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
+        ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sp.setAdapter(ad);
+        c.addView(sp);
+        return sp;
+    }
+
+    private TextView error(LinearLayout c) {
+        TextView t = new TextView(this);
+        t.setTextColor(0xFFC62828);
+        c.addView(t);
+        return t;
+    }
+
+    private static TextWatcher watcher(Runnable r) {
+        return new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int n) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int n) { }
+            @Override public void afterTextChanged(Editable e) { r.run(); }
+        };
+    }
+
+    private String epochProblem() {
+        try { ReferenceFrame.parseEpoch(frameEpoch.getText().toString()); return ""; }
+        catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
+    }
+
+    private boolean poleIsOther() { return poleSpinner.getSelectedItemPosition() >= PoleHeight.PRESETS.length; }
+
+    private void updatePoleVisibility() {
+        boolean other = poleIsOther();
+        poleOther.setVisibility(other ? View.VISIBLE : View.GONE);
+        String err = "";
+        if (other) {
+            try { PoleHeight.parse(poleOther.getText().toString()); }
+            catch (IllegalArgumentException e) { err = e.getMessage() + " (not saved)"; }
+        }
+        poleError.setText(err);
+        poleError.setVisibility(err.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    // ---- map layers ----
+
+    private void loadLayers() {
+        layersHeader.setText("Loading layers\u2026");
+        Layers.getAsync(this, this::showLayers);
+    }
+
+    private void showLayers(List<Layers.LayerFile> files) {
+        layerList.removeAllViews();
+        layersHeader.setText("Layer files (*.geojson, *.json) in " + Layers.importDir(this)
+                + (files.isEmpty() ? "\nNone found. Use Import to copy files here." : ""));
+        Set<String> off = Settings.layersOff(Settings.prefs(this));
+        for (Layers.LayerFile lf : files) {
+            CheckBox cb = new CheckBox(this);
+            cb.setText(lf.name());
+            cb.setChecked(!off.contains(lf.name()));
+            cb.setEnabled(lf.layer != null);
+            cb.setOnCheckedChangeListener((b, on) -> Settings.setLayerOn(Settings.prefs(this), lf.name(), on));
+            layerList.addView(cb);
+            TextView t = new TextView(this);
+            t.setText("  " + lf.summary());
+            if (lf.layer == null) t.setTextColor(0xFFC62828);
+            layerList.addView(t);
+        }
+    }
+
+    /** Opens the system file picker (Drive and Downloads appear there); picked files are copied to layers/. */
+    private void pickLayers() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                .setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        try { startActivityForResult(i, IMPORT_LAYERS); }
+        catch (android.content.ActivityNotFoundException e) { Toast.makeText(this, "No file picker", Toast.LENGTH_LONG).show(); }
+    }
+
+    @Override protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code != IMPORT_LAYERS || result != RESULT_OK || data == null) return;
+        List<Uri> uris = new ArrayList<>();
+        if (data.getClipData() != null) {
+            for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
+        } else if (data.getData() != null) uris.add(data.getData());
+        File dir = Layers.importDir(this);
+        new Thread(() -> {
+            StringBuilder report = new StringBuilder();
+            for (Uri u : uris) report.append(importOne(u, dir)).append('\n');
+            Layers.reload();
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                new AlertDialog.Builder(this).setTitle("Import layers").setMessage(report.toString().trim())
+                        .setPositiveButton("OK", null).show();
+                loadLayers();
+            });
+        }, "import-layers").start();
+    }
+
+    /** Copies one picked file after checking that it parses. Returns a line for the report. */
+    private String importOne(Uri u, File dir) {
+        String name = displayName(u);
+        try {
+            String text;
+            try (InputStream in = getContentResolver().openInputStream(u)) {
+                if (in == null) throw new IOException("cannot open");
+                text = Layers.readText(in, Layers.MAX_BYTES);
+            }
+            GeoJson.Layer l = GeoJson.parse(text);
+            String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
+            if (!Layers.isLayerName(safe)) safe = safe + ".geojson";
+            File out = new File(dir, safe);
+            try (OutputStream o = new FileOutputStream(out)) { o.write(text.getBytes(StandardCharsets.UTF_8)); }
+            return String.format(Locale.US, "%s: %d features%s", safe, l.features.size(),
+                    l.warnings.isEmpty() ? "" : ", " + l.warnings.size() + " skipped");
+        } catch (IOException | SecurityException e) {
+            return name + ": not imported (" + e.getMessage() + ")";
+        } catch (GeoJson.GeoJsonException e) {
+            return name + ": not imported, not a GeoJSON layer (" + e.getMessage() + ")";
+        }
+    }
+
+    private String displayName(Uri u) {
+        try (Cursor c = getContentResolver().query(u, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (RuntimeException ignored) { }
+        String last = u.getLastPathSegment();
+        return last == null ? "layer.geojson" : last.substring(last.lastIndexOf('/') + 1);
+    }
 
     private void header(LinearLayout c, String text, int top) {
         TextView h = new TextView(this);
@@ -187,7 +397,17 @@ public final class SettingsActivity extends Activity {
                 .putBoolean(Settings.CASTER_AT_LAUNCH, casterAtLaunch.isChecked())
                 .putString(Settings.TRANSPORT, bt ? Settings.BLUETOOTH : Settings.USB)
                 .putBoolean(Settings.CONFIGURE_USB, configureUsb).putBoolean(Settings.CONFIGURE_BT, configureBt)
-                .putBoolean(Settings.LOG_ON_GPS_CONNECT, logOnGpsConnect.isChecked());
+                .putBoolean(Settings.LOG_ON_GPS_CONNECT, logOnGpsConnect.isChecked())
+                .putString(Settings.FRAME, ReferenceFrame.SETTING_NAMES[Math.max(0, frameSpinner.getSelectedItemPosition())]);
+        if (epochProblem().isEmpty()) e.putString(Settings.FRAME_EPOCH, text(frameEpoch));
+        else Toast.makeText(this, "Frame epoch not saved: " + epochProblem(), Toast.LENGTH_LONG).show();
+        int pi = poleSpinner.getSelectedItemPosition();
+        try {
+            double pole = pi < PoleHeight.PRESETS.length ? PoleHeight.PRESETS[pi] : PoleHeight.parse(poleOther.getText().toString());
+            e.putString(Settings.POLE_HEIGHT, PoleHeight.format(pole));
+        } catch (IllegalArgumentException x) {
+            Toast.makeText(this, "Pole height not saved: " + x.getMessage(), Toast.LENGTH_LONG).show();
+        }
         int i = device.getSelectedItemPosition();
         if (i >= 0 && i < addresses.size()) {
             e.putString(Settings.BT_ADDRESS, addresses.get(i)).putString(Settings.BT_NAME, names.get(i).replace(" (saved)", ""));

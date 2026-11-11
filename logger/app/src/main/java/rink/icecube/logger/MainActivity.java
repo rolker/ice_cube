@@ -21,18 +21,22 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import rink.icecube.logger.core.BaseCheck;
 import rink.icecube.logger.core.Gga;
+import rink.icecube.logger.core.PoleHeight;
+import rink.icecube.logger.core.ReferenceFrame;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.Rtcm3Parser;
 import rink.icecube.logger.core.StreamParser;
 
-/** Main screen: status and the controls. Settings are on their own screen. */
+/** Main screen: status, heights, warnings and the controls. Settings, map and sessions are their own screens. */
 public final class MainActivity extends Activity {
-    private TextView status, big;
+    private TextView status, big, heights, banner;
     private Button gpsButton, casterButton, sessionButton, markButton;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private String usbAsked;               // device name we already asked USB permission for
@@ -57,16 +61,34 @@ public final class MainActivity extends Activity {
         big.setTypeface(Typeface.DEFAULT_BOLD);
         big.setPadding(0, 0, 0, pad / 2);
         c.addView(big);
+        heights = new TextView(this);
+        heights.setTextSize(17);
+        heights.setTypeface(Typeface.MONOSPACE);
+        heights.setPadding(0, 0, 0, pad / 2);
+        c.addView(heights);
+        banner = new TextView(this);
+        banner.setBackgroundColor(0xFFC62828);
+        banner.setTextColor(0xFFFFFFFF);
+        banner.setTypeface(Typeface.DEFAULT_BOLD);
+        banner.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
+        banner.setVisibility(android.view.View.GONE);
+        c.addView(banner);
         gpsButton = button(c, v -> onGps());
         casterButton = button(c, v -> onCaster());
         sessionButton = button(c, v -> onSession());
         markButton = button(c, v -> {
             LoggerService s = LoggerService.current;
-            if (s != null && s.sessionOpen()) s.mark("control");
+            if (s != null && s.sessionOpen()) {
+                int n = s.markControl();
+                android.widget.Toast.makeText(this, "Marked C" + n, android.widget.Toast.LENGTH_SHORT).show();
+            }
         });
         markButton.setText("Mark control point");
-        Button settings = button(c, v -> startActivity(new Intent(this, SettingsActivity.class)));
-        settings.setText("Settings");
+        LinearLayout row1 = row(c), row2 = row(c);
+        rowButton(row1, "Map", v -> startActivity(new Intent(this, MapActivity.class)));
+        rowButton(row1, "Settings", v -> startActivity(new Intent(this, SettingsActivity.class)));
+        rowButton(row2, "Share last session", v -> shareLast());
+        rowButton(row2, "Sessions", v -> startActivity(new Intent(this, SessionsActivity.class)));
         status = new TextView(this);
         status.setTypeface(Typeface.MONOSPACE);
         status.setTextIsSelectable(true);
@@ -85,6 +107,75 @@ public final class MainActivity extends Activity {
         x.setOnClickListener(l);
         c.addView(x);
         return x;
+    }
+
+    private LinearLayout row(LinearLayout c) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        c.addView(r);
+        return r;
+    }
+
+    private void rowButton(LinearLayout r, String text, android.view.View.OnClickListener l) {
+        Button x = new Button(this);
+        x.setText(text);
+        x.setOnClickListener(l);
+        r.addView(x, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+    }
+
+    private void shareLast() {
+        List<File> all = Storage.sessions(this);
+        if (all.isEmpty()) { big.setText("No sessions yet"); return; }
+        Sharer.share(this, all.get(0));
+    }
+
+    /** The frame line: in use and its source, or what the setting says when no caster runs. */
+    static String frameText(LoggerService s, Context c) {
+        ReferenceFrame.Resolved r = s == null ? null : s.frame();
+        if (r == null) r = ReferenceFrame.resolve(Settings.frame(Settings.prefs(c)), null);
+        String t = "frame     " + r.describe();
+        String note = s == null || s.caster() == null ? null : s.sourcetableNote();
+        if (note != null && !"sourcetable".equals(r.source)) t += "\n  sourcetable: " + note;
+        return t;
+    }
+
+    /** "layers match base" when a layer base point agrees with the received ARP, else null. */
+    static String layerOkText(LoggerService s) {
+        BaseCheck c = s == null ? null : s.layerCheck();
+        return c != null && c.ok ? c.describe() + " [" + s.layerCheckFile() + "]" : null;
+    }
+
+    /** Warnings for the red banner: frame mismatch, base moved, layers not in the base's frame. */
+    static String warnings(LoggerService s) {
+        if (s == null) return null;
+        List<String> w = new ArrayList<>();
+        ReferenceFrame.Resolved r = s.frame();
+        if (r != null && r.warning != null) w.add(r.warning);
+        String moved = s.baseWatch().warning();
+        if (moved != null) w.add(moved);
+        BaseCheck c = s.layerCheck();
+        if (c != null && !c.ok) w.add(c.describe() + " [" + s.layerCheckFile() + "]");
+        return w.isEmpty() ? null : android.text.TextUtils.join("\n", w);
+    }
+
+    private void showHeights(LoggerService s) {
+        double pole = s != null ? s.poleHeight() : Settings.poleHeight(Settings.prefs(this));
+        Gga g = s == null || s.currentFix() == null ? null : s.fix();
+        StringBuilder t = new StringBuilder();
+        if (g == null || Double.isNaN(g.height)) {
+            t.append("antenna   --\nground    --");
+            if (g != null && !Double.isNaN(g.alt)) t.append(String.format(Locale.US, "\n(GGA has no geoid separation; alt %.3f m)", g.alt));
+        } else {
+            t.append(String.format(Locale.US, "antenna   %.3f m\nground    %.3f m", g.height, g.height - pole));
+        }
+        t.append("\npole      ").append(PoleHeight.format(pole)).append(" m");
+        t.append("\n(ellipsoidal = GGA alt + geoid sep)\n").append(frameText(s, this));
+        String ok = layerOkText(s);
+        if (ok != null) t.append('\n').append(ok);
+        heights.setText(t);
+        String w = warnings(s);
+        banner.setVisibility(w == null ? android.view.View.GONE : android.view.View.VISIBLE);
+        if (w != null) banner.setText(w);
     }
 
     private void requestRuntimePermissions() {
@@ -199,6 +290,8 @@ public final class MainActivity extends Activity {
         markButton.setEnabled(session);
         if (s != null && s.usbNeedsPermission()) askUsbPermission();
 
+        if (s != null) s.layersMaybeChanged();
+        showHeights(s);
         SharedPreferences p = Settings.prefs(this);
         StringBuilder t = new StringBuilder();
         if (s == null) {

@@ -23,13 +23,26 @@ import android.os.SystemClock;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
+import rink.icecube.logger.core.BaseCheck;
+import rink.icecube.logger.core.BaseWatch;
 import rink.icecube.logger.core.Gga;
+import rink.icecube.logger.core.PoleHeight;
+import rink.icecube.logger.core.ReferenceFrame;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.Rtcm3Parser;
 import rink.icecube.logger.core.RtcmStats;
+import rink.icecube.logger.core.Sourcetable;
+import rink.icecube.logger.core.StationArp;
 import rink.icecube.logger.core.StreamParser;
+import rink.icecube.logger.core.TrackPoint;
 import rink.icecube.logger.core.UbxConfig;
 
 /**
@@ -40,6 +53,11 @@ import rink.icecube.logger.core.UbxConfig;
  * A session starts when the GPS or the caster is started (or Start session is pressed)
  * and ends with Stop. A GPS started with EXTRA_WAIT (autostart) opens the session only
  * once the link is up.
+ *
+ * It also keeps what the map and the warnings need: a 2-minute trail of GGA fixes, the
+ * session's control marks, the pole height in effect, the reference frame in use (from
+ * the caster's sourcetable or the Frame setting), the base position from RTCM 1005/1006
+ * and how it compares with a map layer's base point.
  */
 public final class LoggerService extends Service {
     static final String ACTION_GPS_CONNECT = "rink.icecube.logger.GPS_CONNECT";
@@ -53,6 +71,7 @@ public final class LoggerService extends Service {
     private static final String CHANNEL = "logger";
     private static final long BT_FIRST_RETRY_MS = 3000, BT_MAX_RETRY_MS = 30000;
     private static final long GGA_MAX_AGE_NS = 30_000_000_000L;
+    private static final long TRAIL_MS = 120_000, FIX_FRESH_NS = 5_000_000_000L;
 
     /** Latest service instance, for the screen. */
     static volatile LoggerService current;
@@ -74,6 +93,42 @@ public final class LoggerService extends Service {
     volatile Rtcm3Parser rtcmParser = newRtcmParser(rtcmStats);
     volatile long rtcmForwarded, rtcmWriteErrors;
     volatile String error;
+
+    private volatile long lastFixNanos;
+    private volatile TrackPoint firstFix;
+    private final ArrayDeque<TrackPoint> trail = new ArrayDeque<>();
+    private final List<TrackPoint> marks = new ArrayList<>();
+    private int markCount;
+    private volatile double poleHeight;
+
+    private volatile BaseWatch baseWatch = new BaseWatch();
+    private volatile ReferenceFrame sourcetableFrame;
+    private volatile String sourcetableNote;           // why the sourcetable gave no frame, or null
+    private volatile ReferenceFrame.Resolved frame;
+    private int casterGeneration;
+    private volatile BaseCheck layerCheck;
+    private volatile String layerCheckFile;
+    private int layerCheckGeneration = -1;
+    private final ExecutorService background = Executors.newSingleThreadExecutor();
+    private SharedPreferences prefs;
+    private final SharedPreferences.OnSharedPreferenceChangeListener prefListener = (p, key) -> {
+        if (Settings.POLE_HEIGHT.equals(key)) {
+            double v = Settings.poleHeight(p);
+            if (v != poleHeight) {
+                poleHeight = v;
+                event("pole_height=" + PoleHeight.format(v) + " changed");
+            }
+        } else if (Settings.FRAME.equals(key) || Settings.FRAME_EPOCH.equals(key)) {
+            updateFrame();
+        }
+    };
+
+    @Override public void onCreate() {
+        super.onCreate();
+        prefs = Settings.prefs(this);
+        poleHeight = Settings.poleHeight(prefs);
+        prefs.registerOnSharedPreferenceChangeListener(prefListener);
+    }
 
     @Override public IBinder onBind(Intent i) { return null; }
 
@@ -113,11 +168,109 @@ public final class LoggerService extends Service {
     // ---- session ----
 
     private StreamParser newParser() {
-        return new StreamParser(s -> { latestGga = s; latestGgaNanos = System.nanoTime(); lastFix = Gga.parse(s); });
+        return new StreamParser(s -> {
+            latestGga = s;
+            latestGgaNanos = System.nanoTime();
+            Gga g = Gga.parse(s);
+            lastFix = g;
+            onFix(TrackPoint.from(g, SystemClock.elapsedRealtime()));
+        });
     }
 
-    private static Rtcm3Parser newRtcmParser(RtcmStats stats) {
-        return new Rtcm3Parser((type, len) -> stats.add(type, SystemClock.elapsedRealtime()));
+    private void onFix(TrackPoint p) {
+        if (p == null) return;
+        lastFixNanos = System.nanoTime();
+        if (firstFix == null) firstFix = p;
+        synchronized (trail) {
+            trail.addLast(p);
+            while (trail.size() > 2000 || trail.peekFirst().elapsedMs < p.elapsedMs - TRAIL_MS) trail.removeFirst();
+        }
+    }
+
+    private Rtcm3Parser newRtcmParser(RtcmStats stats) {
+        Rtcm3Parser r = new Rtcm3Parser((type, len) -> stats.add(type, SystemClock.elapsedRealtime()));
+        r.payloads = (type, b, off, len) -> {
+            if (type != 1005 && type != 1006) return;
+            StationArp a = StationArp.decode(b, off, len);
+            if (a == null) return;
+            for (String e : baseWatch.onStation(a)) event(e);
+            runInBackground(this::checkLayers);
+        };
+        return r;
+    }
+
+    // ---- frame and base checks ----
+
+    /** Re-resolves the frame in use and logs it (and any mismatch warning) when it changes. */
+    private synchronized void updateFrame() {
+        ReferenceFrame.Resolved r = ReferenceFrame.resolve(Settings.frame(Settings.prefs(this)), sourcetableFrame);
+        if (r.sameAs(frame)) return;
+        frame = r;
+        event(r.eventText());
+        if (r.warning != null) event(r.warning);
+    }
+
+    /** Fetches the sourcetable on its own thread; never holds up the corrections connection. */
+    private void fetchSourcetable(String host, int port, String mount, String user, String pass) {
+        final int gen;
+        synchronized (this) { gen = ++casterGeneration; }
+        sourcetableFrame = null;
+        sourcetableNote = "fetching";
+        new Thread(() -> {
+            ReferenceFrame f = null;
+            String why;
+            try {
+                String misc = Sourcetable.misc(Sourcetable.fetch(host, port, user, pass, 8000), mount);
+                if (misc == null) why = "mount point not in sourcetable";
+                else if ((f = ReferenceFrame.parse(misc)) == null) why = misc.isEmpty() ? "misc field empty" : "no frame name in misc field: " + misc;
+                else why = null;
+            } catch (IOException | RuntimeException e) {
+                why = String.valueOf(e.getMessage());
+            }
+            synchronized (this) { if (gen != casterGeneration) return; }
+            sourcetableNote = why;
+            if (f == null) event("frame source=sourcetable: none (" + why + ")");
+            else {
+                sourcetableFrame = f;
+                event("frame=" + f.name + " epoch=" + f.epochText() + " source=sourcetable");
+            }
+            updateFrame();
+        }, "sourcetable").start();
+    }
+
+    /** Runs on the background executor: compares the latest ARP with a layer base point. */
+    private void checkLayers() {
+        StationArp arp = baseWatch.latest();
+        if (arp == null) return;
+        Set<String> off = Settings.layersOff(Settings.prefs(this));
+        double[] base = null;
+        String file = null;
+        for (int pass = 0; pass < 2 && base == null; pass++) {   // switched-on layers first, then any
+            for (Layers.LayerFile lf : Layers.get(this)) {
+                if (lf.layer == null || (pass == 0 && off.contains(lf.name()))) continue;
+                base = lf.layer.basePosition();
+                if (base != null) { file = lf.name(); break; }
+            }
+        }
+        synchronized (this) { layerCheckGeneration = Layers.generation(); }
+        if (base == null) { layerCheck = null; layerCheckFile = null; return; }
+        BaseCheck c = BaseCheck.compare(base[0], base[1], base[2], arp);
+        BaseCheck old = layerCheck;
+        layerCheck = c;
+        layerCheckFile = file;
+        boolean changed = old == null || old.ok != c.ok || Math.abs(old.dE - c.dE) > 0.01 || Math.abs(old.dN - c.dN) > 0.01
+                || (Double.isNaN(old.dU) != Double.isNaN(c.dU)) || Math.abs(old.dU - c.dU) > 0.01;
+        if (changed) event("layer base check: " + c.describe() + " layer=" + file + " station=" + arp.stationId);
+    }
+
+    /** The screens call this; it re-runs the base check after the layers were reloaded. */
+    void layersMaybeChanged() {
+        synchronized (this) { if (layerCheckGeneration == Layers.generation()) return; }
+        runInBackground(this::checkLayers);
+    }
+
+    private void runInBackground(Runnable r) {
+        try { background.execute(r); } catch (java.util.concurrent.RejectedExecutionException ignored) { }   // service ending
     }
 
     private Session ensureSession() {
@@ -129,6 +282,12 @@ public final class LoggerService extends Service {
             rtcmForwarded = 0;
             rtcmWriteErrors = 0;
             lastFix = null;
+            firstFix = null;
+            synchronized (trail) { trail.clear(); marks.clear(); markCount = 0; }
+            baseWatch = new BaseWatch();
+            layerCheck = null;
+            layerCheckFile = null;
+            frame = null;
             error = null;
             try {
                 Session s = Session.open(this);
@@ -136,6 +295,8 @@ public final class LoggerService extends Service {
                         + " device=" + Build.MODEL);
                 session = s;
                 lastDir = s.dir;
+                s.event("pole_height=" + PoleHeight.format(poleHeight));
+                updateFrame();
                 PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                 wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "icecube:logger");
                 wake.acquire(24 * 3600 * 1000L);
@@ -152,7 +313,18 @@ public final class LoggerService extends Service {
         if (s != null) s.event(text);
     }
 
-    void mark(String text) { event(text); }
+    /** Writes a control mark with the pole height in effect and keeps it for the map. Returns its number. */
+    int markControl() {
+        TrackPoint p = currentFix();
+        int n;
+        synchronized (trail) { n = ++markCount; if (p != null) marks.add(p.withLabel("C" + n)); }
+        event(String.format(Locale.US, "control n=%d pole_height=%s gga_quality=%s", n, PoleHeight.format(poleHeight),
+                p == null ? "none" : String.valueOf(p.quality)));
+        return n;
+    }
+
+    /** Flushes the open session's files, if any, for a snapshot. */
+    void flushSession() { Session s = session; if (s != null) s.flushAll(); }
 
     private void stopAll() {
         stopCaster("caster stopped (session stop)");
@@ -184,6 +356,7 @@ public final class LoggerService extends Service {
         if (ensureSession() == null) return;
         logCorrections = Settings.logCorrections(p);
         String mount = p.getString(Settings.MOUNT, "").trim();
+        fetchSourcetable(host, Settings.port(p), mount, p.getString(Settings.USER, "").trim(), p.getString(Settings.PASS, ""));
         NtripClient c = new NtripClient(host, Settings.port(p), mount, p.getString(Settings.USER, "").trim(),
                 p.getString(Settings.PASS, ""), this::onRtcm, this::ggaForCaster, this::event);
         caster = c;
@@ -198,6 +371,10 @@ public final class LoggerService extends Service {
         c.stop();
         try { c.join(1000); } catch (InterruptedException ignored) { }
         event(why);
+        synchronized (this) { casterGeneration++; }   // a fetch still running is ignored
+        sourcetableFrame = null;
+        sourcetableNote = null;
+        if (session != null) updateFrame();
     }
 
     /** Runs on the caster thread. Logs, counts and forwards each received chunk unchanged. */
@@ -407,9 +584,25 @@ public final class LoggerService extends Service {
     NtripClient caster() { return caster; }
     boolean loggingCorrections() { return logCorrections && caster != null; }
     Gga fix() { return lastFix; }
+    /** The latest fix if it is under 5 s old, else null. */
+    TrackPoint currentFix() {
+        if (System.nanoTime() - lastFixNanos > FIX_FRESH_NS) return null;
+        return TrackPoint.from(lastFix, SystemClock.elapsedRealtime());
+    }
+    TrackPoint firstFix() { return firstFix; }
+    TrackPoint[] trail() { synchronized (trail) { return trail.toArray(new TrackPoint[0]); } }
+    TrackPoint[] marks() { synchronized (trail) { return marks.toArray(new TrackPoint[0]); } }
+    double poleHeight() { return poleHeight; }
+    ReferenceFrame.Resolved frame() { return frame; }
+    String sourcetableNote() { return sourcetableNote; }
+    BaseWatch baseWatch() { return baseWatch; }
+    BaseCheck layerCheck() { return layerCheck; }
+    String layerCheckFile() { return layerCheckFile; }
 
     @Override public void onDestroy() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
         stopAll();
+        background.shutdownNow();
         super.onDestroy();
     }
 }

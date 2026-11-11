@@ -3,6 +3,13 @@ package rink.icecube.logger;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+
+import rink.icecube.logger.core.PoleHeight;
+import rink.icecube.logger.core.ReferenceFrame;
+
 /** SharedPreferences keys and defaults shared by the screens and the service. */
 final class Settings {
     static final String HOST = "host", PORT = "port", MOUNT = "mount", USER = "user", PASS = "pass";
@@ -11,6 +18,9 @@ final class Settings {
     static final String CONFIGURE_USB = "configure_usb", CONFIGURE_BT = "configure_bt";
     static final String LOG_ON_GPS_CONNECT = "log_on_gps_connect";
     static final String USB = "usb", BLUETOOTH = "bluetooth";
+    static final String POLE_HEIGHT = "pole_height";      // metres as text, PoleHeight.format
+    static final String LAYERS_OFF = "layers_off";        // set of layer file names switched off
+    static final String FRAME = "frame", FRAME_EPOCH = "frame_epoch";   // caster's frame when the sourcetable has none
 
     private Settings() { }
 
@@ -28,5 +38,27 @@ final class Settings {
     static int port(SharedPreferences p) {
         try { return Integer.parseInt(p.getString(PORT, "2101").trim()); }
         catch (NumberFormatException e) { return 2101; }
+    }
+
+    static double poleHeight(SharedPreferences p) {
+        return PoleHeight.parseOrDefault(p.getString(POLE_HEIGHT, PoleHeight.format(PoleHeight.DEFAULT)));
+    }
+
+    static Set<String> layersOff(SharedPreferences p) {
+        return new HashSet<>(p.getStringSet(LAYERS_OFF, Collections.<String>emptySet()));
+    }
+
+    static void setLayerOn(SharedPreferences p, String file, boolean on) {
+        Set<String> off = layersOff(p);
+        if (on) off.remove(file); else off.add(file);
+        p.edit().putStringSet(LAYERS_OFF, off).apply();
+    }
+
+    /** The Frame setting, or null for Unknown. An invalid epoch counts as none. */
+    static ReferenceFrame frame(SharedPreferences p) {
+        double epoch;
+        try { epoch = ReferenceFrame.parseEpoch(p.getString(FRAME_EPOCH, "")); }
+        catch (IllegalArgumentException e) { epoch = Double.NaN; }
+        return ReferenceFrame.fromSetting(p.getString(FRAME, ReferenceFrame.SETTING_NAMES[0]), epoch);
     }
 }

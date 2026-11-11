@@ -29,6 +29,11 @@
         </activity>
         <activity android:name=".SettingsActivity" android:exported="false"
             android:windowSoftInputMode="stateHidden" />
+        <activity android:name=".MapActivity" android:exported="false"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity android:name=".SessionsActivity" android:exported="false" />
+        <provider android:name=".ShareProvider" android:authorities="${applicationId}.share"
+            android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".LoggerService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
     </application>

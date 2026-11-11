@@ -147,12 +147,15 @@ public final class NtripClient {
         sink.onRtcm(b, n);
     }
 
-    String request() {
+    String request() { return request(host, mount, user, pass); }
+
+    /** The NTRIP 1.0 GET request for a mount point; an empty mount asks for the sourcetable. */
+    static String request(String host, String mount, String user, String pass) {
         StringBuilder r = new StringBuilder();
         r.append("GET /").append(mount).append(" HTTP/1.0\r\n");
         r.append("Host: ").append(host).append("\r\n");
         r.append("Ntrip-Version: Ntrip/1.0\r\n");
-        r.append("User-Agent: NTRIP IceCubeLogger/0.2\r\n");
+        r.append("User-Agent: NTRIP IceCubeLogger/0.3\r\n");
         if (user != null && !user.isEmpty()) {
             String c = user + ":" + (pass == null ? "" : pass);
             r.append("Authorization: Basic ")

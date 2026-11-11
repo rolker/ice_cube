@@ -8,6 +8,8 @@ package rink.icecube.logger.core;
  */
 public final class Rtcm3Parser {
     public interface Listener { void onMessage(int type, int payloadLength); }
+    /** Optional: sees each good frame's payload, buf[off..off+len), only during the call. */
+    public interface PayloadListener { void onPayload(int type, byte[] buf, int off, int len); }
 
     private final byte[] buf = new byte[1 << 14];
     private int len = 0;
@@ -16,6 +18,8 @@ public final class Rtcm3Parser {
     public long bytes, frames, crcErrors, skipped;
 
     public Rtcm3Parser(Listener l) { listener = l; }
+
+    public volatile PayloadListener payloads;
 
     public void feed(byte[] data, int n) {
         bytes += n;
@@ -43,6 +47,8 @@ public final class Rtcm3Parser {
             frames++;
             int type = pl >= 2 ? ((buf[i + 3] & 0xff) << 4) | ((buf[i + 4] & 0xff) >> 4) : 0;
             if (listener != null) listener.onMessage(type, pl);
+            PayloadListener pls = payloads;
+            if (pls != null) pls.onPayload(type, buf, i + 3, pl);
             i += 6 + pl;
         }
         return i;

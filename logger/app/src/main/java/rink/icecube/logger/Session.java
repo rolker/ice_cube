@@ -2,7 +2,6 @@ package rink.icecube.logger;
 
 import android.content.Context;
 import android.os.Build;
-import android.os.Environment;
 import android.os.SystemClock;
 
 import java.io.BufferedWriter;
@@ -62,17 +61,15 @@ final class Session {
     static Session open(Context ctx) throws IOException {
         String name = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(new Date());
         String fallbackReason = "Android " + Build.VERSION.SDK_INT + " before 11";
-        if (Build.VERSION.SDK_INT >= 30) {
-            File docs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+        File docs = Storage.primaryRoot();
+        if (docs != null) {
             try {
-                return new Session(ctx, new File(docs, "IceCubeLogger/sessions/" + name));
+                return new Session(ctx, new File(docs, "sessions/" + name));
             } catch (IOException | SecurityException e) {
                 fallbackReason = "Documents not writable: " + e.getMessage();
             }
         }
-        File[] media = ctx.getExternalMediaDirs();
-        File root = media.length > 0 && media[0] != null ? media[0] : ctx.getFilesDir();
-        Session s = new Session(ctx, new File(root, "sessions/" + name));
+        Session s = new Session(ctx, new File(Storage.fallbackRoot(ctx), "sessions/" + name));
         s.event("storage fallback to app media folder (" + fallbackReason + ")");
         return s;
     }
@@ -115,6 +112,19 @@ final class Session {
             }
             imu.flush();
         }
+    }
+
+    /** Pushes everything written so far to the files, for a snapshot. */
+    void flushAll() {
+        synchronized (this) {
+            if (closed) return;
+            try {
+                gps.flush();
+                if (corrections != null) corrections.flush();
+                events.flush();
+            } catch (IOException ignored) { }
+        }
+        imu.flush();
     }
 
     /** Writes the last event and closes every file. */
