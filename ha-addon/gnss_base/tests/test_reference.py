@@ -10,6 +10,9 @@ equator, and the login is a made-up sentinel that must appear nowhere but in the
 request's Authorization header.
 """
 import ast
+import contextlib
+import io
+import math
 import asyncio
 import json
 import os
@@ -29,20 +32,24 @@ from unittest import mock
 
 from gnss_base import __version__
 from gnss_base import rtcm as rtcmdec
-from gnss_base.__main__ import (DEFAULTS, OVERRIDES, all_reference_settings, load_settings,
-                                reference_settings)
+from gnss_base.__main__ import (DEFAULTS, OVERRIDES, REFERENCE_FIELDS, all_reference_settings,
+                                legacy_name,
+                                load_settings, migrate_references, supervisor_options)
 from gnss_base.datums import decimal_year, expected_offset_enu
 from gnss_base.frames import crc24q
 from gnss_base.hub import RtcmHub, Secret
 from gnss_base.measured import (CONFIG_NAME, MeasuredSettings, OutputLines, RtkrcvRunner,
                                 parse_solution)
 from gnss_base.ntripclient import build_gga
+from gnss_base.refhistory import ReferenceHistory
 from gnss_base.reference import (COMPARE_FRESH_S, CORRECTIONS_STALE_S, GAP_RESTART_S, NO_FIX_RED_S,
                                  OUR_FRAME_UNKNOWN, SOLUTION_STALE_S, STATION_FRAME_UNKNOWN,
                                  ReferenceCheck, ReferenceSettings, SessionStats,
-                                 StationDecoder, build_config, compare, compare_verdict,
-                                 login_clash, parse_gga_position, parse_reset_utc,
+                                 StationDecoder, block_clashes, build_config, login_clash,
+                                 NAME_PATTERN, name_clash, slugify, spread_verdict, summary,
+                                 largest_spread, unresolved_secret, SAME_BASE_M, parse_gga_position, parse_reset_utc,
                                  seconds_to_reset, verdict)
+from tests import miniyaml
 from tests.fake_caster import FakeCaster
 from tests.test_app import BitWriter
 from tests.test_measured import FAKE, ROOT, eph, rtcm
@@ -150,30 +157,30 @@ class Config(unittest.TestCase):
 class Settings(unittest.TestCase):
     def test_missing_options(self):
         self.assertEqual(settings(host="", mountpoint="", user="").problem(),
-                         "set reference_host, reference_mountpoint, reference_user")
-        self.assertEqual(settings(user="").problem(), "set reference_user")
+                         "set references[1].host, references[1].mountpoint, references[1].user")
+        self.assertEqual(settings(user="").problem(), "set references[1].user")
         self.assertEqual(settings().problem(), "")
         self.assertEqual(settings(password=Secret("")).problem(), "",
                          "an empty password is allowed (a caster may want none)")
 
     def test_fields_that_would_break_the_request(self):
-        cases = ((dict(user="a:b"), "reference_user has a ':'"),
-                 (dict(host="h/x"), "reference_host has a '/'"),
-                 (dict(host="h:2101"), "reference_host has a ':'"),
-                 (dict(mountpoint="M P"), "reference_mountpoint has a space"),
-                 (dict(mountpoint="M/P"), "reference_mountpoint has a '/'"),
-                 (dict(mountpoint="M?x"), "reference_mountpoint has a '?'"),
-                 (dict(password=Secret("p w")), "reference_password has a space"),
+        cases = ((dict(user="a:b"), "references[1].user has a ':'"),
+                 (dict(host="h/x"), "references[1].host has a '/'"),
+                 (dict(host="h:2101"), "references[1].host has a ':'"),
+                 (dict(mountpoint="M P"), "references[1].mountpoint has a space"),
+                 (dict(mountpoint="M/P"), "references[1].mountpoint has a '/'"),
+                 (dict(mountpoint="M?x"), "references[1].mountpoint has a '?'"),
+                 (dict(password=Secret("p w")), "references[1].password has a space"),
                  (dict(password=Secret("péw")),
-                  "reference_password has a character that is not printable ASCII"),
+                  "references[1].password has a character that is not printable ASCII"),
                  (dict(password=Secret("p\tw")),
-                  "reference_password has a character that is not printable ASCII"),
+                  "references[1].password has a character that is not printable ASCII"),
                  (dict(password=Secret("x" * 256)),
-                  "reference_password is longer than 255 characters"),
-                 (dict(port=0), "reference_port must be 1 to 65535"),
-                 (dict(port=70000), "reference_port must be 1 to 65535"),
-                 (dict(port="2101"), "reference_port must be 1 to 65535"),
-                 (dict(port=True), "reference_port must be 1 to 65535"))
+                  "references[1].password is longer than 255 characters"),
+                 (dict(port=0), "references[1].port must be 1 to 65535"),
+                 (dict(port=70000), "references[1].port must be 1 to 65535"),
+                 (dict(port="2101"), "references[1].port must be 1 to 65535"),
+                 (dict(port=True), "references[1].port must be 1 to 65535"))
         for fields, expected in cases:
             self.assertEqual(settings(**fields).problem(), expected, fields)
         # A password with ':', '@', '/' or '#' is fine: it only goes through base64.
@@ -194,7 +201,7 @@ class Settings(unittest.TestCase):
 
     def test_frames(self):
         """0.6.2: the frames are declared by name; nothing else is accepted, and an
-        empty reference_frame means unknown (no expected offset)."""
+        empty references[1].frame means unknown (no expected offset)."""
         self.assertEqual(settings().station_frame(), "")
         self.assertEqual(settings().our_frame(), "ITRF2020")
         self.assertEqual(settings(frame="nad83 (2011)").station_frame(), "NAD83(2011)")
@@ -202,9 +209,9 @@ class Settings(unittest.TestCase):
         self.assertEqual(settings(base_frame="").our_frame(), "")
         names = "ITRF2020, ITRF2014, ITRF2008, NAD83(2011)"
         self.assertEqual(settings(frame="WGS84").problem(),
-                         f"reference_frame must be one of {names}, or empty")
+                         f"references[1].frame must be one of {names}, or empty")
         self.assertEqual(settings(frame="0.56 -1.20 1.18").problem(),
-                         f"reference_frame must be one of {names}, or empty")
+                         f"references[1].frame must be one of {names}, or empty")
         self.assertEqual(settings(base_frame="NAD83").problem(),
                          f"base_frame must be one of {names}, or empty")
         self.assertEqual(settings(frame="NAD83(2011)", base_frame="ITRF2020").problem(), "")
@@ -226,74 +233,13 @@ class Settings(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_reset_utc(bad)
         self.assertEqual(settings(reset_utc="25:00").problem(),
-                         "reference_reset_utc must be HH:MM (UTC, 24 h) or empty")
+                         "references[1].reset_utc must be HH:MM (UTC, 24 h), never, or empty")
         ten = 1_798_761_600.0 + 10 * 3600          # 2027-01-01 10:00:00 UTC
         self.assertEqual(seconds_to_reset(ten, 0), 14 * 3600)
         self.assertEqual(seconds_to_reset(ten, 10 * 3600), 0)
         self.assertEqual(seconds_to_reset(ten, 10 * 3600 - 60), 86340)
         self.assertEqual(seconds_to_reset(ten + 0.5, 10 * 3600 + 1), 0.5)
         self.assertIsNone(seconds_to_reset(ten, None))
-
-    def test_options_and_overrides(self):
-        folder = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, folder)
-        options = folder / "options.json"
-        options.write_text(json.dumps({"reference_enabled": True, "reference_host": "h",
-                                       "reference_mountpoint": "MP", "reference_user": "u",
-                                       "reference_password": SENTINEL,
-                                       "reference_frame": "NAD83(2011)",
-                                       "measured_snr_mask": 38}))
-        loaded = load_settings(["--options", str(options)])
-        made = reference_settings(loaded)
-        self.assertEqual((made.enabled, made.host, made.port, made.mountpoint, made.user,
-                          made.password.reveal(), made.frame, made.base_frame, made.base_epoch,
-                          made.reset_utc, made.binary, made.work_dir, made.elevation_mask,
-                          made.snr_mask),
-                         (True, "h", 2101, "MP", "u", SENTINEL, "NAD83(2011)", "ITRF2020", "",
-                          "00:00", "rtkrcv-ex", folder / "reference", 15, 38))
-        self.assertNotIn("reference_password", loaded, "the password is not kept around")
-        self.assertEqual(made.problem(), "")
-        loaded = load_settings(["--options", str(options), "--no-reference",
-                                "--reference-host", " h2 ", "--reference-port", "2102",
-                                "--reference-mountpoint", "M2", "--reference-user", "u2",
-                                "--reference-frame", " itrf2014 ", "--base-frame", "",
-                                "--base-epoch", "2026-11-06",
-                                "--reference-reset-utc", "", "--data-dir", "/x"])
-        made = reference_settings(loaded)
-        self.assertEqual((made.enabled, made.host, made.port, made.mountpoint, made.user,
-                          made.station_frame(), made.our_frame(), round(made.our_epoch(), 2),
-                          made.reset_seconds(), made.work_dir),
-                         (False, "h2", 2102, "M2", "u2", "ITRF2014", "", 2026.85, None,
-                          Path("/x/reference")))
-        self.assertEqual(reference_settings(load_settings(
-            ["--options", str(options), "--reference-frame", "ETRS89"])).problem(),
-            "reference_frame must be one of ITRF2020, ITRF2014, ITRF2008, NAD83(2011), or empty")
-        self.assertTrue(reference_settings(load_settings(
-            ["--options", str(options), "--reference"])).enabled)
-        with self.assertRaises(SystemExit):
-            load_settings(["--reference-password", "x"])
-        for key in ("reference_enabled", "reference_host", "reference_port",
-                    "reference_mountpoint", "reference_user", "reference_password",
-                    "reference_frame", "reference_reset_utc", "base_frame", "base_epoch"):
-            self.assertIn(key, DEFAULTS)
-            self.assertEqual(key in OVERRIDES, key != "reference_password", key)
-        self.assertNotIn("reference_expected_enu", DEFAULTS, "removed in 0.6.2")
-        self.assertEqual((DEFAULTS["reference_enabled"], DEFAULTS["reference_host"],
-                          DEFAULTS["reference_port"], DEFAULTS["reference_mountpoint"],
-                          DEFAULTS["reference_user"], DEFAULTS["reference_password"],
-                          DEFAULTS["reference_frame"], DEFAULTS["reference_reset_utc"],
-                          DEFAULTS["base_frame"], DEFAULTS["base_epoch"]),
-                         (False, "", 2101, "", "", "", "", "00:00", "ITRF2020", ""))
-        # Defaults alone: off, and not configured if turned on.
-        made = reference_settings(load_settings(["--options", str(folder / "none.json")]))
-        self.assertFalse(made.enabled)
-        self.assertEqual(made.problem(),
-                         "set reference_host, reference_mountpoint, reference_user")
-        # A null option (Home Assistant can send one) is an empty string, not "None".
-        options.write_text(json.dumps({"reference_host": None, "reference_user": None,
-                                       "reference_frame": None, "base_frame": None}))
-        made = reference_settings(load_settings(["--options", str(options)]))
-        self.assertEqual((made.host, made.user, made.frame, made.base_frame), ("", "", "", ""))
 
 
 class Decode1033(unittest.TestCase):
@@ -429,7 +375,7 @@ class Stats(unittest.TestCase):
         # Fixes, but no expected offset (a frame not declared): no colour from it.
         self.assertEqual(verdict(None, 10.0), (None, "no residual: no expected offset"))
         self.assertEqual(verdict(None, 10.0, no_expected=STATION_FRAME_UNKNOWN),
-                         (None, "no residual: station frame unknown: set reference_frame"))
+                         (None, "no residual: station frame unknown: set references[1].frame"))
         self.assertEqual(verdict(None, NO_FIX_RED_S + 1, no_expected=STATION_FRAME_UNKNOWN),
                          ("bad", "no fixed solution for 30 min"))
         self.assertEqual(verdict([0.03, 0.03, 0.08], 10.0)[0], "good")
@@ -533,7 +479,7 @@ class StateMachine(unittest.TestCase):
         self.assertEqual((snap["state"], snap["enabled"], snap["reason"]), ("off", False, None))
         check = self.check(user="")
         self.assertEqual(check.state(), "not configured")
-        self.assertEqual(check.snapshot()["reason"], "set reference_user")
+        self.assertEqual(check.snapshot()["reason"], "set references[1].user")
         asyncio.run(self._start(check))
         self.assertFalse(self.stub.started, "nothing runs while not configured")
         check = self.check(enabled=False, reset_utc="99:99")
@@ -630,7 +576,7 @@ class StateMachine(unittest.TestCase):
         self.assertEqual((snap["station_frame"], snap["station_frame_source"],
                           snap["station_df021"], snap["base_frame"], snap["epoch"],
                           snap["no_expected"]),
-                         ("ITRF2020", "reference_frame", 0, "ITRF2020", 2027.0, None))
+                         ("ITRF2020", "references[1].frame", 0, "ITRF2020", 2027.0, None))
         self.assertEqual(snap["corrections"]["descriptors"]["antenna"], "GPPNULLANTENNA")
         self.assertEqual(snap["corrections"]["position"]["antenna_height_m"], 0.0)
         self.assertEqual(snap["base_ecef"], [round(v, 4) for v in OURS])
@@ -641,7 +587,7 @@ class StateMachine(unittest.TestCase):
         self.assertIn("expected offset E N U +0.000 +0.000 +0.000 m (computed, station frame "
                       "minus ours)", header)
         self.assertIn("our frame ITRF2020 (base_frame) epoch 2027.00 (today), station frame "
-                      "ITRF2020 (from reference_frame; stream DF021 0)", header)
+                      "ITRF2020 (from references[1].frame; stream DF021 0)", header)
         self.assertIn(f"CORS 1005 ECEF {CORS[0]:.4f} {CORS[1]:.4f} {CORS[2]:.4f} antenna height 0.0000", header)
         self.assertIn(f"our 1005 ECEF {OURS[0]:.4f}", header)
         self.assertIn("time GPST", header)
@@ -710,7 +656,7 @@ class StateMachine(unittest.TestCase):
         for got, want in zip(snap["residual_enu"], (0.0, 0.0, 0.0)):
             self.assertAlmostEqual(got, want, places=3)
         self.assertEqual(snap["verdict"], "good")
-        self.assertIn("station frame NAD83(2011) (from reference_frame; stream DF021 unknown)",
+        self.assertIn("station frame NAD83(2011) (from references[1].frame; stream DF021 unknown)",
                       check.header())
         self.assertIn(f"epoch {epoch:.2f}", check.header())
         self.assertIn(" ".join(f"{v:+.3f}" for v in expected) + " m (computed", check.header())
@@ -731,7 +677,7 @@ class StateMachine(unittest.TestCase):
         self.assertIn("epoch 2026.85 (base_epoch)", pinned.header())
 
     def test_unknown_station_frame_shows_the_raw_offset_only(self):
-        """The design rule: no guessing. Without reference_frame there is no expected
+        """The design rule: no guessing. Without references[1].frame there is no expected
         offset, no residual and no residual colour, whatever the stream's DF021 says
         (RTCM reserves that field); the no-fix rule still applies."""
         check = self.check()
@@ -748,10 +694,10 @@ class StateMachine(unittest.TestCase):
                          (None, None, 7, None, None, STATION_FRAME_UNKNOWN))
         self.assertEqual(snap["session"]["mean_enu"], [0.0, 0.0, 0.3], "the raw offset")
         self.assertEqual((snap["verdict"], snap["verdict_reason"]),
-                         (None, "no residual: station frame unknown: set reference_frame"))
+                         (None, "no residual: station frame unknown: set references[1].frame"))
         self.assertEqual(snap["corrections"]["position"]["itrf_year"], 7)
         header = check.header()
-        self.assertIn("station frame unknown (set reference_frame; stream DF021 7)", header)
+        self.assertIn("station frame unknown (set references[1].frame; stream DF021 7)", header)
         self.assertIn("expected offset E N U none (computed", header)
         # The previous session keeps "no residual" and no colour.
         check._session_start()
@@ -1157,27 +1103,40 @@ class WithFakeCaster(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snap["client"]["sourcetable"]["format"], "RTCM 3.2")
 
 
-# ---------------------------------------------------------------- 0.7.0: two references
+# ---------------------------------------------------------------- 0.8.0: the references list
 
 def settings2(**fields):
-    """The second check's settings: the options' prefix is reference2."""
-    return settings(**(dict(prefix="reference2", user="user2") | fields))
+    """The second entry's settings: index 2, named "nearest"."""
+    return settings(**(dict(name="nearest", index=2, user="user2") | fields))
 
 
-class SecondReferenceOptions(unittest.TestCase):
-    def test_messages_name_the_second_checks_options(self):
+def options_file(folder, options):
+    path = folder / "options.json"
+    path.write_text(json.dumps(options))
+    return path
+
+
+class ReferencesOptions(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.folder)
+
+    def test_messages_name_the_entry(self):
         self.assertEqual(settings2(host="", mountpoint="", user="").problem(),
-                         "set reference2_host, reference2_mountpoint, reference2_user")
-        cases = ((dict(port=0), "reference2_port must be 1 to 65535"),
-                 (dict(mountpoint="M P"), "reference2_mountpoint has a space"),
-                 (dict(password=Secret("p w")), "reference2_password has a space"),
-                 (dict(frame="WGS84"), "reference2_frame must be one of ITRF2020, ITRF2014, "
-                                       "ITRF2008, NAD83(2011), or empty"),
+                         "set references[2].host, references[2].mountpoint, "
+                         "references[2].user")
+        cases = ((dict(port=0), "references[2].port must be 1 to 65535"),
+                 (dict(mountpoint="M P"), "references[2].mountpoint has a space"),
+                 (dict(password=Secret("p w")), "references[2].password has a space"),
+                 (dict(frame="WGS84"), "references[2].frame must be one of ITRF2020, "
+                                       "ITRF2014, ITRF2008, NAD83(2011), or empty"),
+                 (dict(epoch="soon"), "references[2].epoch must be a date YYYY-MM-DD or a "
+                                      "decimal year, or empty"),
                  (dict(reset_utc="25:00"),
-                  "reference2_reset_utc must be HH:MM (UTC, 24 h) or empty"),
+                  "references[2].reset_utc must be HH:MM (UTC, 24 h), never, or empty"),
                  (dict(gga_position="north"),
-                  'reference2_gga_position must be "lat,lon" in decimal degrees, or empty'),
-                 *((dict(expect_station=bad), "reference2_expect_station must be a whole "
+                  'references[2].gga_position must be "lat,lon" in decimal degrees, or empty'),
+                 *((dict(expect_station=bad), "references[2].expect_station must be a whole "
                    "number from 0 to 4095, or empty") for bad in (-1, 4096, True, 7.0, "x")))
         for fields, expected in cases:
             self.assertEqual(settings2(**fields).problem(), expected, fields)
@@ -1185,12 +1144,38 @@ class SecondReferenceOptions(unittest.TestCase):
         for good in (None, 0, 4095):
             self.assertEqual(settings2(expect_station=good).problem(), "", good)
         self.assertEqual(settings2(frame="nad83(2011)").station_frame(), "NAD83(2011)")
-        check = ReferenceCheck(settings2(), RtcmHub(), lambda: None, label="reference check 2")
-        self.assertEqual(check.no_expected(), "station frame unknown: set reference2_frame")
-        self.assertIn("set reference2_frame", check.header())
+        self.assertAlmostEqual(settings2(epoch="2010.0").station_epoch(), 2010.0)
+        check = ReferenceCheck(settings2(), RtcmHub(), lambda: None,
+                               label="reference check nearest")
+        self.assertEqual(check.no_expected(), "station frame unknown: set references[2].frame")
+        self.assertIn("set references[2].frame", check.header())
         snap = check.snapshot()
-        self.assertEqual((snap["option"], snap["station_frame_source"]), ("reference2", None))
-        self.assertIn("reference2_frame", verdict(None, 1.0, no_expected=check.no_expected())[1])
+        self.assertEqual((snap["option"], snap["name"], snap["slug"], snap["index"],
+                          snap["station_frame_source"]),
+                         ("references[2]", "nearest", "nearest", 2, None))
+        self.assertIn("references[2].frame",
+                      verdict(None, 1.0, no_expected=check.no_expected())[1])
+        epoch = ReferenceCheck(settings2(frame="ITRF2020", epoch="2020-01-01"), RtcmHub(),
+                               lambda: None)
+        self.assertIn("station epoch 2020.00, not modelled", epoch.header())
+        self.assertEqual(epoch.snapshot()["station_epoch"], 2020.0)
+
+    def test_names_and_folders(self):
+        self.assertEqual(slugify("ABCD"), "abcd")
+        self.assertEqual(slugify(" Station 19 "), "station-19")
+        self.assertEqual(slugify("a__b..c"), "a-b-c")
+        self.assertEqual(settings2(name="Station 19").slug, "station-19")
+        for bad in ("", " x", "-x", "x" * 25, "é", "a/b", None, 7):
+            self.assertEqual(settings2(name=bad).problem(),
+                             "references[2].name must be 1 to 24 letters, digits, spaces, "
+                             "'_', '.' or '-', starting with a letter or digit", bad)
+        for good in ("abcd", "ABCD 19", "r_1.b-2", "x" * 24):
+            self.assertEqual(settings2(name=good).problem(), "", good)
+
+    def test_reset_utc(self):
+        self.assertIsNone(settings2(reset_utc="never").reset_seconds())
+        self.assertIsNone(settings2(reset_utc="").reset_seconds())
+        self.assertEqual(settings2(reset_utc="06:30").reset_seconds(), 23400)
 
     def test_gga_position(self):
         self.assertIsNone(parse_gga_position(""))
@@ -1201,8 +1186,8 @@ class SecondReferenceOptions(unittest.TestCase):
         for bad in ("12.5", "12.5;-45", "12.5,-45,3", "a,b", "12.5 -45", "1e3,2", "nan,0",
                     "12,5,-45"):
             with self.assertRaises(ValueError, msg=bad) as caught:
-                parse_gga_position(bad, "reference2_gga_position")
-            self.assertIn("reference2_gga_position", str(caught.exception))
+                parse_gga_position(bad, "references[2].gga_position")
+            self.assertIn("references[2].gga_position", str(caught.exception))
             self.assertNotIn(bad, str(caught.exception), "the message names the option only")
         for bad in ("91,0", "-90.5,0", "0,180.5", "0,-181"):
             with self.assertRaises(ValueError) as caught:
@@ -1210,82 +1195,278 @@ class SecondReferenceOptions(unittest.TestCase):
             self.assertIn("latitude from -90 to 90", str(caught.exception))
         self.assertEqual(settings(gga_position="12.5,-45.25").problem(), "")
         self.assertEqual(settings(gga_position="999,0").problem(),
-                         "reference_gga_position must have a latitude from -90 to 90 and a "
-                         "longitude from -180 to 180")
+                         "references[1].gga_position must have a latitude from -90 to 90 "
+                         "and a longitude from -180 to 180")
         # A bad value stops that check only: it is "not configured" and nothing starts.
         check = ReferenceCheck(settings2(gga_position="x"), RtcmHub(), lambda: None)
         check.runner = StubRunner()
         self.assertEqual(check.state(), "not configured")
-        self.assertIn("reference2_gga_position", check.snapshot()["reason"])
+        self.assertIn("references[2].gga_position", check.snapshot()["reason"])
 
-    def test_options_defaults_overrides_and_the_login_clash(self):
+    def test_the_list_its_defaults_and_folders(self):
+        options = options_file(self.folder, {"base_epoch": "2026.85", "references": [
+            {"name": "abcd", "host": "caster.example.org", "mountpoint": "ABCD",
+             "user": "u", "password": SENTINEL, "frame": "NAD83(2011)",
+             "epoch": "2010.0", "port": 2102, "send_gga": False, "gga_position": "",
+             "expect_station": 19, "reset_utc": "06:30", "enabled": True},
+            {"name": "Nearest one", "host": "other.example.org", "mountpoint": "NEAREST",
+             "user": "u2"},
+            {"name": "spare", "host": "third.example.org", "mountpoint": "X", "user": "u3",
+             "password": SENTINEL + "3", "enabled": False, "reset_utc": "",
+             "expect_station": " 17 "}]})
+        loaded = load_settings(["--options", str(options), "--no-supervisor"])
+        first, second, third = all_reference_settings(loaded)
+        self.assertEqual((first.enabled, first.host, first.port, first.mountpoint, first.user,
+                          first.password.reveal(), first.frame, first.epoch, first.reset_utc,
+                          first.expect_station, first.index, first.name, first.work_dir,
+                          first.base_epoch, first.base_frame),
+                         (True, "caster.example.org", 2102, "ABCD", "u", SENTINEL,
+                          "NAD83(2011)", "2010.0", "06:30", 19, 1, "abcd",
+                          self.folder / "reference-abcd", "2026.85", "ITRF2020"))
+        # Absent fields take their defaults: on, 2101, 00:00, no GGA, any station.
+        self.assertEqual((second.enabled, second.port, second.reset_utc, second.send_gga,
+                          second.gga_position, second.frame, second.expect_station,
+                          second.password.reveal(), second.slug, second.work_dir),
+                         (True, 2101, "00:00", False, "", "", None, "", "nearest-one",
+                          self.folder / "reference-nearest-one"))
+        self.assertEqual((third.enabled, third.reset_seconds(), third.expect_station),
+                         (False, None, 17))
+        self.assertEqual([x.problem() for x in (first, second, third)], ["", "", ""])
+        for entry in loaded["references"]:
+            self.assertNotIn("password", entry, "the password is not kept around")
+        self.assertNotIn(SENTINEL, repr(first) + str([first, second, third]))
+        # Nothing configured: no checks.
+        self.assertEqual(all_reference_settings(load_settings(
+            ["--options", str(self.folder / "none.json"), "--no-supervisor"])), [])
+        # A null field (Home Assistant can send one) takes the default.
+        options = options_file(self.folder, {"references": [
+            {"name": "a", "host": "h", "mountpoint": "M", "user": "u", "port": None,
+             "frame": None, "reset_utc": None, "expect_station": None}]})
+        (made,) = all_reference_settings(load_settings(["--options", str(options)]))
+        self.assertEqual((made.port, made.frame, made.reset_utc, made.expect_station),
+                         (2101, "", "00:00", None))
+
+    def test_clashes_block_the_later_entry(self):
+        options = options_file(self.folder, {"references": [
+            {"name": "A one", "host": "Caster.example.org", "mountpoint": "A", "user": "u"},
+            {"name": "a-one", "host": "other.example.org", "mountpoint": "B", "user": "v"},
+            {"name": "b", "host": "caster.example.org", "mountpoint": "B", "user": "u"},
+            {"name": "c", "host": "caster.example.org", "mountpoint": "C", "user": "u",
+             "enabled": False},
+            {"name": "d", "host": "caster.example.org", "mountpoint": "D", "user": "w"}]})
+        made = all_reference_settings(load_settings(["--options", str(options)]))
+        self.assertEqual([x.problem() for x in made], [
+            "",
+            "references[2].name gives the same folder name (reference-a-one) as "
+            "references[1]: names must differ",
+            "references[3] (b) uses the same caster and user as references[1] (A one): one "
+            "login allows one connection; use another login",
+            "", ""])
+        self.assertEqual(login_clash(settings(), settings2(user="user", enabled=False)), "")
+        self.assertEqual(login_clash(settings(), settings2()), "", "another user")
+        self.assertEqual(name_clash(settings(name="x"), settings2(name="X")),
+                         "references[2].name gives the same folder name (reference-x) as "
+                         "references[1]: names must differ")
+        self.assertEqual([x.blocked for x in block_clashes([settings(), settings2()])],
+                         ["", ""])
+
+    def test_options_and_command_line(self):
+        for key in DEFAULTS:
+            self.assertFalse(key.startswith(("reference_", "reference2_")), key)
+        self.assertEqual(DEFAULTS["references"], [])
+        self.assertNotIn("references", OVERRIDES, "the list is an option only")
+        for key in OVERRIDES:
+            self.assertFalse(key.startswith("reference"), key)
+        for gone in (["--reference-host", "h"], ["--reference2"], ["--reference-password", "x"]):
+            with self.assertRaises(SystemExit):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    load_settings(gone)
+        loaded = load_settings(["--options", "/nonexistent.json", "--base-frame", "ITRF2014",
+                                "--base-epoch", "2026-11-06"])
+        self.assertEqual((loaded["base_frame"], loaded["base_epoch"]),
+                         ("ITRF2014", "2026-11-06"))
+
+
+class Migration(unittest.TestCase):
+    """0.8.0: the 0.7 options reference_* and reference2_* become references entries
+    while the list is empty, from the options file or the Supervisor's saved options."""
+
+    OLD = {"reference_enabled": True, "reference_host": "caster.example.org",
+           "reference_port": 2101, "reference_mountpoint": "ABCD", "reference_user": "u",
+           "reference_password": SENTINEL, "reference_frame": "NAD83(2011)",
+           "reference_reset_utc": "00:00", "reference_send_gga": False,
+           "reference_gga_position": "",
+           "reference2_enabled": True, "reference2_host": "other.example.org",
+           "reference2_port": 2101, "reference2_mountpoint": "SingleStation_Nearest_RTCM_MSM",
+           "reference2_user": "u2", "reference2_password": SENTINEL + "2",
+           "reference2_reset_utc": "00:00", "reference2_send_gga": True,
+           "reference2_gga_position": "", "reference2_expect_station": 19}
+
+    def loaded(self, options, *extra):
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, folder)
-        options = folder / "options.json"
-        options.write_text(json.dumps({
-            "reference_enabled": True, "reference_host": "h", "reference_mountpoint": "MP",
-            "reference_user": "u", "reference_password": SENTINEL,
-            "reference2_enabled": True, "reference2_host": "h2", "reference2_port": 2102,
-            "reference2_mountpoint": "NEAREST", "reference2_user": "u2",
-            "reference2_password": SENTINEL + "2", "reference2_frame": "NAD83(2011)",
-            "reference2_reset_utc": "06:30", "reference2_send_gga": True,
-            "reference2_gga_position": "12.5,-45.25", "reference2_expect_station": 1234}))
-        loaded = load_settings(["--options", str(options)])
-        first, second = all_reference_settings(loaded)
-        self.assertEqual((first.prefix, first.send_gga, first.gga_position, first.work_dir),
-                         ("reference", False, "", folder / "reference"))
-        self.assertEqual((second.enabled, second.host, second.port, second.mountpoint,
-                          second.user, second.password.reveal(), second.frame,
-                          second.reset_utc, second.send_gga, second.gga_latlon(),
-                          second.prefix, second.work_dir, second.base_frame),
-                         (True, "h2", 2102, "NEAREST", "u2", SENTINEL + "2", "NAD83(2011)",
-                          "06:30", True, (12.5, -45.25), "reference2",
-                          folder / "reference2", "ITRF2020"))
+        return load_settings(["--options", str(options_file(folder, options)), *extra])
+
+    def check_entries(self, settings_):
+        first, second = all_reference_settings(settings_)
+        self.assertEqual((first.name, first.host, first.mountpoint, first.user,
+                          first.password.reveal(), first.frame, first.enabled, first.send_gga),
+                         ("abcd", "caster.example.org", "ABCD", "u", SENTINEL, "NAD83(2011)",
+                          True, False))
+        self.assertEqual((second.name, second.mountpoint, second.password.reveal(),
+                          second.frame, second.send_gga, second.expect_station,
+                          second.index, second.work_dir.name),
+                         ("reference2", "SingleStation_Nearest_RTCM_MSM", SENTINEL + "2", "",
+                          True, 19, 2, "reference-reference2"))
         self.assertEqual((first.problem(), second.problem()), ("", ""))
-        self.assertEqual((first.expect_station, second.expect_station), (None, 1234))
-        self.assertNotIn("reference2_password", loaded, "the password is not kept around")
-        for key, default in (("reference_send_gga", False), ("reference_gga_position", ""),
-                             ("reference2_enabled", False), ("reference2_host", ""),
-                             ("reference2_port", 2101), ("reference2_mountpoint", ""),
-                             ("reference2_user", ""), ("reference2_password", ""),
-                             ("reference2_frame", ""), ("reference2_reset_utc", "00:00"),
-                             ("reference2_send_gga", False), ("reference2_gga_position", ""),
-                             ("reference_expect_station", None),
-                             ("reference2_expect_station", None)):
-            self.assertEqual(DEFAULTS[key], default, key)
-            self.assertEqual(key in OVERRIDES, not key.endswith("password"), key)
-        loaded = load_settings(["--options", str(options), "--no-reference2",
-                                "--reference2-host", "h3", "--reference2-port", "2103",
-                                "--no-reference2-send-gga", "--reference-send-gga",
-                                "--reference2-gga-position", "",
-                                "--reference-expect-station", "42"])
-        first, second = all_reference_settings(loaded)
-        self.assertEqual((first.expect_station, second.expect_station), (42, 1234))
-        for raw, want in (("", None), (" 17 ", 17), (None, None), ("x", "x")):
-            loaded = load_settings(["--options", str(options)])
-            loaded["reference_expect_station"] = raw
-            self.assertEqual(reference_settings(loaded).expect_station, want, raw)
-        self.assertEqual((second.enabled, second.host, second.port, second.send_gga,
-                          second.gga_position, first.send_gga), (False, "h3", 2103, False, "",
-                                                                 True))
-        with self.assertRaises(SystemExit):
-            load_settings(["--reference2-password", "x"])
-        # The same caster and user twice: the second is blocked, the first runs.
-        options.write_text(json.dumps({
-            "reference_enabled": True, "reference_host": "Caster.example",
-            "reference_mountpoint": "A", "reference_user": "u",
-            "reference2_enabled": True, "reference2_host": "caster.example",
-            "reference2_mountpoint": "B", "reference2_user": "u"}))
-        first, second = all_reference_settings(load_settings(["--options", str(options)]))
-        self.assertEqual(first.problem(), "")
-        self.assertEqual(second.problem(), "reference2 uses the same caster and user as "
-                         "reference: one login allows one connection; use another login")
-        self.assertEqual(login_clash(settings(), settings(prefix="reference2", enabled=False)), "")
-        self.assertEqual(login_clash(settings(), settings2()), "", "another user")
-        # Defaults alone: the second check is off.
-        first, second = all_reference_settings(load_settings(
-            ["--options", str(folder / "none.json")]))
-        self.assertEqual((first.enabled, second.enabled), (False, False))
+
+    def test_from_the_options_file(self):
+        settings_ = self.loaded(self.OLD)
+        notice = migrate_references(settings_, fetch=lambda: self.fail("not needed"))
+        self.assertEqual((notice["kind"], notice["source"], notice["names"]),
+                         ("migrated", "the options file", ["abcd", "reference2"]))
+        self.assertIn("Add them as references entries", notice["text"])
+        self.assertFalse([k for k in settings_ if k.startswith("reference_")],
+                         "the old keys are gone from the settings")
+        self.assertIn('name: "abcd"', notice["yaml"])
+        self.assertIn('mountpoint: "ABCD"', notice["yaml"])
+        self.assertIn('password: "<the same as before>"', notice["yaml"])
+        for text in (notice["text"], notice["yaml"], json.dumps(notice)):
+            self.assertNotIn(SENTINEL, text)
+        self.check_entries(settings_)
+
+    def test_a_gga_position_is_never_shown(self):
+        """R1-1: like the password, the GGA position is a placeholder in the notice."""
+        position = "12.3456789,-45.6789123"          # made up
+        settings_ = self.loaded(dict(self.OLD, reference_gga_position=position))
+        notice = migrate_references(settings_)
+        self.assertIn('gga_position: "<the same as before>"', notice["yaml"])
+        self.assertIn('gga_position: ""', notice["yaml"], "an empty one is shown as empty")
+        for text in (notice["text"], notice["yaml"], json.dumps(notice)):
+            self.assertNotIn("12.345", text)
+            self.assertNotIn("45.678", text)
+        first, _ = all_reference_settings(settings_)
+        self.assertEqual(first.gga_position, position, "still used")
+
+    def test_a_secret_blocks_its_entry_and_is_named_not_shown(self):
+        """R1-2: the Supervisor's saved options hold "!secret <name>" as text; the app
+        cannot resolve it, so the entry does not run, and the notice says which field."""
+        saved = dict(DEFAULTS, **dict(self.OLD, reference_password="!secret cors_pw_name",
+                                      reference2_user="!secret other_user_name"))
+        settings_ = self.loaded({"references": []})
+        notice = migrate_references(settings_, fetch=lambda: saved)
+        self.assertIn("references[1].password, references[2].user are !secrets",
+                      notice["text"])
+        self.assertIn("enter the real value or keep using !secret", notice["text"])
+        for text in (notice["text"], notice["yaml"], json.dumps(notice)):
+            self.assertNotIn("cors_pw_name", text)
+            self.assertNotIn("other_user_name", text)
+        self.assertIn('user: "<your !secret, as before>"', notice["yaml"])
+        first, second = all_reference_settings(settings_)
+        self.assertTrue(first.problem().startswith(
+            "references[1].password is a !secret the app cannot read"), first.problem())
+        self.assertTrue(second.problem().startswith("references[2].user is a !secret"))
+        self.assertNotIn("cors_pw_name", first.problem())
+        self.assertNotIn("other_user_name", second.problem())
+        # A field that is converted (send_gga to a bool) still blocks its entry.
+        settings_ = self.loaded({"references": []})
+        saved = dict(DEFAULTS, **dict(self.OLD, reference2_send_gga="!secret gga_on"))
+        notice = migrate_references(settings_, fetch=lambda: saved)
+        self.assertIn("references[2].send_gga is a !secret,", notice["text"])
+        _, second = all_reference_settings(settings_)
+        self.assertTrue(second.problem().startswith("references[2].send_gga is a !secret"),
+                        second.problem())
+        # One secret alone: singular.
+        settings_ = self.loaded({"references": []})
+        saved = dict(DEFAULTS, **dict(self.OLD, reference_password="!secret x"))
+        self.assertIn("references[1].password is a !secret,",
+                      migrate_references(settings_, fetch=lambda: saved)["text"])
+
+    def test_unresolved_secret(self):
+        for value in ("!secret x", "  !secret x", "!secret"):
+            self.assertTrue(unresolved_secret(value), value)
+        for value in ("", "secret", "a!secret x", "!secretive", None, 5):
+            self.assertFalse(unresolved_secret(value), value)
+
+    def test_from_the_supervisors_saved_options(self):
+        """Home Assistant strips options the schema no longer has from options.json, but
+        /addons/self/info still returns the saved ones (with the new defaults merged)."""
+        settings_ = self.loaded({"references": []})
+        saved = dict(DEFAULTS, **self.OLD)
+        notice = migrate_references(settings_, fetch=lambda: saved)
+        self.assertEqual((notice["kind"], notice["source"]),
+                         ("migrated", "the Supervisor's saved options"))
+        self.check_entries(settings_)
+
+    def test_an_old_check_that_was_off_or_empty(self):
+        settings_ = self.loaded({"reference_enabled": False, "reference_host": "h",
+                                 "reference_mountpoint": "A", "reference_user": "u",
+                                 "reference2_enabled": False, "reference2_host": "",
+                                 "reference2_mountpoint": ""})
+        notice = migrate_references(settings_)
+        self.assertEqual(notice["names"], ["a"])
+        (made,) = all_reference_settings(settings_)
+        self.assertFalse(made.enabled, "kept, and still off")
+
+    def test_not_when_the_list_is_set(self):
+        settings_ = self.loaded(dict(self.OLD, references=[
+            {"name": "x", "host": "h", "mountpoint": "M", "user": "u"}]))
+        notice = migrate_references(settings_, fetch=lambda: self.fail("not asked"))
+        self.assertIsNone(notice["kind"])
+        self.assertIn("ignored", notice["text"])
+        self.assertEqual([x.name for x in all_reference_settings(settings_)], ["x"])
+
+    def test_nothing_to_migrate(self):
+        for fetch in (None, lambda: None, lambda: dict(DEFAULTS)):
+            settings_ = self.loaded({})
+            notice = migrate_references(settings_, fetch=fetch)
+            self.assertEqual(notice["kind"], "none")
+            self.assertIn("enter them again", notice["text"])
+            self.assertEqual(all_reference_settings(settings_), [])
+        settings_ = self.loaded({"references": [{"name": "x", "host": "h",
+                                                 "mountpoint": "M", "user": "u"}]})
+        self.assertEqual(migrate_references(settings_)["kind"], None)
+
+    def test_names(self):
+        taken = set()
+        self.assertEqual(legacy_name("ABCD", 1, taken), "abcd")
+        self.assertEqual(legacy_name("SingleStation_Nearest_RTCM_MSM", 2, taken), "reference2")
+        self.assertEqual(legacy_name("", 1, taken), "reference1")
+        self.assertEqual(legacy_name("ABCD", 2, {"abcd"}), "reference2")
+        self.assertEqual(legacy_name("reference2", 2, {"reference2"}), "reference2x")
+        settings_ = self.loaded({"reference_enabled": True, "reference_host": "h",
+                                 "reference_mountpoint": "SAME", "reference_user": "u",
+                                 "reference2_enabled": True, "reference2_host": "h2",
+                                 "reference2_mountpoint": "SAME", "reference2_user": "u"})
+        self.assertEqual(migrate_references(settings_)["names"], ["same", "reference2"])
+
+    def test_the_supervisor_request(self):
+        import http.server
+        import threading
+        seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                body = json.dumps({"result": "ok", "data": {"options": {"a": 1}}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_port}/addons/self/info"
+        self.assertEqual(supervisor_options("tok", url), {"a": 1})
+        self.assertEqual(seen, [("/addons/self/info", "Bearer tok")])
+        from tests.test_app import free_port
+        self.assertIsNone(supervisor_options("tok", f"http://127.0.0.1:{free_port()}/x",
+                                             timeout=2))
 
 
 class StationIdentity(unittest.TestCase):
@@ -1299,7 +1480,7 @@ class StationIdentity(unittest.TestCase):
     def check(self, **fields):
         made = ReferenceCheck(settings2(**fields), RtcmHub(), lambda: {"ecef": OURS},
                               clock=lambda: self.now, wall=lambda: self.wall,
-                              label="reference check 2")
+                              label="reference check nearest")
         self.stub = made.runner = StubRunner()
         return made
 
@@ -1318,7 +1499,7 @@ class StationIdentity(unittest.TestCase):
         self.assertEqual(self.stub.requests, ["the station changed (ID 7 to 12)"])
         self.assertEqual(check.station_changes, 1)
         text = "\n".join(logs.output)
-        self.assertIn("reference check 2: station changed: ID 7 to 12, 0.000 km", text)
+        self.assertIn("reference check nearest: station changed: ID 7 to 12, 0.000 km", text)
         self.assertNotIn(f"{CORS[0]:.4f}", text, "no position in the log")
         self.now += 30
         snap = check.snapshot()
@@ -1348,7 +1529,7 @@ class StationIdentity(unittest.TestCase):
         self.assertEqual(check.snapshot()["gga_source"], "our 1005")
         check = self.check(send_gga=True, gga_position="12.5,-45.25")
         self.assertEqual(check._gga_position(), (12.5, -45.25, 0.0))
-        self.assertEqual(check.snapshot()["gga_source"], "reference2_gga_position")
+        self.assertEqual(check.snapshot()["gga_source"], "references[2].gga_position")
         self.assertIsNone(self.check().snapshot()["gga_source"])
         nowhere = ReferenceCheck(settings2(send_gga=True), RtcmHub(), lambda: None)
         self.assertIsNone(nowhere._gga_position())
@@ -1371,21 +1552,24 @@ class StationIdentity(unittest.TestCase):
         self.assertAlmostEqual(lat, 0.0, places=7)
 
 
-class Comparison(unittest.TestCase):
-    """The Reference comparison card's numbers and colours."""
+class Summary(unittest.TestCase):
+    """The "Our antenna against the references" card: each reference's residual (its
+    solution of our antenna turned into our frame), colours, and the spread."""
 
     def setUp(self):
         self.now = 1000.0
+        self.wall = 1_798_761_600.0
 
-    def pair(self, first_frame="ITRF2020", second_frame="ITRF2020"):
+    def make(self, frames):
         checks = []
-        for fields in (dict(frame=first_frame), dict(prefix="reference2", user="u2",
-                                                     frame=second_frame)):
-            made = ReferenceCheck(settings(**fields), RtcmHub(), lambda: {"ecef": OURS},
-                                  clock=lambda: self.now)
+        for index, frame_name in enumerate(frames, 1):
+            made = ReferenceCheck(settings(frame=frame_name, name=f"r{index}", index=index,
+                                           user=f"u{index}"),
+                                  RtcmHub(), lambda: {"ecef": OURS}, clock=lambda: self.now,
+                                  wall=lambda: self.wall)
             made.runner = StubRunner()
             made._session_start()
-            made.client.state = "connected"   # streaming: the comparison is current
+            made.client.state = "connected"   # streaming: current
             checks.append(made)
         return checks
 
@@ -1396,241 +1580,560 @@ class Comparison(unittest.TestCase):
         for _ in range(count):
             check._solution(solution(lat=lat, lon=lon, height=height), "line")
 
-    def test_differences_and_colours(self):
-        first, second = self.pair()
-        result = compare(first, second)
-        self.assertEqual((result["shown"], result["reason"]),
-                         (False, "no session mean of fixed epochs yet: reference, reference2"))
-        self.feed(first, (0.10, -0.20, 0.30))
-        self.assertIn("reference2", compare(first, second)["reason"])
-        self.feed(second, (0.12, -0.21, 0.35))
-        result = compare(first, second)
-        self.assertTrue(result["shown"])
-        for got, want in zip(result["first_minus_ours"], (0.10, -0.20, 0.30)):
-            self.assertAlmostEqual(got, want, places=3)
-        for got, want in zip(result["second_minus_ours"], (0.12, -0.21, 0.35)):
-            self.assertAlmostEqual(got, want, places=3)
-        for got, want in zip(result["second_minus_first"], (0.02, -0.01, 0.05)):
-            self.assertAlmostEqual(got, want, places=3)
-        self.assertEqual((result["residual"], result["verdict"], result["first_frame"],
-                          result["second_frame"], result["first_fixed"]),
-                         (True, "good", "ITRF2020", "ITRF2020", 3))
-        self.assertEqual(result["verdict_reason"],
-                         "within 3 cm horizontal and 6 cm up (ITRF2020)")
-        json.dumps(result, allow_nan=False)
+    def test_residual_is_our_antenna_in_our_frame(self):
+        """residual = (station frame solution minus ours) minus the expected offset at our
+        epoch: a NAD83(2011) station that agrees sits at 0, 0, 0 although its raw offset
+        is about a metre."""
+        nad, itrf = self.make(["NAD83(2011)", "ITRF2020"])
+        expected = expected_offset_enu(OURS, "NAD83(2011)", decimal_year(self.wall))
+        self.assertGreater(math.hypot(*expected), 0.5, "the frames differ by about a metre")
+        self.feed(nad, [e + d for e, d in zip(expected, (0.01, -0.02, 0.03))])
+        self.feed(itrf, (0.004, 0.0, -0.01))
+        rows = summary([nad, itrf])["rows"]
+        self.assertEqual([r["residual_enu"] for r in rows],
+                         [[0.01, -0.02, 0.03], [0.004, 0.0, -0.01]])
+        self.assertEqual([r["verdict"] for r in rows], ["good", "good"])
+        self.assertEqual([r["raw_enu"] for r in rows], [None, None])
+        row = rows[0]
+        self.assertEqual((row["name"], row["slug"], row["index"], row["station_frame"],
+                          row["fixed"], row["fixed_share"], row["session_age_s"],
+                          row["current"]), ("r1", "r1", 1, "NAD83(2011)", 3, 1.0, 0.0, True))
 
-    def test_stale_without_streaming_or_a_recent_fix(self):
-        """S2: a verdict only while both stream and each has a fix in the last 30 min;
-        otherwise the numbers stay, marked stale, with each side's last-fix age."""
-        first, second = self.pair()
-        self.feed(first, (0.0, 0.0, 0.0))
-        self.feed(second, (0.01, 0.0, 0.0))
-        self.assertEqual(compare(first, second)["verdict"], "good")
-        second.client.state = "login refused"
-        result = compare(first, second)
-        self.assertEqual((result["shown"], result["stale"], result["verdict"],
-                          result["residual"]), (True, True, None, False))
-        self.assertEqual(result["stale_reason"], "reference2 is not streaming (login refused)")
-        self.assertTrue(result["verdict_reason"].startswith("stale, no verdict: "))
-        self.assertAlmostEqual(result["second_minus_first"][0], 0.01, places=3)
-        second.client.state = "connected"
-        second.client.died = True
-        self.assertTrue(compare(first, second)["stale"], "a stopped client is not streaming")
-        second.client.died = False
-        # Streaming, but the first's last fix is more than 30 min old.
-        self.now += COMPARE_FRESH_S + 1
-        self.feed(second, (0.01, 0.0, 0.0))
-        result = compare(first, second)
-        self.assertEqual((result["stale"], result["verdict"]), (True, None))
-        self.assertEqual(result["stale_reason"], "reference has no fix in the last 30 min")
-        self.assertEqual((result["first_last_fix_age_s"], result["second_last_fix_age_s"]),
-                         (COMPARE_FRESH_S + 1, 0.0))
-        self.feed(first, (0.0, 0.0, 0.0))
-        self.assertEqual((compare(first, second)["stale"], compare(first, second)["verdict"]),
-                         (False, "good"))
+    def test_colours_follow_the_bands(self):
+        checks = self.make(["ITRF2020"] * 3)
+        for check, enu in zip(checks, ((0.03, 0.03, -0.09), (0.08, 0.0, 0.0),
+                                       (0.0, 0.0, 0.25))):
+            self.feed(check, enu)
+        self.assertEqual([r["verdict"] for r in summary(checks)["rows"]],
+                         ["good", "warn", "bad"])
 
-    def test_stale_while_rtkrcv_restarts(self):
-        """R2-3: a nearest-station switch while both stream asks rtkrcv for a new
-        session; until it has restarted, the session mean is the old station's, so
-        no verdict under the new station's ID. Also none while no rtkrcv runs."""
+    def test_spread_between_references(self):
+        checks = self.make(["ITRF2020"] * 3)
+        for check, enu in zip(checks, ((0.01, 0.0, 0.0), (0.02, 0.01, 0.02),
+                                       (0.0, 0.0, 0.03))):
+            self.feed(check, enu)
+        spread = summary(checks)["spread"]
+        self.assertEqual((spread["count"], spread["names"], spread["horizontal_m"],
+                          spread["up_m"], spread["verdict"], spread["left_out"]),
+                         (3, ["r1", "r2", "r3"], round(math.hypot(0.02, 0.01), 4), 0.03,
+                          "good", []))
+        self.feed(checks[2], (-0.05, 0.0, 0.03), count=30)    # mean moves about 4.5 cm east
+        spread = summary(checks)["spread"]
+        self.assertEqual(spread["verdict"], "warn", spread)
+        self.feed(checks[2], (-0.3, 0.0, 0.03), count=300)
+        self.assertEqual(summary(checks)["spread"]["verdict"], "bad")
+
+    def test_spread_verdict_limits(self):
+        self.assertEqual(spread_verdict(0.03, 0.06)[0], "good", "the limits count")
+        self.assertEqual(spread_verdict(0.035, 0.0)[0], "warn", "3.5 cm horizontal")
+        self.assertEqual(spread_verdict(0.0, -0.07)[0], "warn")
+        self.assertEqual(spread_verdict(0.1, 0.1)[0], "warn")
+        self.assertEqual(spread_verdict(0.11, 0.0)[0], "bad", "11 cm horizontal")
+        self.assertEqual(spread_verdict(0.0, 0.11), ("bad", "more than 10 cm apart"))
+
+    def test_spread_is_the_largest_pair_not_the_bounding_box(self):
+        """R1-9: residuals at (0, 0), (2.5, 1) and (1, 2.5) cm: every pair within 2.7 cm
+        (green), while the box's diagonal is 3.5 cm (amber)."""
+        checks = self.make(["ITRF2020"] * 3)
+        for check, enu in zip(checks, ((0.0, 0.0, 0.0), (0.025, 0.01, 0.0),
+                                       (0.01, 0.025, 0.0))):
+            self.feed(check, enu)
+        self.assertEqual(largest_spread([(0, 0, 0), (0.025, 0.01, 0), (0.01, 0.025, 0)])[0],
+                         math.hypot(0.025, 0.01))
+        spread = summary(checks)["spread"]
+        self.assertEqual((spread["horizontal_m"], spread["up_m"], spread["verdict"]),
+                         (round(math.hypot(0.025, 0.01), 4), 0.0, "good"))
+        self.assertLess(spread["horizontal_m"], 0.027)
+        # Up: the largest minus the smallest, from another pair than the horizontal.
+        self.assertEqual(largest_spread([(0, 0, 0.05), (0.02, 0, 0.0), (0, 0, -0.02)]),
+                         (0.02, 0.07))
+
+    def test_unknown_frame_is_raw_with_the_reason_and_left_out(self):
+        known, unknown = self.make(["ITRF2020", ""])
+        self.feed(known, (0.01, 0.0, 0.0))
+        self.feed(unknown, (0.55, -1.15, 1.2))
+        result = summary([known, unknown])
+        row = result["rows"][1]
+        self.assertEqual((row["residual_enu"], row["raw_enu"], row["verdict"]),
+                         (None, [0.55, -1.15, 1.2], None))
+        self.assertEqual(row["no_residual"], "station frame unknown: set references[2].frame")
+        spread = result["spread"]
+        self.assertEqual((spread["count"], spread["horizontal_m"], spread["verdict"]),
+                         (1, None, None))
+        self.assertEqual(spread["left_out"],
+                         [{"name": "r2", "why": "station frame unknown: set references[2].frame"}])
+        self.assertIn("needs two current references", spread["verdict_reason"])
+
+    def test_only_current_references_count(self):
+        checks = self.make(["ITRF2020"] * 4)
+        for check in checks:
+            self.feed(check, (0.01, 0.0, 0.0))
+        checks[1].client.state = "login refused"
+        checks[2].runner.pending = True
+        self.now += COMPARE_FRESH_S + 1          # nobody has a recent fix now...
+        for check in (checks[0], checks[1], checks[2]):
+            self.feed(check, (0.01, 0.0, 0.0), count=1)
         from tests.test_app import arp_frame as make
-        first, second = self.pair()
-        for check in (first, second):
-            check.station._frame(make(*CORS, station=3))
-        self.feed(first, (0.0, 0.0, 0.0))
-        self.feed(second, (0.01, 0.0, 0.0))
-        self.assertEqual(compare(first, second)["verdict"], "good")
-        with self.assertLogs("gnss_base", "WARNING"):
-            second.station._frame(make(*CORS, station=12))
-        self.assertTrue(second.runner.pending, "the switch asked for a restart")
-        result = compare(first, second)
-        self.assertEqual((result["second_station_id"], result["stale"], result["verdict"],
-                          result["residual"]), (12, True, None, False))
-        self.assertEqual(result["stale_reason"],
-                         "reference2's rtkrcv is restarting (a new session)")
-        # Between the old rtkrcv's exit and the new one's start: no process.
-        second.runner.pending = False
-        second.runner.running = None
-        self.assertEqual(compare(first, second)["verdict"], None)
-        self.assertTrue(compare(first, second)["stale"])
-        # The new session: no mean yet, so nothing shown, and no old colour.
-        second.runner.running = 0.0
-        second._session_start()
-        result = compare(first, second)
-        self.assertEqual((result["shown"], result["verdict"]), (False, None))
-        self.feed(second, (0.02, 0.0, 0.0))
-        result = compare(first, second)
-        self.assertEqual((result["second_station_id"], result["stale"], result["verdict"]),
-                         (12, False, "good"))
+        checks[0].settings.expect_station = 7
+        checks[0].station._frame(make(*CORS, station=12))
+        rows = summary(checks)["rows"]
+        self.assertEqual([r["not_current"] for r in rows],
+                         ["wrong station (got 12, expected 7)",
+                          "not streaming (login refused)",
+                          "rtkrcv is restarting (a new session)",
+                          f"no fix in the last {COMPARE_FRESH_S / 60:.0f} min"])
+        self.assertEqual(rows[0]["verdict"], None, "no colour on a wrong station")
+        self.assertEqual([r["verdict"] for r in rows[1:]], [None, None, None],
+                         "no colour while not current")
+        self.assertEqual(summary(checks)["spread"]["count"], 0)
+        checks[3].settings.enabled = False
+        self.assertEqual(len(summary(checks)["rows"]), 3, "an entry that is off is not shown")
 
-    def test_station_ids_and_a_wrong_station(self):
-        """S3: both station IDs on the card; a station other than the expected one
-        takes the colour off the check and the comparison, logged once per change."""
-        from tests.test_app import arp_frame as make
-        first, second = self.pair()
-        second.settings.expect_station = 7
-        for check, station in ((first, 3), (second, 7)):
-            check.station._frame(make(*CORS, station=station))
-        self.feed(first, (0.0, 0.0, 0.0))
-        self.feed(second, (0.01, 0.0, 0.0))
-        result = compare(first, second)
-        self.assertEqual((result["first_station_id"], result["second_station_id"],
-                          result["station_mismatch"], result["verdict"]), (3, 7, None, "good"))
-        self.assertIsNone(second.snapshot()["station_mismatch"])
-        self.assertEqual(second.snapshot()["expect_station"], 7)
-        with self.assertLogs("gnss_base", "WARNING") as logs:
-            second.station._frame(make(*CORS, station=12))
-        self.assertEqual(sum("wrong station (got 12, expected 7) (reference2_expect_station)"
-                             in line for line in logs.output), 1)
-        with self.assertNoLogs("gnss_base", "WARNING"):
-            second.station._frame(make(*CORS, station=12))   # the same: not again
-        snap = second.snapshot()
-        self.assertEqual(snap["station_mismatch"], "wrong station (got 12, expected 7)")
-        self.assertIsNone(snap["verdict"])
-        self.assertIn("wrong station (got 12, expected 7)", snap["verdict_reason"])
-        result = compare(first, second)
-        self.assertEqual((result["station_mismatch"], result["verdict"], result["residual"]),
-                         ("reference2: wrong station (got 12, expected 7)", None, False))
-        self.assertTrue(result["shown"])
-        with self.assertLogs("gnss_base", "WARNING") as logs:
-            second.station._frame(make(*CORS, station=13))
-        self.assertIn("got 13, expected 7", "\n".join(logs.output), "a new change is logged")
-        with self.assertLogs("gnss_base", "INFO") as logs:
-            second.station._frame(make(*CORS, station=7))
-        self.assertIn("the expected station 7 again", "\n".join(logs.output))
-        self.assertIsNone(second.snapshot()["station_mismatch"])
-        self.assertEqual(first.wrong_station(), "", "no expectation: any station")
+    def test_a_row_is_coloured_only_while_current(self):
+        """R1-4: a good residual that is not current loses its colour, as on the card."""
+        checks = self.make(["ITRF2020"] * 3)
+        for check in checks:
+            self.feed(check, (0.01, 0.0, 0.0))
+        checks[1].client.state = "backoff"
+        checks[2].runner.pending = True
+        rows = summary(checks)["rows"]
+        self.assertEqual([r["verdict"] for r in rows], ["good", None, None])
+        self.assertEqual(rows[1]["verdict_reason"],
+                         "not current, no verdict: not streaming (backoff)")
+        self.assertEqual(rows[2]["verdict_reason"],
+                         "not current, no verdict: rtkrcv is restarting (a new session)")
+        self.assertEqual(rows[1]["residual_enu"], [0.01, 0.0, 0.0], "still shown")
 
-    def test_verdict_limits(self):
-        self.assertEqual(compare_verdict([0.03, 0.0, 0.06])[0], "good", "the limits count")
-        self.assertEqual(compare_verdict([0.025, 0.025, 0.0])[0], "warn", "3.5 cm horizontal")
-        self.assertEqual(compare_verdict([0.0, 0.0, -0.07])[0], "warn")
-        self.assertEqual(compare_verdict([0.1, 0.0, 0.1])[0], "warn")
-        self.assertEqual(compare_verdict([0.08, 0.08, 0.0])[0], "bad", "11 cm horizontal")
-        self.assertEqual(compare_verdict([0.0, 0.0, 0.11]),
-                         ("bad", "more than 10 cm apart"))
+    def test_a_session_from_an_older_1005_is_left_out(self):
+        """R1-3: our 1005 changes; A's session restarts on it, B has had no solution
+        since. B's old-base session must not be compared with A's."""
+        base = {"ecef": OURS}
+        checks = self.make(["ITRF2020"] * 2)
+        for check in checks:
+            check._get_base = lambda: base
+        a, b = checks
+        self.feed(a, (0.01, 0.0, 0.0))
+        self.feed(b, (0.01, 0.0, 0.0))
+        self.assertEqual(summary(checks)["spread"]["count"], 2)
+        moved = tuple(p + d for p, d in zip(OURS, _enu_to_ecef_delta(OURS, (0.0, 0.3, 0.0))))
+        base = {"ecef": moved}
+        # A sees a solution: its session restarts on the new 1005 (same antenna place,
+        # so the offset is 30 cm south of the new base).
+        self.feed(a, (0.01, -0.3, 0.0))
+        self.assertEqual(a._base_ecef, moved)
+        self.assertNotEqual(b._base_ecef, moved, "B has seen nothing yet")
+        result = summary(checks)
+        rows = result["rows"]
+        self.assertEqual(b._base_ecef, moved, "summary brings B to the current 1005")
+        self.assertEqual((rows[1]["residual_enu"], rows[1]["verdict"], rows[1]["current"]),
+                         (None, None, False))
+        self.assertEqual(result["spread"]["count"], 1)
+        self.assertEqual(result["spread"]["left_out"],
+                         [{"name": "r2", "why": "no fix in the last 30 min"}])
+        self.assertEqual(rows[1]["no_residual"], "no fixed solution this session yet")
+        # With no current 1005 to ask (None), the one a check saw change last counts.
+        checks = self.make(["ITRF2020"] * 2)
+        a, b = checks
+        base = {"ecef": OURS}
+        for check in checks:
+            check._get_base = lambda: base
+        self.feed(a, (0.01, 0.0, 0.0))
+        self.feed(b, (0.01, 0.0, 0.0))
+        base = {"ecef": moved}
+        self.now += 1
+        self.feed(a, (0.01, -0.3, 0.0))
+        base = None
+        result = summary(checks)
+        rows = result["rows"]
+        self.assertEqual(rows[1]["not_current"],
+                         "its session is from an older 1005 position of ours")
+        self.assertEqual((rows[1]["verdict"], rows[1]["current"]), (None, False))
+        self.assertIsNotNone(rows[1]["residual_enu"], "shown, not compared")
+        self.assertEqual((rows[0]["current"], result["spread"]["count"]), (True, 1))
+        self.assertEqual(SAME_BASE_M, 0.001)
 
-    def test_frames_not_declared_or_different_raw_only(self):
-        for frames, reason in (
-                (("ITRF2020", ""), "no residual: station frame unknown: set reference2_frame"),
-                (("", ""), "no residual: station frame unknown: set reference_frame, "
-                           "reference2_frame"),
-                (("NAD83(2011)", "ITRF2020"),
-                 "no residual: the frames differ (NAD83(2011), ITRF2020), so the difference "
-                 "includes the transformation between them")):
-            first, second = self.pair(*frames)
-            self.feed(first, (0.5, -1.2, 1.2))
-            self.feed(second, (0.0, 0.0, 0.0))
-            result = compare(first, second)
-            self.assertTrue(result["shown"], frames)
-            self.assertEqual((result["residual"], result["verdict"], result["verdict_reason"]),
-                             (False, None, reason), frames)
-            self.assertAlmostEqual(result["second_minus_first"][2], -1.2, places=3)
+    def test_the_same_name_twice_is_two_rows(self):
+        """Two entries with the same name (the later one blocked) keep their own rows;
+        the spread's left_out goes by place, not by name."""
+        checks = self.make(["ITRF2020"] * 2)
+        checks[1].settings.name = "r1"
+        for check in checks:
+            self.feed(check, (0.01, 0.0, 0.0))
+        checks[1].client.state = "backoff"
+        result = summary(checks)
+        self.assertEqual([r["index"] for r in result["rows"]], [1, 2])
+        self.assertEqual(result["spread"]["names"], ["r1"])
+        self.assertEqual(result["spread"]["left_out"],
+                         [{"name": "r1", "why": "not streaming (backoff)"}])
 
-    def test_not_shown_when_off_or_from_another_1005(self):
-        first, second = self.pair()
-        self.feed(first, (0.0, 0.0, 0.0))
-        self.feed(second, (0.0, 0.0, 0.0))
-        second._base_ecef = tuple(v + 0.01 for v in OURS)
-        self.assertEqual(compare(first, second)["reason"],
-                         "the two sessions are not from the same 1005 position of ours")
-        off = ReferenceCheck(settings2(enabled=False), RtcmHub(), lambda: None)
-        self.assertEqual(compare(first, off)["reason"], "reference2 is off or not configured")
+    def test_covariance_for_the_ellipse(self):
+        stats = SessionStats()
+        stats.reset(0)
+        self.assertIsNone(stats.covariance_en())
+        for e, n in ((0.0, 0.0), (0.02, 0.02), (0.04, 0.04), (0.02, 0.0)):
+            stats.add(1.0, 1, (e, n, 0.0))
+        cov = stats.covariance_en()
+        values = [(0.0, 0.0), (0.02, 0.02), (0.04, 0.04), (0.02, 0.0)]
+        me = sum(v[0] for v in values) / 4
+        mn = sum(v[1] for v in values) / 4
+        want = sum((v[0] - me) * (v[1] - mn) for v in values) / 4
+        self.assertAlmostEqual(cov[0][1], want, places=12)
+        self.assertAlmostEqual(cov[1][0], want, places=12)
+        self.assertAlmostEqual(cov[0][0], sum((v[0] - me) ** 2 for v in values) / 4, places=12)
+        stats.add(1.0, 2, (5.0, 5.0, 0.0))   # float epochs do not count
+        self.assertEqual(stats.covariance_en(), cov)
 
 
-class TwoChecks(unittest.IsolatedAsyncioTestCase):
-    """Two checks side by side against two fake casters and the fake rtkrcv: each its
-    own client, rtkrcv, work folder and state; a refused login on one leaves the other
+class History(unittest.TestCase):
+    """refhistory.py: 30 s bins of the fixed epochs, residuals, daily means, files."""
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.wall = 1_798_761_600.0                  # 2027-01-01 00:00 UTC
+        self.expected = (0.5, -1.2, 1.1)
+
+    def history(self):
+        return ReferenceHistory(self.folder, "abcd", expected=lambda: self.expected,
+                                station=lambda: 19, wall=lambda: self.wall)
+
+    def test_bins_residuals_points_and_days(self):
+        history = self.history()
+        for second in range(90):                     # three bins of 30 fixed epochs
+            history.add(self.wall + second, (0.51, -1.19, 1.13))
+        self.wall += 90
+        job = history.take()                         # closes the third bin
+        self.assertEqual(len(history.bins), 3)
+        start, count, raw, res, sid = history.bins[0]
+        self.assertEqual((start, count, sid), (1_798_761_600, 30, 19))
+        self.assertEqual([round(v, 4) for v in res], [0.01, 0.01, 0.03])
+        points = history.points(3600)
+        self.assertEqual([p[1:] for p in points], [[0.01, 0.01, 0.03, 30]] * 3)
+        self.assertEqual([p[0] for p in points], [75.0, 45.0, 15.0], "ages of bin middles")
+        self.assertEqual(history.days(), [["2027-01-01", 0.01, 0.01, 0.03, 90]])
+        self.assertEqual(len(history.points(3600, max_points=2)), 2, "decimated")
+        self.assertEqual(history.points(3600, max_points=2)[0][4], 60, "weights add up")
+        self.assertEqual(history.points(40), [points[-1]], "the window counts")
+        history.write(job)
+        lines = history.path.read_text().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(json.loads(lines[0])["res"], [0.01, 0.01, 0.03])
+        self.assertEqual(json.loads(history.daily_path.read_text()),
+                         {"2027-01-01": [90, 0.9, 0.9, 2.7]})
+        # Read back; damaged lines are skipped; too old ones too.
+        with open(history.path, "a") as stream:
+            stream.write("{not json\n")
+            stream.write(json.dumps({"t": self.wall - 9 * 86400, "c": 1, "raw": [0, 0, 0],
+                                     "res": [0, 0, 0]}) + "\n")
+        again = self.history().load()
+        self.assertEqual(len(again.bins), 3)
+        self.assertEqual([b[4] for b in again.bins], [19] * 3, "the station ID read back")
+        self.assertEqual(again.days(), history.days())
+        self.assertEqual(again.error, "")
+
+    def test_the_rewrite_keeps_the_station_id(self):
+        """R1-7: the lines written at start and once a day keep "sid"."""
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertTrue(job["rewrite"])
+        history.write(job)
+        again = self.history().load()
+        job = again.take()
+        self.assertTrue(job["rewrite"])
+        again.write(job)
+        (line,) = again.path.read_text().splitlines()
+        self.assertEqual(json.loads(line)["sid"], 19)
+        self.assertEqual(again.bins[0][4], 19)
+        nothing = ReferenceHistory(self.folder, "x", wall=lambda: self.wall)
+        nothing.add(self.wall, (0, 0, 0))
+        nothing.close_bin()
+        self.assertIsNone(json.loads(nothing.take()["lines"][0])["sid"])
+
+    def test_a_failed_write_is_kept_for_the_next(self):
+        """R1-5: a failed write puts its lines back (before newer ones), and its daily
+        file and rewrite are done at the next write."""
+        history = self.history()
+        history.write(history.take())                # the first rewrite, done
+        history.add(self.wall, (0.51, -1.19, 1.13))
+        history.close_bin()
+        job = history.take()
+        self.assertEqual((len(job["lines"]), job["rewrite"], job["daily"] is None),
+                         (1, False, False))
+        from unittest import mock
+        with mock.patch("builtins.open", side_effect=OSError(28, "No space left")):
+            self.assertFalse(history.write(job))
+        self.assertIn("No space left", history.error)
+        history.restore(job)
+        self.wall += 30
+        history.add(self.wall, (0.52, -1.19, 1.13))
+        history.close_bin()
+        again = history.take()
+        self.assertEqual(again["lines"][0], job["lines"][0], "the failed line first")
+        self.assertEqual(len(again["lines"]), 2)
+        self.assertIsNotNone(again["daily"])
+        self.assertTrue(history.write(again))
+        self.assertEqual(history.error, "")
+        self.assertEqual(len(history.path.read_text().splitlines()), 2)
+        self.assertEqual(json.loads(history.daily_path.read_text())["2027-01-01"][0], 2)
+        # An append that failed after writing a line writes it again: read once.
+        with open(history.path, "a") as stream:
+            stream.write(history.path.read_text().splitlines()[-1] + "\n")
+        self.assertEqual(len(self.history().load().bins), 2)
+        # The bins appended but the daily file failed: only the daily file again.
+        history.add(self.wall + 30, (0.52, -1.19, 1.13))
+        history.close_bin()
+        job = history.take()
+        real_replace = os.replace
+        with mock.patch("os.replace", side_effect=OSError(5, "EIO")):
+            self.assertFalse(history.write(job))
+        lines = len(history.path.read_text().splitlines())   # with the line added above
+        history.restore(job)
+        again = history.take()
+        self.assertEqual((again["lines"], again["daily"] is None), ([], False),
+                         "the appended line is not written twice")
+        self.assertTrue(history.write(again))
+        self.assertIs(os.replace, real_replace)
+        self.assertEqual(len(history.path.read_text().splitlines()), lines)
+        # A failed rewrite is done again, from the bins.
+        self.wall += 2 * 86400
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertTrue(job["rewrite"])
+        with mock.patch("os.replace", side_effect=OSError(5, "EIO")):
+            self.assertFalse(history.write(job))
+        history.restore(job)
+        job = history.take()
+        self.assertTrue(job["rewrite"], "tried again")
+        self.assertEqual(len(job["lines"]), 4)
+        self.assertIsNotNone(job["daily"])
+
+    def test_flush_restores_on_failure(self):
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        (self.folder / "reference-abcd.jsonl.tmp").mkdir()   # the rewrite cannot write
+
+        async def go():
+            return await history.flush(asyncio.get_running_loop())
+        self.assertFalse(asyncio.run(go()))
+        self.assertIsNone(history._rewritten, "the rewrite is due again")
+        self.assertTrue(history._daily_dirty)
+        (self.folder / "reference-abcd.jsonl.tmp").rmdir()
+        self.assertTrue(asyncio.run(go()))
+        self.assertEqual(len(history.path.read_text().splitlines()), 1)
+
+    def test_a_damaged_daily_file_is_moved_aside(self):
+        """R1-6: the only record of the past daily means is not overwritten: the damaged
+        file is moved aside, and the error stays until the next start."""
+        self.folder.joinpath("reference-abcd-daily.json").write_text('{"2026-12-30": [5, 0.')
+        history = self.history().load()
+        aside = self.folder / "reference-abcd-daily.json.corrupt-20270101T000000Z"
+        self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.')
+        self.assertFalse(history.daily_path.exists())
+        self.assertIn("moved to reference-abcd-daily.json.corrupt-20270101T000000Z",
+                      history.error)
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        self.assertTrue(history.write(history.take()))
+        self.assertIn("was damaged", history.error, "kept after a good write")
+        self.assertEqual(list(json.loads(history.daily_path.read_text())), ["2027-01-01"])
+        self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.', "untouched")
+        self.assertEqual(self.history().load().error, "", "the next start reads it fine")
+        # Damaged again within the same second: the first copy is kept.
+        history.daily_path.write_text("{")
+        self.history().load()
+        self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.')
+        self.assertEqual(aside.with_name(aside.name + "-2").read_text(), "{")
+
+    def test_a_daily_file_that_cannot_be_moved_is_not_overwritten(self):
+        self.folder.joinpath("reference-abcd-daily.json").write_text("[1, 2")
+        from unittest import mock
+        with mock.patch("os.replace", side_effect=OSError(30, "Read-only")):
+            history = self.history().load()
+        self.assertIn("could not be moved aside", history.error)
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertIsNone(job["daily"])
+        history.write(job)
+        self.assertEqual(history.daily_path.read_text(), "[1, 2")
+
+    def test_files_are_flushed_to_disk_before_the_rename(self):
+        from unittest import mock
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        calls = []
+        real_fsync, real_replace = os.fsync, os.replace
+        with mock.patch("os.fsync", side_effect=lambda fd: (calls.append("fsync"),
+                                                            real_fsync(fd))), \
+                mock.patch("os.replace", side_effect=lambda a, b: (calls.append("replace"),
+                                                                   real_replace(a, b))):
+            self.assertTrue(history.write(history.take()))
+        self.assertEqual(calls, ["fsync", "replace", "fsync", "replace"])
+
+    def test_no_expected_offset_keeps_the_raw_offset_only(self):
+        self.expected = None
+        history = self.history()
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        self.assertEqual(history.bins[0][3], None)
+        self.assertEqual(history.points(3600), [])
+        self.assertEqual(history.days(), [])
+        job = history.take()
+        self.assertIsNone(job["daily"])
+        self.assertEqual(json.loads(job["lines"][0])["raw"], [0.5, -1.2, 1.1])
+
+    def test_appends_then_rewrites_once_a_day_and_drops_old_bins(self):
+        history = self.history()
+        history.write(history.take())                # first: a (pruning) rewrite
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertFalse(job["rewrite"])
+        history.write(job)
+        self.assertEqual(len(history.path.read_text().splitlines()), 1)
+        self.assertIsNone(history.take(), "nothing new")
+        self.wall += 9 * 86400
+        history.add(self.wall, (0.5, -1.2, 1.1))
+        history.close_bin()
+        job = history.take()
+        self.assertTrue(job["rewrite"])
+        history.write(job)
+        self.assertEqual(len(history.path.read_text().splitlines()), 1, "the old bin is gone")
+        self.assertEqual(len(history.days()), 2, "daily means are kept")
+
+    def test_a_write_error_is_reported(self):
+        history = ReferenceHistory(self.folder / "file" / "x", "abcd",
+                                   wall=lambda: self.wall)
+        (self.folder / "file").write_text("not a folder")
+        history.add(self.wall, (0, 0, 0))
+        history.close_bin()
+        history.write(history.take())
+        self.assertIn("writing the plot history", history.error)
+
+    def test_the_check_feeds_its_fixed_epochs(self):
+        got = []
+        check = ReferenceCheck(settings(frame="ITRF2020"), RtcmHub(), lambda: {"ecef": OURS},
+                               on_fixed=lambda wall, enu: got.append(enu),
+                               wall=lambda: self.wall)
+        check.runner = StubRunner()
+        check._session_start()
+        check._solution(solution(quality=1), "line")
+        check._solution(solution(quality=2), "line")
+        self.assertEqual(len(got), 1, "fixed epochs only")
+
+
+class PlotsApi(unittest.IsolatedAsyncioTestCase):
+    async def test_endpoint(self):
+        from aiohttp.test_utils import TestClient, TestServer
+        from gnss_base.web import create_app
+        asked = []
+
+        def plots(window):
+            asked.append(window)
+            return {"window": window, "references": []}
+
+        app = create_app(lambda: {}, allowed_clients=(), get_plots=plots)
+        async with TestClient(TestServer(app)) as client:
+            reply = await client.get("/api/references/plots")
+            self.assertEqual((reply.status, await reply.json()),
+                             (200, {"window": "24h", "references": []}))
+            self.assertEqual(reply.headers["Cache-Control"], "no-store")
+            for window in ("1h", "7d"):
+                self.assertEqual((await client.get(f"/api/references/plots?window={window}"))
+                                 .status, 200)
+            reply = await client.get("/api/references/plots?window=30d")
+            self.assertEqual(reply.status, 400)
+        self.assertEqual(asked, ["24h", "1h", "7d"])
+        app = create_app(lambda: {}, allowed_clients=())
+        async with TestClient(TestServer(app)) as client:
+            self.assertEqual((await client.get("/api/references/plots")).status, 404)
+
+
+class ThreeChecks(unittest.IsolatedAsyncioTestCase):
+    """Three checks side by side against three fake casters and the fake rtkrcv: each its
+    own client, rtkrcv, work folder and state; a refused login on one leaves the others
     streaming; the second sends a GGA to its nearest-station mountpoint only."""
 
-    async def test_two_independent_checks(self):
+    async def test_three_independent_checks(self):
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, folder)
-        first_caster = FakeCaster(data=arp_frame(*CORS) + frame_1033(), period=0.05,
-                                  login=("user", SENTINEL))
-        second_caster = FakeCaster(data=arp_frame(*CORS) + frame_1033(), period=0.05,
-                                   login=("user2", SENTINEL),
-                                   mountpoints={"NEAREST": {"nmea": "1"}})
-        ports = [await first_caster.start(), await second_caster.start()]
-        self.addAsyncCleanup(first_caster.stop)
-        self.addAsyncCleanup(second_caster.stop)
+        casters = [FakeCaster(data=arp_frame(*CORS) + frame_1033(), period=0.05,
+                              login=("user", SENTINEL)),
+                   FakeCaster(data=arp_frame(*CORS) + frame_1033(), period=0.05,
+                              login=("user2", SENTINEL), mountpoints={"NEAREST": {"nmea": "1"}}),
+                   FakeCaster(data=arp_frame(*CORS) + frame_1033(station=9), period=0.05,
+                              login=("user3", SENTINEL))]
+        ports = [await caster.start() for caster in casters]
+        for caster in casters:
+            self.addAsyncCleanup(caster.stop)
         with mock.patch.dict(os.environ, {"FAKE_RTKRCV_PERIOD": "0.05",
                                           "FAKE_RTKRCV_MODE": "normal",
                                           "FAKE_RTKRCV_SOLUTION": "0 0 3.0 5 20"}):
             hub = RtcmHub()
-            first = ReferenceCheck(
-                settings(binary=str(FAKE), work_dir=folder / "reference", port=ports[0],
-                         password=Secret("wrong")),
-                hub, lambda: {"ecef": OURS}, poll_s=0.05, hang_s=0.5)
-            second = ReferenceCheck(
-                settings2(binary=str(FAKE), work_dir=folder / "reference2", port=ports[1],
-                          mountpoint="NEAREST", send_gga=True, gga_position="12.5,-45.25"),
-                hub, lambda: {"ecef": OURS}, poll_s=0.05, hang_s=0.5,
-                label="reference check 2")
-            self.addAsyncCleanup(first.stop)
-            self.addAsyncCleanup(second.stop)
+            entries = [settings(binary=str(FAKE), work_dir=folder / "reference-one",
+                                port=ports[0], password=Secret("wrong"), name="one"),
+                       settings2(binary=str(FAKE), work_dir=folder / "reference-nearest",
+                                 port=ports[1], mountpoint="NEAREST", send_gga=True,
+                                 gga_position="12.5,-45.25"),
+                       settings(binary=str(FAKE), work_dir=folder / "reference-three",
+                                port=ports[2], user="user3", name="three", index=3)]
+            checks = [ReferenceCheck(entry, hub, lambda: {"ecef": OURS}, poll_s=0.05,
+                                     hang_s=0.5, label=f"reference check {entry.name}")
+                      for entry in entries]
+            for check in checks:
+                self.addAsyncCleanup(check.stop)
+            first, second, third = checks
             with self.assertLogs("gnss_base", "INFO") as logs:
-                first.start()
-                second.start()
+                for check in checks:
+                    check.start()
                 deadline = asyncio.get_running_loop().time() + 10
                 while (first.state() != "login refused" or second.stats.counts["single"] < 3
-                       or not second_caster.uplink):
+                       or third.stats.counts["single"] < 3 or not casters[1].uplink):
                     self.assertLess(asyncio.get_running_loop().time(), deadline,
-                                    (first.snapshot()["state"], second.snapshot()["state"]))
+                                    [c.snapshot()["state"] for c in checks])
                     hub.publish(rtcm(1074, 40))
                     hub.publish(eph(1))
                     await asyncio.sleep(0.05)
-            one, two = first.snapshot(), second.snapshot()
+            one, two, three = (check.snapshot() for check in checks)
             self.assertEqual(one["state"], "login refused")
-            self.assertIn("check reference_user and reference_password", one["reason"])
-            self.assertEqual(two["client"]["state"], "connected")
-            self.assertEqual(two["state"], "no corrections", "streaming, no MSM from it")
+            self.assertIn("check references[1].user and references[1].password", one["reason"])
+            for snap in (two, three):
+                self.assertEqual(snap["client"]["state"], "connected")
+                self.assertEqual(snap["state"], "no corrections", "streaming, no MSM from it")
             self.assertEqual((two["option"], two["send_gga"], two["gga_source"]),
-                             ("reference2", True, "reference2_gga_position"))
-            self.assertEqual(two["station_id"], 7)
+                             ("references[2]", True, "references[2].gga_position"))
+            self.assertEqual((two["station_id"], three["station_id"]), (7, 7))
+            self.assertEqual(three["corrections"]["descriptors"]["receiver"], "LEICA GR30")
             self.assertGreaterEqual(two["client"]["gga_sent"], 1)
-            # The configured position, the system clock's time (not compared), a valid
-            # checksum.
-            sentence = second_caster.uplink[0].decode()
+            self.assertEqual(three["client"]["gga_sent"], 0)
+            sentence = casters[1].uplink[0].decode()
             self.assertEqual(sentence.split(",")[2:6], ["1230.00000", "N", "04515.00000", "W"])
             self.assertEqual(sentence.split(",")[6:14],
                              build_gga(12.5, -45.25, 0.0, 0.0).decode().split(",")[6:14])
-            body, _, checksum = sentence.strip().partition("*")
-            value = 0
-            for char in body[1:]:
-                value ^= ord(char)
-            self.assertEqual(checksum, f"{value:02X}")
-            self.assertEqual(first_caster.uplink, [], "no GGA to the first caster")
-            self.assertEqual(first_caster.stream_connections, 0)
-            self.assertTrue((folder / "reference2" / CONFIG_NAME).exists())
-            self.assertNotEqual(first.runner.snapshot()["pid"], second.runner.snapshot()["pid"])
-            self.assertEqual([s.name for s in hub._subscribers].count("reference check 2"), 1)
+            self.assertEqual((casters[0].uplink, casters[2].uplink), ([], []))
+            self.assertEqual(casters[0].stream_connections, 0)
+            for name in ("reference-nearest", "reference-three"):
+                self.assertTrue((folder / name / CONFIG_NAME).exists())
+            self.assertEqual(len({c.runner.snapshot()["pid"] for c in checks}), 3)
+            names = [s.name for s in hub._subscribers]
+            for check in checks:
+                self.assertEqual(names.count(check.label), 1)
             text = "\n".join(logs.output)
-            self.assertIn("NTRIP client (reference2): connected", text)
-            self.assertIn("NTRIP client: Login refused", text, "the first logs as before")
+            self.assertIn("NTRIP client (nearest): connected", text)
+            self.assertIn("NTRIP client (three): connected", text)
+            self.assertIn("NTRIP client (one): Login refused", text)
             for secret in (SENTINEL, "GPGGA", "1230.00000", "wrong"):
                 self.assertNotIn(secret, text, secret)
-                self.assertNotIn(secret, json.dumps(one) + json.dumps(two), secret)
+                self.assertNotIn(secret, json.dumps([one, two, three]), secret)
+            result = summary(checks)
+            self.assertEqual([r["name"] for r in result["rows"]], ["one", "nearest", "three"])
+            self.assertEqual(result["rows"][0]["not_current"], "not streaming (login refused)")
+
 
 
 def find_rtkrcv():
@@ -1684,8 +2187,10 @@ class RealRtkrcv(unittest.IsolatedAsyncioTestCase):
 
 class EndToEnd(unittest.TestCase):
     """The whole app with a simulated receiver and the fake rtkrcv standing in for both
-    instances: the reference card reaches `api/status` without the password, its log
-    is written, and the app still stops within Home Assistant's 10 s."""
+    instances, configured with the 0.7 options (reference_*), which the app migrates:
+    the reference card reaches `api/status` without the password, with the migration
+    notice, its logs are written to the new named folder, and the app still stops
+    within Home Assistant's 10 s."""
 
     def test_app_runs_the_reference_check(self):
         from tests.test_app import SimulatedReceiver, free_port
@@ -1709,7 +2214,8 @@ class EndToEnd(unittest.TestCase):
             "reference_host": "127.0.0.1", "reference_port": caster_port,
             "reference_mountpoint": "MP_1",
             "reference_user": "user", "reference_password": SENTINEL,
-            "reference_frame": "ITRF2020"}))
+            "reference_frame": "ITRF2020",
+            "reference_gga_position": "12.3456789,-45.6789123"}))   # made up, not sent
         env = dict(os.environ, FAKE_RTKRCV_PERIOD="0.2", FAKE_RTKRCV_MODE="normal",
                    FAKE_RTKRCV_SOLUTION="0 0 0.01 1 25")
         process = subprocess.Popen(
@@ -1733,7 +2239,7 @@ class EndToEnd(unittest.TestCase):
                 except OSError:
                     continue
                 status = json.loads(text)
-                reference = status["reference"]
+                (reference,) = status["references"]
                 if reference["state"] == "fixed" and reference["session"]["epochs"] >= 3:
                     break
         finally:
@@ -1746,8 +2252,22 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(process.returncode, 0, app_output)
         self.assertNotIn(SENTINEL, text)
         self.assertNotIn(SENTINEL, app_output)
-        reference = status["reference"]
+        for part in ("12.345", "45.678"):
+            self.assertNotIn(part, text, "no GGA position in api/status")
+            self.assertNotIn(part, app_output, "nor in the log")
+        self.assertIn('gga_position: "<the same as before>"',
+                      status["reference_summary"]["notice"]["yaml"])
+        (reference,) = status["references"]
         self.assertEqual(reference["state"], "fixed", reference)
+        self.assertEqual((reference["name"], reference["slug"], reference["option"]),
+                         ("mp_1", "mp-1", "references[1]"))
+        notice = status["reference_summary"]["notice"]
+        self.assertEqual((notice["kind"], notice["names"]), ("migrated", ["mp_1"]))
+        self.assertIn("references: The references list is empty, so the 0.7 reference "
+                      "options from the options file are used", app_output)
+        self.assertIn("mp_1 (MP_1)", app_output)
+        (row,) = status["reference_summary"]["rows"]
+        self.assertEqual((row["residual_enu"], row["verdict"]), ([0.0, 0.0, 0.01], "good"))
         self.assertEqual((reference["mountpoint"], reference["password_set"],
                           reference["verdict"]), ("MP_1", True, "good"))
         self.assertEqual(reference["client"]["state"], "connected")
@@ -1757,23 +2277,25 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(caster.most_open, 1)
         self.assertEqual(reference["solution"]["offset_enu"], [0.0, 0.0, 0.01])
         self.assertEqual(reference["corrections"]["descriptors"]["antenna"], "GPPNULLANTENNA")
-        self.assertEqual(reference["log"]["folder"], "reference")
+        self.assertEqual(reference["log"]["folder"], "reference-mp-1")
         self.assertEqual((reference["station_frame"], reference["expected_enu"]),
                          ("ITRF2020", [0.0, 0.0, 0.0]))
         # The CORS stream as received is on disk, and on the Log files table.
-        (raw,) = (directory / "logs" / "reference" / "raw").glob("*.rtcm3")
+        (raw,) = (directory / "logs" / "reference-mp-1" / "raw").glob("*.rtcm3")
+        self.assertFalse((directory / "logs" / "reference").exists(), "the 0.7 folder is not used")
         self.assertTrue(raw.read_bytes().startswith(sample), "the stream as sent")
         self.assertGreater(raw.stat().st_size, len(sample), "and on")
         self.assertGreater(reference["raw_log"]["bytes_today"], 0)
-        self.assertIn(f"reference/raw/{raw.name}",
+        self.assertIn(f"reference-mp-1/raw/{raw.name}",
                       [f["file"] for f in status["storage"]["files"]])
         self.assertIn(raw.name, [f["file"] for f in reference["raw_log"]["files"]])
         self.assertEqual(status["measured"]["state"], "running", "the other instance too")
-        config = directory / "reference" / CONFIG_NAME
+        config = directory / "reference-mp-1" / CONFIG_NAME
         self.assertNotIn(SENTINEL, config.read_text())
         self.assertNotIn("ntripcli", config.read_text())
-        self.assertTrue((directory / "reference" / "rtkrcv.nav").exists(), "SIGTERM, cache saved")
-        (llh,) = (directory / "logs" / "reference").glob("*.llh")
+        self.assertTrue((directory / "reference-mp-1" / "rtkrcv.nav").exists(),
+                        "SIGTERM, cache saved")
+        (llh,) = (directory / "logs" / "reference-mp-1").glob("*.llh")
         lines = llh.read_text().splitlines()
         self.assertTrue(lines[0].startswith(f"% gnss_base {__version__}, rtkrcv 2.4.3 b34, "
                                             "RTK static against MP_1"), lines[0])
@@ -1784,20 +2306,22 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(pos.read_text().startswith("% gnss_base"))
 
 
-class EndToEndTwo(unittest.TestCase):
-    """0.7.0: the whole app with both checks, the second on a nearest-station (nmea 1)
-    mountpoint with the GGA uplink and our 1005 as its position: both cards and the
-    comparison reach `api/status`, each check has its own logs, and neither password nor
-    the GGA appears in the add-on log or the page's data."""
+class EndToEndThree(unittest.TestCase):
+    """0.8.0: the whole app with three entries in `references`, the second on a
+    nearest-station (nmea 1) mountpoint with the GGA uplink and our 1005 as its position,
+    the third with its station frame unknown: every card, the summary and the plots
+    reach the page's API, each check has its own named folders, and neither a password
+    nor the GGA appears in the add-on log or the page's data."""
 
-    def test_app_runs_two_reference_checks(self):
+    def test_app_runs_three_reference_checks(self):
         from tests.test_app import SimulatedReceiver, free_port
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
         sample = arp_frame(*CORS, antenna_height=0.0) + frame_1033() + rtcm(1074, 40)
         casters = [FakeCaster(data=sample, period=0.2, login=("user", SENTINEL)),
                    FakeCaster(data=sample, period=0.2, login=("user2", SENTINEL + "2"),
-                              mountpoints={"NEAREST": {"nmea": "1"}})]
+                              mountpoints={"NEAREST": {"nmea": "1"}}),
+                   FakeCaster(data=sample, period=0.2, login=("user3", SENTINEL + "3"))]
         ports = [caster.run_in_thread() for caster in casters]
         for caster in casters:
             self.addCleanup(caster.stop_thread)
@@ -1811,17 +2335,17 @@ class EndToEndTwo(unittest.TestCase):
         options = directory / "options.json"
         options.write_text(json.dumps({
             "device": os.ttyname(slave), "baud": 460800, "log_dir": str(directory / "logs"),
-            "min_free_gb": 0, "caster_enabled": False,
-            "reference_enabled": True, "reference_host": "127.0.0.1",
-            "reference_port": ports[0], "reference_mountpoint": "MP_1",
-            "reference_user": "user", "reference_password": SENTINEL,
-            "reference_frame": "ITRF2020",
-            "reference2_enabled": True, "reference2_host": "127.0.0.1",
-            "reference2_port": ports[1], "reference2_mountpoint": "NEAREST",
-            "reference2_user": "user2", "reference2_password": SENTINEL + "2",
-            "reference2_frame": "ITRF2020", "reference2_send_gga": True}))
+            "min_free_gb": 0, "caster_enabled": False, "references": [
+                {"name": "ABCD", "host": "127.0.0.1", "port": ports[0], "mountpoint": "MP_1",
+                 "user": "user", "password": SENTINEL, "frame": "ITRF2020"},
+                {"name": "nearest", "host": "127.0.0.1", "port": ports[1],
+                 "mountpoint": "NEAREST", "user": "user2", "password": SENTINEL + "2",
+                 "frame": "ITRF2020", "send_gga": True},
+                {"name": "Third one", "host": "127.0.0.1", "port": ports[2],
+                 "mountpoint": "MP_1", "user": "user3", "password": SENTINEL + "3"}]}))
         env = dict(os.environ, FAKE_RTKRCV_PERIOD="0.2", FAKE_RTKRCV_MODE="normal",
                    FAKE_RTKRCV_SOLUTION="0 0 0.01 1 25")
+        env.pop("SUPERVISOR_TOKEN", None)
         process = subprocess.Popen(
             [sys.executable, "-m", "gnss_base", "--options", str(options), "--host",
              "127.0.0.1", "--port", str(port), "--allow-any-client", "--by-id-dir",
@@ -1829,10 +2353,10 @@ class EndToEndTwo(unittest.TestCase):
             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         receiver = SimulatedReceiver(master)
         stream = arp_frame(*OURS) + rtcm(1074, 40)
-        status = text = None
+        status = text = plots = None
         try:
             receiver.start()
-            deadline = time.time() + 30
+            deadline = time.time() + 40
             while time.time() < deadline:
                 receiver.send(stream)
                 time.sleep(0.2)
@@ -1845,90 +2369,116 @@ class EndToEndTwo(unittest.TestCase):
                 status = json.loads(text)
                 # The second client waits for our 1005 (the GGA's position) first:
                 # "no position", then a new look after 10 s.
-                if (status["reference_comparison"]["shown"]
-                        and status["reference2"]["client"]["state"] == "connected"
-                        and status["reference2"]["state"] == "fixed"
-                        and min(status[k]["session"]["epochs"]
-                                for k in ("reference", "reference2")) >= 3):
+                if (all(r["state"] == "fixed" and r["session"]["epochs"] >= 3
+                        for r in status["references"])
+                        and status["reference_summary"]["spread"]["count"] == 2):
                     break
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/references/plots"
+                                        "?window=1h", timeout=5) as reply:
+                plots_text = reply.read().decode()
+            plots = json.loads(plots_text)
         finally:
             process.terminate()
             app_output = process.communicate(timeout=15)[0].decode(errors="replace")
             receiver.stop()
         self.assertEqual(process.returncode, 0, app_output)
-        one, two = status["reference"], status["reference2"]
-        self.assertEqual((one["state"], two["state"]), ("fixed", "fixed"), (one, two))
-        self.assertEqual((one["option"], two["option"]), ("reference", "reference2"))
+        one, two, three = status["references"]
+        self.assertEqual([r["state"] for r in (one, two, three)], ["fixed"] * 3)
+        self.assertEqual([(r["name"], r["slug"], r["option"]) for r in (one, two, three)],
+                         [("ABCD", "abcd", "references[1]"),
+                          ("nearest", "nearest", "references[2]"),
+                          ("Third one", "third-one", "references[3]")])
         self.assertEqual(two["client"]["sourcetable"]["nmea"], "1")
         self.assertEqual(two["gga_source"], "our 1005")
         self.assertGreaterEqual(two["client"]["gga_sent"], 1)
-        self.assertEqual(one["client"]["gga_sent"], 0)
+        self.assertEqual((one["client"]["gga_sent"], three["client"]["gga_sent"]), (0, 0))
         self.assertEqual(two["station_id"], 7)
-        self.assertEqual([m["mountpoint"] for m in two["client"]["mountpoints"]], ["NEAREST"])
-        self.assertTrue(two["client"]["mountpoints"][0]["accepted"])
-        # The GGA carried our 1005 (synthetic, at 0/0) to the second caster only.
+        self.assertEqual(two["station_position"], {"lat": 0.225, "lon": 0.0})
         self.assertTrue(casters[1].uplink)
         self.assertIn(b",0000.00000,N,00000.00000,E,1,", casters[1].uplink[0])
-        self.assertEqual(casters[0].uplink, [])
-        comparison = status["reference_comparison"]
-        self.assertEqual((comparison["shown"], comparison["residual"], comparison["verdict"]),
-                         (True, True, "good"))
-        self.assertEqual(comparison["second_minus_first"], [0.0, 0.0, 0.0])
+        self.assertEqual((casters[0].uplink, casters[2].uplink), ([], []))
+        summary_ = status["reference_summary"]
+        rows = summary_["rows"]
+        self.assertEqual([r["residual_enu"] for r in rows],
+                         [[0.0, 0.0, 0.01], [0.0, 0.0, 0.01], None])
+        self.assertEqual([r["verdict"] for r in rows], ["good", "good", None])
+        self.assertEqual(rows[2]["raw_enu"], [0.0, 0.0, 0.01])
+        self.assertEqual(rows[2]["no_residual"], "station frame unknown: set references[3].frame")
+        self.assertEqual(rows[1]["baseline_km"], round(math.dist(OURS, CORS) / 1000, 3))
+        spread = summary_["spread"]
+        self.assertEqual((spread["names"], spread["horizontal_m"], spread["up_m"],
+                          spread["verdict"]), (["ABCD", "nearest"], 0.0, 0.0, "good"))
+        self.assertEqual(summary_["notice"]["kind"], None)
+        self.assertEqual([r["name"] for r in plots["references"]], ["ABCD", "nearest", "Third one"])
+        self.assertEqual(plots["window_s"], 3600)
+        self.assertEqual(plots["references"][0]["session_mean"], [0.0, 0.0, 0.01])
+        self.assertEqual(plots["references"][2]["no_residual"],
+                         "station frame unknown: set references[3].frame")
         for secret in (SENTINEL, "GPGGA", "0000.00000"):
             self.assertNotIn(secret, text, secret)
+            self.assertNotIn(secret, plots_text, secret)
             self.assertNotIn(secret, app_output, secret)
-        self.assertIn("NTRIP client (reference2): connected", app_output)
+        self.assertIn("NTRIP client (nearest): connected", app_output)
+        self.assertIn("NTRIP client (Third one): connected", app_output)
         logs = directory / "logs"
-        (llh,) = (logs / "reference2").glob("*.llh")
+        (llh,) = (logs / "reference-nearest").glob("*.llh")
         self.assertIn("RTK static against NEAREST", llh.read_text().splitlines()[0])
-        self.assertIn("from reference2_frame", llh.read_text().splitlines()[0])
-        (raw,) = (logs / "reference2" / "raw").glob("*.rtcm3")
+        self.assertIn("from references[2].frame", llh.read_text().splitlines()[0])
+        (raw,) = (logs / "reference-nearest" / "raw").glob("*.rtcm3")
         self.assertTrue(raw.read_bytes().startswith(sample))
-        self.assertIn(f"reference2/raw/{raw.name}", [f["file"] for f in status["storage"]["files"]])
-        self.assertTrue(list((logs / "reference").glob("*.llh")))
-        self.assertTrue((directory / "reference2" / "rtkrcv.nav").exists(), "SIGTERM, cache saved")
-        for path in [*logs.rglob("*"), *(directory / "reference2").rglob("*")]:
-            if path.is_file() and path.suffix in (".llh", ".pos", ".conf", ".jsonl"):
+        self.assertIn(f"reference-nearest/raw/{raw.name}",
+                      [f["file"] for f in status["storage"]["files"]])
+        for slug in ("abcd", "third-one"):
+            self.assertTrue(list((logs / f"reference-{slug}").glob("*.llh")), slug)
+        self.assertTrue((directory / "reference-nearest" / "rtkrcv.nav").exists(),
+                        "SIGTERM, cache saved")
+        # The plots' history is written at shutdown (the open bin closed).
+        history = directory / "history" / "reference-abcd.jsonl"
+        self.assertTrue(json.loads(history.read_text().splitlines()[-1])["res"])
+        self.assertTrue((directory / "history" / "reference-abcd-daily.json").exists())
+        for path in [*logs.rglob("*"), *directory.rglob("reference-*/*"),
+                     *(directory / "history").rglob("*")]:
+            if path.is_file() and path.suffix in (".llh", ".pos", ".conf", ".jsonl", ".json"):
                 self.assertNotIn(SENTINEL, path.read_text(errors="replace"), path)
 
 
 class Page(unittest.TestCase):
-    def test_reference_card(self):
-        html = (ROOT / "gnss_base" / "static" / "index.html").read_text()
-        for text in ('id="ref"', 'id="refd"', 'id="refmp"', 'id="refnote"', 'id="refout"',
-                     "renderReference(s.reference)", "Reference check",
+    def setUp(self):
+        self.html = (ROOT / "gnss_base" / "static" / "index.html").read_text()
+
+    def test_reference_cards(self):
+        html = self.html
+        for text in ('id="refsum"', 'id="sumt"', 'id="spread"', 'id="sumnote"', 'id="sumyaml"',
+                     "renderReferences(s.references||[],s.reference_summary||{})",
+                     "Reference check: ", "Our antenna against the references",
                      "A fixed solution can still be a false fix",
                      "Static mode smears an antenna move into a slow drift",
                      "the Measured position card catches a move within seconds",
-                     "solution minus our RTCM 1005 position", "within 5 cm horizontal",
+                     "never guessed from the stream", "within 5 cm horizontal",
                      "Residual (mean − expected)", "Expected offset", "Baseline",
-                     "Station frame", '"unknown: set "+o+"_frame"', "Our frame", "set base_frame",
+                     "Station frame", '"unknown: set "+o+".frame"', "Our frame", "set base_frame",
                      "computed, station frame minus ours", "reserved by RTCM",
-                     "CORS raw log", '<section class="wide"><h2>Reference check',
-                     "never guessed from the stream", "Caster connection", "Sourcetable entry",
+                     "CORS raw log", "Caster connection", "Sourcetable entry",
                      '"login refused":"Login refused by the caster"',
                      '"mountpoint not found":"Mountpoint not found"', "retry in",
                      "Session mean ± std (fixed)", "Mean ± std, 10 min", "Fixed share",
                      "rtkrcv CPU", "rtkrcv memory", "not applied; see the README",
-                     "Previous session", "previous session's residual",
-                     "password ${r.password_set?\"set\":\"not set\"}"):
+                     "Previous session", "previous session's residual", "; not modelled)",
+                     "password ${r.password_set?\"set\":\"not set\"}",
+                     "Spread between references (the two farthest apart)",
+                     "Not in the spread",
+                     "raw (station frame minus ours)", "Plot history"):
             self.assertIn(text, html, text)
+        self.assertNotIn("reference_comparison", html, "the 0.7 comparison card is gone")
+        self.assertNotIn('id="ref2card"', html)
         card = html[html.index("function renderReference"):html.index("function render(s)")]
         self.assertNotIn("innerHTML", card, "values reach the card through dl, which escapes")
         self.assertIn("$(id+\"out\").textContent=out", card)
         self.assertIn("clientBusy||wrong?null:r.verdict", card,
                       "no residual colour while not connected, or on a wrong station")
         self.assertIn("r.station_mismatch", card)
-        self.assertIn(':red?"bad":live&&wrong?"warn":', card,
-                      "a red state (refused login, missing mountpoint, client stopped) "
-                      "wins over the wrong station's amber")
-        self.assertIn("live&&wrong&&!clientBusy?", card,
-                      "no 'wrong station' in the headline while the client is not connected")
-        cmp = html[html.index("function renderComparison"):html.index("async function tick")]
-        for text in ("c.stale?", "c.station_mismatch?", "!c.station_mismatch&&!c.stale&&c.residual",
-                     "first_station_id", "second_station_id", "first_last_fix_age_s",
-                     "second_last_fix_age_s"):
-            self.assertIn(text, cmp, text)
+        self.assertIn(':red?"bad":live&&wrong?"warn":', card)
+        self.assertIn("live&&wrong&&!clientBusy?", card)
         states = html[html.index("const REF_STATES"):html.index("function renderReference")]
         for state in ("not configured", "connecting", "no corrections", "stale", "fixed",
                       "float", "single", "starting", "idle", "restarting", "not available",
@@ -1938,8 +2488,57 @@ class Page(unittest.TestCase):
         import re
         self.assertEqual(len(re.findall(r"<section[ >]", html)), html.count("</section>"))
 
+    def test_summary_and_cards_are_built_from_the_list(self):
+        html = self.html
+        part = html[html.index("function refCard"):html.index("const refMarks")]
+        for text in ('"ref-"+r.index', 'insertAdjacentElement("afterend",el)',
+                     "section.refcard", "el.remove()", "renderSummary(sum,refs)",
+                     "r.residual_enu||r.raw_enu", "sp.left_out", "n.yaml"):
+            self.assertIn(text, part, text)
+        self.assertNotRegex(part, r"\.password\b(?!_set)")
+        self.assertNotIn("r.slug", part, "cards are keyed by the entry's place")
+        marks = html[html.index("const refMarks"):html.index('$("fitrefs").onclick')]
+        for text in ("keep.add(r.index)", "refMarks.get(r.index)", "refMarks.set(r.index,m)"):
+            self.assertIn(text, marks, text)
+        self.assertNotIn("r.slug", marks, "map markers too")
+        summary_ = html[html.index("function renderSummary"):html.index("const refMarks")]
+        self.assertIn("c=cls(r.verdict)", summary_, "colour only from the app's verdict")
+        self.assertIn('raw (station frame minus ours): ${r.no_residual}`+(r.not_current?',
+                      summary_, "a raw row says when it is not current")
+        self.assertIn("sp.horizontal_m", summary_)
+        self.assertNotIn("sp.enu", summary_)
+
+    def test_plots_and_map(self):
+        html = self.html
+        for text in ('id="rscatter"', 'id="rup"', 'id="rdaily"', 'id="rwin"',
+                     'data-w="1h"', 'data-w="24h" class="on"', 'data-w="7d"',
+                     '"api/references/plots?window="+plotWindow', "function ellipse(cov)",
+                     "0.5*Math.atan2(2*b,a-d)", "c.ellipse(", "session_mean",
+                     "covariance_en", "r.days", "Daily means", 'id="rtable"',
+                     "function updateRefMap", "station_position", "L.polyline([basePos,p]",
+                     "permanent:true", 'id="fitrefs"', "map.fitBounds",
+                     "--s1:#2a78d6", "--s5:#d55181"):
+            self.assertIn(text, html, text)
+        # No chart library: the plots are drawn on canvas like the drift plot.
+        self.assertEqual(html.count("<script src="), 3, "Leaflet, track.js, control.js only")
+
+    def test_ellipse_maths(self):
+        """The page's 1-sigma ellipse, run under Node when it is installed."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        start = self.html.index("function ellipse(cov){")
+        end = self.html.index("\n}\n", start) + 3
+        script = self.html[start:end] + """
+const out=[ellipse([[4,0],[0,1]]),ellipse([[1,0],[0,4]]),ellipse([[2,1],[1,2]])];
+console.log(JSON.stringify(out.map(e=>[+e.r1.toFixed(6),+e.r2.toFixed(6),+e.angle.toFixed(6)])));"""
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=20)
+        self.assertEqual(json.loads(result.stdout), [[2, 1, 0], [2, 1, round(math.pi / 2, 6)],
+                                                     [round(math.sqrt(3), 6), 1,
+                                                      round(math.pi / 4, 6)]])
+
     def test_within_5_cm_rule_is_the_apps(self):
-        html = (ROOT / "gnss_base" / "static" / "index.html").read_text()
+        html = self.html
         self.assertIn("r.verdict", html, "the page shows the app's verdict, it does not judge")
         card = html[html.index("function renderReference"):html.index("function render(s)")]
         self.assertNotIn("0.05", card)
@@ -1947,31 +2546,70 @@ class Page(unittest.TestCase):
 
 
 class Packaging(unittest.TestCase):
-    def test_options_schema_and_image(self):
+    def setUp(self):
+        self.config = miniyaml.load((ROOT / "config.yaml").read_text())
+        self.translations = miniyaml.load((ROOT / "translations" / "en.yaml").read_text())
+
+    def test_the_references_schema(self):
         text = (ROOT / "config.yaml").read_text()
-        for line in ("  reference_enabled: false\n", '  reference_host: ""\n',
-                     "  reference_port: 2101\n", '  reference_mountpoint: ""\n',
-                     '  reference_user: ""\n', '  reference_password: ""\n',
-                     '  reference_reset_utc: "00:00"\n',
-                     "  base_frame: ITRF2020\n",
-                     "  base_frame: list(ITRF2020|ITRF2014|ITRF2008|NAD83(2011))?\n",
-                     '  base_epoch: ""\n', "  base_epoch: str\n",
-                     "  reference_enabled: bool\n", "  reference_host: str\n",
-                     "  reference_port: port\n", "  reference_mountpoint: str\n",
-                     "  reference_user: str\n", "  reference_password: password\n",
-                     "  reference_frame: list(NAD83(2011)|ITRF2020|ITRF2014|ITRF2008)?\n",
-                     "  reference_reset_utc: match("):
-            self.assertIn(line, text, line)
-        self.assertNotIn("reference_expected_enu", text)
-        self.assertIn('version: "0.7.0"', text)
-        self.assertNotIn('  reference_frame: ""\n', text, "optional: absent until chosen")
+        self.assertIn('version: "0.8.0"', text)
+        self.assertEqual(__version__, "0.8.0")
+        options, schema = self.config["options"], self.config["schema"]
+        self.assertEqual(options["references"], [])
+        (entry,) = schema["references"]
+        self.assertEqual(entry, {
+            "name": "match(^[A-Za-z0-9][A-Za-z0-9 _.-]{0,23}$)", "enabled": "bool?",
+            "host": "str", "port": "port?", "mountpoint": "str", "user": "str",
+            "password": "password?",
+            "frame": "list(NAD83(2011)|ITRF2020|ITRF2014|ITRF2008)?", "epoch": "str?",
+            "send_gga": "bool?", "gga_position": "str?", "expect_station": "int(0,4095)?",
+            "reset_utc": "match(^([01]?[0-9]|2[0-3]):[0-5][0-9]$|^$|^never$)?"})
+        self.assertEqual(set(entry), set(REFERENCE_FIELDS))
+        # What the schema leaves optional the app defaults; what it requires has none.
+        for key, kind in entry.items():
+            self.assertEqual(kind.endswith("?"), key not in ("name", "host", "mountpoint",
+                                                             "user"), key)
+        self.assertEqual((REFERENCE_FIELDS["enabled"], REFERENCE_FIELDS["port"],
+                          REFERENCE_FIELDS["reset_utc"], REFERENCE_FIELDS["send_gga"],
+                          REFERENCE_FIELDS["frame"], REFERENCE_FIELDS["expect_station"]),
+                         (True, 2101, "00:00", False, "", None))
         import re
-        pattern = re.search(r"reference_reset_utc: match\((.*)\)\n", text).group(1)
-        for good in ("", "7:05", "00:00", "23:59", "09:30"):
-            self.assertTrue(re.fullmatch(pattern, good), good)
-        for bad in ("24:00", "7:5", "12:60", "noon", "1:00:00"):
-            self.assertFalse(re.fullmatch(pattern, bad), bad)
-        self.assertEqual(__version__, "0.7.0")
+        name = re.fullmatch(r"match\((.*)\)", entry["name"]).group(1)
+        self.assertEqual(name, "^" + NAME_PATTERN + "$", "the schema's rule is the app's")
+        pattern = re.fullmatch(r"match\((.*)\)\?", entry["reset_utc"]).group(1)
+        for good in ("", "7:05", "00:00", "23:59", "09:30", "never"):
+            self.assertTrue(re.match(pattern, good), good)
+            self.assertEqual(settings(reset_utc=good).problem(), "", good)
+        for bad in ("24:00", "7:5", "12:60", "noon", "1:00:00", "Never "):
+            self.assertFalse(re.match(pattern, bad), bad)
+        for key in self.config["schema"]:
+            self.assertFalse(key.startswith("reference_"), "the 0.7 keys are gone")
+        self.assertEqual(self.config["schema"]["base_frame"],
+                         "list(ITRF2020|ITRF2014|ITRF2008|NAD83(2011))?")
+        self.assertEqual((options["base_frame"], options["base_epoch"]), ("ITRF2020", ""))
+
+    def test_translations_name_and_describe_every_option(self):
+        configuration = self.translations["configuration"]
+        schema = self.config["schema"]
+        self.assertEqual(list(configuration), list(schema), "every option, in schema order")
+        for key, kind in schema.items():
+            entry = configuration[key]
+            self.assertTrue(entry["name"] and entry["description"], key)
+            self.assertLessEqual(len(entry["name"]), 40, key)
+            if isinstance(kind, list):
+                fields = entry["fields"]
+                self.assertEqual(list(fields), list(kind[0]), key)
+                for field_name in kind[0]:
+                    self.assertTrue(fields[field_name]["name"]
+                                    and fields[field_name]["description"], field_name)
+            else:
+                self.assertNotIn("fields", entry, key)
+        self.assertTrue(configuration["base_frame"]["name"].startswith("Our base"))
+        self.assertIn("RTCM 1005", configuration["base_frame"]["description"])
+        self.assertEqual(configuration["references"]["fields"]["enabled"]["name"], "On",
+                         "quoted in the file: a bare On is a YAML 1.1 boolean")
+
+    def test_image(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
         for text in ("FROM ubuntu:24.04 AS rtklib", "FROM ubuntu:24.04\n",
                      "RTKLIB_TAG=v2.5.1",
@@ -1982,28 +2620,33 @@ class Packaging(unittest.TestCase):
         self.assertNotIn(" rtklib ", dockerfile, "Ubuntu's rtklib package is not installed")
         self.assertNotIn("gfortran", dockerfile)
         self.assertFalse((ROOT / "build.yaml").exists(), "0.6.1: the base is in the Dockerfile")
+
+    def test_readme(self):
         readme = (ROOT / "README.md").read_text()
-        for text in ("reference_frame", "base_frame", "reference_reset_utc", "GPPNULLANTENNA",
+        for text in ("references[1].frame", "base_frame", "reset_utc", "GPPNULLANTENNA",
                      "solution minus our", "rtkrcv-ex", "v2.5.1", "false fix",
                      "## Reference check", "DF021", "all bits should be set to zero",
-                     "reference/raw/YYYY-MM-DD.rtcm3", "station's frame minus ours",
+                     "reference-<slug>/raw/YYYY-MM-DD.rtcm3", "station's frame minus ours",
                      "Pearson & Snay", "no-store", "ntripclient", "Authorization",
                      "one connection at a time", "tests.test_ntripclient", "base_epoch",
-                     "hide private mountpoints"):
+                     "hide private mountpoints", "### Migration from 0.7", "caster.example.org",
+                     "api/references/plots", "translations/en.yaml", "**0.8.0**",
+                     "reference/ and reference2/"):
             self.assertIn(text, readme, text)
         for stale in ("stays in rtkrcv's private config file", "each rtkrcv restart leaves"):
             self.assertNotIn(stale, readme, stale)
-        self.assertNotIn("reference_expected_enu", readme.split("## Changes")[0],
-                         "the option is gone; only the changelog may name it")
+        before_changes = readme.split("## Changes")[0]
+        for gone in ("reference_expected_enu", "reference2_frame", "--reference-host"):
+            self.assertNotIn(gone, before_changes.split("### Migration from 0.7")[0], gone)
         self.assertNotIn(SENTINEL, readme)
 
-    def test_shutdown_stops_both_instances_then_the_logs(self):
+    def test_shutdown_stops_every_instance_then_the_logs(self):
         source = (ROOT / "gnss_base" / "__main__.py").read_text()
-        # 0.7.0: every reference check, then their logs.
         self.assertIn("x.stop() for x in (rtkrcv, *references)", source)
         self.assertIn("(solutions, *reference_logs)", source)
-        self.assertIn("log, errors, solutions, *reference_logs,\n            raw_logs=[x for x in cors_logs if x is not None]", source)
+        self.assertIn("raw_logs=[x for x in cors_logs if x is not None]", source)
         self.assertIn("cors_log.close()", source)
+        self.assertIn("history.close_bin()", source)
 
 
 class NoPathToTheReceiver(unittest.TestCase):

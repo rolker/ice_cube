@@ -36,6 +36,7 @@ from gnss_base.hub import ConnectionLog, OutputFilter, RtcmHub, Secret, is_rtcm_
 from gnss_base.status import Status
 from gnss_base.upload import Uploader, UploadSettings, classify
 from gnss_base.web import STATIC
+from tests import miniyaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SENTINEL = "S3ntinel-pw-7f3a9c"   # a made-up password that must appear nowhere but the socket
@@ -1976,25 +1977,29 @@ class Packaging(unittest.TestCase):
     def test_config_yaml_version_options_and_ports(self):
         text = (ROOT / "config.yaml").read_text()
         self.assertIn(f'version: "{__version__}"', text)
-        self.assertEqual(__version__, "0.7.0")
+        self.assertEqual(__version__, "0.8.0")
         self.assertIn("ports:\n  2101/tcp: 2101\n", text)
         self.assertIn("ports_description:\n  2101/tcp: ", text)
-        options = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)
-        schema = re.search(r"\nschema:\n((?:  .*\n)+)", text).group(1)
-
-        def keys(block):
-            return [line.split(":")[0].strip() for line in block.splitlines()]
-
-        # reference_frame is a drop-down that is unset until chosen (0.6.3): optional in
-        # the schema and absent from the options defaults, so the app's DEFAULTS supply "".
-        # The expected station IDs (0.7.0) are optional the same way (DEFAULTS: None).
-        optional = {"reference_frame", "reference2_frame", "reference_expect_station",
-                    "reference2_expect_station"}
-        self.assertEqual(set(keys(options)) - {"device"}, set(DEFAULTS) - {"device"} - optional)
-        for prefix in ("reference", "reference2"):
-            self.assertIn(f"  {prefix}_expect_station: int(0,4095)?\n", schema)
-            self.assertIsNone(DEFAULTS[f"{prefix}_expect_station"])
-        self.assertEqual(set(keys(schema)), set(DEFAULTS))
+        config = miniyaml.load(text)
+        options, schema = config["options"], config["schema"]
+        options_block = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)
+        schema_block = re.search(r"\nschema:\n((?:  .*\n)+)", text).group(1)
+        # 0.8.0: the references are one list; every top-level option has a default
+        # (device is picked in the UI), and the schema's keys are the app's DEFAULTS.
+        self.assertEqual(set(options) - {"device"}, set(DEFAULTS) - {"device"})
+        self.assertEqual(set(schema), set(DEFAULTS))
+        self.assertEqual(options["references"], [])
+        self.assertEqual(DEFAULTS["references"], [])
+        # The order the configuration page shows: receiver, our base, corrections out,
+        # measured position, references, logging.
+        self.assertEqual(list(schema), [
+            "device", "device_match", "baud", "base_frame", "base_epoch",
+            "caster_enabled", "caster_mountpoint", "caster_user", "caster_password",
+            "caster_max_clients", "upload_host", "upload_port", "upload_mountpoint",
+            "upload_password", "upload_style", "measured_enabled", "measured_elevation_mask",
+            "measured_snr_mask", "references", "log_dir", "min_free_gb"])
+        self.assertEqual(list(options), [k for k in schema if k != "device"])
+        schema, options = schema_block, options_block   # the text, from here on
         self.assertIn("upload_password: password", schema)
         self.assertIn("caster_password: password", schema)
         self.assertIn('upload_mountpoint: ""', options, "no mountpoint name in the defaults")

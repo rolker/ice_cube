@@ -30,6 +30,7 @@ USER_HEADERS = {"id": "X-Remote-User-Id", "name": "X-Remote-User-Name",
                 "display_name": "X-Remote-User-Display-Name"}
 MAX_BODY = 4096
 TRACK_SOURCES = ("gga", "measured")
+PLOT_WINDOWS = ("1h", "24h", "7d")
 
 
 def ingress_user(request):
@@ -37,7 +38,8 @@ def ingress_user(request):
             if header in request.headers}
 
 
-def create_app(get_status, allowed_clients=(INGRESS_PROXY,), get_track=None, control=None):
+def create_app(get_status, allowed_clients=(INGRESS_PROXY,), get_track=None, control=None,
+               get_plots=None):
     @web.middleware
     async def only_ingress(request, handler):
         if allowed_clients and request.remote not in allowed_clients:
@@ -70,6 +72,15 @@ def create_app(get_status, allowed_clients=(INGRESS_PROXY,), get_track=None, con
         if source not in TRACK_SOURCES:
             return reply({"error": "source must be gga or measured."}, 400)
         return reply(get_track(request.query.get("since"), source))
+
+    async def plots(request):
+        """The reference plots' data: `window` 1h, 24h (default) or 7d."""
+        if get_plots is None:
+            raise web.HTTPNotFound()
+        window = request.query.get("window", "24h")
+        if window not in PLOT_WINDOWS:
+            return reply({"error": "window must be 1h, 24h or 7d."}, 400)
+        return reply(get_plots(window))
 
     def receiver_route(handler):
         """A POST with a JSON object body; RequestError becomes a 400 with its text."""
@@ -128,6 +139,7 @@ def create_app(get_status, allowed_clients=(INGRESS_PROXY,), get_track=None, con
     app.router.add_get("/api/status", status)
     app.router.add_get("/api/track", track)
     app.router.add_get("/api/commands", history)
+    app.router.add_get("/api/references/plots", plots)
     for path, handler in (("/api/command", command), ("/api/command/confirm", confirm),
                           ("/api/profile/check", profile_check),
                           ("/api/profile/apply", profile_apply),

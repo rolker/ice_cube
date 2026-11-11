@@ -23,8 +23,11 @@ of its USB serial bridge).
   station by RTK (a second `rtkrcv`, static, our receiver as the rover and the
   station's NTRIP stream as the base), centimetre level, as an offset from our RTCM 1005
 - **0.7.0:** a second reference check against another station, a GGA uplink for
-  "nearest station" mountpoints, each caster's mountpoint list on its card, and a
-  comparison of the two stations
+  "nearest station" mountpoints, and each caster's mountpoint list on its card
+- **0.8.0:** any number of reference stations as one `references` list, a summary of
+  our antenna against all of them in our own frame with the spread between them, plots
+  of their solutions and daily means, the stations on the map, and a configuration page
+  with grouped, named and described options
 
 ## Status page
 
@@ -543,54 +546,56 @@ does not do: react to a move within seconds (static mode smears a move into a sl
 until the next session; the Measured position card is the one that catches a move) or
 work without internet and a CORS login.
 
-**Options** (all in the app configuration; nothing on the command line carries the
-password):
+**Options.** Each reference station is one entry of the `references` list in the app
+configuration (see "Several references" below for an example); options are named
+`references[<n>].<field>` in every message, numbered from 1 in the list's order.
+Nothing on the command line configures a reference.
 
-- `reference_enabled`: true to run it. Off by default.
-- `reference_host`, `reference_port` (2101), `reference_mountpoint`, `reference_user`,
-  `reference_password`: the NTRIP caster and login of your network (MaCORS, a state DOT
-  network, ...). Pick a **single-station** mountpoint in RTCM 3 with MSM and 1005/1006,
-  within a few tens of kilometres, not a VRS/iMAX/network one (those need a GGA uplink and
-  give a synthetic station). The card is empty ("not configured") until host,
-  mountpoint and user are set. One login means one connection: the app opens exactly
-  one at a time and waits between attempts (below); check your network's terms before
-  leaving a single-station connection up for days.
-- `reference_frame`: a drop-down: the reference frame the station's coordinates are in,
-  as its network documents it: `NAD83(2011)` (MaCORS and the state networks of the United
-  States), `ITRF2020`, `ITRF2014` or `ITRF2008`. Unset by default, which means
-  **unknown**: the card then shows the raw offset only, with no expected offset, no
-  residual and no colour from a residual, and says "station frame unknown: set
-  reference_frame". The app never guesses the frame (see Frames below). A name outside
-  that list is refused at startup with a message naming the option.
-- `base_frame`: a drop-down: the frame of our own 1005 position, `ITRF2020` by default (what a
-  CSRS-PPP or OPUS ITRF coordinate is in). It goes into the local caster's sourcetable
-  and the expected offset; empty means not declared (no expected offset either). A name
-  outside the list stops the reference check with a message naming the option; the
-  local caster still runs, announces no frame, and shows the message on its card.
-- `base_epoch`: when that coordinate was observed, as the PPP date `YYYY-MM-DD` or a
-  decimal year (`2026.85`). It is the epoch the sourcetable announces and the expected
-  offset is computed at. Empty (the default) means today's date, which is right only
-  for a coordinate kept current (see Frames below); set it when you apply a coordinate.
-  Anything else (not a date, or a year outside 1990 to 2100) stops the reference check
-  with a message naming the option, like `base_frame`.
-- `reference_reset_utc`: the time of day (UTC, `HH:MM`) when rtkrcv is restarted so
-  each day is one static solution; `00:00` by default; empty means never.
-- `reference_send_gga`: false by default. True turns on the **GGA uplink** (below) for
-  this caster, for a "nearest station" mountpoint that is marked `nmea` 1.
-- `reference_gga_position`: the position the GGA carries. Empty (the default) means our
-  base's own RTCM 1005 position; `lat,lon` in decimal degrees (for example
-  `12.5,-45.25`, a made-up value) sends that position instead, to steer a
-  nearest-station mountpoint to the station nearest it. Anything else stops this check
-  at startup with a message naming the option.
-- `reference_expect_station`: optional, unset by default (any station). A station ID,
-  0 to 4095, that the station's RTCM 1005/1006 must carry. Another ID shows as **wrong
-  station (got N, expected M)** on the card (amber, no residual colour) and on the
-  comparison card (no colour), and is logged once per change; meant for a
+- `name` (required): a short name, 1 to 24 letters, digits, spaces, `_`, `.` or `-`. It
+  is the card's title, and its lower-case form with `-` for anything else (the slug:
+  `ABCD 19` gives `abcd-19`) names the folders `<log_dir>/reference-<slug>/` and
+  `<data_dir>/reference-<slug>/`. Two entries with the same slug: the later one does not
+  start, with a message naming it.
+- `enabled`: unset or true runs it; false keeps the entry without connecting.
+- `host`, `port` (unset: 2101), `mountpoint`, `user`, `password`: the NTRIP caster and
+  login of your network (MaCORS, a state DOT network, ...). Pick a **single-station**
+  mountpoint in RTCM 3 with MSM and 1005/1006, within a few tens of kilometres, not a
+  VRS/iMAX/network one (those give a synthetic station). The card says "not configured"
+  until host, mountpoint and user are set. One login means one connection: the app
+  opens exactly one at a time and waits between attempts (below); check your network's
+  terms before leaving a single-station connection up for days.
+- `frame`: a drop-down: the reference frame the station's coordinates are in, as its
+  network documents it: `NAD83(2011)` (MaCORS and the state networks of the United
+  States), `ITRF2020`, `ITRF2014` or `ITRF2008`. Unset means **unknown**: the card then
+  shows the raw offset only, with no expected offset, no residual and no colour from a
+  residual, and says "station frame unknown: set references[1].frame". The app never
+  guesses the frame (see Frames below). A name outside that list is refused at startup
+  with a message naming the option.
+- `epoch`: optional, the epoch of the station's coordinates if the network documents
+  one (`YYYY-MM-DD` or a decimal year). It is shown on the card and in the log header;
+  no velocity model moves the station to our epoch, so for an ITRF station whose
+  coordinates are years older than ours the plate motion between the two epochs (about
+  2 cm a year here) is in the residual. NAD83(2011) coordinates are at 2010.00 by
+  definition: leave it unset there.
+- `reset_utc`: the time of day (UTC, `HH:MM`) when rtkrcv is restarted so each day is
+  one static solution; unset means `00:00`; `never` (or empty) means never.
+- `send_gga`: unset or false. True turns on the **GGA uplink** (below) for this
+  caster, for a "nearest station" mountpoint that is marked `nmea` 1.
+- `gga_position`: the position the GGA carries. Empty or unset means our base's own
+  RTCM 1005 position; `lat,lon` in decimal degrees (for example `12.5,-45.25`, a
+  made-up value) sends that position instead, to steer a nearest-station mountpoint to
+  the station nearest it. Anything else stops this check at startup with a message
+  naming the option.
+- `expect_station`: optional, unset by default (any station). A station ID, 0 to 4095,
+  that the station's RTCM 1005/1006 must carry. Another ID shows as **wrong station
+  (got N, expected M)** on the card (amber, no residual colour) and in the summary
+  (no colour, left out of the spread), and is logged once per change; meant for a
   nearest-station mountpoint, to notice when it switches to another station. A value
   outside 0 to 4095 stops this check at startup with a message naming the option.
-- A second check, `reference2_*`: see "Second reference (0.7.0)" below.
-- The masks are the measured position's (`measured_elevation_mask`, `measured_snr_mask`,
-  applied to our side; the station's observations are not masked by SNR).
+- Shared by all entries: our base's frame and epoch (`base_frame`, `base_epoch`, under
+  "Our base" in the configuration, see Frames below) and the masks of the measured
+  position (`measured_elevation_mask`, `measured_snr_mask`, applied to our side; the
+  station's observations are not masked by SNR).
 
 **The NTRIP connection.** The app connects to the caster as soon as the check starts.
 Each attempt: TCP connect (15 s); if the mountpoint has not been checked yet, or the
@@ -599,7 +604,7 @@ does not finish it in time, is asked for the stream anyway), to see what the
 mountpoint's `STR` record says (format, constellations, whether it wants a GGA
 position: a network or VRS stream, `solution` 1, or a format that is not RTCM 3, is
 refused, since a single RTCM 3 station is what the check needs; `nmea` 1 is refused too
-unless `reference_send_gga` is on, see GGA uplink below; a mountpoint missing from the
+unless the entry's `send_gga` is on, see GGA uplink below; a mountpoint missing from the
 table is still asked for, because casters hide private mountpoints from it, and the
 caster's answer decides). The sourcetable request carries the login when a user is set
 (the same headers as the stream request; some casters, Trimble Pivot among them, list
@@ -627,11 +632,11 @@ hammered against the caster; a minute after an internal error (a bug), which is 
 and shown as the reason rather than stopping the client. The password is used in the
 `Authorization` header and nowhere else (see Password below).
 
-**The card ("Reference check (<mountpoint>)")**:
+**The card ("Reference check: <name> (<mountpoint>)")**, one per entry that is on:
 
 - State, the client's first: *off*, *not configured*, *connecting to the caster*,
   *reading the caster's sourcetable*, *login refused by the caster* (the status line and
-  "check reference_user and reference_password"; red), *mountpoint not found* (red),
+  "check references[1].user and references[1].password"; red), *mountpoint not found* (red),
   *mountpoint not usable* (red, with the STR field that says why), *no data from the
   caster* and *connection failed* (amber, with the error and "retry in ..."); then
   rtkrcv's: *idle* (no MSM from our receiver yet), *starting* (rtkrcv just started, or no
@@ -662,7 +667,7 @@ and shown as the reason rather than stopping the client. The password is used in
 - Mean ± std over the last 10 minutes (of the fixed epochs, or of all epochs while
   nothing is fixed), the **session mean ± std of the fixed epochs**, and the fixed share
   of the session's epochs.
-- The station's frame and where it came from ("NAD83(2011) (from reference_frame)", or
+- The station's frame and where it came from ("NAD83(2011) (from references[1].frame)", or
   unknown, with the stream's DF021 value when it is not zero), our frame and the epoch,
   the **expected offset** ("computed, station frame minus ours, epoch 2026.85") and the
   **residual** (session mean minus expected), with a colour:
@@ -677,12 +682,12 @@ and shown as the reason rather than stopping the client. The password is used in
 - rtkrcv's CPU and memory, restarts, and its last output lines when something is wrong,
   as on the measured card. RTK with ambiguity resolution costs more than single point;
   check the CPU figure on your device after a day before leaving both instances on.
-  With the second reference check there are two RTK instances besides the measured
-  one: check both cards' CPU figures (and the device's load) after a day.
+  Each entry of `references` is one more RTK instance: check every card's CPU figure
+  (and the device's load) after a day.
 
 **Sessions.** Static mode accumulates one filter for as long as rtkrcv runs, so each run
 is one solution: it converges over minutes (the spike fixed at 25 km in 2 minutes and held
-81 % of the hour) and improves for hours. rtkrcv is restarted at `reference_reset_utc`
+81 % of the hour) and improves for hours. rtkrcv is restarted at the entry's `reset_utc`
 (a planned restart, not counted as a failure), and when corrections resume after a gap of
 more than 5 minutes (the held ambiguities are stale by then), and when the station's
 own 1005/1006 position changes (another station behind the mountpoint, a
@@ -719,7 +724,7 @@ and 1033 but no observations counts as none.
 station's frame, because rtkrcv takes the base coordinate from its 1005/1006. Our 1005
 is in ours. The offset between the two frames at our antenna is what the raw offset
 should show, and the app computes it (`gnss_base/datums.py`) from three declared
-things: the station's frame (`reference_frame`), our frame (`base_frame`) and the epoch
+things: the station's frame (the entry's `frame`), our frame (`base_frame`) and the epoch
 (`base_epoch`, the coordinate's observation date, or today's date as a decimal year
 when it is not set, since the app cannot know when the coordinate was observed). The
 epoch matters: an ITRF2020 coordinate moves with the plate, about 2 cm a year in the
@@ -762,10 +767,10 @@ in. A residual of a few centimetres confirms three things at once: our coordinat
 station's, and the transformation; if it is not small the check cannot say which is off.
 
 **The station's stream on disk.** Everything the app's NTRIP client receives from the
-station is written as received to `<log_dir>/reference/raw/YYYY-MM-DD.rtcm3` (RTCM3 without any
-header, about 1 kB/s), with the receiver raw log's rotation at midnight UTC, compression
-of finished days and free-space floor; the files are on the Log files table as
-`reference/raw/...`, and the card has a "CORS raw log" line. Nothing is written while
+station is written as received to `<log_dir>/reference-<slug>/raw/YYYY-MM-DD.rtcm3` (RTCM3
+without any header, about 1 kB/s), with the receiver raw log's rotation at midnight UTC,
+compression of finished days and free-space floor; the files are on the Log files table
+as `reference-<slug>/raw/...`, and the card has a "CORS raw log" line. Nothing is written while
 the check is off or not configured. The bytes are the NTRIP client's, so a gap in the
 file is a gap in the connection (shown on the card), not an rtkrcv restart.
 
@@ -781,38 +786,49 @@ every NTRIP client, and the corrections come back unsigned. Use a login made for
 purpose, and treat the check as a comparison with a network you trust, not as a defence
 against someone tampering with that network's stream.
 
-Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
+Solutions are logged to `<log_dir>/reference-<slug>/YYYY-MM-DD.llh` (see Logs).
 
-### Second reference (0.7.0)
+### Several references (0.8.0)
 
-A second check runs beside the first, against another station, the same way: its own
-NTRIP client, its own rtkrcv (RTK static, the same settings), its own card ("Reference
-check 2", shown only while it is on), its own session, daily reset and gap restart,
-work folder `<data_dir>/reference2` and logs `<log_dir>/reference2/` (same names as
-the first's). Its options are flat and spelt like the first's:
+Every entry of `references` runs the same way and independently: its own NTRIP client,
+its own rtkrcv (RTK static, the same settings), its own card, session, daily reset, gap
+restart, work folder `<data_dir>/reference-<slug>` and logs `<log_dir>/reference-<slug>/`.
+A bad value stops that entry only. Entries may not share a caster and user while both
+are on: a CORS login usually allows one connection, so the second would be refused
+while the first streams; the later entry says so and does not start. Two logins on one
+caster, or two casters, run side by side (the one-connection rule is per login). Each
+check costs an rtkrcv with ambiguity resolution: check the cards' CPU figures and the
+device's load after a day before adding a third or fourth.
 
-- `reference2_enabled` (false), `reference2_host`, `reference2_port` (2101),
-  `reference2_mountpoint`, `reference2_user`, `reference2_password` (a password field),
-  `reference2_frame` (the same drop-down; unset means unknown), `reference2_reset_utc`
-  (`00:00`), `reference2_send_gga` (false), `reference2_gga_position` (empty: our 1005),
-  `reference2_expect_station` (unset: any station).
-- The masks, `base_frame` and `base_epoch` are shared with the first check.
-- Every message names the option it is about (`reference2_frame`, ...). A bad value
-  stops that check only.
-- The two checks may not share a caster and user: a CORS login usually allows one
-  connection, so the second would be refused while the first streams. With the same
-  host, port and user on both, the second says so and does not start. Two logins on
-  one caster, or two casters, run side by side (the one-connection rule is per login).
+An example, in the configuration's YAML editor (made-up hosts and logins; the form
+editor shows the same fields with their names and descriptions):
 
-The first check's options, card, logs and log lines are as before, so a 0.6
-configuration runs unchanged with the second check off.
+```yaml
+references:
+  - name: abcd
+    host: caster.example.org
+    mountpoint: ABCD
+    user: my-login
+    password: my-password
+    frame: NAD83(2011)
+  - name: wxyz
+    host: other.example.org
+    port: 2101
+    mountpoint: SingleStation_Nearest_RTCM_MSM
+    user: my-other-login
+    password: my-other-password
+    frame: NAD83(2011)
+    send_gga: true
+    expect_station: 19
+    reset_utc: "00:00"
+```
 
 ### GGA uplink (0.7.0)
 
 Some casters choose the station by the client's position: Trimble Pivot's
 `SingleStation_Nearest_RTCM_MSM`, for example, is marked `nmea` 1 in the sourcetable and
-streams the single station nearest the GGA it receives. With `reference_send_gga` (or
-`reference2_send_gga`) on, the app sends an NMEA GGA sentence with the stream request
+streams the single station nearest the GGA it receives. With an entry's `send_gga` on,
+the app sends an NMEA GGA sentence with the stream request
 twice over: as the NTRIP 2 header `Ntrip-GGA: $GPGGA,...*hh` (the whole sentence, for
 a caster that reads the request as strict HTTP and picks the station when the request
 arrives), and as raw bytes right after the request (NTRIP 1 style, as casters expect
@@ -824,7 +840,7 @@ RTCM 3 are still refused, so a VRS stream is not taken for a station. Which stat
 the caster picked is what its 1005/1006 (station ID, position, baseline) and 1033 say
 on the card; a switch is a "station changed" (above).
 
-The position: `*_gga_position` empty means our base's own RTCM 1005 position (the
+The position: `gga_position` empty means our base's own RTCM 1005 position (the
 receiver's current one; the last one the check saw when none is current), with its ellipsoidal height in the
 altitude field and a geoid separation of 0; until it has arrived the client waits and
 does not connect. `lat,lon` sends that position instead, height 0, to make the caster
@@ -833,40 +849,173 @@ or its network's station list), to a few hundredths of a degree.
 
 **Privacy.** The GGA goes only to that check's caster, on its own connection, and
 carries only our base's position or the configured one; with an empty
-`*_gga_position` that is the base's position to a few centimetres, so set one if you do
+`gga_position` that is the base's position to a few centimetres, so set one if you do
 not want the caster to have it. The GGA, and the request with its `Ntrip-GGA` header,
 are never written to the add-on log, the page or `api/status`; a GGA sentence in a
 caster's reply is replaced by `GGA ***` before the reply is shown or logged (the log says "GGA uplink on" and counts the GGA sent when a connection
 ends; the card shows the count and the source, not the coordinate). Like the login, it
 travels in clear over plain TCP.
 
-### Reference comparison (0.7.0)
+### Our antenna against the references (0.8.0)
 
-When both checks have a session mean of fixed epochs, from the same 1005 of ours, a
-"Reference comparison" card shows, in centimetres east, north and up at our antenna:
-reference 1 minus ours and reference 2 minus ours (each with its station's frame), and
-reference 2 minus reference 1. The last does not depend on our coordinate at all: it
-compares the two stations (their coordinates, frames and the two RTK solutions). It is
-judged only when both stations' frames are declared and the same: green within 3 cm
-horizontal and 6 cm up, amber within 10 cm, red beyond. Otherwise the card shows the
-raw difference and why there is no residual (a frame unknown, or two different frames,
-whose transformation the difference then contains); the app does not guess a frame or
-transform between the two stations' frames here. Each side also shows its station ID
-(the one its session is relative to) and how long ago its last fix was.
+The card "Our antenna against the references" sets every entry that is on side by
+side. Each reference's solution is of **our antenna**, in the station's frame; the app
+turns it into **our frame**: the residual is the session mean of the fixed epochs
+(station frame minus our 1005) minus the expected offset between the station's frame
+and ours at our epoch (Frames above). So a consistent reference sits at 0, 0, 0 cm,
+whatever its frame, and a drift of our antenna moves every reference's residual the same
+way. One row per reference: name (with its plot colour), station ID, baseline, the
+residual E, N, U in centimetres coloured by the bands above (green within 5 cm
+horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix),
+the fixed share, the session's age and the reason. A reference whose station frame is
+unknown is shown **raw** (station frame minus ours, in metres) with the reason, and no
+colour. A row is coloured only while the reference is current (below); otherwise it
+says "not current, no verdict" and why, as its own card drops its colour.
 
-It is judged only while it is current: both checks' NTRIP clients streaming, each
-check's rtkrcv running with no restart pending, and each check with a fixed epoch in
-the last 30 min. Otherwise the headline is **Stale** with why (for example "reference2
-is not streaming (login refused)", "reference2's rtkrcv is restarting (a new
-session)", as for the few seconds after a "nearest station" mountpoint switched, when
-the session mean is still the old station's, or "reference has no fix in the last 30
-min"), the numbers stay with each side's last-fix age, and there is
-no colour, so a session mean kept after a check dropped does not read as a current
-"Stations agree". With `*_expect_station` set and the other station received on either
-side, the headline is **Wrong station** ("reference2: wrong station (got N, expected
-M)"), also without colour.
+Below the table, the **spread between references**, over the references that are
+current: a residual, the NTRIP client streaming, rtkrcv running with no restart pending
+(after a nearest-station switch the session mean is still the old station's until
+rtkrcv restarts), a fix in the last 30 min, the expected station, and a session from
+our current 1005 (after our 1005 changes, a reference counts again once its session
+has restarted on the new position). The spread is the largest horizontal distance
+between any two of the residuals and the largest difference up (max minus min), which
+may come from different pairs. Green within 3 cm horizontal and 6 cm up, amber within
+10 cm, red beyond: the bands are for a pair, so the colour is the worst pair's. It
+needs two current references. The others are listed under it with why. The spread compares the
+stations with each other, independent of our coordinate: a large spread says a station
+(or its frame, or a short session) is off; a small spread with all residuals away from
+zero says our coordinate is.
+
+What agreement to expect: two NAD83(2011) networks agree at the station-coordinate
+level to 1-2 cm horizontal and 2-4 cm up; short broadcast-orbit RTK sessions add a few
+centimetres more at 50 km. NAD83(2011) residuals also carry the point's NAD83 velocity
+since 2010.00, which the app does not model (Frames above).
+
+This card replaces 0.7's "Reference comparison" card (reference 2 minus reference 1, in
+the stations' frames).
+
+### Plots (0.8.0)
+
+The card "Reference solutions (residual in our frame)" draws, from `api/references/plots`:
+
+- **East/north scatter** in centimetres around our 1005 (the crosshair is our
+  coordinate), one colour per reference, of the residuals of the fixed epochs as
+  30-second means (merged further when a window holds more than 1500), over the last
+  1 h, 24 h (default) or 7 days. Each reference's current session mean is a large dot
+  with its 1-sigma ellipse (from the session's east and north variances and their
+  covariance). Pointing at a dot gives its values.
+- **Up over time**, the same points.
+- **Daily means** of E, N and U per reference and UTC day, as three strips, and as a
+  table under them, so a drift of the antenna shows in every reference at once, while
+  one station's problem shows in that one only.
+
+A reference whose station frame is unknown is listed in the legend as not plotted, with
+why. The colours follow each entry's place in the list (five colours, then repeated),
+never its rank. The plots are drawn on a canvas by the page itself; no chart library or
+other service is loaded.
+
+The history behind them is the app's own: `<data_dir>/history/reference-<slug>.jsonl`
+(one line per 30 s bin: start, fixed epochs, mean offset and residual in metres,
+station ID; the last 8 days) and `reference-<slug>-daily.json` (the daily sums, kept
+for good), written once a minute and at shutdown, each through a temporary file flushed
+to disk; a failed write is tried again at the next minute. A daily file that cannot be
+read at start is moved aside as `reference-<slug>-daily.json.corrupt-<UTC time>` (the
+page shows the error until the next start), and the daily means start afresh. A bin keeps the residual computed for
+the frames and epoch of its time, so changing an entry's frame later does not rewrite
+history. Bins with no residual (frame unknown) keep the raw offset only.
+`api/references/plots?window=1h|24h|7d` returns, per entry that is on, `points` as
+`[age_s, e, n, u, fixed epochs]` (metres, oldest first), `session_mean`,
+`session_std`, `covariance_en` (m²), `days` as `[day, e, n, u, fixed epochs]` and
+`no_residual` (why there is none).
+
+**On the map**, each reference station is a dot at the position from its 1005, with a
+dashed line from our base, labelled with its name, station ID and baseline. The map
+does not move for them; **Show reference stations** fits our base and all of them.
+The stations' positions are public; they come from their streams.
+
+The history follows the entry's name (its slug): **renaming an entry starts its plots
+from empty**. The old `history/reference-<old slug>.jsonl` and
+`reference-<old slug>-daily.json` stay in `<data_dir>/history/` (and its logs in
+`<log_dir>/reference-<old slug>/`), shown nowhere; they are a few MB at most. Rename
+back to see them again. To remove them: the log folder is in the share (Samba or the
+File editor); `<data_dir>` is the app's private `/data`, which the share does not show,
+so delete `history/reference-<old slug>.jsonl` and `history/reference-<old
+slug>-daily.json` from a host shell (on Home Assistant OS, under
+`/mnt/data/supervisor/addons/data/<app id>/`), or with `rm` inside the app's container
+(`docker exec`).
+
+### Migration from 0.7
+
+0.7.x had flat options for two checks (`reference_host`, ..., `reference2_frame`, ...).
+Home Assistant validates the options against the new schema when it starts an app, and
+writes only the keys the schema has to `/data/options.json`: the old keys are not in it
+(Supervisor `AppOptions`: "Option ... does not exist in the schema" is logged and the
+key skipped). The Supervisor still keeps the configuration as it was last saved, old
+keys included, and returns it to the app itself at `/addons/self/info`, until the
+configuration is saved again (saving validates it and drops the old keys).
+
+So at startup, while `references` is empty, the app looks for the old keys in the
+options file and then asks the Supervisor (`SUPERVISOR_TOKEN`, no extra permission
+needed for its own info). If it finds a 0.7 check with a host or mountpoint set, or
+on, it runs it as an entry: named after the mountpoint in lower case when that is a
+short plain name (`ABCD` gives `abcd`), else `reference1` or `reference2`. The add-on
+log says so once ("references: The references list is empty, so the 0.7 reference
+options ... are used for now ..."), naming the entries and their mountpoints, never a
+password, and the summary card shows the same notice with the entries as YAML to paste
+into the configuration (the passwords and GGA positions left out as "<the same as
+before>": copy them from the old keys, which the YAML editor still shows until you
+save). The YAML shows host, user and mountpoint as they were.
+
+A 0.7 value that was a `!secret` (for example `reference_password: "!secret cors"`)
+reaches the app from the Supervisor's saved options as that text: the Supervisor
+resolves secrets only into the options file. The app cannot read the secret, so that
+entry does not run ("references[1].password is a !secret the app cannot read ..."),
+and the notice names the field, never its value: in the new `references` entry, enter
+the real value, or keep using `!secret` there (the Supervisor resolves it in the list). **Save the list in the configuration**: the
+next save makes Home Assistant forget the old keys, and the migration then has nothing
+to read.
+
+If the old values cannot be found (the configuration was saved since, or the
+Supervisor did not answer), the log and the card say that no reference stations are
+configured: enter them again as `references` entries.
+
+Where the old data is: 0.7's logs stay in `<log_dir>/reference/` and
+`<log_dir>/reference2/` (and their `raw/`), untouched; 0.8 writes to
+`<log_dir>/reference-<slug>/`. The old work folders `<data_dir>/reference` and
+`<data_dir>/reference2` hold only rtkrcv's ephemeris cache and can be left. Nothing is
+moved or deleted.
 
 ## Changes
+
+**0.8.0**
+
+- The reference checks are one list, `references`, of any number of entries (name,
+  host, port, mountpoint, user, password, frame, epoch, send_gga, gga_position,
+  expect_station, reset_utc, enabled), each with its own NTRIP client, rtkrcv, card and
+  logs. The flat `reference_*` and `reference2_*` options and their command-line
+  arguments are gone; while the list is empty the app runs the old values it still
+  finds (options file, or the Supervisor's saved options) and says to save them as
+  entries (see Migration from 0.7). Names must give distinct folder names; one login
+  still allows one connection. Messages name `references[<n>].<field>`.
+- Logs and work folders are named after the entry: `<log_dir>/reference-<slug>/` (with
+  `raw/`), `<data_dir>/reference-<slug>/`. 0.7's `reference/` and `reference2/` are left
+  as they are.
+- New card "Our antenna against the references": each reference's residual in our
+  frame (its solution of our antenna minus the expected offset), fixed share, session
+  age, station ID and baseline, unknown frames shown raw, and the spread between the
+  current references (green 3 cm horizontal / 6 cm up, amber 10 cm). It replaces the
+  "Reference comparison" card.
+- Plots: residual scatter (E/N, with session means and 1-sigma ellipses) and Up over
+  time for 1 h / 24 h / 7 d, and daily means per reference; history in
+  `<data_dir>/history/`, data at `api/references/plots`. The reference stations on the
+  map, with a line to our base and the baseline.
+- An entry's `epoch` (the station coordinates' epoch) is shown and logged, not modelled.
+  `reset_utc` also takes `never`.
+- The configuration page: options in groups (receiver, our base, corrections out,
+  measured position, references, logging), and `translations/en.yaml` gives every
+  option, and every field of a reference, a readable name and a one-line description.
+  `base_frame` and `base_epoch` keep their keys, now shown as "Our base: frame" and
+  "Our base: epoch" next to the receiver options.
 
 **0.7.0**
 
@@ -1110,60 +1259,69 @@ start manually for now.
 
 ## Options
 
-| option | default | meaning |
+The configuration page shows the options in this order, with the names and one-line
+descriptions from `translations/en.yaml` (the keys below are what the YAML editor and
+`/data/options.json` use). Optional options that are unset are hidden by Home Assistant
+until "Show unused optional configuration options" is on; the only one here is
+`base_frame` when cleared.
+
+| group | option (shown as) | default | meaning |
+|---|---|---|---|
+| Receiver | device (Receiver: serial port) | none | Serial port of the receiver. Use the `/dev/serial/by-id/` entry. |
+| Receiver | device_match (Receiver: name must contain) | USB_Dual_Serial | The app refuses any device whose stable name lacks this text, which protects a Zigbee stick or other serial device. |
+| Receiver | baud (Receiver: baud rate) | 460800 | Receiver baud rate |
+| Our base | base_frame (Our base: frame) | ITRF2020 | The frame of the base position the receiver broadcasts (RTCM 1005): in the caster's sourcetable and every reference's expected offset. Unset: not declared |
+| Our base | base_epoch (Our base: epoch) | empty | When that position was observed (the PPP date), `YYYY-MM-DD` or a decimal year: announced and used for the expected offsets. Empty: today's date |
+| Corrections out | caster_enabled (Local caster: on) | true | Run the local NTRIP caster |
+| Corrections out | caster_mountpoint (Local caster: mountpoint) | BASE | 1 to 32 letters, digits or `_` |
+| Corrections out | caster_user (Local caster: user) | empty | With a password: the user name it requires (empty: any user) |
+| Corrections out | caster_password (Local caster: password) | empty | Empty: no login needed. Set: rovers must log in |
+| Corrections out | caster_max_clients (Local caster: max rovers) | 16 | Rovers at once (1 to 16) |
+| Corrections out | upload_host (Upload (RTK2go): caster) | rtk2go.com | NTRIP caster to upload to |
+| Corrections out | upload_port (Upload (RTK2go): port) | 2101 | Its port |
+| Corrections out | upload_mountpoint (Upload (RTK2go): mountpoint) | empty | Your reserved mountpoint. Empty: no upload |
+| Corrections out | upload_password (Upload (RTK2go): password) | empty | The mountpoint's password. Empty: no upload |
+| Corrections out | upload_style (Upload (RTK2go): NTRIP style) | rev1 | NTRIP style of the reservation. Only rev1 works so far |
+| Measured position | measured_enabled (Measured position: on) | true | Run rtkrcv for the live measured position |
+| Measured position | measured_elevation_mask (Measured position: elevation mask) | 15 | Degrees (0 to 45), here and in every reference check |
+| Measured position | measured_snr_mask (Measured position: SNR mask) | 35 | dB-Hz (0 to 50; 0 = no mask), here and in every reference check |
+| References | references (Reference stations) | empty list | One entry per CORS station, fields below |
+| Logging | log_dir (Logging: folder) | /share/gnss_base | Where logs go |
+| Logging | min_free_gb (Logging: minimum free space (GB)) | 10 | Logging pauses when free disk falls below this, and resumes when space returns |
+
+The fields of a `references` entry (see Reference check for each in full):
+
+| field (shown as) | when unset | meaning |
 |---|---|---|
-| device | none | Serial port of the receiver. Use the `/dev/serial/by-id/` entry. |
-| device_match | USB_Dual_Serial | The app refuses any device whose path lacks this text, which protects a Zigbee stick or other serial device. Set to match your receiver. |
-| baud | 460800 | Receiver baud rate |
-| log_dir | /share/gnss_base | Where logs go |
-| min_free_gb | 10 | Logging pauses when free disk falls below this, and resumes when space returns |
-| caster_enabled | true | Run the local NTRIP caster |
-| caster_mountpoint | BASE | Its mountpoint: 1 to 32 letters, digits or `_` |
-| caster_user | empty | With a password: the user name it requires (empty: any user) |
-| caster_password | empty | Empty: no login needed. Set: rovers must log in |
-| caster_max_clients | 16 | Rovers at once (1 to 16) |
-| upload_host | rtk2go.com | NTRIP caster to upload to |
-| upload_port | 2101 | Its port |
-| upload_mountpoint | empty | Your reserved mountpoint. Empty: no upload |
-| upload_password | empty | The mountpoint's password. Empty: no upload |
-| upload_style | rev1 | NTRIP style of the reservation. Only rev1 works so far |
-| measured_enabled | true | Run rtkrcv for the live measured position |
-| measured_elevation_mask | 15 | rtkrcv's elevation mask, degrees (0 to 45) |
-| measured_snr_mask | 35 | rtkrcv's SNR mask, dB-Hz (0 to 50; 0 = no mask); both instances |
-| reference_enabled | false | Run the reference check (RTK against a CORS station) |
-| reference_host | empty | The CORS network's NTRIP caster |
-| reference_port | 2101 | Its port |
-| reference_mountpoint | empty | A single-station RTCM 3 mountpoint (MSM + 1005/1006) |
-| reference_user | empty | Your login |
-| reference_password | empty | Its password (used in the request's Authorization header only; not in rtkrcv's config) |
-| reference_frame | empty | The station's frame: NAD83(2011), ITRF2020, ITRF2014 or ITRF2008. Empty: unknown, no expected offset or residual |
-| reference_reset_utc | 00:00 | Daily restart of the reference rtkrcv (UTC, HH:MM); empty: never |
-| reference_send_gga | false | Send a GGA to the caster (for an `nmea` 1 nearest-station mountpoint), in the `Ntrip-GGA` header and right after the request, then every 10 s |
-| reference_gga_position | empty | The GGA's position, `lat,lon` in decimal degrees. Empty: our base's 1005 position |
-| reference_expect_station | unset | The station ID (0 to 4095) the stream's 1005/1006 must carry; another shows as "wrong station". Unset: any |
-| reference2_enabled | false | Run the second reference check |
-| reference2_host, reference2_port, reference2_mountpoint, reference2_user, reference2_password | empty, 2101, empty, empty, empty | The second check's caster and login, as for the first |
-| reference2_frame | empty | The second station's frame (same list). Empty: unknown |
-| reference2_reset_utc | 00:00 | The second rtkrcv's daily restart |
-| reference2_send_gga, reference2_gga_position | false, empty | The second check's GGA uplink |
-| reference2_expect_station | unset | The second station's expected ID, as for the first |
-| base_frame | ITRF2020 | The frame of our own base position: in the sourcetable and the expected offset. Empty: not declared |
-| base_epoch | empty | When the base position was observed (the PPP date), `YYYY-MM-DD` or a decimal year: the epoch announced and used for the expected offset. Empty: today's date |
+| name (Name) | required | Card title and folder name `reference-<slug>`; unique |
+| enabled (On) | on | False keeps the entry without connecting |
+| host (Caster) | required | The network's NTRIP caster, host name only |
+| port (Port) | 2101 | Its port |
+| mountpoint (Mountpoint) | required | A single-station RTCM 3 mountpoint (MSM + 1005/1006) |
+| user (User) | required | Your login; one login allows one connection |
+| password (Password) | none | Used in the request's Authorization header only |
+| frame (Station frame) | unknown | NAD83(2011), ITRF2020, ITRF2014 or ITRF2008. Unknown: no expected offset or residual |
+| epoch (Station epoch) | none | The station coordinates' epoch, if documented; shown, not modelled |
+| send_gga (Send GGA) | off | GGA uplink for an `nmea` 1 nearest-station mountpoint |
+| gga_position (GGA position) | our 1005 | `lat,lon` in decimal degrees |
+| expect_station (Expected station ID) | any | 0 to 4095; another shows as "wrong station" |
+| reset_utc (Daily restart (UTC)) | 00:00 | `HH:MM` UTC; `never` or empty: never |
+
+Why `base_frame` and `base_epoch` kept their keys: renaming an option is a migration of
+its own (Home Assistant drops the old key from the options the app gets), for no gain
+on the page, where the translations already show them as "Our base: frame" and "Our
+base: epoch", in their own group after the receiver.
 
 Command-line arguments override options (`--device`, `--baud`, `--caster-mountpoint`,
 `--upload-host`, ...; `--no-caster`, and `--caster-host`/`--caster-port` for where the
-caster listens). Passwords can be set only in the options. `--data-dir` sets where the
-upload keeps `upload-state.json` (default: the options file's folder, `/data` in Home
-Assistant) and rtkrcv its working folder `rtkrcv/`. `--no-measured`,
+caster listens). Passwords and the references can be set only in the options.
+`--data-dir` sets where the upload keeps `upload-state.json`, rtkrcv its working folder
+`rtkrcv/`, the reference checks theirs and the plots their history (default: the
+options file's folder, `/data` in Home Assistant). `--no-measured`,
 `--measured-elevation-mask` and `--measured-snr-mask` override the measured options;
-`--reference`/`--no-reference`, `--reference-host`, `--reference-port`,
-`--reference-mountpoint`, `--reference-user`, `--reference-frame`, `--base-frame`,
-`--base-epoch` and `--reference-reset-utc` the reference ones (the password is an option only);
-`--reference-send-gga`/`--no-reference-send-gga` and `--reference-gga-position` the GGA
-uplink; the second check's are spelt the same with `reference2` (`--reference2`,
-`--no-reference2`, `--reference2-host`, ..., `--reference2-gga-position`); `--rtkrcv
-PATH` runs another rtkrcv build for both instances (default: `rtkrcv-ex` on the path, the
-RTKLIB-EX build in the image).
+`--base-frame` and `--base-epoch` our base's; `--no-supervisor` skips asking the
+Supervisor for 0.7 options to migrate; `--rtkrcv PATH` runs another rtkrcv build for
+every instance (default: `rtkrcv-ex` on the path, the RTKLIB-EX build in the image).
 
 ## Logs
 
@@ -1182,18 +1340,19 @@ other settings or another rtkrcv version. About 13 MB a day, 3 to 4 MB compresse
 days become `.pos.gz`. They hold positions too, so keep them private. Nothing is written
 below `min_free_gb`. They can be made again by replaying the raw log through rtkrcv.
 
-`<log_dir>/reference/YYYY-MM-DD.llh` is the reference check's equivalent, same writer,
+`<log_dir>/reference-<slug>/YYYY-MM-DD.llh` is a reference check's equivalent (one folder
+per `references` entry, named after it), same writer,
 same compression and disk floor. Its `%` header names the mountpoint, our 1005 ECEF, the
 station's 1005 ECEF (and 1006 antenna height), both frames and where they came from, the
 epoch, the computed expected offset and its sign convention, and the masks; a new header
 line is written when any of them changes (a new session's rtkrcv version, a new 1005,
 the epoch's second decimal). The lines are rtkrcv's: quality 1 is fixed,
 2 float, 5 single; the last two fields are the age of the corrections and the AR ratio.
-It holds absolute positions in the station's frame: private, like the others.
-The second check writes the same files under `<log_dir>/reference2/` (and
-`reference2/raw/`), with `reference2_frame` named in its header.
+It holds absolute positions in the station's frame: private, like the others. The
+header names the entry's frame option (`references[2].frame`) and, when set, its
+station epoch.
 
-`<log_dir>/reference/raw/YYYY-MM-DD.rtcm3` is the station's stream as the app's NTRIP
+`<log_dir>/reference-<slug>/raw/YYYY-MM-DD.rtcm3` is the station's stream as the app's NTRIP
 client received it
 (header-less RTCM3, about 1 kB/s, 100 to 170 MB a day before compression), written with
 the receiver raw log's rules: UTC days, `.rtcm3.gz` when finished, `-late-<n>` files,
@@ -1202,11 +1361,19 @@ and only while the app's NTRIP client is connected: a gap in the file is a gap i
 connection, shown on the card; rtkrcv's restarts do not touch it. It holds the
 station's position (its 1005), which is public, and nothing of ours.
 
+Before 0.8.0 the folders were reference/ and reference2/ (by option prefix, not by
+station). They are left untouched: read the history of those days there.
+`<data_dir>/history/` holds the plots' bins and daily means (see Plots); it is working
+state in the app's private folder, included in Home Assistant backups of the app.
+
 ## Tests
 
 From this folder, with `aiohttp` and `pyserial` installed (Python 3.11 or later):
 
     python -m unittest tests.test_app tests.test_outputs tests.test_measured tests.test_reference tests.test_ntripclient tests.test_datums
+
+The tests read `config.yaml` and `translations/en.yaml` with a small reader of their
+own (`tests/miniyaml.py`), so PyYAML is not needed.
 
 `tests.test_outputs` covers the hub, the filter, the caster and the upload, against a fake
 caster on localhost; nothing connects outside the machine. If RTKLIB's `str2str` is on
@@ -1240,11 +1407,23 @@ GGA (sent or echoed by a caster) nor the password reaches the log.
 `tests.test_reference` covers the reference check: the config's option spellings
 (`tests/reference_golden.conf`, with no credential in it), the option checks, the
 states, the session statistics and the residual rule, the daily reset, planned
-restarts, the station decoder, the raw log, and the whole app with both instances and
-the fake caster; and (0.7.0) the `reference2_*`, `*_gga_position` and
-`*_expect_station` option checks and the login clash, station changes, a wrong station,
-the GGA position from the current 1005, the comparison's numbers, colours, station IDs
-and stale rule (also while a check's rtkrcv restarts after a station switch), two checks
-running side by side (one refused, one streaming with a GGA), and the whole app with
-both. The smoke test with a real binary points the client at a closed local
+restarts, the station decoder, the raw log, station changes, a wrong station and the
+GGA position from the current 1005; and (0.8.0) the `references` list (defaults of
+absent fields, messages naming `references[<n>].<field>`, names and their folder slugs,
+the name and login clashes), the migration from 0.7 (from the options file, from the
+Supervisor's saved options over a local HTTP stand-in, not when the list is set,
+nothing to migrate, names from mountpoints, no password or GGA position in the notice,
+a `!secret` value blocking its entry by field name), the residual in our frame for a
+NAD83(2011) and an ITRF2020 station, colours only while current, the spread (the
+largest pair) and which references count (not a session from an older 1005), the
+east-north covariance, the plots' history (bins, residuals, station IDs kept through
+the rewrite, decimation, daily means, files, pruning, a failed write kept for the next,
+a damaged daily file moved aside, flushed before the rename), the plots endpoint, three
+checks running side by side (one refused, one streaming with a GGA, one plain), the
+page's cards, plots and the ellipse maths (under Node), the schema of the list and that
+`translations/en.yaml` names and describes every option and field, and the whole app
+twice: with 0.7 options (migrated, written to the new folder) and with three entries
+(one with its frame unknown), checking the summary, the plots endpoint, the history
+written at shutdown, and that no password or GGA reaches the log, the page's data or
+any file. The smoke test with a real binary points the client at a closed local
 port: no CORS is ever contacted by the tests.

@@ -195,7 +195,7 @@ class Streaming(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(base64.b64encode(f"user:{SENTINEL}".encode()).decode(), text)
         snap = client.snapshot()
         self.assertIn("Login refused by the caster (HTTP/1.1 401 Unauthorized)", snap["reason"])
-        self.assertIn("reference_user and reference_password", snap["reason"])
+        self.assertIn("references[1].user and references[1].password", snap["reason"])
         self.assertEqual(snap["retry_in_s"], REFUSED_WAIT_S)
         self.assertEqual(self.caster.stream_connections, 0)
         self.assertEqual(self.caster.open, 0, "the socket is closed while waiting")
@@ -241,7 +241,7 @@ class Streaming(unittest.IsolatedAsyncioTestCase):
         snap = client.snapshot()
         self.assertEqual(snap["reason"], "Mountpoint not found (HTTP/1.1 404 Not Found; not "
                          "listed in the caster's sourcetable of 1 mountpoints): check "
-                         "reference_mountpoint (case matters).")
+                         "references[1].mountpoint (case matters).")
         self.assertEqual((snap["sourcetable"], snap["listed"]), ({}, False))
         self.assertEqual(snap["retry_in_s"], REFUSED_WAIT_S)
         self.assertEqual([path for path, _ in self.caster.requests], ["/", "/NOPE"])
@@ -625,7 +625,7 @@ class Uplink(unittest.IsolatedAsyncioTestCase):
         return made
 
     async def test_gga_after_the_request_and_then_every_interval(self):
-        client = self.client(send_gga=True, prefix="reference2")
+        client = self.client(send_gga=True, name="nearest", index=2)
         with self.assertLogs("gnss_base", "INFO") as logs:
             client.start()
             await until(lambda: len(self.caster.uplink) >= 4, what=client.snapshot())
@@ -679,7 +679,7 @@ class Uplink(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("gnss_base", "INFO") as logs:
             client.start()
             await until(lambda: client.state == "no position", what=client.snapshot())
-        self.assertIn("reference_gga_position", client.reason)
+        self.assertIn("references[1].gga_position", client.reason)
         self.assertEqual(client.retry_in_s(), NO_POSITION_WAIT_S)
         self.assertEqual([path for path, _ in self.caster.requests], ["/"], "no stream request")
         self.assertEqual(client.attempts_today, 0, "a wait, not an attempt on the caster")
