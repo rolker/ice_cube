@@ -6,7 +6,7 @@
 <title>GNSS Base</title>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <script src="vendor/leaflet/leaflet.js"></script>
-<script src="track.js?v=0.6.3"></script>
+<script src="track.js?v=0.7.0"></script>
 <style>
 :root{--bg:#f6f7f8;--card:#fff;--text:#1c2024;--muted:#60676f;--line:#dfe3e7;--good:#16794a;--warn:#a15c00;--bad:#b3261e;--accent:#2a78d6;--age-old:#b7d3f6;--age-new:#0d366b}
 @media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2125;--text:#eceff1;--muted:#9aa3ab;--line:#30363c;--good:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--accent:#6da7ec;--age-old:#184f95;--age-new:#cde2fb}}
@@ -21,8 +21,10 @@ section{background:var(--card);border:1px solid var(--line);border-radius:8px;pa
 .big{font-size:24px;font-weight:600}
 dl{display:grid;grid-template-columns:minmax(auto,45%) 1fr;gap:3px 14px;margin:8px 0 0}
 dt{color:var(--muted);min-width:0}dd{margin:0;min-width:0;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
-#refd{grid-template-columns:minmax(auto,22%) 1fr minmax(auto,22%) 1fr;column-gap:24px}
-@media (max-width:1100px){#refd{grid-template-columns:minmax(auto,45%) 1fr}}
+#refd,#ref2d{grid-template-columns:minmax(auto,22%) 1fr minmax(auto,22%) 1fr;column-gap:24px}
+@media (max-width:1100px){#refd,#ref2d{grid-template-columns:minmax(auto,45%) 1fr}}
+details.mps{margin-top:8px}details.mps summary{cursor:pointer;color:var(--muted);font-size:13px}
+details.mps td{font-size:13px}tr.sel td{font-weight:600;color:var(--accent)}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 th{color:var(--muted);font-weight:500;text-align:right}th:first-child,td:first-child{text-align:left}
 th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
@@ -78,7 +80,14 @@ td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
 <pre id="measout" class="note" hidden></pre></section>
 <section class="wide"><h2>Reference check <span id="refmp"></span></h2><div id="ref" class="big">—</div><dl id="refd"></dl>
 <p id="refnote" class="note">The app logs in to the caster itself and shows what it answers; rtkrcv reads the station's stream from the app. RTK against a CORS station, static: the session mean converges over minutes to hours. Offsets are the solution minus our RTCM 1005 position (the CORS frame minus ours); the expected offset is computed from the declared frames (reference_frame, base_frame) and today's epoch, never guessed from the stream; the residual is the mean minus the expected offset: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. With no station frame declared there is no residual and no colour from it. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p>
+<details id="refmpl" class="mps" hidden><summary id="refmps">Caster mountpoints</summary><table id="refmpt"></table><pre id="refcas" class="note"></pre></details>
 <pre id="refout" class="note" hidden></pre></section>
+<section class="wide" id="ref2card" hidden><h2>Reference check 2 <span id="ref2mp"></span></h2><div id="ref2" class="big">—</div><dl id="ref2d"></dl>
+<p id="ref2note" class="note">A second reference check, against another station (options reference2_*), with its own NTRIP client, rtkrcv, session, daily reset and logs; the same rules as the card above. With reference2_send_gga on, the app sends the caster a GGA with our base's position, or reference2_gga_position, so a "nearest station" mountpoint can pick a station; the station ID and position from its 1005 say which one it picked.</p>
+<details id="ref2mpl" class="mps" hidden><summary id="ref2mps">Caster mountpoints</summary><table id="ref2mpt"></table><pre id="ref2cas" class="note"></pre></details>
+<pre id="ref2out" class="note" hidden></pre></section>
+<section class="wide" id="cmpcard" hidden><h2>Reference comparison</h2><div id="cmp" class="big">—</div><dl id="cmpd"></dl>
+<p class="note">Session means of the fixed epochs, in cm at our antenna. Each reference minus ours carries the offset between that station's frame and ours; reference 2 minus reference 1 does not depend on our coordinate at all. It is judged only when both stations' frames are declared and the same: green within 3 cm horizontal and 6 cm up, amber within 10 cm, red beyond. Otherwise it is shown raw, with the reason; the frames are never guessed.</p></section>
 <section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
 <h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
 <section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl><p id="svinnote" class="note"></p></section>
@@ -409,40 +418,49 @@ function stationLost(){
 }
 // The reference check card: a second rtkrcv (RTK static against a CORS station). No
 // password reaches the page: the app sends only whether one is set.
-const REF_STATES={off:"Off","not configured":"Not configured","not available":"Not available",idle:"Idle: no MSM from the receiver yet",restarting:"Restarting",starting:"Starting",connecting:"Connecting to the caster",sourcetable:"Reading the caster's sourcetable","login refused":"Login refused by the caster","mountpoint not found":"Mountpoint not found","unsuitable mountpoint":"Mountpoint not usable","no data":"No data from the caster",backoff:"Connection failed","client stopped":"NTRIP client stopped","no corrections":"No corrections",stale:"No recent solution",fixed:"Fixed",float:"Float",single:"Single: corrections not used yet"};
-const CLIENT_WAITING=["login refused","mountpoint not found","unsuitable mountpoint","no data","backoff"];
+const REF_STATES={off:"Off","not configured":"Not configured","not available":"Not available",idle:"Idle: no MSM from the receiver yet",restarting:"Restarting",starting:"Starting",connecting:"Connecting to the caster",sourcetable:"Reading the caster's sourcetable","login refused":"Login refused by the caster","mountpoint not found":"Mountpoint not found","unsuitable mountpoint":"Mountpoint not usable","no data":"No data from the caster","no position":"Waiting for a position for the GGA",backoff:"Connection failed","client stopped":"NTRIP client stopped","no corrections":"No corrections",stale:"No recent solution",fixed:"Fixed",float:"Float",single:"Single: corrections not used yet"};
+const CLIENT_WAITING=["login refused","mountpoint not found","unsuitable mountpoint","no data","no position","backoff"];
 const enu=v=>v?`E ${signed3(v[0])}, N ${signed3(v[1])}, U ${signed3(v[2])}`:null;
 const signed3=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v).toFixed(3)+" m";
 const enuStd=(m,s)=>m&&s?`E ${signed3(m[0])} ±${s[0].toFixed(3)}, N ${signed3(m[1])} ±${s[1].toFixed(3)}, U ${signed3(m[2])} ±${s[2].toFixed(3)}`:null;
-function renderReference(r){
+function renderReference(r,id="ref"){
   if(!r)return;
+  const o=r.option||"reference";
   const state=r.state||"—",live=!["off","not configured","not available"].includes(state),c=r.corrections||{},cors=c.position,d=c.descriptors,sol=r.solution,ses=r.session||{},rec=r.recent,prev=r.previous_session;
   // Until this session has a fix, the previous session's verdict colours the card
   // (a daily reset is not an outage), but only while solutions keep coming.
   const clientBusy=["connecting","sourcetable",...CLIENT_WAITING,"client stopped"].includes(state);
-  const colour=!live||clientBusy?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
-  $("refmp").textContent=r.mountpoint?`(${r.mountpoint})`:"";
+  // A station other than <option>_expect_station: no colour from any residual.
+  const wrong=r.station_mismatch;
+  const colour=!live||clientBusy||wrong?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
+  $(id+"mp").textContent=r.mountpoint?`(${r.mountpoint})`:"";
   const verdictText=r.verdict?{good:"Residual OK",warn:"Residual amber",bad:"Residual red"}[r.verdict]:null;
   const cl=r.client||{},clientWaiting=CLIENT_WAITING.includes(state),retry=clientWaiting&&cl.retry_in_s!=null?` · retry in ${duration(cl.retry_in_s)}`:"";
   // While the caster connection is not up, the headline is the client's alone: no
   // residual verdict (it may be hours old) and no colour from it.
-  $("ref").textContent=(REF_STATES[state]||state)+(state==="restarting"&&r.retry_in_s!=null?` in ${duration(r.retry_in_s)}`:"")+retry+(live&&!clientBusy&&verdictText?` · ${verdictText}`:!r.verdict&&colour?" · previous session's residual":"");
+  const sc=r.station_changed,recentChange=sc&&sc.age_s<3600?" · station changed":"";
+  $(id).textContent=(REF_STATES[state]||state)+(state==="restarting"&&r.retry_in_s!=null?` in ${duration(r.retry_in_s)}`:"")+retry+(live&&!clientBusy&&verdictText?` · ${verdictText}`:!r.verdict&&colour?" · previous session's residual":"")+recentChange+(live&&wrong&&!clientBusy?` · ${wrong}`:"");
   // Colour: the residual's verdict once there is one (red also after 30 min without a
   // fix); otherwise red when the caster refused or nothing can run, amber while
-  // connecting or waiting for corrections or a fix.
-  $("ref").className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:["not available","login refused","mountpoint not found","unsuitable mountpoint","client stopped"].includes(state)?"bad":["connecting","sourcetable","no data","backoff","no corrections","stale","single","restarting"].includes(state)?"warn":"");
+  // connecting or waiting for corrections or a fix. A wrong station is amber, but the
+  // red states come first: a refused login on a wrong station is still red.
+  const red=["not available","login refused","mountpoint not found","unsuitable mountpoint","client stopped"].includes(state);
+  $(id).className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:red?"bad":live&&wrong?"warn":["connecting","sourcetable","no data","no position","backoff","no corrections","stale","single","restarting"].includes(state)?"warn":"");
   const eph=r.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
-  const why=(state==="off"?"Off (reference_enabled is false)":null)||r.reason||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
+  const why=(state==="off"?`Off (${o}_enabled is false)`:null)||r.reason||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
   const st=cl.sourcetable,stText=st==null?null:!Object.keys(st).length?(cl.listed===false?`not listed in the caster's sourcetable of ${cl.sourcetable_size} mountpoints (the caster's answer to the stream request decides)`:"the caster gave no sourcetable at /"):`${st.format||"?"} ${st.format_details||""}, ${st.nav_system||"?"}, nmea ${st.nmea||"?"}, solution ${st.solution||"?"}${st.identifier?`, "${st.identifier}"`:""}${st.misc?` (${st.misc})`:""}`;
   const connText=cl.connected_s==null?(cl.last_reply?`not connected (last reply: ${cl.last_reply})`:null):`${duration(cl.connected_s)}, ${cl.bytes_per_s==null?"?":size(cl.bytes_per_s)+"/s"}, ${size(cl.bytes)} this connection, last byte ${cl.last_byte_age_s} s ago`;
   const dropped=Object.entries((r.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
   const log=r.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
   const counts=ses.counts||{},share=ses.fixed_share==null?null:`${(ses.fixed_share*100).toFixed(0)} % of ${ses.epochs} epochs (${counts.fixed||0} fixed, ${counts.float||0} float, ${counts.single||0} single)`;
-  dl("refd",[["Why",why],["CORS",r.host?`${r.host}:${r.port}, login ${r.user_set?"user set":"no user"}, password ${r.password_set?"set":"not set"}`:null],
+  const gga=!r.send_gga?null:`on (${o}_send_gga): position ${r.gga_source==="our 1005"?"our base's 1005":r.gga_source}, ${cl.gga_sent??0} sent${cl.gga_sent_connection?` (${cl.gga_sent_connection} this connection)`:""}${cl.gga_last_age_s!=null?`, last ${cl.gga_last_age_s} s ago`:""}${cl.gga_skipped?`, ${cl.gga_skipped} skipped (no position)`:""}`;
+  dl(id+"d",[["Why",why],["CORS",r.host?`${r.host}:${r.port}, login ${r.user_set?"user set":"no user"}, password ${r.password_set?"set":"not set"}`:null],
     ["Caster connection",live?connText||"none yet":null],
     ["Connections, attempts today",live?`${cl.connections??0}, ${cl.attempts_today??0}`:null],
     ["Sourcetable entry",live?stText:null],
-    ["Station",cors?`${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
+    ["GGA uplink",live?gga:null],
+    ["Station",cors?`ID ${r.station_id} (${cors.message})${r.expect_station!=null?(wrong?`: ${wrong} (${o}_expect_station)`:`, as expected (${o}_expect_station)`):""}, ${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
+    ["Station changed",sc?`ID ${sc.from_id} → ${sc.to_id}, ${(sc.moved_m/1000).toFixed(2)} km from the last 1005, ${duration(sc.age_s)} ago (${sc.utc.replace("T"," ").replace("+00:00"," UTC")}); rtkrcv restarted`:null],
     ["Baseline",r.baseline_km==null?null:r.baseline_km.toFixed(2)+" km"],
     ["CORS antenna height (1006)",cors&&cors.antenna_height_m!=null?cors.antenna_height_m.toFixed(4)+" m"+(cors.antenna_height_m?" (not applied; see the README)":""):null],
     ["Corrections",c.age_s==null?(live?"none yet":null):`${c.age_s} s ago (${c.frames} frames, ${size(c.bytes)})`],
@@ -453,19 +471,20 @@ function renderReference(r){
     ["Session mean ± std (fixed)",enuStd(ses.mean_enu,ses.std_enu)],
     ["Session",ses.started_utc?`since ${ses.started_utc.replace("T"," ").replace("+00:00"," UTC")}${ses.last_fix_age_s!=null?`, last fix ${duration(ses.last_fix_age_s)} ago`:""}`:null],
     ["Fixed share",share],
-    ["Station frame",!live?null:r.station_frame?`${r.station_frame} (from ${r.station_frame_source})`:"unknown: set reference_frame"+(r.station_df021!=null?` (the stream's DF021 is ${r.station_df021}: reserved by RTCM, not read as a frame)`:"")],
+    ["Station frame",!live?null:r.station_frame?`${r.station_frame} (from ${r.station_frame_source})`:"unknown: set "+o+"_frame"+(r.station_df021!=null?` (the stream's DF021 is ${r.station_df021}: reserved by RTCM, not read as a frame)`:"")],
     ["Our frame",!live?null:r.base_frame?`${r.base_frame} (base_frame), epoch ${r.epoch.toFixed(2)} (${r.epoch_source==="base_epoch"?"base_epoch":"today's date; set base_epoch"})`:"unknown: set base_frame"],
     ["Expected offset",!live?null:r.expected_enu?`${enu(r.expected_enu)} (computed, station frame minus ours, epoch ${r.epoch.toFixed(2)})`:`none: ${r.no_expected||"not computed"}`],
     ["Residual (mean − expected)",!live?null:r.residual_enu?`${enu(r.residual_enu)}: ${r.verdict_reason}`:r.verdict_reason||null],
     ["Previous session",prev?`${prev.residual_enu?enu(prev.residual_enu)+" residual":"no residual"} (${prev.verdict_reason}), ${prev.fixed} fixed epochs, ended ${prev.ended_utc.replace("T"," ").replace("+00:00"," UTC")} (${prev.ended_because})`:null],
-    ["Next daily reset",r.next_reset_s==null?(live?"never (reference_reset_utc empty)":null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
+    ["Next daily reset",r.next_reset_s==null?(live?`never (${o}_reset_utc empty)`:null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
     ["Base position changed",r.base_changed_age_s==null?null:duration(r.base_changed_age_s)+" ago (session statistics restarted)"],
     ["Sessions",live?`${r.sessions} (${r.resets} daily resets, ${r.gap_restarts} gap restarts, ${r.station_changes} station changes)`:null],
     ["CORS raw log",r.raw_log?`${size(r.raw_log.bytes_today)} today`+(r.raw_log.paused?", paused (disk limit)":"")+(r.raw_log.last_error?`: ${r.raw_log.last_error}`:""):null],
     ["rtkrcv CPU",r.cpu_percent==null?null:r.cpu_percent+" % of one core"],["rtkrcv memory",r.rss_bytes==null?null:size(r.rss_bytes)],
     ["Restarts today",live?r.restarts_today:null],["Feed skipped",((r.feed||{}).frames_skipped||0)+(r.cors_feed||{}).frames_skipped?`${(r.feed||{}).frames_skipped||0} of our frames, ${(r.cors_feed||{}).frames_skipped||0} station chunks`:null],["Lines dropped",dropped||null],
     ["rtkrcv",r.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
-  const out=(r.output||[]).join("\n");$("refout").textContent=out;$("refout").hidden=!out;
+  const out=(r.output||[]).join("\n");$(id+"out").textContent=out;$(id+"out").hidden=!out;
+  renderMountpoints(id,cl);
 }
 function render(s){
   // The same 5 s as the card's rule (DATA_FRESH_S in track.js).
@@ -510,11 +529,46 @@ function render(s){
   renderOutputs(s);
   renderMeasured(s.measured);
   renderReference(s.reference);
+  // The second check's card only while it is on.
+  $("ref2card").hidden=!s.reference2||s.reference2.state==="off";
+  if(s.reference2&&s.reference2.state!=="off")renderReference(s.reference2,"ref2");
+  renderComparison(s.reference_comparison);
   if(typeof renderReceiver==="function")renderReceiver(s);
   table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
   table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");
   table("files",["File","Size"],d.files.map(x=>[x.file,size(x.bytes)]),"No logs yet");
   $("msgs").textContent=s.messages.length?s.messages.join("\n"):"None yet";
+}
+// The caster's mountpoints (its sourcetable's STR records), for finding a station's
+// own mountpoint; the configured one is highlighted. Redrawn only when the table, the
+// mountpoint or the GGA setting changed, so an open list stays put.
+const mpKeys={};
+function renderMountpoints(id,cl){
+  const list=cl.mountpoints||[],key=[cl.sourcetable_utc,cl.mountpoint,cl.send_gga,list.length].join("|");
+  $(id+"mpl").hidden=!list.length&&!(cl.caster_records||[]).length;
+  if(mpKeys[id]===key)return;mpKeys[id]=key;
+  $(id+"mps").textContent=`Caster mountpoints (${list.length+(cl.mountpoints_cut||0)})`+(cl.sourcetable_utc?`, read ${cl.sourcetable_utc.replace("T"," ").replace("+00:00"," UTC")}${cl.sourcetable_login?` (${cl.sourcetable_login})`:""}`:"")+(cl.mountpoints_cut?`; first ${list.length} shown`:"");
+  const accept=m=>m.accepted?"yes":m.nmea==="1"&&!cl.send_gga?"no (needs the GGA uplink)":"no";
+  const head=["Mountpoint","Identifier","Format","Systems","nmea","Solution","Usable here"];
+  const rows=list.map(m=>[m.configured?"sel":"",[m.mountpoint+(m.configured?" (configured)":""),m.identifier,m.format,m.nav_system,m.nmea,m.solution==="1"?"network":m.solution==="0"?"single":m.solution,accept(m)]]);
+  $(id+"mpt").innerHTML=`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(([sel,r])=>`<tr class="${esc(sel)}">${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("");
+  $(id+"cas").textContent=(cl.caster_records||[]).join("\n");
+}
+// The two reference checks side by side (the app's `compare`): centimetres, the
+// colour only when both frames are declared and the same, both checks stream, each
+// has a fix in the last 30 min, and neither is on a wrong station.
+const cm=v=>v?["E","N","U"].map((a,i)=>`${a} ${v[i]<0?"−":"+"}${Math.abs(v[i]*100).toFixed(1)}`).join(", ")+" cm":null;
+function renderComparison(c){
+  $("cmpcard").hidden=!c||!c.shown;
+  if(!c||!c.shown)return;
+  const frame=f=>f||"frame unknown",id=v=>v==null?"station ID ?":`station ID ${v}`;
+  const fix=a=>a==null?"no fix":`last fix ${duration(a)} ago`;
+  // Judged only while current: a stale or wrong-station comparison has no colour.
+  $("cmp").textContent=c.station_mismatch?`Wrong station: ${c.station_mismatch}`:c.stale?`Stale: ${c.stale_reason}`:c.residual?{good:"Stations agree",warn:"Stations differ (amber)",bad:"Stations disagree"}[c.verdict]:"Raw difference only";
+  $("cmp").className="big "+(!c.station_mismatch&&!c.stale&&c.residual?{good:"good",warn:"warn",bad:"bad"}[c.verdict]:"");
+  dl("cmpd",[["Reference 1 minus ours",`${cm(c.first_minus_ours)} (${id(c.first_station_id)}, ${frame(c.first_frame)} minus ours, ${c.first_fixed} fixed epochs, ${fix(c.first_last_fix_age_s)})`],
+    ["Reference 2 minus ours",`${cm(c.second_minus_ours)} (${id(c.second_station_id)}, ${frame(c.second_frame)} minus ours, ${c.second_fixed} fixed epochs, ${fix(c.second_last_fix_age_s)})`],
+    [c.residual?"Reference 2 minus reference 1 (residual)":"Reference 2 minus reference 1 (raw)",`${cm(c.second_minus_first)}: ${c.verdict_reason}`]]);
 }
 async function tick(){
   let s=null;
@@ -541,6 +595,6 @@ drawDrift();
 tick();
 trackTick();
 </script>
-<script src="control.js?v=0.6.3"></script>
+<script src="control.js?v=0.7.0"></script>
 </body>
 </html>

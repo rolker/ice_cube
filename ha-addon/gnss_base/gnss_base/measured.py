@@ -584,6 +584,11 @@ class RtkrcvRunner:
         self._restart_reason = reason
         return True
 
+    def restart_pending(self):
+        """True from an accepted request_restart until the supervisor acts on it (the
+        session's numbers until then are the old run's)."""
+        return bool(self._restart_reason)
+
     def running_s(self):
         """Seconds the current rtkrcv has run, or None without one."""
         return None if self._process is None else self._clock() - self._started

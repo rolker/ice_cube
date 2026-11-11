@@ -39,6 +39,8 @@ class FakeCaster:
         self.table_extra = table_extra
         self.table_style = table_style    # "v1": SOURCETABLE 200 OK; "http"; "chunked"
         self.root_reply = None            # bytes to answer "/" with instead of the table
+        self.root_login_reply = None      # the same, for a "/" request with a login
+        self.uplink = []                  # lines the client sent on stream connections
         self.chunk_size = 700
         self.requests = []          # (path, headers dict) in order
         self.open = 0
@@ -112,7 +114,11 @@ class FakeCaster:
             # and `most_open` count connections as the client sees them.
             if path in ("/", ""):
                 self.sourcetable_requests += 1
-                writer.write(self.sourcetable() if self.root_reply is None else self.root_reply)
+                if self.root_login_reply is not None and "authorization" in headers:
+                    writer.write(self.root_login_reply)
+                else:
+                    writer.write(self.sourcetable() if self.root_reply is None
+                                 else self.root_reply)
                 await writer.drain()
                 await self._hold(reader)
                 return
@@ -155,6 +161,9 @@ class FakeCaster:
                 await self._hold(reader)
                 return
             self.stream_connections += 1
+            # What the client sends from now on (a GGA uplink) is kept line by line;
+            # its end is the client closing, which ends the connection as _hold does.
+            uplink = asyncio.get_running_loop().create_task(self._read_uplink(reader))
             chunked = behaviour == "chunked"
             if behaviour == "icy":
                 writer.write(b"ICY 200 OK\r\n")
@@ -170,9 +179,11 @@ class FakeCaster:
                              + b"\r\n")
             await writer.drain()
             if behaviour == "silent":
-                await self._hold(reader)
+                await self._hold_uplink(uplink)
                 return
             for _ in range(self.repeat):
+                if uplink.done():
+                    return
                 if self.data:
                     piece = self.data
                     if chunked:
@@ -186,7 +197,7 @@ class FakeCaster:
             if chunked:
                 writer.write(b"0\r\n\r\n")
                 await writer.drain()
-            await self._hold(reader)
+            await self._hold_uplink(uplink)
         except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.CancelledError):
             pass
         finally:
@@ -201,6 +212,21 @@ class FakeCaster:
             await asyncio.wait_for(reader.read(1), self.hold_s)
         except asyncio.TimeoutError:
             pass
+
+    async def _read_uplink(self, reader):
+        while True:
+            line = await reader.readline()
+            if not line:
+                return
+            self.uplink.append(line)
+
+    async def _hold_uplink(self, uplink):
+        try:
+            await asyncio.wait_for(asyncio.shield(uplink), self.hold_s)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            uplink.cancel()
 
     async def _read_request(self, reader):
         lines = []

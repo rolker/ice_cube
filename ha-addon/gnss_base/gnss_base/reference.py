@@ -51,6 +51,22 @@ restart, without the exit backoff), and when corrections resume after a gap of m
 than GAP_RESTART_S, since the held ambiguities are then stale. A moved antenna shows as
 a slow drift until the next reset; the measured position (single point) catches a move
 within seconds, so that card is the one to watch for moves.
+
+Two checks (0.7.0): `ReferenceCheck` runs once per configured reference, each with its
+own settings (`ReferenceSettings.prefix`: "reference" for the first, "reference2" for the
+second; the texts that name an option use it), client, rtkrcv, work folder, logs and
+reset. The station behind a mountpoint is identified by its 1005/1006 station ID and
+position and its 1033 descriptors; a "nearest station" mountpoint (GGA uplink, see
+ntripclient.py) can switch stations, and a change of ID or position restarts rtkrcv
+and is shown and logged as "station changed". `compare` sets the two checks' session
+means side by side (the "Reference comparison" card): each reference minus ours, and
+the second minus the first, which does not depend on our coordinate at all, with a
+colour (COMPARE_GOOD_*, COMPARE_WARN_M) only when both stations' frames are declared
+and the same, both checks are streaming now and each has a fixed epoch within
+COMPARE_FRESH_S; otherwise the numbers are shown as stale, with each side's last-fix
+age. `reference*_expect_station` (a station ID, 0 to 4095, or empty for any) marks a
+1005/1006 from another station as "wrong station (got N, expected M)" on the check's
+card and the comparison (no colour on either), logged once per change.
 """
 import asyncio
 import contextlib
@@ -81,6 +97,11 @@ NO_FIX_RED_S = 1800.0         # fixed once, then none for this long: red
 GOOD_HORIZONTAL_M = 0.05
 GOOD_UP_M = 0.10
 WARN_M = 0.20
+COMPARE_GOOD_HORIZONTAL_M = 0.03  # reference 2 minus reference 1, same declared frame
+COMPARE_GOOD_UP_M = 0.06
+COMPARE_WARN_M = 0.10
+COMPARE_FRESH_S = 1800.0      # each check's last fix at most this old for a verdict
+SAME_BASE_M = 0.001           # the two checks' offsets are from the same 1005 within this
 MAX_FIELD = 255               # host, mountpoint, user and password: at most this long
 MAX_OFFSET_M = 1_000_000.0    # an offset beyond this is not kept (a corrupt line)
 EARTH_RADIUS_M = 6_371_000.0  # a 1005 nearer the centre than half of this is no position
@@ -182,7 +203,11 @@ STATION_FRAME_UNKNOWN = "station frame unknown: set reference_frame"
 OUR_FRAME_UNKNOWN = "our frame unknown: set base_frame"
 
 
-def parse_reset_utc(text):
+def station_frame_unknown(prefix="reference"):
+    return f"station frame unknown: set {prefix}_frame"
+
+
+def parse_reset_utc(text, name="reference_reset_utc"):
     """`reference_reset_utc` ("HH:MM", UTC) as seconds since midnight; None if empty
     (no daily reset)."""
     text = str(text).strip()
@@ -190,8 +215,28 @@ def parse_reset_utc(text):
         return None
     match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
     if not match or not (int(match.group(1)) < 24 and int(match.group(2)) < 60):
-        raise ValueError("reference_reset_utc must be HH:MM (UTC, 24 h) or empty")
+        raise ValueError(f"{name} must be HH:MM (UTC, 24 h) or empty")
     return int(match.group(1)) * 3600 + int(match.group(2)) * 60
+
+
+_NUMBER = r"\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*"
+
+
+def parse_gga_position(text, name="reference_gga_position"):
+    """`reference_gga_position`: "lat,lon" in decimal degrees as (lat, lon), or None
+    when empty (the GGA then carries our base's 1005 position). The message names the
+    option, never the value."""
+    text = str(text).strip()
+    if not text:
+        return None
+    match = re.fullmatch(_NUMBER + "," + _NUMBER, text)
+    if not match:
+        raise ValueError(f'{name} must be "lat,lon" in decimal degrees, or empty')
+    lat, lon = float(match.group(1)), float(match.group(2))
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError(f"{name} must have a latitude from -90 to 90 and a longitude "
+                         "from -180 to 180")
+    return lat, lon
 
 
 def seconds_to_reset(now_wall, reset_seconds):
@@ -218,6 +263,9 @@ def _field_problem(value, forbidden=""):
 
 @dataclass
 class ReferenceSettings:
+    """One reference check's options. `prefix` is the options' prefix ("reference",
+    "reference2"), used in every text that names an option. `blocked` is a problem
+    found across checks (the same login twice), set by the app."""
     enabled: bool = False
     host: str = ""
     port: int = 2101
@@ -232,21 +280,27 @@ class ReferenceSettings:
     work_dir: Path = Path("/data/reference")
     elevation_mask: int = 15        # the measured position's masks, shared
     snr_mask: int = 35
+    send_gga: bool = False          # the GGA uplink (reference_send_gga)
+    gga_position: str = ""          # "lat,lon" for the GGA; empty: our 1005
+    expect_station: object = None   # the station ID expected (0 to 4095); None: any
+    prefix: str = "reference"
+    blocked: str = ""
 
     def problem(self):
         """Why the check cannot run with these options ("not configured"), or ""."""
-        missing = [name for name, value in (("reference_host", self.host),
-                                            ("reference_mountpoint", self.mountpoint),
-                                            ("reference_user", self.user)) if not value]
+        p = self.prefix
+        missing = [name for name, value in ((f"{p}_host", self.host),
+                                            (f"{p}_mountpoint", self.mountpoint),
+                                            (f"{p}_user", self.user)) if not value]
         if missing:
             return "set " + ", ".join(missing)
         if (not isinstance(self.port, int) or isinstance(self.port, bool)
                 or not 1 <= self.port <= 65535):
-            return "reference_port must be 1 to 65535"
-        for name, value, forbidden in (("reference_host", self.host, ":/@"),
-                                       ("reference_mountpoint", self.mountpoint, ":/@?"),
-                                       ("reference_user", self.user, ":"),
-                                       ("reference_password", self.password.reveal(), "")):
+            return f"{p}_port must be 1 to 65535"
+        for name, value, forbidden in ((f"{p}_host", self.host, ":/@"),
+                                       (f"{p}_mountpoint", self.mountpoint, ":/@?"),
+                                       (f"{p}_user", self.user, ":"),
+                                       (f"{p}_password", self.password.reveal(), "")):
             why = _field_problem(value, forbidden)
             if why:
                 return f"{name} {why}"
@@ -254,19 +308,28 @@ class ReferenceSettings:
                                   ("measured_snr_mask", self.snr_mask, 60)):
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= high:
                 return f"{name} must be a whole number from 0 to {high}"
+        expect = self.expect_station
+        if expect is not None and (not isinstance(expect, int) or isinstance(expect, bool)
+                                   or not 0 <= expect <= 4095):
+            return f"{p}_expect_station must be a whole number from 0 to 4095, or empty"
         try:
-            parse_frame(self.frame, "reference_frame")
+            parse_frame(self.frame, f"{p}_frame")
             parse_frame(self.base_frame, "base_frame")
             parse_epoch(self.base_epoch, "base_epoch")
-            parse_reset_utc(self.reset_utc)
+            parse_reset_utc(self.reset_utc, f"{p}_reset_utc")
+            parse_gga_position(self.gga_position, f"{p}_gga_position")
             build_config(1, 1, 1, self)
         except ValueError as error:
             return str(error)
-        return ""
+        return self.blocked
 
     def station_frame(self):
         """The station's declared frame (canonical name), or "" when none is declared."""
-        return parse_frame(self.frame, "reference_frame")
+        return parse_frame(self.frame, f"{self.prefix}_frame")
+
+    def gga_latlon(self):
+        """The configured GGA position (lat, lon), or None (our 1005)."""
+        return parse_gga_position(self.gga_position, f"{self.prefix}_gga_position")
 
     def our_frame(self):
         return parse_frame(self.base_frame, "base_frame")
@@ -276,7 +339,19 @@ class ReferenceSettings:
         return parse_epoch(self.base_epoch, "base_epoch")
 
     def reset_seconds(self):
-        return parse_reset_utc(self.reset_utc)
+        return parse_reset_utc(self.reset_utc, f"{self.prefix}_reset_utc")
+
+
+def login_clash(first, second):
+    """Why `second` cannot run beside `first`, or "": both on, with the same caster and
+    user (a CORS login usually allows one connection, so two would refuse each other)."""
+    if not (first.enabled and second.enabled):
+        return ""
+    if (first.host.lower(), first.port, first.user) != (second.host.lower(), second.port,
+                                                        second.user) or not second.user:
+        return ""
+    return (f"{second.prefix} uses the same caster and user as {first.prefix}: one login "
+            "allows one connection; use another login")
 
 
 def build_config(feed_port, solution_port, cors_port, settings):
@@ -304,8 +379,9 @@ class StationDecoder:
     A new connection starts a new parse (`reset`), as the stream may resume inside a
     frame."""
 
-    def __init__(self, on_frame=None, clock=time.monotonic):
+    def __init__(self, on_frame=None, clock=time.monotonic, label="reference check"):
         self._on_frame = on_frame
+        self.label = label
         self._clock = clock
         self._parser = FrameParser()
         self.unknown_bytes = 0
@@ -359,7 +435,7 @@ class StationDecoder:
             except Exception:   # the decoder goes on whatever the check does with it
                 self.callback_errors += 1
                 if self.callback_errors == 1:
-                    LOG.exception("reference check: handling a CORS frame failed")
+                    LOG.exception("%s: handling a CORS frame failed", self.label)
 
     def snapshot(self):
         now = self._clock()
@@ -493,12 +569,16 @@ class ReferenceCheck:
     ...}` or None (Status.current_base). `on_solution(solution, line)` gets each solution
     line (for the log); `on_raw(data)` the station's bytes as received (for the raw
     log). `version` is the app's version, for the log header and the NTRIP user agent.
-    `client_kwargs` go to the NtripClient (tests), `runner_kwargs` to the runner."""
+    `label` names the check in the log and on the hub ("reference check", "reference
+    check 2"). `client_kwargs` go to the NtripClient (tests), `runner_kwargs` to the
+    runner."""
 
     def __init__(self, settings, hub, get_base, on_solution=None, version="",
                  clock=time.monotonic, wall=time.time, on_raw=None, client_kwargs=None,
-                 **runner_kwargs):
+                 label="reference check", **runner_kwargs):
         self.settings = settings
+        self.label = label
+        self.prefix = settings.prefix
         self._get_base = get_base
         self._on_solution = on_solution
         self._on_raw = on_raw
@@ -506,15 +586,18 @@ class ReferenceCheck:
         self._clock = clock
         self._wall = wall
         self.problem = settings.problem()
-        self.station = StationDecoder(on_frame=self._corrections, clock=clock)
+        self.station = StationDecoder(on_frame=self._corrections, clock=clock, label=label)
         self.cors_feed = FeedServer()
+        # The first check's client logs as "NTRIP client", as before 0.7.0.
         self.client = NtripClient(settings, self._on_data, version=version, clock=clock,
                                   wall=wall, on_connect=self.station.reset,
+                                  label="" if self.prefix == "reference" else self.prefix,
+                                  gga_position=self._gga_position,
                                   **(client_kwargs or {}))
         self.runner = RtkrcvRunner(
             settings, hub, on_solution=self._solution, clock=clock, wall=wall,
             make_config=self._config, servers={"cors": self.cors_feed},
-            on_start=self._session_start, label="reference check", **runner_kwargs)
+            on_start=self._session_start, label=label, **runner_kwargs)
         self.raw_errors = 0           # on_raw raised
         self.stats = SessionStats()
         self.latest = None            # the latest solution, with offset_enu
@@ -524,7 +607,10 @@ class ReferenceCheck:
         self._cors_ecef = None        # the station's 1005 this session is relative to
         self._session_clock = None    # when this session started (clock)
         self.previous = None          # the last session that had fixed epochs
-        self.station_changes = 0      # sessions ended by a changed CORS position
+        self.station_changes = 0      # sessions ended by a changed CORS position or ID
+        self._cors_id = None          # the station ID this session is relative to
+        self._known_station = None    # (ID, ECEF) of the last 1005/1006, across sessions
+        self.station_changed = None   # the last change seen: when, IDs, distance
         self._base_ecef = None        # our 1005 the offsets are from
         self._base_changed = None     # when it last changed during a session (clock)
         self._reset_task = None
@@ -535,6 +621,8 @@ class ReferenceCheck:
         self._station_frame = settings.station_frame() if not self.problem else ""
         self._our_frame = settings.our_frame() if not self.problem else ""
         self._our_epoch = settings.our_epoch() if not self.problem else None
+        self._gga_latlon = settings.gga_latlon() if not self.problem else None
+        self._wrong_logged = None     # the unexpected station ID last logged
 
     # ---- life cycle ----
 
@@ -542,7 +630,7 @@ class ReferenceCheck:
         if not self.settings.enabled:
             return
         if self.problem:
-            LOG.info("reference check not configured: %s", self.problem)
+            LOG.info("%s not configured: %s", self.label, self.problem)
             return
         self.client.start()
         self.runner.start()
@@ -570,9 +658,18 @@ class ReferenceCheck:
             except Exception:
                 self.raw_errors += 1
                 if self.raw_errors == 1:
-                    LOG.exception("reference check: writing the station's stream failed")
+                    LOG.exception("%s: writing the station's stream failed", self.label)
         self.station.feed(data)    # a new connection resets the parse (on_connect)
         self.cors_feed.send(data)
+
+    def _gga_position(self):
+        """What the GGA uplink sends: the configured position (height 0), or our base's
+        current 1005 position, or the last one this check saw (`_base_ecef`), or None."""
+        if self._gga_latlon is not None:
+            return (*self._gga_latlon, 0.0)
+        base = self._get_base()
+        ecef = self._base_ecef if base is None else tuple(base["ecef"])
+        return None if ecef is None else ecef_to_llh(*ecef)
 
     async def _reset_loop(self):
         """Restart rtkrcv at the daily reset time. Sleeps at most an hour at a time, so
@@ -634,14 +731,23 @@ class ReferenceCheck:
         if number in (1005, 1006) and self.station.position is not None:
             # The station's coordinate is what the solution is relative to: a changed
             # one (another station behind the mountpoint, a re-coordination) is a new
-            # session, not a mix of two frames.
+            # session, not a mix of two frames. So is a changed station ID (a
+            # "nearest station" mountpoint that switched).
             ecef = tuple(self.station.position["ecef"])
+            station_id = self.station.position["station_id"]
+            self._note_station(now, station_id, ecef)
+            self._note_expected(station_id)
             if self._cors_ecef is None:
-                self._cors_ecef = ecef
-            elif math.dist(ecef, self._cors_ecef) > 0.0005:
-                if self.runner.request_restart("the station's 1005 position changed"):
-                    self.station_changes += 1
-                    self._cors_ecef = ecef
+                self._cors_ecef, self._cors_id = ecef, station_id
+            else:
+                moved = math.dist(ecef, self._cors_ecef) > 0.0005
+                renamed = station_id != self._cors_id
+                if moved or renamed:
+                    why = ("the station's 1005 position changed" if not renamed else
+                           f"the station changed (ID {self._cors_id} to {station_id})")
+                    if self.runner.request_restart(why):
+                        self.station_changes += 1
+                        self._cors_ecef, self._cors_id = ecef, station_id
             return
         if not is_msm(number):
             return
@@ -651,6 +757,47 @@ class ReferenceCheck:
             if self.runner.request_restart(
                     f"corrections resumed after a {minutes:.0f} min gap"):
                 self.gap_restarts += 1
+
+    def _note_station(self, now, station_id, ecef):
+        """Keep the station's identity across sessions; a change (ID, or position by
+        more than 0.5 mm) is shown on the card and logged once. Its old 1033
+        descriptors are dropped: they were the old station's."""
+        known, self._known_station = self._known_station, (station_id, ecef)
+        if known is None:
+            return
+        old_id, old_ecef = known
+        moved_m = math.dist(ecef, old_ecef)
+        if old_id == station_id and moved_m <= 0.0005:
+            return
+        if old_id != station_id:
+            self.station.descriptors = None
+        self.station_changed = {"utc": _utc(self._wall()), "clock": now,
+                                "from_id": old_id, "to_id": station_id,
+                                "moved_m": round(moved_m, 4)}
+        LOG.warning("%s: station changed: ID %s to %s, %.3f km from the last 1005; "
+                    "rtkrcv restarts for a new session", self.label, old_id, station_id,
+                    moved_m / 1000)
+
+    def wrong_station(self):
+        """"wrong station (got N, expected M)" when `expect_station` is set and the
+        latest 1005/1006 has another station ID, else ""."""
+        expect = self.settings.expect_station
+        position = self.station.position
+        if expect is None or self.problem or position is None:
+            return ""
+        got = position["station_id"]
+        return "" if got == expect else f"wrong station (got {got}, expected {expect})"
+
+    def _note_expected(self, station_id):
+        """Log a station other than the expected one once per change, and its return."""
+        wrong = self.wrong_station()
+        if wrong and station_id != self._wrong_logged:
+            self._wrong_logged = station_id
+            LOG.warning("%s: %s (%s_expect_station)", self.label, wrong, self.prefix)
+        elif not wrong and self._wrong_logged is not None:
+            self._wrong_logged = None
+            LOG.info("%s: the expected station %s again", self.label,
+                     self.settings.expect_station)
 
     def _check_base(self, now):
         """Keep the offsets' reference, our 1005, current; a changed 1005 (a new fixed
@@ -738,7 +885,7 @@ class ReferenceCheck:
     def no_expected(self):
         """Why there is no expected offset, or ""."""
         if not self._station_frame:
-            return STATION_FRAME_UNKNOWN
+            return station_frame_unknown(self.prefix)
         if not self._our_frame:
             return OUR_FRAME_UNKNOWN
         if self._base_ecef is None:
@@ -788,7 +935,7 @@ class ReferenceCheck:
                 f"our frame {self._our_frame or 'unknown'} (base_frame) epoch {self.epoch():.2f} "
                 f"({'base_epoch' if self._our_epoch is not None else 'today'}), "
                 f"station frame {self._station_frame or 'unknown'} "
-                f"({'from reference_frame' if self._station_frame else 'set reference_frame'}; "
+                f"({'from' if self._station_frame else 'set'} {self.prefix}_frame; "
                 f"stream DF021 {'unknown' if df021 is None else df021}), "
                 f"expected offset E N U "
                 f"{'none' if expected is None else ' '.join(f'{v:+.3f}' for v in expected) + ' m'} "
@@ -807,13 +954,19 @@ class ReferenceCheck:
         last_fix_age = None if self.stats.last_fix is None else now - self.stats.last_fix
         session_age = None if self._session_clock is None else now - self._session_clock
         colour, why = verdict(residual, last_fix_age, session_age, self.no_expected())
+        wrong = self.wrong_station()
+        if wrong:
+            colour, why = None, f"{wrong}: no verdict"
         epochs = self.stats.epochs
         baseline = self.baseline_m()
         started = self.stats.started_wall
         next_reset = self.seconds_to_reset()
         show_output = state not in ("off", "not configured", "fixed", "float", "single")
         client = self.client.snapshot()
+        position = self.station.position
+        changed = self.station_changed
         return {
+            "option": self.prefix,
             "enabled": self.settings.enabled,
             "state": state,
             "reason": self.problem
@@ -828,7 +981,16 @@ class ReferenceCheck:
             "user_set": bool(self.settings.user),
             "password_set": bool(self.settings.password),
             "station_frame": self._station_frame or None,
-            "station_frame_source": "reference_frame" if self._station_frame else None,
+            "station_frame_source": f"{self.prefix}_frame" if self._station_frame else None,
+            "station_id": None if position is None else position["station_id"],
+            "expect_station": self.settings.expect_station,
+            "station_mismatch": wrong or None,
+            "station_changed": None if changed is None else {
+                key: changed[key] for key in ("utc", "from_id", "to_id", "moved_m")}
+            | {"age_s": round(now - changed["clock"], 1)},
+            "send_gga": bool(self.settings.send_gga),
+            "gga_source": None if not self.settings.send_gga else
+            f"{self.prefix}_gga_position" if self._gga_latlon is not None else "our 1005",
             "station_df021": self.station_df021(),
             "base_frame": self._our_frame or None,
             "epoch": round(self.epoch(), 2),
@@ -875,3 +1037,103 @@ class ReferenceCheck:
                 "feed", "solutions", "ephemerides", "error")},
             "output": self.runner.output.snapshot() if show_output else [],
         }
+
+
+def compare_verdict(difference):
+    """("good" | "warn" | "bad", why) for reference 2 minus reference 1 (E, N, U metres)
+    when both are in the same declared frame: green within 3 cm horizontal and 6 cm up,
+    amber within 10 cm, red beyond."""
+    horizontal, up = math.hypot(difference[0], difference[1]), abs(difference[2])
+    if horizontal <= COMPARE_GOOD_HORIZONTAL_M and up <= COMPARE_GOOD_UP_M:
+        return "good", (f"within {COMPARE_GOOD_HORIZONTAL_M * 100:.0f} cm horizontal and "
+                        f"{COMPARE_GOOD_UP_M * 100:.0f} cm up")
+    if horizontal <= COMPARE_WARN_M and up <= COMPARE_WARN_M:
+        return "warn", f"within {COMPARE_WARN_M * 100:.0f} cm"
+    return "bad", f"more than {COMPARE_WARN_M * 100:.0f} cm apart"
+
+
+def _session_station(check):
+    """The station ID the check's session is relative to, else its latest one, or None."""
+    if check._cors_id is not None:
+        return check._cors_id
+    position = check.station.position
+    return None if position is None else position["station_id"]
+
+
+def compare(first, second):
+    """The "Reference comparison" card: the two checks' session means of the fixed
+    epochs (each the station's frame minus ours, at our antenna) and the second minus
+    the first, which our coordinate cancels out of, with both station IDs. Shown only
+    when both have a session mean, from the same 1005 of ours. A colour only when both
+    stations' frames are declared and the same (otherwise the raw difference and why
+    there is no residual: the frames are never guessed, and no transformation is
+    applied here), and only while it is current: both NTRIP clients streaming, each
+    check's last fix at most COMPARE_FRESH_S old, and each check's rtkrcv running with
+    no restart pending (else `stale`, with each side's last-fix age), and neither check
+    on a wrong station (`wrong_station`)."""
+    result = {"shown": False, "reason": None, "first": first.prefix, "second": second.prefix,
+              "first_station_id": _session_station(first),
+              "second_station_id": _session_station(second),
+              "first_minus_ours": None, "second_minus_ours": None,
+              "second_minus_first": None, "first_frame": None, "second_frame": None,
+              "first_fixed": None, "second_fixed": None, "residual": False,
+              "first_last_fix_age_s": None, "second_last_fix_age_s": None,
+              "stale": False, "stale_reason": None, "station_mismatch": None,
+              "verdict": None, "verdict_reason": None}
+    for check in (first, second):
+        if not check.settings.enabled or check.problem:
+            result["reason"] = f"{check.prefix} is off or not configured"
+            return result
+    means = [check.stats.session_mean() for check in (first, second)]
+    if any(mean is None for mean in means):
+        missing = [c.prefix for c, m in zip((first, second), means) if m is None]
+        result["reason"] = f"no session mean of fixed epochs yet: {', '.join(missing)}"
+        return result
+    bases = [check._base_ecef for check in (first, second)]
+    if None in bases or math.dist(*bases) > SAME_BASE_M:
+        result["reason"] = "the two sessions are not from the same 1005 position of ours"
+        return result
+    one, two = means[0][0], means[1][0]
+    difference = [b - a for a, b in zip(one, two)]
+    frames = [check._station_frame or None for check in (first, second)]
+    result.update(shown=True, first_minus_ours=[round(v, 4) for v in one],
+                  second_minus_ours=[round(v, 4) for v in two],
+                  second_minus_first=[round(v, 4) for v in difference],
+                  first_frame=frames[0], second_frame=frames[1],
+                  first_fixed=first.stats.fixed_count, second_fixed=second.stats.fixed_count)
+    now = first._clock()
+    ages = [None if c.stats.last_fix is None else now - c.stats.last_fix
+            for c in (first, second)]
+    result.update(first_last_fix_age_s=None if ages[0] is None else round(ages[0], 1),
+                  second_last_fix_age_s=None if ages[1] is None else round(ages[1], 1))
+    stale = []
+    for check, age in zip((first, second), ages):
+        if check.client.died or check.client.state != "connected":
+            stale.append(f"{check.prefix} is not streaming ({check.client.state})")
+        elif check.runner.restart_pending() or check.runner.running_s() is None:
+            # A station switch (or a gap, or the daily reset) asked for a new session:
+            # until rtkrcv has restarted, the session mean is the old run's, while
+            # the station ID may already be the new one.
+            stale.append(f"{check.prefix}'s rtkrcv is restarting (a new session)")
+        elif age is None or age > COMPARE_FRESH_S:
+            stale.append(f"{check.prefix} has no fix in the last "
+                         f"{COMPARE_FRESH_S / 60:.0f} min")
+    wrong = [f"{c.prefix}: {c.wrong_station()}" for c in (first, second) if c.wrong_station()]
+    unknown = [c.prefix for c, f in zip((first, second), frames) if not f]
+    if wrong:
+        result.update(station_mismatch="; ".join(wrong),
+                      verdict_reason="no verdict: " + "; ".join(wrong))
+    elif stale:
+        result.update(stale=True, stale_reason="; ".join(stale),
+                      verdict_reason="stale, no verdict: " + "; ".join(stale))
+    elif unknown:
+        result["verdict_reason"] = ("no residual: station frame unknown: set "
+                                    + ", ".join(f"{p}_frame" for p in unknown))
+    elif frames[0] != frames[1]:
+        result["verdict_reason"] = (f"no residual: the frames differ ({frames[0]}, "
+                                    f"{frames[1]}), so the difference includes the "
+                                    "transformation between them")
+    else:
+        colour, why = compare_verdict(difference)
+        result.update(residual=True, verdict=colour, verdict_reason=f"{why} ({frames[0]})")
+    return result

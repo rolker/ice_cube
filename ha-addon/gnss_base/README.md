@@ -22,6 +22,9 @@ of its USB serial bridge).
 - **Stage 6 (0.6.0):** checks the base antenna's position continuously against a CORS
   station by RTK (a second `rtkrcv`, static, our receiver as the rover and the
   station's NTRIP stream as the base), centimetre level, as an offset from our RTCM 1005
+- **0.7.0:** a second reference check against another station, a GGA uplink for
+  "nearest station" mountpoints, each caster's mountpoint list on its card, and a
+  comparison of the two stations
 
 ## Status page
 
@@ -572,6 +575,20 @@ password):
   with a message naming the option, like `base_frame`.
 - `reference_reset_utc`: the time of day (UTC, `HH:MM`) when rtkrcv is restarted so
   each day is one static solution; `00:00` by default; empty means never.
+- `reference_send_gga`: false by default. True turns on the **GGA uplink** (below) for
+  this caster, for a "nearest station" mountpoint that is marked `nmea` 1.
+- `reference_gga_position`: the position the GGA carries. Empty (the default) means our
+  base's own RTCM 1005 position; `lat,lon` in decimal degrees (for example
+  `12.5,-45.25`, a made-up value) sends that position instead, to steer a
+  nearest-station mountpoint to the station nearest it. Anything else stops this check
+  at startup with a message naming the option.
+- `reference_expect_station`: optional, unset by default (any station). A station ID,
+  0 to 4095, that the station's RTCM 1005/1006 must carry. Another ID shows as **wrong
+  station (got N, expected M)** on the card (amber, no residual colour) and on the
+  comparison card (no colour), and is logged once per change; meant for a
+  nearest-station mountpoint, to notice when it switches to another station. A value
+  outside 0 to 4095 stops this check at startup with a message naming the option.
+- A second check, `reference2_*`: see "Second reference (0.7.0)" below.
 - The masks are the measured position's (`measured_elevation_mask`, `measured_snr_mask`,
   applied to our side; the station's observations are not masked by SNR).
 
@@ -580,18 +597,29 @@ Each attempt: TCP connect (15 s); if the mountpoint has not been checked yet, or
 last attempt failed, `GET /` for the caster's **sourcetable** first (advisory: a caster that gives none, or
 does not finish it in time, is asked for the stream anyway), to see what the
 mountpoint's `STR` record says (format, constellations, whether it wants a GGA
-position: a network or VRS stream, `nmea` 1 or `solution` 1, or a format that is not
-RTCM 3, is refused, since the app sends no position and a single RTCM 3 station is what
-the check needs; a mountpoint missing from the table is still asked for, because
-casters hide private mountpoints from it, and the caster's answer decides); then
+position: a network or VRS stream, `solution` 1, or a format that is not RTCM 3, is
+refused, since a single RTCM 3 station is what the check needs; `nmea` 1 is refused too
+unless `reference_send_gga` is on, see GGA uplink below; a mountpoint missing from the
+table is still asked for, because casters hide private mountpoints from it, and the
+caster's answer decides). The sourcetable request carries the login when a user is set
+(the same headers as the stream request; some casters, Trimble Pivot among them, list
+more mountpoints to a logged-in client), and is made again without it if that gets no
+table. The table is read again after a failed attempt and once a day, not on every
+reconnect. After a **refused login** on the stream request the next table is asked for
+without the login: with a one-connection login that the caster frees with a delay, a
+logged-in `GET /` right before the stream request could keep the login busy and get it
+refused again. The card's mountpoint list then keeps the last logged-in table (marked
+"login (kept ...)"), and the mountpoint is looked for in both; the next table after a
+stream that was not refused is asked for with the login again. Then
 `GET /<mountpoint>` with the login (HTTP Basic, `Ntrip-Version: Ntrip/2.0`, HTTP/1.0, so a
 version 2 caster answers plainly; chunked replies are decoded anyway). The caster's
 status line decides: `ICY 200 OK` or `HTTP/1.x 200` streams; `401` (or any line saying
 "Unauthorized" or "Bad Password") is **login refused**; `404`, or a sourcetable in
 reply (version 1 casters), is **mountpoint not found** (the reason says whether the
 table listed it); anything else is shown as it came. The stream is read until the caster closes it or no
-byte arrives for 30 s (**no data**). Exactly one connection at a time (a CORS login
-usually allows one, and a second attempt would get the first refused): attempts run one
+byte arrives for 30 s (**no data**). Exactly one connection at a time per login (a CORS login
+usually allows one, and a second attempt would get the first refused; a client with no
+user has no login to protect, so this guard does not apply to it): attempts run one
 after the other, the socket is closed before the next is scheduled, and the waits are
 10 s doubling to 10 min, reset after a connection that streamed for a minute; 5 min
 after a refused login or a missing or unsuitable mountpoint, so a wrong password is not
@@ -610,10 +638,24 @@ and shown as the reason rather than stopping the client. The password is used in
   solution yet), *no corrections* (the station's stream carries no observations, or
   stopped for 30 s), *fixed*, *float*, *single* (corrections arrive but are not used
   yet, usually the first seconds), *stale* (no solution for 30 s while corrections
-  arrive), *restarting*, *not available*. The caster connection line shows how long it
+  arrive), *restarting*, *not available*; *waiting for a position for the GGA* (amber)
+  when the GGA uplink is on and our 1005 has not arrived yet (the client looks again
+  every 10 s and does not connect before). The caster connection line shows how long it
   has been up, the rate, the bytes and the last byte's age; the sourcetable entry line
-  the mountpoint's STR fields; the station line what its RTCM 1033 says (receiver and
-  antenna).
+  the mountpoint's STR fields; the station line its station ID (from 1005/1006; with `*_expect_station` set, whether it is the expected one) and
+  what its RTCM 1033 says (receiver and antenna); with the uplink on, the GGA line how
+  many GGA were sent and what position they carry (our 1005, or the option's name,
+  not the coordinate).
+- **Station changed**: the station ID or position changed (a nearest-station mountpoint
+  picked another station, or the station was re-coordinated): old and new ID, the
+  distance between the two 1005 positions and when. rtkrcv restarts for a new session,
+  the old station's 1033 descriptors are dropped, the headline says "station changed"
+  for an hour, and the add-on log has one line for it.
+- **Caster mountpoints (N)**, collapsible, under the card: every `STR` record of the
+  caster's sourcetable (up to 500): mountpoint, identifier, format, constellations,
+  `nmea` flag, solution (single or network) and whether the app would take it with the
+  current `send_gga` setting; the configured one is highlighted. The caster's `CAS`
+  and `NET` lines follow, as sent. Use it to find a station's own mountpoint.
 - Baseline length, from the station's 1005/1006 and our 1005. Corrections age.
 - The last solution: satellites, quality, AR ratio, differential age; its offset E/N/U
   from our 1005.
@@ -635,6 +677,8 @@ and shown as the reason rather than stopping the client. The password is used in
 - rtkrcv's CPU and memory, restarts, and its last output lines when something is wrong,
   as on the measured card. RTK with ambiguity resolution costs more than single point;
   check the CPU figure on your device after a day before leaving both instances on.
+  With the second reference check there are two RTK instances besides the measured
+  one: check both cards' CPU figures (and the device's load) after a day.
 
 **Sessions.** Static mode accumulates one filter for as long as rtkrcv runs, so each run
 is one solution: it converges over minutes (the spike fixed at 25 km in 2 minutes and held
@@ -739,7 +783,120 @@ against someone tampering with that network's stream.
 
 Solutions are logged to `<log_dir>/reference/YYYY-MM-DD.llh` (see Logs).
 
+### Second reference (0.7.0)
+
+A second check runs beside the first, against another station, the same way: its own
+NTRIP client, its own rtkrcv (RTK static, the same settings), its own card ("Reference
+check 2", shown only while it is on), its own session, daily reset and gap restart,
+work folder `<data_dir>/reference2` and logs `<log_dir>/reference2/` (same names as
+the first's). Its options are flat and spelt like the first's:
+
+- `reference2_enabled` (false), `reference2_host`, `reference2_port` (2101),
+  `reference2_mountpoint`, `reference2_user`, `reference2_password` (a password field),
+  `reference2_frame` (the same drop-down; unset means unknown), `reference2_reset_utc`
+  (`00:00`), `reference2_send_gga` (false), `reference2_gga_position` (empty: our 1005),
+  `reference2_expect_station` (unset: any station).
+- The masks, `base_frame` and `base_epoch` are shared with the first check.
+- Every message names the option it is about (`reference2_frame`, ...). A bad value
+  stops that check only.
+- The two checks may not share a caster and user: a CORS login usually allows one
+  connection, so the second would be refused while the first streams. With the same
+  host, port and user on both, the second says so and does not start. Two logins on
+  one caster, or two casters, run side by side (the one-connection rule is per login).
+
+The first check's options, card, logs and log lines are as before, so a 0.6
+configuration runs unchanged with the second check off.
+
+### GGA uplink (0.7.0)
+
+Some casters choose the station by the client's position: Trimble Pivot's
+`SingleStation_Nearest_RTCM_MSM`, for example, is marked `nmea` 1 in the sourcetable and
+streams the single station nearest the GGA it receives. With `reference_send_gga` (or
+`reference2_send_gga`) on, the app sends an NMEA GGA sentence with the stream request
+twice over: as the NTRIP 2 header `Ntrip-GGA: $GPGGA,...*hh` (the whole sentence, for
+a caster that reads the request as strict HTTP and picks the station when the request
+arrives), and as raw bytes right after the request (NTRIP 1 style, as casters expect
+for `nmea` 1 mountpoints); then raw every 10 s while it is connected: `$GPGGA`, quality 1 (the usual
+value for a nearest-station or VRS choice), the UTC time from the system clock, a
+nominal 12 satellites and HDOP 1.0, and a correct checksum. The `nmea` 1 refusal is
+lifted for that check only; a network solution (`solution` 1) and a format that is not
+RTCM 3 are still refused, so a VRS stream is not taken for a station. Which station
+the caster picked is what its 1005/1006 (station ID, position, baseline) and 1033 say
+on the card; a switch is a "station changed" (above).
+
+The position: `*_gga_position` empty means our base's own RTCM 1005 position (the
+receiver's current one; the last one the check saw when none is current), with its ellipsoidal height in the
+altitude field and a geoid separation of 0; until it has arrived the client waits and
+does not connect. `lat,lon` sends that position instead, height 0, to make the caster
+pick the station nearest it: take the station's published position (its CORS datasheet
+or its network's station list), to a few hundredths of a degree.
+
+**Privacy.** The GGA goes only to that check's caster, on its own connection, and
+carries only our base's position or the configured one; with an empty
+`*_gga_position` that is the base's position to a few centimetres, so set one if you do
+not want the caster to have it. The GGA, and the request with its `Ntrip-GGA` header,
+are never written to the add-on log, the page or `api/status`; a GGA sentence in a
+caster's reply is replaced by `GGA ***` before the reply is shown or logged (the log says "GGA uplink on" and counts the GGA sent when a connection
+ends; the card shows the count and the source, not the coordinate). Like the login, it
+travels in clear over plain TCP.
+
+### Reference comparison (0.7.0)
+
+When both checks have a session mean of fixed epochs, from the same 1005 of ours, a
+"Reference comparison" card shows, in centimetres east, north and up at our antenna:
+reference 1 minus ours and reference 2 minus ours (each with its station's frame), and
+reference 2 minus reference 1. The last does not depend on our coordinate at all: it
+compares the two stations (their coordinates, frames and the two RTK solutions). It is
+judged only when both stations' frames are declared and the same: green within 3 cm
+horizontal and 6 cm up, amber within 10 cm, red beyond. Otherwise the card shows the
+raw difference and why there is no residual (a frame unknown, or two different frames,
+whose transformation the difference then contains); the app does not guess a frame or
+transform between the two stations' frames here. Each side also shows its station ID
+(the one its session is relative to) and how long ago its last fix was.
+
+It is judged only while it is current: both checks' NTRIP clients streaming, each
+check's rtkrcv running with no restart pending, and each check with a fixed epoch in
+the last 30 min. Otherwise the headline is **Stale** with why (for example "reference2
+is not streaming (login refused)", "reference2's rtkrcv is restarting (a new
+session)", as for the few seconds after a "nearest station" mountpoint switched, when
+the session mean is still the old station's, or "reference has no fix in the last 30
+min"), the numbers stay with each side's last-fix age, and there is
+no colour, so a session mean kept after a check dropped does not read as a current
+"Stations agree". With `*_expect_station` set and the other station received on either
+side, the headline is **Wrong station** ("reference2: wrong station (got N, expected
+M)"), also without colour.
+
 ## Changes
+
+**0.7.0**
+
+- A second reference check (`reference2_*` options, "Reference check 2" card,
+  `<log_dir>/reference2/` logs, `<data_dir>/reference2` work folder), the same code as
+  the first (`ReferenceCheck` once per reference). The first check is unchanged. Two
+  checks with the same caster and user are refused (one connection per login); the
+  NTRIP client's one-connection guard is now per login, and does not apply to a
+  client with no user (no login, so no per-login limit).
+- GGA uplink for "nearest station" (`nmea` 1) mountpoints: `reference_send_gga`,
+  `reference_gga_position` and their `reference2_` twins, off by default. The GGA goes
+  in the NTRIP 2 `Ntrip-GGA` request header and as raw bytes after the request, then
+  every 10 s; its position is our current 1005 (or the last one seen), or the option's.
+  The GGA itself is never logged, and one echoed in a caster's reply is scrubbed.
+- `reference_expect_station` and `reference2_expect_station` (optional, 0 to 4095):
+  another station ID shows as "wrong station (got N, expected M)" on the check's card
+  and the comparison, without colour, logged once per change.
+- Station identity on the card: the station ID from 1005/1006 beside the 1033
+  descriptors. A changed station ID now restarts rtkrcv too (a changed position did
+  already); either is shown as "station changed" and logged.
+- Each card lists the caster's mountpoints (collapsible, with whether each would be
+  accepted); the sourcetable is now asked for with the login, and again without it if
+  that fails, and read again after a failed attempt or a day. After a refused login on
+  the stream request it is asked for without the login, keeping the logged-in list.
+- "Reference comparison" card: both references minus ours and reference 2 minus
+  reference 1, with both station IDs and last-fix ages, judged only in the same
+  declared frame (green 3 cm horizontal / 6 cm up, amber 10 cm) and only while both
+  checks stream, neither check's rtkrcv is restarting, and each has a fix in the last
+  30 min (otherwise "Stale", no colour).
+- Check the CPU after a day with both reference checks on.
 
 **0.6.3**
 
@@ -981,6 +1138,15 @@ start manually for now.
 | reference_password | empty | Its password (used in the request's Authorization header only; not in rtkrcv's config) |
 | reference_frame | empty | The station's frame: NAD83(2011), ITRF2020, ITRF2014 or ITRF2008. Empty: unknown, no expected offset or residual |
 | reference_reset_utc | 00:00 | Daily restart of the reference rtkrcv (UTC, HH:MM); empty: never |
+| reference_send_gga | false | Send a GGA to the caster (for an `nmea` 1 nearest-station mountpoint), in the `Ntrip-GGA` header and right after the request, then every 10 s |
+| reference_gga_position | empty | The GGA's position, `lat,lon` in decimal degrees. Empty: our base's 1005 position |
+| reference_expect_station | unset | The station ID (0 to 4095) the stream's 1005/1006 must carry; another shows as "wrong station". Unset: any |
+| reference2_enabled | false | Run the second reference check |
+| reference2_host, reference2_port, reference2_mountpoint, reference2_user, reference2_password | empty, 2101, empty, empty, empty | The second check's caster and login, as for the first |
+| reference2_frame | empty | The second station's frame (same list). Empty: unknown |
+| reference2_reset_utc | 00:00 | The second rtkrcv's daily restart |
+| reference2_send_gga, reference2_gga_position | false, empty | The second check's GGA uplink |
+| reference2_expect_station | unset | The second station's expected ID, as for the first |
 | base_frame | ITRF2020 | The frame of our own base position: in the sourcetable and the expected offset. Empty: not declared |
 | base_epoch | empty | When the base position was observed (the PPP date), `YYYY-MM-DD` or a decimal year: the epoch announced and used for the expected offset. Empty: today's date |
 
@@ -992,7 +1158,10 @@ Assistant) and rtkrcv its working folder `rtkrcv/`. `--no-measured`,
 `--measured-elevation-mask` and `--measured-snr-mask` override the measured options;
 `--reference`/`--no-reference`, `--reference-host`, `--reference-port`,
 `--reference-mountpoint`, `--reference-user`, `--reference-frame`, `--base-frame`,
-`--base-epoch` and `--reference-reset-utc` the reference ones (the password is an option only); `--rtkrcv
+`--base-epoch` and `--reference-reset-utc` the reference ones (the password is an option only);
+`--reference-send-gga`/`--no-reference-send-gga` and `--reference-gga-position` the GGA
+uplink; the second check's are spelt the same with `reference2` (`--reference2`,
+`--no-reference2`, `--reference2-host`, ..., `--reference2-gga-position`); `--rtkrcv
 PATH` runs another rtkrcv build for both instances (default: `rtkrcv-ex` on the path, the
 RTKLIB-EX build in the image).
 
@@ -1021,6 +1190,8 @@ line is written when any of them changes (a new session's rtkrcv version, a new 
 the epoch's second decimal). The lines are rtkrcv's: quality 1 is fixed,
 2 float, 5 single; the last two fields are the age of the corrections and the AR ratio.
 It holds absolute positions in the station's frame: private, like the others.
+The second check writes the same files under `<log_dir>/reference2/` (and
+`reference2/raw/`), with `reference2_frame` named in its header.
 
 `<log_dir>/reference/raw/YYYY-MM-DD.rtcm3` is the station's stream as the app's NTRIP
 client received it
@@ -1059,11 +1230,21 @@ and the inverse.
 localhost (`tests/fake_caster.py`): `ICY`, HTTP and chunked streams, 401, 404 and a
 sourcetable in reply, the sourcetable check and unsuitable mountpoints, no data, one
 connection at a time, the backoff schedule, and that the password appears only in the
-`Authorization` header.
+`Authorization` header; and (0.7.0) the GGA sentence (format, checksum, time), the
+acceptance rules with and without the uplink, a sourcetable of several records with
+the "usable here" column, the logged-in sourcetable and its fallback and refresh, the
+uplink on the wire (the `Ntrip-GGA` header and the raw sentence), "no position", two
+logins at once, two clients with no user at once, the anonymous sourcetable after a refused login, and that neither the
+GGA (sent or echoed by a caster) nor the password reaches the log.
 
 `tests.test_reference` covers the reference check: the config's option spellings
 (`tests/reference_golden.conf`, with no credential in it), the option checks, the
 states, the session statistics and the residual rule, the daily reset, planned
 restarts, the station decoder, the raw log, and the whole app with both instances and
-the fake caster. The smoke test with a real binary points the client at a closed local
+the fake caster; and (0.7.0) the `reference2_*`, `*_gga_position` and
+`*_expect_station` option checks and the login clash, station changes, a wrong station,
+the GGA position from the current 1005, the comparison's numbers, colours, station IDs
+and stale rule (also while a check's rtkrcv restarts after a station switch), two checks
+running side by side (one refused, one streaming with a GGA), and the whole app with
+both. The smoke test with a real binary points the client at a closed local
 port: no CORS is ever contacted by the tests.

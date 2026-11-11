@@ -15,9 +15,10 @@ from unittest import mock
 from gnss_base import ntripclient
 from gnss_base.frames import crc24q
 from gnss_base.hub import Secret
-from gnss_base.ntripclient import (FIRST_RETRY_S, MAX_RETRY_S, REFUSED_WAIT_S, STABLE_S,
-                                   ChunkDecoder, NtripClient, classify_reply,
-                                   parse_sourcetable, unsuitable)
+from gnss_base.ntripclient import (FIRST_RETRY_S, MAX_RETRY_S, NO_POSITION_WAIT_S,
+                                   REFUSED_WAIT_S, STABLE_S, TABLE_REFRESH_S, ChunkDecoder,
+                                   NtripClient, build_gga, classify_reply, nmea_checksum,
+                                   parse_other_records, parse_sourcetable, unsuitable)
 from gnss_base.reference import ReferenceSettings
 from tests.fake_caster import FakeCaster, str_line
 
@@ -154,8 +155,11 @@ class Streaming(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b"".join(self.got)[:len(rtcm(1074, 40))], rtcm(1074, 40))
         self.assertEqual([path for path, _ in self.caster.requests], ["/", "/MP_1"])
         table, stream = (headers for _, headers in self.caster.requests)
-        self.assertNotIn("authorization", table, "no login for the sourcetable")
         token = base64.b64encode(f"user:{SENTINEL}".encode()).decode()
+        # 0.7.0: the sourcetable is asked for with the login too, the same headers as
+        # the stream request (a caster may list more mountpoints to a logged-in user).
+        self.assertEqual(table, stream)
+        self.assertEqual(snap["sourcetable_login"], "login")
         self.assertEqual(stream["authorization"], f"Basic {token}")
         self.assertEqual((stream["ntrip-version"], stream["user-agent"]),
                          ("Ntrip/2.0", "NTRIP gnss_base/t"))
@@ -513,6 +517,329 @@ class Streaming(unittest.IsolatedAsyncioTestCase):
         client._day = "yesterday"
         client._roll_day()
         self.assertEqual(client.attempts_today, 0)
+
+
+class Gga(unittest.TestCase):
+    """0.7.0: the GGA uplink's sentence."""
+
+    @staticmethod
+    def checksum(sentence):
+        body = sentence[1:sentence.index("*")]
+        value = 0
+        for char in body:
+            value ^= ord(char)
+        return f"{value:02X}"
+
+    def test_format_checksum_and_time(self):
+        wall = 1_798_761_600.0 + 3723.456          # 2027-01-01 01:02:03.456 UTC
+        sentence = build_gga(0.5, -0.25, 10.0, wall).decode("ascii")
+        self.assertTrue(sentence.endswith("\r\n"))
+        sentence = sentence[:-2]
+        body, _, checksum = sentence.partition("*")
+        self.assertEqual(body, "$GPGGA,010203.45,0030.00000,N,00015.00000,W,1,12,1.0,"
+                               "10.000,M,0.000,M,,")
+        self.assertEqual(checksum, self.checksum(sentence))
+        self.assertEqual(checksum, nmea_checksum(body[1:]))
+        fields = body.split(",")
+        self.assertEqual(len(fields), 15, "the 14 GGA fields after the talker")
+        self.assertEqual((fields[6], fields[7], fields[8]), ("1", "12", "1.0"), "quality 1")
+        # Southern and eastern hemispheres, three-digit longitudes, quality 4.
+        other = build_gga(-12.5, 123.75, -3.2, 1_798_761_600.0, quality=4).decode()
+        self.assertIn(",000000.00,1230.00000,S,12345.00000,E,4,", other)
+        self.assertEqual(other[other.index("*") + 1:-2], self.checksum(other[:-2]))
+        # A minute that rounds up to 60 carries into the degrees.
+        carry = build_gga(1.9999999999, 0.0, 0.0, 0.0).decode()
+        self.assertIn(",0200.00000,N,", carry)
+        self.assertIn(",235959.99,", build_gga(0.0, 0.0, 0.0, 86399.999).decode())
+        for bad in ((91.0, 0.0), (0.0, 181.0), (float("nan"), 0.0)):
+            with self.assertRaises(ValueError):
+                build_gga(*bad, 0.0, 0.0)
+
+
+class Acceptance(unittest.TestCase):
+    """0.7.0: with the GGA uplink on, an nmea 1 mountpoint (a "nearest station" one) is
+    accepted; a network solution and a non-RTCM 3 format never are."""
+
+    def test_rules_with_and_without_send_gga(self):
+        cases = (({"nmea": "1", "solution": "0"}, False, True),
+                 ({"nmea": "1", "solution": "1"}, False, False),
+                 ({"nmea": "0", "solution": "1"}, False, False),
+                 ({"nmea": "1", "format": "RTCM 2.3"}, False, False),
+                 ({"nmea": "0", "solution": "0", "format": "RTCM 3.2"}, True, True),
+                 ({"format": "CMR"}, False, False))
+        for record, without, with_gga in cases:
+            self.assertEqual(unsuitable(record) == "", without, record)
+            self.assertEqual(unsuitable(record, send_gga=True) == "", with_gga, record)
+        self.assertIn("GGA uplink", unsuitable({"nmea": "1"}))
+
+    def test_multi_record_sourcetable_and_the_usable_column(self):
+        text = ("SOURCETABLE 200 OK\r\n\r\n"
+                "CAS;caster.example;2101;Example;Operator;0;USA;0.00;0.00;http://x\r\n"
+                "NET;EXNET;Operator;B;N;http://x;http://y;mail@example;\r\n"
+                + str_line("SingleStation_Nearest_RTCM_MSM", nmea="1", solution="0")
+                + str_line("Network_VRS", nmea="1", solution="1")
+                + str_line("STATION_A", identifier="Town A")
+                + str_line("OLD_RTCM2", fmt="RTCM 2.3")
+                + "ENDSOURCETABLE\r\n")
+        records = parse_sourcetable(text)
+        self.assertEqual([r["mountpoint"] for r in records],
+                         ["SingleStation_Nearest_RTCM_MSM", "Network_VRS", "STATION_A",
+                          "OLD_RTCM2"])
+        self.assertEqual(records[2]["identifier"], "Town A")
+        others = parse_other_records(text)
+        self.assertEqual([line[:4] for line in others], ["CAS;", "NET;"])
+        self.assertEqual(parse_other_records("CAS;" + "x" * 500)[0], "CAS;" + "x" * 196)
+        for send_gga, usable in ((False, [False, False, True, False]),
+                                 (True, [True, False, True, False])):
+            client = NtripClient(settings(1, mountpoint="STATION_A", send_gga=send_gga),
+                                 lambda data: None)
+            client.records = records
+            snap = client.snapshot()
+            self.assertEqual([m["accepted"] for m in snap["mountpoints"]], usable, send_gga)
+            self.assertEqual([m["configured"] for m in snap["mountpoints"]],
+                             [False, False, True, False])
+            self.assertEqual(set(snap["mountpoints"][0]), {
+                "mountpoint", "identifier", "format", "nav_system", "nmea", "solution",
+                "accepted", "configured"})
+
+
+class Uplink(unittest.IsolatedAsyncioTestCase):
+    """0.7.0: the GGA goes right after the request and then every interval, only with
+    send_gga; it never reaches the log; no position means no attempt."""
+
+    async def asyncSetUp(self):
+        self.caster = FakeCaster(data=rtcm(1074, 40), period=0.02,
+                                 mountpoints={"NEAREST": {"nmea": "1"}})
+        self.port = await self.caster.start()
+        self.addAsyncCleanup(self.caster.stop)
+        self.got = []
+        self.clock = Clock()
+
+    def client(self, position=(0.5, -0.25, 3.0), **fields):
+        self.position = position
+        made = NtripClient(settings(self.port, mountpoint="NEAREST", **fields), self.got.append,
+                           clock=self.clock, sleep=self.clock.sleep, wall=lambda: 1_798_761_600.0,
+                           gga_position=lambda: self.position, gga_interval_s=0.05,
+                           label="reference2")
+        self.addAsyncCleanup(made.stop)
+        return made
+
+    async def test_gga_after_the_request_and_then_every_interval(self):
+        client = self.client(send_gga=True, prefix="reference2")
+        with self.assertLogs("gnss_base", "INFO") as logs:
+            client.start()
+            await until(lambda: len(self.caster.uplink) >= 4, what=client.snapshot())
+            self.clock.hold = True
+            await self.caster.drop_clients()
+            await until(lambda: client.state == "backoff", what=client.snapshot())
+        expected = build_gga(0.5, -0.25, 3.0, 1_798_761_600.0)
+        self.assertEqual(self.caster.uplink[0], expected, "the first, with the request")
+        # NTRIP 2: the same sentence in the Ntrip-GGA header, `$` to checksum, no CR LF.
+        stream_headers = [h for path, h in self.caster.requests if path == "/NEAREST"]
+        self.assertEqual(stream_headers[0]["ntrip-gga"], expected.decode().rstrip("\r\n"))
+        self.assertTrue(stream_headers[0]["ntrip-gga"].startswith("$GPGGA,"))
+        self.assertNotIn("ntrip-gga", [h for path, h in self.caster.requests
+                                       if path == "/"][0], "not on the sourcetable request")
+        self.assertTrue(all(line == expected for line in self.caster.uplink))
+        snap = client.snapshot()
+        self.assertEqual(snap["state"], "backoff")
+        self.assertGreaterEqual(snap["gga_sent"], 4)
+        self.assertTrue(snap["send_gga"])
+        self.assertEqual(snap["sourcetable"]["nmea"], "1", "accepted with the uplink on")
+        text = "\n".join(logs.output)
+        self.assertIn("NTRIP client (reference2): connected", text)
+        self.assertIn("GGA uplink on", text)
+        self.assertRegex(text, r"\(\d+ GGA sent\)")
+        self.assertNotIn("GPGGA", text, "the GGA itself is never logged")
+        self.assertNotIn("Ntrip-GGA", text, "nor the request header")
+        self.assertNotIn("0030.00000", text)
+        self.assertNotIn(SENTINEL, text)
+        self.assertNotIn("GPGGA", json.dumps(snap))
+        self.assertNotIn(SENTINEL, json.dumps(snap))
+
+    async def test_without_send_gga_nothing_is_sent_and_nmea_1_is_refused(self):
+        client = self.client()
+        client.start()
+        await until(lambda: client.state == "unsuitable mountpoint", what=client.snapshot())
+        self.assertIn("GGA uplink", client.reason)
+        self.caster.mountpoints = {"NEAREST": {"nmea": "0"}}
+        await client.stop()
+        client = self.client()
+        client.start()
+        await until(lambda: len(self.got) >= 2, what=client.snapshot())
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.caster.uplink, [], "no GGA without send_gga")
+        self.assertTrue(all("ntrip-gga" not in h for _, h in self.caster.requests),
+                        "no Ntrip-GGA header without send_gga")
+        self.assertEqual(client.snapshot()["gga_sent"], 0)
+
+    async def test_no_position_no_attempt(self):
+        client = self.client(position=None, send_gga=True)
+        self.clock.hold = True
+        with self.assertLogs("gnss_base", "INFO") as logs:
+            client.start()
+            await until(lambda: client.state == "no position", what=client.snapshot())
+        self.assertIn("reference_gga_position", client.reason)
+        self.assertEqual(client.retry_in_s(), NO_POSITION_WAIT_S)
+        self.assertEqual([path for path, _ in self.caster.requests], ["/"], "no stream request")
+        self.assertEqual(client.attempts_today, 0, "a wait, not an attempt on the caster")
+        self.position = (0.5, -0.25, 3.0)
+        self.clock.hold = False
+        await until(lambda: client.state == "connected", what=client.snapshot())
+        await until(lambda: self.caster.uplink)
+        self.assertEqual(sum("Waiting for a position" in line for line in logs.output), 1)
+
+    async def test_a_gga_echoed_by_the_caster_is_scrubbed(self):
+        """A caster that answers with the request in its reply (an error page, say):
+        neither the sentence nor the header reaches the log or the snapshot."""
+        sentence = build_gga(0.5, -0.25, 3.0, 1_798_761_600.0).decode().rstrip("\r\n")
+        client = self.client(send_gga=True)
+        for text in (f"HTTP/1.1 400 Bad request: Ntrip-GGA: {sentence}",
+                     f"echo {sentence[1:]} end", "x $GNGGA,1,2,3*00"):
+            scrubbed = client._scrub(text)
+            self.assertNotIn("GGA,", scrubbed, text)
+            self.assertNotIn("0030.00000", scrubbed, text)
+            self.assertIn("GGA ***", scrubbed)
+        self.assertEqual(client._scrub("ICY 200 OK"), "ICY 200 OK")
+
+    async def test_two_logins_stream_at_once(self):
+        """Per login: two checks on two logins (or casters) run side by side."""
+        first = self.client(send_gga=True)
+        second = NtripClient(settings(self.port, mountpoint="NEAREST", user="other",
+                                      send_gga=True), lambda data: None,
+                             clock=self.clock, sleep=self.clock.sleep,
+                             gga_position=lambda: (0.0, 0.0, 0.0), gga_interval_s=0.05)
+        self.addAsyncCleanup(second.stop)
+        first.start()
+        second.start()
+        await until(lambda: first.state == second.state == "connected",
+                    what=(first.snapshot(), second.snapshot()))
+        self.assertEqual(self.caster.stream_connections, 2)
+        self.assertEqual(NtripClient._open, {("127.0.0.1", self.port, "user"): 1,
+                                             ("127.0.0.1", self.port, "other"): 1})
+        await first.stop()
+        await second.stop()
+        self.assertEqual(NtripClient._open, {})
+
+    async def test_two_anonymous_clients_stream_at_once(self):
+        """No user, no login: the per-login guard does not apply, so two anonymous
+        checks on one caster both stream (login_clash allows them too)."""
+        first = self.client(send_gga=True, user="", password=Secret(""))
+        second = NtripClient(settings(self.port, mountpoint="NEAREST", user="",
+                                      password=Secret(""), send_gga=True),
+                             lambda data: None, clock=self.clock, sleep=self.clock.sleep,
+                             gga_position=lambda: (0.0, 0.0, 0.0), gga_interval_s=0.05)
+        self.addAsyncCleanup(second.stop)
+        first.start()
+        second.start()
+        await until(lambda: first.state == second.state == "connected",
+                    what=(first.snapshot(), second.snapshot()))
+        self.assertEqual(self.caster.stream_connections, 2)
+        self.assertEqual(NtripClient._open, {}, "no guard without a login")
+        self.assertEqual((first.internal_errors, second.internal_errors), (0, 0))
+        await first.stop()
+        await second.stop()
+        self.assertEqual(NtripClient._open, {})
+
+
+class SourcetableWithLogin(unittest.IsolatedAsyncioTestCase):
+    """0.7.0: the table is asked for with the login (as the stream is), again without
+    it when that gets no table, and again after a failure or a day, not on every
+    reconnect."""
+
+    async def asyncSetUp(self):
+        self.caster = FakeCaster(data=rtcm(1074, 40), period=0.02,
+                                 mountpoints={"MP_1": "icy", "OTHER": {"nmea": "1"}})
+        self.port = await self.caster.start()
+        self.addAsyncCleanup(self.caster.stop)
+        self.clock = Clock()
+
+    def client(self, **fields):
+        made = NtripClient(settings(self.port, **fields), lambda data: None,
+                           clock=self.clock, sleep=self.clock.sleep, rand=lambda: 0.0)
+        self.addAsyncCleanup(made.stop)
+        return made
+
+    async def test_fallback_without_the_login(self):
+        self.caster.root_login_reply = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"
+        client = self.client()
+        with self.assertLogs("gnss_base", "INFO") as logs:
+            client.start()
+            await until(lambda: client.state == "connected", what=client.snapshot())
+        self.assertEqual([path for path, _ in self.caster.requests], ["/", "/", "/MP_1"])
+        self.assertIn("authorization", self.caster.requests[0][1])
+        self.assertNotIn("authorization", self.caster.requests[1][1])
+        snap = client.snapshot()
+        self.assertEqual(snap["sourcetable_login"], "no login (fallback)")
+        self.assertEqual([m["mountpoint"] for m in snap["mountpoints"]], ["MP_1", "OTHER"])
+        self.assertEqual([m["accepted"] for m in snap["mountpoints"]], [True, False])
+        text = "\n".join(logs.output)
+        self.assertIn("lists 2 mountpoints: MP_1, OTHER", text)
+        self.assertNotIn(SENTINEL, text)
+        self.assertNotIn(base64.b64encode(f"user:{SENTINEL}".encode()).decode(), text)
+
+    async def test_no_user_no_login_for_the_table(self):
+        client = self.client(user="", password=Secret(""))
+        client.start()
+        await until(lambda: client.state == "connected", what=client.snapshot())
+        self.assertNotIn("authorization", self.caster.requests[0][1])
+        self.assertEqual(client.sourcetable_login, "no login")
+
+    async def test_no_login_for_the_table_after_a_refused_stream(self):
+        """S5: after a 401 on the stream request, the next table is fetched without the
+        login (a logged-in GET / could keep a one-connection login busy); the card keeps
+        the logged-in table's longer list. Once the stream is accepted, the next table
+        is asked for with the login again."""
+        self.caster.login = ("user", SENTINEL)
+        # The logged-in table lists one more (hidden) mountpoint than the anonymous one.
+        anonymous = self.caster.sourcetable()
+        self.caster.mountpoints["HIDDEN"] = "icy"
+        client = self.client()
+        with self.assertLogs("gnss_base", "INFO") as logs:
+            client.start()
+            await until(lambda: client.state == "connected", what=client.snapshot())
+            self.assertEqual(client.sourcetable_login, "login")
+            self.caster.login = ("user", "changed")       # the next stream request: 401
+            self.caster.root_reply = anonymous             # what an anonymous GET / sees
+            await self.caster.drop_clients()
+            await until(lambda: client.state == "login refused", what=client.snapshot())
+            refused_at = len(self.caster.requests)
+            self.caster.login = ("user", SENTINEL)
+            self.clock.now += REFUSED_WAIT_S
+            await until(lambda: client.connections == 2, what=client.snapshot())
+        after = self.caster.requests[refused_at:]
+        self.assertEqual([path for path, _ in after], ["/", "/MP_1"])
+        self.assertNotIn("authorization", after[0][1], "no login for the table after a 401")
+        self.assertIn("authorization", after[1][1], "the stream request has it, as always")
+        snap = client.snapshot()
+        self.assertEqual([m["mountpoint"] for m in snap["mountpoints"]],
+                         ["MP_1", "OTHER", "HIDDEN"], "the logged-in list is kept")
+        self.assertEqual(snap["sourcetable_size"], 3)
+        self.assertTrue(snap["sourcetable_login"].startswith("login (kept"))
+        self.assertTrue(snap["listed"])
+        self.assertIn("(no login (after a refused login)) lists 2 mountpoints",
+                      "\n".join(logs.output))
+        # Streamed: a later table (after a failure) is asked for with the login again.
+        self.caster.root_reply = None
+        await self.caster.stop()
+        await until(lambda: client.state == "backoff", what=client.snapshot())
+        await self.caster.start(port=self.port)
+        await until(lambda: client.connections == 3, timeout=10, what=client.snapshot())
+        tables = [h for path, h in self.caster.requests if path == "/"]
+        self.assertIn("authorization", tables[-1])
+        self.assertEqual(client.sourcetable_login, "login")
+
+    async def test_refreshed_after_a_day_not_on_every_reconnect(self):
+        client = self.client()
+        client.start()
+        await until(lambda: client.state == "connected")
+        await self.caster.drop_clients()
+        await until(lambda: client.connections == 2, timeout=5, what=client.snapshot())
+        self.assertEqual(self.caster.sourcetable_requests, 1, "a reconnect reuses the table")
+        self.clock.now += TABLE_REFRESH_S
+        await self.caster.drop_clients()
+        await until(lambda: client.connections == 3, timeout=5, what=client.snapshot())
+        self.assertEqual(self.caster.sourcetable_requests, 2, "a day later it is read again")
 
 
 class NoPathToTheReceiver(unittest.TestCase):

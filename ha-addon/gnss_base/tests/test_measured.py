@@ -828,7 +828,7 @@ class Settings(unittest.TestCase):
             self.assertIn(line, text)
         self.assertIn("/usr/local/bin/rtkrcv-ex", (ROOT / "Dockerfile").read_text())
         source = (ROOT / "gnss_base" / "__main__.py").read_text()
-        self.assertIn("x.stop() for x in (rtkrcv, reference)", source)
+        self.assertIn("x.stop() for x in (rtkrcv, *references)", source)
         self.assertIn("x.stop(timeout=left(0.2)) for x in logs", source)
         self.assertIn("SHUTDOWN_BUDGET_S = 9.0", source)
 
