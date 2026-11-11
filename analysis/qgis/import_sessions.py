@@ -476,7 +476,13 @@ def _flat(family, parts):
 
 # ----------------------------------------------------------------------------- main
 
-def main(argv=None):
+def run(argv=None, log=print, progress=None):
+    """The import as a function: `argv` as on the command line, `log(str)` for the report
+    lines, `progress(done, total, name)` called before each session and at the end.
+    Returns a summary dict: gpkg, season, found, added (one dict per session read:
+    session, captures, photos, photos_extracted, track_points, replaced), unchanged
+    (names skipped), photos_extracted, refs_csv_rows, totals (rows per table), origin,
+    recomputed. Bad arguments raise SystemExit (argparse)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="*", help="session zips, session folders or folders of them")
     ap.add_argument("--config", help="TOML config (default: config.toml at the repo root, if any)")
@@ -492,6 +498,7 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true", help="re-read sessions even if unchanged")
     ap.add_argument("--no-photos", action="store_true", help="do not extract photos")
     args = ap.parse_args(argv)
+    added, unchanged = [], []
 
     cfg, cfg_dir = load_config(args.config)
     season = cfg.get("season", {})
@@ -507,84 +514,106 @@ def main(argv=None):
 
     gpkg_path.parent.mkdir(parents=True, exist_ok=True)
     gp = GeoPackage(gpkg_path)
-    ensure_schema(gp)
-    done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
+    try:
+        ensure_schema(gp)
+        done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
 
-    sources = find_sessions(inputs)
-    print(f"{len(sources)} session(s) found")
-    parsed, refs_texts, n_photos = [], [], 0
-    for src in sources:
-        t = src.refs_csv()
-        if t:
-            refs_texts.append(t)
-        old = done.get(src.name)
-        if old and not args.force:
-            if old[0] == src.signature():
-                print(f"  {src.name}: unchanged, skipped")
-                src.close()
-                continue
-            if src.snapshot and not old[1]:
-                print(f"  {src.name}: snapshot of a session already imported in full, skipped")
-                src.close()
-                continue
-        s = load_session(src)
-        k = import_session(gp, src, s, gpkg_path.parent / "photos", not args.no_photos)
-        n_photos += k
-        gp.commit()
-        parsed.append(s)
-        i = s.info
-        print(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures, "
-              f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
-              + (f"; {i['remarks']}" if i.get("remarks") else ""))
-        src.close()
-    n_refs = import_refs_csv(gp, refs_texts)
+        sources = find_sessions(inputs)
+        log(f"{len(sources)} session(s) found")
+        parsed, refs_texts, n_photos = [], [], 0
+        for k_src, src in enumerate(sources):
+            if progress is not None:
+                progress(k_src, len(sources), src.name)
+            t = src.refs_csv()
+            if t:
+                refs_texts.append(t)
+            old = done.get(src.name)
+            if old and not args.force:
+                if old[0] == src.signature():
+                    log(f"  {src.name}: unchanged, skipped")
+                    unchanged.append(src.name)
+                    src.close()
+                    continue
+                if src.snapshot and not old[1]:
+                    log(f"  {src.name}: snapshot of a session already imported in full, skipped")
+                    unchanged.append(src.name)
+                    src.close()
+                    continue
+            s = load_session(src)
+            k = import_session(gp, src, s, gpkg_path.parent / "photos", not args.no_photos)
+            n_photos += k
+            gp.commit()
+            parsed.append(s)
+            i = s.info
+            added.append({"session": s.name, "captures": i["n_captures"], "photos": i["n_photos"],
+                          "photos_extracted": k, "track_points": i["n_track_points"],
+                          "replaced": s.name in done})
+            log(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures, "
+                  f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
+                  + (f"; {i['remarks']}" if i.get("remarks") else ""))
+            src.close()
+        n_refs = import_refs_csv(gp, refs_texts)
 
-    meta = get_meta(gp)
-    base = resolve_base(args, cfg, cfg_dir, layer_files, parsed)
-    if base is None and meta.get("base_lat"):
-        base = LocalFrame(float(meta["base_lat"]), float(meta["base_lon"]), float(meta["base_h"]),
-                          name="base", source=meta.get("base_source") or meta.get("frame_source", ""))
-    frame = resolve_origin(args, cfg, base, meta)
-    recompute = frame is not None and (meta.get("origin_key") != frame.key()
-                                       or meta.get("schema_version") != str(SCHEMA_VERSION))
-    if frame is not None:
-        gp.add_srs(LOCAL_SRS_ID, frame.crs_name(), "ICECUBE", 1, frame.wkt1(),
-                   f"Local ENU display CRS: orthographic at {frame.name}, metres east and north of it",
-                   wkt2=frame.wkt2())
-        set_meta(gp, origin_name=frame.name, origin_lat=f"{frame.lat:.10f}", origin_lon=f"{frame.lon:.10f}",
-                 origin_h=f"{frame.h:.5f}", origin_source=frame.source, origin_key=frame.key(),
-                 local_crs_name=frame.crs_name(), local_wkt=frame.wkt2(), local_proj=frame.proj_string(),
-                 local_proj_tmerc=frame.tmerc_proj_string(), local_srs_id=LOCAL_SRS_ID,
-                 local_frame="ENU: x east, y north, z up (m) about the origin, exact; WGS84")
-    if base is not None:
-        set_meta(gp, base_lat=f"{base.lat:.10f}", base_lon=f"{base.lon:.10f}", base_h=f"{base.h:.5f}",
-                 base_source=base.source)
+        meta = get_meta(gp)
+        base = resolve_base(args, cfg, cfg_dir, layer_files, parsed)
+        if base is None and meta.get("base_lat"):
+            base = LocalFrame(float(meta["base_lat"]), float(meta["base_lon"]), float(meta["base_h"]),
+                              name="base", source=meta.get("base_source") or meta.get("frame_source", ""))
+        frame = resolve_origin(args, cfg, base, meta)
+        recompute = frame is not None and (meta.get("origin_key") != frame.key()
+                                           or meta.get("schema_version") != str(SCHEMA_VERSION))
         if frame is not None:
-            bx, by, bz = frame.enu(base.lat, base.lon, base.h)
-            set_meta(gp, base_x_m=f"{bx:.5f}", base_y_m=f"{by:.5f}", base_z_m=f"{bz:.5f}")
-    gp.con.execute("DELETE FROM icecube_meta WHERE key IN ('frame_source')")   # schema 1 key
-    set_meta(gp, season=name, schema_version=SCHEMA_VERSION)
-    update_local(gp, frame, recompute)
+            gp.add_srs(LOCAL_SRS_ID, frame.crs_name(), "ICECUBE", 1, frame.wkt1(),
+                       f"Local ENU display CRS: orthographic at {frame.name}, metres east and north of it",
+                       wkt2=frame.wkt2())
+            set_meta(gp, origin_name=frame.name, origin_lat=f"{frame.lat:.10f}", origin_lon=f"{frame.lon:.10f}",
+                     origin_h=f"{frame.h:.5f}", origin_source=frame.source, origin_key=frame.key(),
+                     local_crs_name=frame.crs_name(), local_wkt=frame.wkt2(), local_proj=frame.proj_string(),
+                     local_proj_tmerc=frame.tmerc_proj_string(), local_srs_id=LOCAL_SRS_ID,
+                     local_frame="ENU: x east, y north, z up (m) about the origin, exact; WGS84")
+        if base is not None:
+            set_meta(gp, base_lat=f"{base.lat:.10f}", base_lon=f"{base.lon:.10f}", base_h=f"{base.h:.5f}",
+                     base_source=base.source)
+            if frame is not None:
+                bx, by, bz = frame.enu(base.lat, base.lon, base.h)
+                set_meta(gp, base_x_m=f"{bx:.5f}", base_y_m=f"{by:.5f}", base_z_m=f"{bz:.5f}")
+        gp.con.execute("DELETE FROM icecube_meta WHERE key IN ('frame_source')")   # schema 1 key
+        set_meta(gp, season=name, schema_version=SCHEMA_VERSION)
+        update_local(gp, frame, recompute)
 
-    if layer_files:
-        counts = import_layers(gp, layer_files, frame)
-        print(f"layers: {', '.join(f'{t} ({n})' for t, n in counts.items())}")
-    for t in ("captures", "photos", "refs", "tracks", "track_points"):
-        gp.update_extent(t)
-    gp.touch("sessions")
-    gp.commit()
-    summary = {t: gp.con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
-               for t in ("sessions", "captures", "photos", "refs", "tracks", "track_points")}
+        if layer_files:
+            counts = import_layers(gp, layer_files, frame)
+            log(f"layers: {', '.join(f'{t} ({n})' for t, n in counts.items())}")
+        for t in ("captures", "photos", "refs", "tracks", "track_points"):
+            gp.update_extent(t)
+        gp.touch("sessions")
+        gp.commit()
+        summary = {t: gp.con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
+                   for t in ("sessions", "captures", "photos", "refs", "tracks", "track_points")}
+    except BaseException:
+        gp.con.rollback()   # the session being read is not half-written; earlier ones are kept
+        gp.con.close()      # no handle stays open (Windows locks the file)
+        raise
     gp.close()
-    print(f"refs.csv rows seen: {n_refs}; photos extracted this run: {n_photos}")
+    log(f"refs.csv rows seen: {n_refs}; photos extracted this run: {n_photos}")
     if frame is None:
-        print("local frame: none (no origin or base given; x_m/y_m/z_m left empty)")
+        log("local frame: none (no origin or base given; x_m/y_m/z_m left empty)")
     else:
-        print(f"local frame: ENU about {frame.name} ({frame.source})"
+        log(f"local frame: ENU about {frame.name} ({frame.source})"
               + ("; x/y/z_m recomputed for all rows" if recompute else ""))
     if base is not None:
-        print(f"base: {base.source}")
-    print(f"{gpkg_path}: " + ", ".join(f"{t} {n}" for t, n in summary.items()))
+        log(f"base: {base.source}")
+    log(f"{gpkg_path}: " + ", ".join(f"{t} {n}" for t, n in summary.items()))
+    if progress is not None:
+        progress(len(sources), len(sources), "done")
+    return {"gpkg": str(gpkg_path), "season": name, "found": len(sources), "added": added,
+            "unchanged": unchanged, "photos_extracted": n_photos, "refs_csv_rows": n_refs,
+            "totals": summary, "origin": frame.name if frame is not None else None,
+            "recomputed": bool(recompute)}
+
+
+def main(argv=None):
+    run(argv)
     return 0
 
 

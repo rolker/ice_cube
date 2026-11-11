@@ -186,7 +186,7 @@ def _st(i):
 
 def connect(path):
     """sqlite3 connection with the ST_* functions the GeoPackage RTree triggers use."""
-    con = sqlite3.connect(str(path))
+    con = sqlite3.connect(str(path), timeout=30)   # wait out a reader (QGIS) briefly
     con.create_function("ST_IsEmpty", 1, lambda b: None if b is None else int(envelope(b) is None))
     for name, i in (("ST_MinX", 0), ("ST_MaxX", 1), ("ST_MinY", 2), ("ST_MaxY", 3)):
         con.create_function(name, 1, _st(i))

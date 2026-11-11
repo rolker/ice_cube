@@ -1,9 +1,13 @@
 """Build a QGIS project for a season GeoPackage made by import_sessions.py.
 
-Run it inside QGIS (3.34 LTR or later): Plugins > Python Console, then the "Show Editor"
-button, open this file, and press Run Script. It asks for the season .gpkg (or reads the
-ICECUBE_GPKG environment variable), replaces the current project (it asks first if one
-is open), and saves `<season>.qgz` next to the gpkg.
+The Ice Cube QGIS plugin (analysis/qgis/plugin, "Build / refresh project") runs this; it
+also works on its own inside QGIS (3.34 LTR or later, QGIS 4): Plugins > Python Console,
+then the "Show Editor" button, open this file, and press Run Script. It asks for the
+season .gpkg (or reads the ICECUBE_GPKG environment variable), replaces the current
+project and saves `<season>.qgz` next to the gpkg. An existing `<season>.qgz` is kept as
+`<season>.qgz.bak` (the previous .bak is replaced) and overwritten: nothing to delete by
+hand. It asks first only when the open project has unsaved changes (or a layer has
+unsaved edits), since replacing the project would lose them.
 
 What it sets up:
 - Project CRS: "Ice Cube local ENU (origin G)" (or whatever the origin is named), an
@@ -29,6 +33,7 @@ What it sets up:
 Nothing site-specific is in this file: the CRS and paths come from the gpkg at run time.
 """
 import os
+import shutil
 import sqlite3
 
 from qgis.core import (QgsCategorizedSymbolRenderer, QgsCoordinateReferenceSystem,
@@ -54,6 +59,13 @@ FIX = {4: ("RTK fixed", "110,110,110,255", "solid"), 5: ("RTK float", "170,170,1
        0: ("No fix", "230,230,230,255", "dot")}
 STATUS = {"measured": ("Measured", "circle", "0,150,0,255", "0,80,0,255", 3.0),
           "predicted": ("Predicted", "circle", "0,0,0,0", "230,120,0,255", 3.0)}
+
+
+LOG = print   # report lines; the plugin points this at its log
+
+
+def _log(msg):
+    LOG(msg)
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -253,7 +265,7 @@ def local_crs(meta):
             continue
         if c.isValid():
             crs = c
-            print(f"local CRS from {key} ({kind})")
+            _log(f"local CRS from {key} ({kind})")
             break
         tried.append(f"{key}: not valid")
     if crs is None:
@@ -285,11 +297,11 @@ def register_user_crs(crs, name):
             raise RuntimeError("addUserCrs returned no id")
         user = QgsCoordinateReferenceSystem(f"USER:{sid}")
         if user.isValid():
-            print(f"user CRS {user.authid()} \"{name}\"")
+            _log(f"user CRS {user.authid()} \"{name}\"")
             return user
-        print("user CRS registered but not readable back; using the CRS as built")
+        _log("user CRS registered but not readable back; using the CRS as built")
     except Exception as e:   # noqa: BLE001 (older QGIS: no registry; the CRS still works)
-        print(f"user CRS not registered ({e}); using the CRS as built")
+        _log(f"user CRS not registered ({e}); using the CRS as built")
     return crs
 
 
@@ -312,21 +324,64 @@ def choose_gpkg():
     return p or None
 
 
-def build(gpkg, ask=True):
-    """Build and save the project; returns the .qgz path."""
+def backup_existing(qgz):
+    """Copy an existing `qgz` to `<qgz>.bak` (replacing an older .bak); returns the .bak
+    path, or None when there was nothing to keep."""
+    if not os.path.isfile(qgz):
+        return None
+    bak = qgz + ".bak"
+    shutil.copy2(qgz, bak)
+    return bak
+
+
+def unsaved_changes(project):
+    """What replacing `project` would lose: a list of short descriptions (empty when the
+    project is saved and no layer has unsaved edits)."""
+    out = []
+    if project.isDirty():
+        out.append("unsaved project changes" + (f" in {os.path.basename(project.fileName())}"
+                                                 if project.fileName() else ""))
+    for lyr in project.mapLayers().values():
+        if getattr(lyr, "isEditable", None) and lyr.isEditable() and lyr.isModified():
+            out.append(f"unsaved edits in layer {lyr.name()}")
+    return out
+
+
+def confirm_replace(project, qgz, ask=True):
+    """True when the build may replace the open project: no unsaved changes, or the user
+    said so. Without iface (or ask=False) it never asks."""
+    lost = unsaved_changes(project)
+    if not lost or not ask or iface is None:
+        return True
+    from qgis.PyQt.QtWidgets import QMessageBox
+    same = project.fileName() and os.path.normcase(os.path.abspath(project.fileName())) == \
+        os.path.normcase(os.path.abspath(qgz))
+    what = "This project" if same else "The open project"
+    text = (f"{what} has " + "; ".join(lost) + ".\n\nBuild anyway and discard them? "
+            f"(The current {os.path.basename(qgz)} is kept as {os.path.basename(qgz)}.bak.)")
+    yes, no = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
+    return QMessageBox.question(None, "Ice Cube", text, yes | no, no) == yes
+
+
+def build(gpkg, ask=True, extent=None):
+    """Build and save the project; returns the .qgz path (None when the user said no).
+    `extent` (a QgsRectangle in the project CRS) keeps a view instead of zooming to the
+    data."""
     gpkg = os.path.abspath(gpkg)
     tables, meta = read_gpkg(gpkg)
     season = meta.get("season") or os.path.splitext(os.path.basename(gpkg))[0]
     qgz = os.path.join(os.path.dirname(gpkg), season + ".qgz")
     crs = local_crs(meta)   # before touching the open project: a CRS error stops here
     project = QgsProject.instance()
-    if ask and iface is not None and project.mapLayers():
-        from qgis.PyQt.QtWidgets import QMessageBox
-        yes = getattr(QMessageBox, "Yes", None) or QMessageBox.StandardButton.Yes   # Qt5 / Qt6
-        if QMessageBox.question(None, "Ice Cube", f"Replace the current project with {season}.qgz?",
-                                yes | (getattr(QMessageBox, "No", None) or QMessageBox.StandardButton.No)
-                                ) != yes:
-            return None
+    if not confirm_replace(project, qgz, ask):
+        _log("not built: the open project has unsaved changes")
+        return None
+    bak = backup_existing(qgz)
+    if bak:
+        _log(f"previous project kept as {bak}")
+    for lyr in project.mapLayers().values():   # discard edit buffers the user agreed to lose
+        if getattr(lyr, "isEditable", None) and lyr.isEditable():
+            lyr.rollBack()
     project.clear()
     project.setFileName(qgz)
     project.setTitle(f"Ice Cube {season}")
@@ -338,7 +393,7 @@ def build(gpkg, ask=True):
     def layer(table, name=None):
         lyr = QgsVectorLayer(f"{gpkg}|layername={table}", name or table, "ogr")
         if not lyr.isValid():
-            print(f"could not open {table}")
+            _log(f"could not open {table}")
             return None
         return lyr
 
@@ -357,7 +412,7 @@ def build(gpkg, ask=True):
         try:
             styler(lyr)
         except Exception as e:   # a style detail should not stop the project
-            print(f"{table}: style not fully applied ({e})")
+            _log(f"{table}: style not fully applied ({e})")
         add(project, survey, lyr, visible)
         if table in ("captures", "tracks"):
             extent_layers.append(lyr)
@@ -369,7 +424,7 @@ def build(gpkg, ask=True):
         try:
             style_map_layer(lyr)
         except Exception as e:
-            print(f"{table}: style not fully applied ({e})")
+            _log(f"{table}: style not fully applied ({e})")
         add(project, maps, lyr)
         extent_layers.append(lyr)
     if "sessions" in tables:
@@ -384,17 +439,25 @@ def build(gpkg, ask=True):
         if lyr.featureCount() and not lyr.extent().isEmpty():
             tr = QgsCoordinateTransform(lyr.crs(), crs, project)
             ext.combineExtentWith(tr.transformBoundingBox(lyr.extent()))
-    if iface is not None and not ext.isEmpty():
+    if iface is not None and extent is not None and not extent.isEmpty():
+        iface.mapCanvas().setExtent(extent)
+        iface.mapCanvas().refresh()
+    elif iface is not None and not ext.isEmpty():
         iface.mapCanvas().setExtent(ext.buffered(max(ext.width(), ext.height()) * 0.05))
         iface.mapCanvas().refresh()
     ok = project.write(qgz)
-    print(f"{'saved' if ok else 'COULD NOT SAVE'} {qgz}; CRS {crs.description() or crs.authid()} "
+    if not ok:
+        raise OSError(f"could not save {qgz}: {project.error()}")
+    _log(f"{'saved' if ok else 'COULD NOT SAVE'} {qgz}; CRS {crs.description() or crs.authid()} "
           f"(origin {meta.get('origin_name', '?')}, x east, y north, metres)")
     return qgz
 
 
-gpkg_path = choose_gpkg()
-if gpkg_path:
+def main():
+    gpkg_path = choose_gpkg()
+    if not gpkg_path:
+        print("no GeoPackage chosen")
+        return
     try:
         build(gpkg_path)
     except CrsError as err:
@@ -402,5 +465,9 @@ if gpkg_path:
         if iface is not None:
             from qgis.PyQt.QtWidgets import QMessageBox
             QMessageBox.critical(None, "Ice Cube: CRS error", str(err))
-else:
-    print("no GeoPackage chosen")
+
+
+# Run when executed as a script (python console "Run Script" uses __main__ or __console__),
+# not when imported as a module by the plugin or the tests.
+if __name__.rsplit(".", 1)[-1] != "build_project":
+    main()
