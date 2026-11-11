@@ -22,7 +22,7 @@ from .hub import ConnectionLog, RtcmHub, Secret
 from .measured import DEFAULT_BINARY, MeasuredSettings, RtkrcvRunner, SolutionLog
 from .rawlog import RawLog, compress
 from .receiver import ChunkQueue, SerialReader
-from .reference import ReferenceCheck, ReferenceSettings
+from .reference import ReferenceCheck, ReferenceSettings, compare, login_clash
 from .status import Status
 from .upload import Uploader, UploadSettings
 from .web import INGRESS_PROXY, create_app
@@ -41,8 +41,16 @@ DEFAULTS = {"device": "", "device_match": "USB_Dual_Serial", "baud": 460800,
             "measured_enabled": True, "measured_elevation_mask": 15, "measured_snr_mask": 35,
             "reference_enabled": False, "reference_host": "", "reference_port": 2101,
             "reference_mountpoint": "", "reference_user": "", "reference_password": "",
-            "reference_frame": "", "reference_reset_utc": "00:00", "base_frame": "ITRF2020",
-            "base_epoch": ""}
+            "reference_frame": "", "reference_reset_utc": "00:00",
+            "reference_send_gga": False, "reference_gga_position": "",
+            "reference_expect_station": None,
+            "reference2_enabled": False, "reference2_host": "", "reference2_port": 2101,
+            "reference2_mountpoint": "", "reference2_user": "", "reference2_password": "",
+            "reference2_frame": "", "reference2_reset_utc": "00:00",
+            "reference2_send_gga": False, "reference2_gga_position": "",
+            "reference2_expect_station": None,
+            "base_frame": "ITRF2020", "base_epoch": ""}
+REFERENCES = ("reference", "reference2")   # the reference checks' option prefixes
 # Options that a command-line argument can override. Passwords are options only: on a
 # command line they would show in process lists.
 OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster_enabled",
@@ -50,7 +58,13 @@ OVERRIDES = ("device", "device_match", "baud", "log_dir", "min_free_gb", "caster
              "upload_mountpoint", "upload_style", "measured_enabled",
              "measured_elevation_mask", "measured_snr_mask", "reference_enabled",
              "reference_host", "reference_port", "reference_mountpoint", "reference_user",
-             "reference_frame", "reference_reset_utc", "base_frame", "base_epoch")
+             "reference_frame", "reference_reset_utc", "reference_send_gga",
+             "reference_gga_position", "reference_expect_station", "reference2_enabled",
+             "reference2_host",
+             "reference2_port", "reference2_mountpoint", "reference2_user",
+             "reference2_frame", "reference2_reset_utc", "reference2_send_gga",
+             "reference2_gga_position", "reference2_expect_station", "base_frame",
+             "base_epoch")
 
 
 def load_settings(argv=None):
@@ -108,6 +122,31 @@ def load_settings(argv=None):
                              "year; empty: today's date")
     parser.add_argument("--reference-reset-utc", dest="reference_reset_utc",
                         help="daily restart of the reference rtkrcv, HH:MM UTC; empty: never")
+    # The GGA uplink of both checks, and the second check's options, spelt like the
+    # first's (--reference2-host, ...).
+    for prefix in REFERENCES:
+        dash = prefix.replace("_", "-")
+        if prefix != "reference":
+            parser.add_argument(f"--{dash}", dest=f"{prefix}_enabled", action="store_const",
+                                const=True, help=f"run the {prefix} check")
+            parser.add_argument(f"--no-{dash}", dest=f"{prefix}_enabled",
+                                action="store_const", const=False,
+                                help=f"do not run the {prefix} check")
+            for name in ("host", "mountpoint", "user", "frame"):
+                parser.add_argument(f"--{dash}-{name}", dest=f"{prefix}_{name}")
+            parser.add_argument(f"--{dash}-port", dest=f"{prefix}_port", type=int)
+            parser.add_argument(f"--{dash}-reset-utc", dest=f"{prefix}_reset_utc")
+        parser.add_argument(f"--{dash}-send-gga", dest=f"{prefix}_send_gga",
+                            action="store_const", const=True,
+                            help=f"send a GGA to the {prefix} caster (nmea 1 mountpoints)")
+        parser.add_argument(f"--no-{dash}-send-gga", dest=f"{prefix}_send_gga",
+                            action="store_const", const=False)
+        parser.add_argument(f"--{dash}-gga-position", dest=f"{prefix}_gga_position",
+                            help='the GGA\'s position, "lat,lon" in decimal degrees; '
+                                 "empty: our base's 1005 position")
+        parser.add_argument(f"--{dash}-expect-station", dest=f"{prefix}_expect_station",
+                            type=int, help="the station ID (0 to 4095) the stream must "
+                                           "carry; other IDs show as a wrong station")
     parser.add_argument("--rtkrcv", default=DEFAULT_BINARY,
                         help=f"the rtkrcv program for both instances (default: "
                              f"{DEFAULT_BINARY} on PATH, RTKLIB-EX built into the image)")
@@ -143,10 +182,11 @@ def measured_settings(settings):
         snr_mask=number("measured_snr_mask"))
 
 
-def reference_settings(settings):
-    """The reference check's settings from the options. Its work folder is
-    `<data_dir>/reference`; the masks are the measured position's. The password goes
-    into a Secret and is removed from `settings`."""
+def reference_settings(settings, prefix="reference"):
+    """A reference check's settings from the options `<prefix>_*` ("reference" or
+    "reference2"). Its work folder is `<data_dir>/<prefix>`; the masks, base_frame and
+    base_epoch are shared. The password goes into a Secret and is removed from
+    `settings`."""
     def number(key):
         value = settings[key]
         return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -154,16 +194,36 @@ def reference_settings(settings):
     def text(key):
         return str(settings[key] if settings[key] is not None else "").strip()
 
+    def station(key):
+        """An expected station ID: None when empty; a whole number as given, or as
+        digits in a text; anything else as is, for problem() to refuse."""
+        value = settings.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return value
+
     return ReferenceSettings(
-        enabled=bool(settings["reference_enabled"]), host=text("reference_host"),
-        port=settings["reference_port"], mountpoint=text("reference_mountpoint"),
-        user=text("reference_user"),
-        password=Secret(str(settings.pop("reference_password", "") or "")),
-        frame=text("reference_frame"), base_frame=text("base_frame"),
-        base_epoch=text("base_epoch"), reset_utc=text("reference_reset_utc"),
+        enabled=bool(settings[f"{prefix}_enabled"]), host=text(f"{prefix}_host"),
+        port=settings[f"{prefix}_port"], mountpoint=text(f"{prefix}_mountpoint"),
+        user=text(f"{prefix}_user"),
+        password=Secret(str(settings.pop(f"{prefix}_password", "") or "")),
+        frame=text(f"{prefix}_frame"), base_frame=text("base_frame"),
+        base_epoch=text("base_epoch"), reset_utc=text(f"{prefix}_reset_utc"),
+        send_gga=settings[f"{prefix}_send_gga"] is True,
+        gga_position=text(f"{prefix}_gga_position"),
+        expect_station=station(f"{prefix}_expect_station"), prefix=prefix,
         binary=str(settings["rtkrcv"]),
-        work_dir=Path(settings["data_dir"]).absolute() / "reference",
+        work_dir=Path(settings["data_dir"]).absolute() / prefix,
         elevation_mask=number("measured_elevation_mask"), snr_mask=number("measured_snr_mask"))
+
+
+def all_reference_settings(settings):
+    """Both checks' settings, the second blocked if it would share the first's login."""
+    first, second = (reference_settings(settings, prefix) for prefix in REFERENCES)
+    second.blocked = login_clash(first, second)
+    return first, second
 
 
 def output_settings(settings):
@@ -299,9 +359,11 @@ async def housekeeping(log, errors, *solution_logs, raw_logs=()):
         errors.check("logging", log.write_error)
         errors.check("disk", log.disk_error)
         errors.check("housekeeping", log.housekeeping_error)
-        for raw_log in raw_logs:
+        for index, raw_log in enumerate(raw_logs):
             await _raw_housekeeping(raw_log, loop)
-            errors.check("CORS raw log", raw_log.write_error or raw_log.housekeeping_error)
+            # One name per log, so the reporter tells their errors apart.
+            errors.check("CORS raw log" + (f" {index + 1}" if index else ""),
+                         raw_log.write_error or raw_log.housekeeping_error)
         for solution_log in solution_logs:
             try:
                 await solution_log.housekeep()
@@ -379,8 +441,9 @@ async def run(settings):
                            room=lambda: not log.paused)
     events.start()  # file writes in a background task, never on the serial path
     measured = measured_settings(settings)
-    reference_options = reference_settings(settings)
-    rtkrcv = caster = uploader = queue = runner = keeper = reference = None
+    reference_options = all_reference_settings(settings)
+    rtkrcv = caster = uploader = queue = runner = keeper = None
+    references = []
 
     def solution_header():
         version = rtkrcv.output.version if rtkrcv is not None else None
@@ -391,17 +454,22 @@ async def run(settings):
     solutions = SolutionLog(Path(settings["log_dir"]) / "measured", solution_header,
                             room=lambda: not log.paused)
     solutions.start()
-    # The reference check's log: the header names the frames (ReferenceCheck.header).
-    reference_log = SolutionLog(Path(settings["log_dir"]) / "reference",
-                                lambda: reference.header() if reference is not None else "",
-                                room=lambda: not log.paused, suffix=".llh")
-    reference_log.start()
-    # The CORS stream as received, `reference/raw/YYYY-MM-DD.rtcm3`, with the raw log's
-    # rotation, compression and free-space floor; only when the check can run.
-    cors_log = None
-    if reference_options.enabled and not reference_options.problem():
-        cors_log = RawLog(Path(settings["log_dir"]) / "reference", settings["min_free_gb"],
-                          suffix=".rtcm3")
+    # Each reference check's log, `<prefix>/YYYY-MM-DD.llh`: the header names the
+    # frames (ReferenceCheck.header). The CORS stream as received,
+    # `<prefix>/raw/YYYY-MM-DD.rtcm3`, with the raw log's rotation, compression and
+    # free-space floor; only when the check can run.
+    reference_logs, cors_logs = [], []
+    for options in reference_options:
+        def header(index=len(reference_logs)):
+            return references[index].header() if len(references) > index else ""
+
+        reference_log = SolutionLog(Path(settings["log_dir"]) / options.prefix, header,
+                                    room=lambda: not log.paused, suffix=".llh")
+        reference_log.start()
+        reference_logs.append(reference_log)
+        cors_logs.append(RawLog(Path(settings["log_dir"]) / options.prefix,
+                                settings["min_free_gb"], suffix=".rtcm3")
+                         if options.enabled and not options.problem() else None)
     try:
         caster_settings, upload_settings = output_settings(settings)
         caster = Caster(caster_settings, hub, events, __version__)
@@ -415,12 +483,15 @@ async def run(settings):
 
         # rtkrcv gets the hub only, like the other outputs.
         rtkrcv = RtkrcvRunner(measured, hub, on_solution)
-        # The reference check: a second rtkrcv on the hub, and the receiver's 1005 from
-        # the status (read only) as the reference for its offsets.
-        reference = ReferenceCheck(reference_options, hub, status.current_base,
-                                   on_solution=lambda solution, line: reference_log.write(line),
-                                   version=__version__,
-                                   on_raw=None if cors_log is None else cors_log.write)
+        # The reference checks: one more rtkrcv each on the hub, and the receiver's 1005
+        # from the status (read only) as the reference for their offsets.
+        for index, (options, reference_log, cors_log) in enumerate(
+                zip(reference_options, reference_logs, cors_logs)):
+            references.append(ReferenceCheck(
+                options, hub, status.current_base,
+                on_solution=lambda solution, line, out=reference_log: out.write(line),
+                version=__version__, on_raw=None if cors_log is None else cors_log.write,
+                label="reference check" + (f" {index + 1}" if index else "")))
         # The no-measured-GGA texts mention rtkrcv only while it can give a solution.
         status.measured_expected = lambda: rtkrcv.state() not in ("off", "not available")
         queue = ChunkQueue(loop, pipeline.on_data)
@@ -446,8 +517,10 @@ async def run(settings):
         def snapshot():
             result = status.snapshot()
             result["storage"] = log.snapshot()
-            if cors_log is not None:
-                merge_storage(result["storage"], cors_log.snapshot(), "reference/raw/")
+            for options, cors_log in zip(reference_options, cors_logs):
+                if cors_log is not None:
+                    merge_storage(result["storage"], cors_log.snapshot(),
+                                  f"{options.prefix}/raw/")
             result["parser"] = {"unknown_bytes": pipeline.parser.unknown_bytes,
                                 "bad_frames": pipeline.parser.bad_frames,
                                 "queue_dropped_bytes": queue.dropped_bytes}
@@ -456,8 +529,12 @@ async def run(settings):
             result["upload"] = uploader.snapshot()
             result["measured"] = dict(rtkrcv.snapshot(), **status.measured_summary(),
                                       log=solutions.snapshot())
-            result["reference"] = dict(reference.snapshot(), log=reference_log.snapshot(),
-                                       raw_log=None if cors_log is None else cors_log.snapshot())
+            for options, reference, reference_log, cors_log in zip(
+                    reference_options, references, reference_logs, cors_logs):
+                result[options.prefix] = dict(
+                    reference.snapshot(), log=reference_log.snapshot(),
+                    raw_log=None if cors_log is None else cors_log.snapshot())
+            result["reference_comparison"] = compare(*references)
             return result
 
         allowed = () if settings["allow_any_client"] else (INGRESS_PROXY,)
@@ -469,30 +546,32 @@ async def run(settings):
         await caster.start()
         uploader.start()
         rtkrcv.start()
-        reference.start()
+        for reference in references:
+            reference.start()
 
         stop = asyncio.Event()
         for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             loop.add_signal_handler(name, stop.set)
         keeper = asyncio.create_task(housekeeping(
-            log, errors, solutions, reference_log,
-            raw_logs=[x for x in (cors_log,) if x is not None]))
+            log, errors, solutions, *reference_logs,
+            raw_logs=[x for x in cors_logs if x is not None]))
         await stop.wait()
     finally:
         await shutdown(SHUTDOWN_BUDGET_S, keeper=keeper, rtkrcv=rtkrcv, solutions=solutions,
                        outputs=[x for x in (uploader, caster) if x is not None],
                        events=events, control=control, reader=reader, queue=queue,
-                       log=log, runner=runner, reference=reference, reference_log=reference_log,
-                       cors_log=cors_log)
+                       log=log, runner=runner, references=references,
+                       reference_logs=reference_logs, cors_logs=cors_logs)
         executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, reader,
-                   queue, log, runner, reference=None, reference_log=None, cors_log=None):
+                   queue, log, runner, references=(), reference_logs=(), cors_logs=()):
     """Stop everything within `budget` seconds from now (Home Assistant's 10 s stop
     timeout), independent parts at once, each bounded by the time left:
-    - both rtkrcv (SIGTERM so each saves its ephemeris cache, SIGKILL after 3 s), then
-      their solution logs, so the lines they sent last are written;
+    - every rtkrcv (SIGTERM so each saves its ephemeris cache, SIGKILL after 3 s), and
+      the reference checks' NTRIP clients, then the CORS raw logs and the solution
+      logs, so the lines they sent last are written;
     - the upload and the caster, then the connection log, which records their ends;
     - the startup check, the serial reader, then what it still queued, into the raw log;
     - the status page, with WEB_SHUTDOWN_S for open requests.
@@ -507,10 +586,11 @@ async def shutdown(budget, keeper, rtkrcv, solutions, outputs, events, control, 
         return max(0.1, deadline - loop.time() - margin)
 
     async def measured_part():
-        await asyncio.gather(*(x.stop() for x in (rtkrcv, reference) if x is not None))
-        if cors_log is not None:
-            cors_log.close()   # after the client stopped: its last bytes are in
-        logs = [x for x in (solutions, reference_log) if x is not None]
+        await asyncio.gather(*(x.stop() for x in (rtkrcv, *references) if x is not None))
+        for cors_log in cors_logs:
+            if cors_log is not None:
+                cors_log.close()   # after the client stopped: its last bytes are in
+        logs = [x for x in (solutions, *reference_logs) if x is not None]
         await asyncio.gather(*(x.stop(timeout=left(0.2)) for x in logs))
 
     async def outputs_part():

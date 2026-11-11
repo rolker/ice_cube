@@ -1976,7 +1976,7 @@ class Packaging(unittest.TestCase):
     def test_config_yaml_version_options_and_ports(self):
         text = (ROOT / "config.yaml").read_text()
         self.assertIn(f'version: "{__version__}"', text)
-        self.assertEqual(__version__, "0.6.3")
+        self.assertEqual(__version__, "0.7.0")
         self.assertIn("ports:\n  2101/tcp: 2101\n", text)
         self.assertIn("ports_description:\n  2101/tcp: ", text)
         options = re.search(r"\noptions:\n((?:  .*\n)+)", text).group(1)
@@ -1987,8 +1987,13 @@ class Packaging(unittest.TestCase):
 
         # reference_frame is a drop-down that is unset until chosen (0.6.3): optional in
         # the schema and absent from the options defaults, so the app's DEFAULTS supply "".
-        self.assertEqual(set(keys(options)) - {"device"},
-                         set(DEFAULTS) - {"device", "reference_frame"})
+        # The expected station IDs (0.7.0) are optional the same way (DEFAULTS: None).
+        optional = {"reference_frame", "reference2_frame", "reference_expect_station",
+                    "reference2_expect_station"}
+        self.assertEqual(set(keys(options)) - {"device"}, set(DEFAULTS) - {"device"} - optional)
+        for prefix in ("reference", "reference2"):
+            self.assertIn(f"  {prefix}_expect_station: int(0,4095)?\n", schema)
+            self.assertIsNone(DEFAULTS[f"{prefix}_expect_station"])
         self.assertEqual(set(keys(schema)), set(DEFAULTS))
         self.assertIn("upload_password: password", schema)
         self.assertIn("caster_password: password", schema)
