@@ -195,7 +195,7 @@ public class TiltSolverTest {
     }
 
     /**
-     * Roland's house-corner set (local ENU metres about an arbitrary origin, not coordinates):
+     * The first house-corner set (local ENU metres about an arbitrary origin, not coordinates):
      * five leans with the tip on the corner, pole 1.6 m, leaning over only ~145 degrees.
      */
     @Test public void houseCornerSet() {

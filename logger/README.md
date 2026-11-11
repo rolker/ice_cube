@@ -1,12 +1,14 @@
-# Ice Cube Logger 0.5.1
+# Ice Cube Logger 0.6
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
 is a local map with your own GeoJSON layers (no basemap, no network) where you capture
 surface, object and reference points with large glove-friendly buttons or the volume
 keys, and take photos. Reference points are averaged and checked against earlier visits
-(the pole check). It checks the reference frame and base position, and shares a session
-as a zip. It works in portrait or landscape, and the screen can be locked to how the
+(the pole check). A false-fix guard holds captures back while a new RTK fix settles and
+flags fixes that began with a suspicious jump, and a tilt capture finds the pole tip from
+several leans when the pole cannot stand plumb (a house corner, a fence post). It checks
+the reference frame and base position, and shares a session as a zip. It works in portrait or landscape, and the screen can be locked to how the
 phone sits on the pole.
 
 Captures are deliberately unlabelled in the field: no pick-lists while surveying. Each
@@ -39,8 +41,17 @@ MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest
   - Ref duration: seconds of RTK fixed epochs averaged for a Ref capture, 10 to 300,
     default 30.
   - Pole check tolerance: cm, 0.5 to 20, default 3. See Refs and the pole check.
+  - False-fix guard (see False-fix guard): Fix settle time, s, 0 to 60, default 10 (0
+    turns settling off); Fix jump warning, m, 0.1 to 10, default 1.0. The settle time
+    applies at once, the jump threshold from the next fix stretch.
+  - Tilt capture gates (see Tilt capture): minimum coverage 0 to 360°, default 180; maximum
+    RMS 0.1 to 20 cm, default 2; minimum lean 0 to 30°, default 5; maximum lean 5 to 60°,
+    default 35; maximum sigma 0.1 to 50 cm, default 5; IMU disagreement 0.5 to 20°,
+    default 3; lean scatter 0.2 to 20 cm, default 2. A value out of range is not saved and
+    the screen says why. They apply to the next tilt capture.
   - Volume keys: Mark / Mode (default on): on the map, volume down = MARK, volume up =
-    MODE. The keys then do not change the volume while the map is in front.
+    MODE; during a tilt capture down = LEAN, up = finish; hold down about 1 s to start a
+    tilt capture. The keys then do not change the volume while the map is in front.
   - Sound and Vibration (default on): the cues listed under Feedback.
   - Show earlier refs (default off): refs from `refs.csv` of other sessions as grey rings.
   - Number captures on the map (default on): labels S12, O13, R14 next to the points.
@@ -67,7 +78,9 @@ The app opens on the map, full screen; USB attach opens it too. The screen stays
 Status strip along the top (one line in landscape, two rows in portrait). Every item is a
 button (at least 48 dp tall):
 - Fix chip: RTK FIXED / FLOAT / DGPS / SINGLE / NO FIX (or NO GPS) in the fix colour, with
-  the correction age, e.g. `FIXED 1.0s`. Tap: Details.
+  the correction age, e.g. `FIXED 1.0s`. While a new fix settles it reads `FIX settling 7s`
+  in amber; in a fix stretch that began with a jump over the warning it reads
+  `FIXED? jump 2.1m` in amber until the fix drops. Tap: Details.
 - GPS and NTRIP dots: green connected, amber connecting or retrying after a loss, red the
   last attempt failed (still retrying), grey off. Tap to connect, or to disconnect (while
   a session records it asks first).
@@ -79,7 +92,8 @@ button (at least 48 dp tall):
 Under the strip, only when present: a red bar with warnings (frame mismatch, base moved,
 layers don't match base, failed pole check, GPS or caster link lost, GPS silent; tap it
 for Details), and for 10 s after a capture, ref or pole check a green (or red) notice,
-e.g. `S12  FIXED  5 ep  ±0.4 cm`.
+e.g. `S12  FIXED  5 ep  ±0.4 cm`; amber with dark text when the capture is flagged, e.g.
+`S12  FIXED  5 ep  ±0.4 cm  fix may be false (jumped 2.2 m)`.
 
 Four large buttons, a column on the right edge in landscape, a row along the bottom in
 portrait (each at least 64 dp):
@@ -87,13 +101,18 @@ portrait (each at least 64 dp):
   (Surface cyan, Object magenta, Ref dark slate; the same colours mark the points on the
   map). The mode is remembered. Not while a ref is running.
 - MARK: captures in the current mode (see Captures). While a ref runs it reads CANCEL REF.
+  Long-press: start a tilt capture in the current mode (see Tilt capture). During a tilt
+  capture MODE reads `LEAN` with the next lean number and MARK reads `TILT 2/4` until four
+  leans, then `FINISH TILT`.
 - PHOTO: the system camera (see Photos).
 - ☰ MENU: a panel from the right: Connect/Disconnect GPS and caster (with their state),
-  Start/Stop session, Pole height, Layers (a checkbox per layer file, applied at once),
+  Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs), Layers (a checkbox per layer file, applied at once),
   Share last session, Sessions, Details, Settings. Back or a tap outside closes it.
 
 Volume keys (Settings > Survey, default on): volume down = MARK, volume up = MODE while the
-map is in front. A held key acts once. The key presses are consumed, so the media volume
+map is in front. Volume down acts when released; held about 1 s it starts a tilt capture
+instead. During a tilt capture volume down = LEAN and volume up = finish. A held key acts
+once. The key presses are consumed, so the media volume
 does not change on this screen; set it elsewhere (e.g. on Details) before going out.
 
 Details (fix chip or MENU) is the former main screen: every status line (links, byte and
@@ -117,12 +136,141 @@ in `events.csv` (the same row; events.csv turns commas into `;`). Captures are n
   is written with the number of epochs and their scatter, and the pole check runs.
   The pole height is the one in effect when the ref started.
 
+### False-fix guard
+In the field data (2026-11-11) several RTK "fixed" stretches were wrong: each began with a
+1.3 to 2.9 m position jump at the float-to-fixed transition and then read 0.2 to 2.2 m off
+in height (and horizontally suspect) for minutes; ordinary captures in them were bad. A
+normal float-to-fix step moves a few centimetres to a few decimetres. So the app follows
+the stretches of RTK fixed GGA epochs:
+- A stretch starts at any epoch of quality 4 after one that was not (float, single, no
+  position), and also when two consecutive fixed epochs are more than 0.5 m apart (or
+  2 m/s times their time difference, if that is more: a step a moving pole cannot make;
+  at 4 Hz that is 0.5 m) or more than 2 s apart (the GPS went quiet). The jump at stretch
+  start is the 3D distance from the previous epoch with a position to the first fixed one;
+  it is unknown (empty) if that epoch is more than 2 s older. Each start is logged in
+  `events.csv` as `fix stretch start jump=1.234 m` (with `(jump between fixed epochs)` or
+  `suspect` when they apply).
+- Settling: for the settle time after a stretch starts (Settings, default 10 s) MARK gives
+  the error buzz and a toast `fix settling: N s`, and nothing is captured
+  (`capture refused class=…: fix settling N s`). A running ref does not count fixed epochs
+  while the fix settles: its ring says PAUSED: fix settling, as for a fix drop. Tilt leans
+  are refused the same way. The fix chip says `FIX settling 7s` in amber.
+- Suspect: if the jump at stretch start was over the jump warning (Settings, default
+  1.0 m) the whole stretch is suspect. Captures are still allowed after settling, but the
+  notice is amber, `… fix may be false (jumped 2.2 m)`, the cue is a fast warble ending
+  low, and the row has `fix_suspect` 1. Re-shoot such points after the fix drops and comes
+  back cleanly, or check them against a known mark.
+- Every capture row carries `fix_age_s` (seconds from the stretch start to the last
+  averaged epoch) and `fix_jump_m`, so later analysis can pick its own thresholds. One
+  average never mixes two stretches: fixed epochs from before the latest stretch began are
+  left out.
+
+These thresholds are a starting point from one afternoon of data. A larger jump threshold
+gives fewer false alarms; a longer settle time catches false fixes that drift off soon
+after they start, but not ones that stay wrong for minutes (those need the jump flag or a
+check against a known mark).
+
+### Tilt capture
+For a point where the pole cannot stand plumb (a house corner, a fence post, a wall): keep
+the tip on the point and lean the pole in several directions. Every antenna position is
+then the pole height L from the tip, and the tip is the centre of the sphere through them.
+
+How to hold the pole:
+1. Choose the mode (Surface, Object or Ref): the point gets that class, with method `tilt`.
+2. Put the tip on the point. Long-press MARK, or hold volume down about 1 s, or MENU >
+   Tilt capture. Three rising tones; the map shows a compass rose.
+3. Lean the pole 15 to 25° toward one direction, keep the tip still on the point, hold it
+   still 1 to 2 s and press volume down (or the LEAN button, or long-press MARK). Two short
+   beeps: the lean is taken (the last 1 s of fixed epochs and the phone's gravity vector).
+4. Repeat toward at least 4 directions spread around the circle (more is better: 6 to 8
+   in 45 to 60° steps is ideal). Against a wall you cannot lean into it, but lean along the
+   wall both ways and away from it: that still covers 180°. The rose shows each lean as a
+   spoke toward its direction (longer for more tilt, the ring is 30°) and a hollow dot
+   where the antenna leans now, so you can see the gaps; below it the count, coverage, RMS
+   and sigmas once 3 leans give a provisional tip.
+5. Press MARK (or volume up) to finish once there are at least 4 leans. If a gate warns, a
+   dialog lists the warnings: Save, More leans, or Cancel tilt. Back or MENU > Cancel tilt
+   capture drops the set (its leans still go to `tilt_obs.csv`, unused).
+
+A lean is refused (error buzz and a toast) if: there is no RTK fixed average (leans must
+be fixed; float is far too noisy for this), the fix is settling, the GGA has no height, the
+1 s horizontal scatter sqrt(sd_e² + sd_n²) is over the lean scatter gate (default 2 cm:
+the pole moved), or, once 3 leans give a provisional tip, its tilt is outside the minimum
+and maximum lean (default 5 to 35°; a near-vertical lean adds almost nothing).
+
+The solve (pure Java, `core/TiltSolver`, unit tested): local east/north/up metres about
+the first lean; least squares for the tip c with |p_i - c| = L (L = the pole height in
+effect when the set started), Gauss-Newton from mean(p) - (0, 0, L). It reports each lean's
+residual, the RMS (root mean square of the residuals), each lean's tilt and azimuth (the
+direction it leans toward), the coverage (360° minus the largest gap between lean
+azimuths) and per-axis standard deviations of the tip from the normal matrix scaled by the
+larger of the residual variance (n - 3 degrees of freedom) and (1 cm)². With leans on one
+side only, the tip is poorly determined along that side: the first house-corner set
+(5 leans, tilts 14 to 19°, coverage 145°) fitted with 1 cm residuals but a 9 cm sigma
+north. With 1 cm noise per lean, 4 leans place the tip to about 3 cm and 6 to 8 leans to
+about 2 cm (synthetic tests); a still pole's 1 s average is usually better than 1 cm.
+
+IMU check (no calibration needed): the phone is rigid on the pole, so the pole axis is one
+fixed direction in the phone's axes, and the angle between it and the phone's gravity
+vector at each lean must equal that lean's tilt from the solution. The app fits that axis
+to the other leans and reports, per lean, the disagreement in degrees (leave one out). This
+works however the pole is twisted about its own axis; comparing the gravity vectors of two
+leans directly would not, because a twist changes the angle between them without moving
+the pole. A tip that slipped while a lean was read, or a bad fix, shows as a lean that
+disagrees (a 15 cm slip toward the lean is about 5°). At finish, leans whose tilt ended up
+outside the lean gates are dropped, then, while the largest disagreement is over the IMU
+gate (default 3°), the lean whose removal leaves the others most consistent; each only
+while at least 4 leans remain. The set is re-solved and a toast says what was dropped
+(`Tilt: dropped lean 3 (IMU 5.2°), re-solved with 5`). Spokes of leans over the IMU gate
+are red on the rose. Leans without gravity (a phone with no gravity sensor) skip the check.
+
+Gates (Settings > Survey), checked at finish; any that fails asks before saving:
+coverage under 180°, RMS over 2 cm, a used lean outside 5 to 35°, a tip sigma over 5 cm,
+an IMU disagreement over 3° that could not be dropped, or a lean in a suspect fix stretch.
+
+The point row: `lat`, `lon` and `h_ground_ellips` are the tip; `h_ant_ellips` is the mean
+antenna height of the used leans (so here h_ant - pole is not h_ground); `pole_m` is L;
+`fix` 4; `n_epochs` the epochs of all used leans; `sd_e_m`, `sd_n_m`, `sd_u_m` the RMS of
+the leans' own 1 s scatter; `age_s` the mean correction age; `utc` from the last used
+lean; `fix_age_s` the youngest stretch age, `fix_jump_m` the largest jump and `fix_suspect`
+1 if any lean was in a suspect stretch; `method` `tilt` and the `tilt_*` columns (see
+points.csv). In Ref mode the tip is also appended to `refs.csv` and the pole check runs on
+it. A pole height that is off by d moves the tip up or down by about d, as for a plumb
+shot; the antenna phase centre offset along the pole acts the same way.
+
+`events.csv`: `tilt start set=… class=… pole_height=…`, `tilt lean set=… k=… n_epochs=…
+sd_h_m=… tilt_deg=… grav=x;y;z`, `tilt lean refused set=…: …`, `tilt end set=… n=… leans=…
+used=… rms_m=… cover_deg=… sd_m=e;n;u imu_max_deg=… warnings=… dropped …`, `tilt cancelled
+by user set=… leans=…`.
+
+### tilt_obs.csv
+Every lean of every tilt set in the session, so a set can be re-solved later (another pole
+height, other gates, a different solver). Appended when a set is finished or cancelled;
+header first. Columns:
+
+| column | meaning |
+|---|---|
+| `set` | tilt set number in this session (1, 2, …) |
+| `n` | the points.csv row it produced; empty for a cancelled set |
+| `lean` | lean number in the set (1, 2, …), refused leans not counted |
+| `elapsed_ns`, `utc` | phone clock when the lean was taken; UTC of its last epoch |
+| `lat`, `lon`, `h_ant_ellips` | the lean's 1 s mean antenna position |
+| `n_epochs`, `sd_e_m`, `sd_n_m`, `sd_u_m`, `age_s` | as in points.csv, for this lean |
+| `fix_age_s`, `fix_jump_m`, `fix_suspect` | the fix stretch of this lean |
+| `grav_x`, `grav_y`, `grav_z`, `grav_n` | mean phone gravity vector over the same second (m/s², phone axes as in imu.csv) and the number of samples; empty and 0 without a gravity sensor |
+| `e_m`, `n_m`, `u_m` | the lean in local ENU metres about the set's first lean |
+| `tilt_deg`, `azimuth_deg`, `resid_m`, `imu_deg` | from the last solve: tilt from vertical, direction it leans toward, sphere residual, IMU disagreement |
+| `used` | 1 if the lean is in the saved solution |
+| `why_dropped` | e.g. `IMU 5.2 deg` or `tilt 3.1 deg`; empty if not dropped |
+
 Feedback (Settings > Survey: Sound, Vibration): each has its own tone and vibration
 pattern: mode change 1, 2 or 3 beeps (surface, object, ref); surface capture a short high
 pip; object capture a two-tone pip; ref start a long low tone; ref paused a long middle
 tone; ref resumed a short one; ref end a rising three-tone; ref cancelled a falling two;
 photo a click; pole check OK two rising beeps; pole check failed an alternating alarm;
-errors (no fix, no session, mode change during a ref) a low buzz. Sounds use the media
+a capture in a suspect fix stretch a fast warble ending low; tilt start three rising
+tones, each lean two short beeps, tilt saved a rising three-tone; errors (no fix, fix
+settling, no session, mode change during a ref, a refused lean) a low buzz. Sounds use the media
 volume, so silent mode does not mute them.
 
 On the map: surface small cyan dots, object larger magenta squares, ref dark rings,
@@ -152,15 +300,31 @@ they contain a comma, quote or line break. The app rewrites the whole file on ea
 | `age_s` | mean correction age of those epochs, s |
 | `photo` | photo file name(s) in `photos/`, `;` between several, or empty |
 | `note` | always empty from the phone: for the laptop tool |
+| `fix_age_s` | 0.6: seconds from the start of the RTK fixed stretch to the last averaged epoch (see False-fix guard); empty when not fixed |
+| `fix_jump_m` | 0.6: the position jump at that stretch's start, m (3D); empty when not fixed or unknown |
+| `fix_suspect` | 0.6: 1 if the stretch began with a jump over the warning threshold, else 0 |
+| `method` | 0.6: `single` (one 1 s average), `ref` (a ref occupation) or `tilt` (a tilt capture); empty for photo rows |
+| `tilt_n` | 0.6, tilt only: leans used in the solution |
+| `tilt_rms_m` | 0.6, tilt only: RMS of the sphere residuals, m |
+| `tilt_cover_deg` | 0.6, tilt only: azimuth coverage of the used leans, degrees |
+| `tilt_sd_e_m`, `tilt_sd_n_m`, `tilt_sd_u_m` | 0.6, tilt only: standard deviation of the tip east, north, up, m |
+
+The ten 0.6 columns come after `note`, so a reader that takes the first 17 columns by
+position keeps working; rows written before 0.6 simply lack them. The session importer
+(`analysis/qgis/logger_session.py` on the `feature/session-import` branch) reads only the
+first 17 for now and needs updating to pick up `fix_suspect`, `method` and the tilt
+columns (and `tilt_obs.csv`).
 
 Example (made-up position):
 ```
-n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note
-1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,
-2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,
+n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m
+1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,
+2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,
+3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060
 ```
 
-Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix`,
+Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix` (or
+`: fix settling N s`), `fix stretch start jump=…`, the tilt events (see Tilt capture),
 `ref start n=… duration_s=… pole_height=… quality=…`, `ref paused …`, `ref resumed …`,
 `ref end n=… epochs=… pauses=…`, `ref cancelled …`, `pole check n=…: …`, `photo file=…
 attached to n=…` or `own row n=…`, `photo cancelled: …`.
@@ -176,6 +340,10 @@ shows the ground height difference to the most recent one and to the mean of all
   alarm sound. Usually the pole height setting is wrong, or the pole sank.
 - otherwise a green "pole check OK (±0.8 cm vs last visit)".
 - first visit (or no ground height): "first visit to this mark", no check.
+
+From 0.6 its rows carry the ten new points.csv columns; the first time 0.6 appends to an
+older `refs.csv` it rewrites the header line to the new one (rows unchanged), so the older
+rows simply have empty values there.
 
 `refs.csv` contains positions. It stays on the phone and in Drive; never commit it to
 the public repo. An earlier install's `refs.csv` in Documents may not be readable after a
@@ -343,6 +511,7 @@ folder path is on Details.
 - `events.csv`: session start and stop, links connected and lost (with transport and
   device), retries, pole height, captures, refs, pole checks, photos, frame, base position
   and checks, and final counts
+- `tilt_obs.csv`: every lean of every tilt capture (see tilt_obs.csv), when there was one
 - `points.csv`: the captures (see points.csv); written from the start, header only until
   the first capture
 - `photos/`: the session's photos (may carry EXIF GPS)
