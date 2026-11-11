@@ -255,7 +255,17 @@ class BuildProjectTest(unittest.TestCase):
         self.project.mapLayers.return_value = {}
         self.project.fileName.return_value = str(self.qgz)
         self.project.write.side_effect = lambda p: Path(p).write_text("new") or True
+        # project.crs() returns whatever setCrs() was last given, as in QGIS
+        self.project.setCrs.side_effect = lambda c: setattr(self.project.crs, "return_value", c)
         self.bp.QgsProject.instance.return_value = self.project
+
+    def test_crs_set_after_layers_and_checked(self):
+        """A first layer that changes the project CRS must not survive the build."""
+        crs = mock.MagicMock(name="local")
+        self.bp.local_crs = lambda meta: crs
+        self.bp.build(str(self.gpkg), ask=False)
+        self.assertIs(self.project.crs(), crs)
+        self.assertEqual(self.project.setCrs.call_args_list[-1], mock.call(crs))
 
     def tearDown(self):
         self.ctx.__exit__(None, None, None)

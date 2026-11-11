@@ -444,7 +444,10 @@ def build(gpkg, ask=True, extent=None):
                            "CRS; set it by hand in Project > Properties > CRS")
 
     ext = QgsRectangle()
-    ext.setMinimal()
+    if hasattr(ext, "setNull"):   # QGIS 3.34+ (setMinimal is deprecated, gone in 5.0)
+        ext.setNull()
+    else:
+        ext.setMinimal()
     for lyr in extent_layers:
         if lyr.featureCount() and not lyr.extent().isEmpty():
             tr = QgsCoordinateTransform(lyr.crs(), crs, project)
