@@ -78,9 +78,16 @@ class LocalFrame:
 
     def enu(self, lat, lon, h):
         """Exact (x east, y north, z up) in metres of a geodetic point."""
-        x = geodetic_to_ecef(lat, lon, h)
-        d = [x[i] - self._x0[i] for i in range(3)]
+        return self.enu_ecef(*geodetic_to_ecef(lat, lon, h))
+
+    def enu_ecef(self, x, y, z):
+        """Exact (x east, y north, z up) in metres of an ECEF point (metres)."""
+        d = (x - self._x0[0], y - self._x0[1], z - self._x0[2])
         return tuple(sum(self._r[k][i] * d[i] for i in range(3)) for k in range(3))
+
+    def rotate_enu(self, e, n, u):
+        """ECEF components (dx, dy, dz) of a vector given east, north, up at the origin."""
+        return tuple(self._r[0][i] * e + self._r[1][i] * n + self._r[2][i] * u for i in range(3))
 
     def geodetic(self, e, n, u):
         """Inverse of enu(): (lat, lon, h) of a point given in the local frame."""
