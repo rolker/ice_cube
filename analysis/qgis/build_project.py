@@ -433,6 +433,16 @@ def build(gpkg, ask=True, extent=None):
             form(lyr, editable=("note",))
             add(project, root.addGroup("Tables"), lyr)
 
+    # QGIS gives a new project the CRS of the first layer added (WGS84 here), overriding
+    # the setCrs above, so set it again now that all layers are in, and check it took.
+    project.setCrs(crs)
+    if iface is not None:
+        iface.mapCanvas().setDestinationCrs(crs)
+    if project.crs() != crs:
+        raise RuntimeError("Ice Cube: the project CRS is "
+                           f"{project.crs().authid() or project.crs().description()}, not the local "
+                           "CRS; set it by hand in Project > Properties > CRS")
+
     ext = QgsRectangle()
     ext.setMinimal()
     for lyr in extent_layers:
@@ -448,7 +458,8 @@ def build(gpkg, ask=True, extent=None):
     ok = project.write(qgz)
     if not ok:
         raise OSError(f"could not save {qgz}: {project.error()}")
-    _log(f"{'saved' if ok else 'COULD NOT SAVE'} {qgz}; CRS {crs.description() or crs.authid()} "
+    pc = project.crs()
+    _log(f"{'saved' if ok else 'COULD NOT SAVE'} {qgz}; project CRS {pc.description() or pc.authid()} "
           f"(origin {meta.get('origin_name', '?')}, x east, y north, metres)")
     return qgz
 
