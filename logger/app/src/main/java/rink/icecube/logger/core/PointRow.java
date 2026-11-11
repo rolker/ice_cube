@@ -16,9 +16,13 @@ import java.util.Locale;
 public final class PointRow {
     public static final String SURFACE = "surface", OBJECT = "object", REF = "ref", PHOTO = "photo";
     public static final String HEADER = "n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,"
-            + "n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note";
+            + "n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,"
+            + "fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m";
     public static final String REFS_HEADER = "session," + HEADER;
-    public static final int COLUMNS = 17;
+    /** Columns of HEADER; rows written before 0.6 have only the first BASE_COLUMNS (up to note). */
+    public static final int COLUMNS = 27, BASE_COLUMNS = 17;
+    /** method: one averaged capture, a tilt capture, or a ref occupation. */
+    public static final String SINGLE = "single", TILT = "tilt", OCCUPATION = "ref";
 
     public int n;
     public String cls = "";
@@ -28,6 +32,14 @@ public final class PointRow {
     public int fix, nEpochs;
     public double sdE = Double.NaN, sdN = Double.NaN, sdU = Double.NaN, age = Double.NaN;
     public String photo = "", note = "";
+    /** 0.6: seconds since the RTK fixed stretch began, its start jump (m), and whether it is suspect. */
+    public double fixAge = Double.NaN, fixJump = Double.NaN;
+    public boolean fixSuspect;
+    /** 0.6: single, tilt or ref (empty for photo rows), and the tilt solution (tiltN 0 when not tilt). */
+    public String method = "";
+    public int tiltN;
+    public double tiltRms = Double.NaN, tiltCover = Double.NaN, tiltSdE = Double.NaN, tiltSdN = Double.NaN,
+            tiltSdU = Double.NaN;
     /** refs.csv only: the session folder name. */
     public String session = "";
 
@@ -66,14 +78,23 @@ public final class PointRow {
     public String toCsv() {
         return n + "," + cls + "," + elapsedNs + "," + utc + "," + num(lat, 9) + "," + num(lon, 9) + "," + num(hAnt, 4)
                 + "," + num(pole, 3) + "," + num(hGround, 4) + "," + fix + "," + nEpochs + "," + num(sdE, 4) + ","
-                + num(sdN, 4) + "," + num(sdU, 4) + "," + num(age, 1) + "," + text(photo) + "," + text(note);
+                + num(sdN, 4) + "," + num(sdU, 4) + "," + num(age, 1) + "," + text(photo) + "," + text(note)
+                + "," + num(fixAge, 1) + "," + num(fixJump, 3) + "," + (fixSuspect ? 1 : 0) + "," + text(method) + ","
+                + (tiltN > 0 ? String.valueOf(tiltN) : "") + "," + num(tiltRms, 4) + "," + num(tiltCover, 0) + ","
+                + num(tiltSdE, 4) + "," + num(tiltSdN, 4) + "," + num(tiltSdU, 4);
     }
 
     public String toRefsCsv() { return text(session) + "," + toCsv(); }
 
-    /** Parses the columns of HEADER starting at offset (1 for refs.csv). Throws IllegalArgumentException. */
+    /**
+     * Parses the columns of HEADER starting at offset (1 for refs.csv). Rows from before 0.6
+     * (BASE_COLUMNS, ending at note) are accepted; the 0.6 columns then stay empty.
+     * Throws IllegalArgumentException.
+     */
     public static PointRow parse(List<String> f, int offset) {
-        if (f.size() < offset + COLUMNS) throw new IllegalArgumentException("expected " + (offset + COLUMNS) + " columns");
+        if (f.size() < offset + BASE_COLUMNS) {
+            throw new IllegalArgumentException("expected " + (offset + BASE_COLUMNS) + " columns");
+        }
         PointRow r = new PointRow();
         try {
             if (offset > 0) r.session = f.get(0);
@@ -94,7 +115,20 @@ public final class PointRow {
             r.sdU = dbl(f.get(i++));
             r.age = dbl(f.get(i++));
             r.photo = f.get(i++);
-            r.note = f.get(i);
+            r.note = f.get(i++);
+            if (f.size() >= offset + COLUMNS) {
+                r.fixAge = dbl(f.get(i++));
+                r.fixJump = dbl(f.get(i++));
+                r.fixSuspect = "1".equals(f.get(i++).trim());
+                r.method = f.get(i++).trim();
+                String t = f.get(i++).trim();
+                r.tiltN = t.isEmpty() ? 0 : Integer.parseInt(t);
+                r.tiltRms = dbl(f.get(i++));
+                r.tiltCover = dbl(f.get(i++));
+                r.tiltSdE = dbl(f.get(i++));
+                r.tiltSdN = dbl(f.get(i++));
+                r.tiltSdU = dbl(f.get(i));
+            }
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("bad number: " + e.getMessage());
         }

@@ -68,6 +68,26 @@ class TestUTM(unittest.TestCase):
         self.assertAlmostEqual(float(x1 - x0), 99.96, places=3)
 
 
+class TestENUSite(unittest.TestCase):
+    def test_origin_is_zero_and_axes(self):
+        site = io.Site.from_config({"site": {"origin_geodetic": [0.0, 0.0, 10.0]}})
+        x, y, z = site.local(np.array([0.0, 0.001, 0.0]), np.array([0.0, 0.0, 0.001]), np.array([10.0, 10.0, 12.5]))
+        np.testing.assert_allclose([x[0], y[0], z[0]], 0.0, atol=1e-6)
+        self.assertAlmostEqual(y[1], 110.574, delta=0.5)   # meridian arc at the equator
+        self.assertAlmostEqual(x[1], 0.0, delta=1e-6)
+        self.assertAlmostEqual(x[2], 111.32 * (1 + 10 / 6378137.0), delta=0.5)
+        self.assertAlmostEqual(z[2], 2.5 - 111.32 ** 2 / (2 * 6378137.0), delta=1e-4)   # curvature drop
+
+    def test_z_is_up_and_scalar_height(self):
+        site = io.Site.from_config({"site": {"origin_geodetic": [45.0, -70.0, 30.0]}})
+        x, y, z = site.local(np.array([45.0]), np.array([-70.0]), 31.25)
+        self.assertAlmostEqual(float(z[0]), 1.25, places=7)
+
+    def test_both_origins_refused(self):
+        with self.assertRaises(ValueError):
+            io.Site.from_config({"site": {"origin": [1.0, 2.0], "origin_geodetic": [0.0, 0.0, 0.0]}})
+
+
 class TestReaders(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

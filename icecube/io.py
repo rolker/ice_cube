@@ -12,7 +12,10 @@ Formats:
 
 Local x, y are UTM metres minus a site origin, the same convention as
 analysis/config.py (`origin_utm19n` in site_config.json), so the two packages share
-an origin. The UTM forward projection is the Krueger series (Karney 2011), accurate to
+an origin. Alternatively (`[site] origin_geodetic = [lat, lon, h]`) x, y, z are exact
+ENU about a geodetic origin (x east, y north, z up: ECEF difference rotated at the
+origin), the frame of the QGIS session import and the logger map, so local
+coordinates match theirs; then z is height above the origin's tangent plane. The UTM forward projection is the Krueger series (Karney 2011), accurate to
 well under a millimetre at these distances, pure numpy. Heights are kept as given
 (ellipsoidal if the file is ellipsoidal) minus the configured origin height, so nothing
 in this package needs the absolute height.
@@ -114,20 +117,45 @@ def _beta(n):
     )
 
 
+def geodetic_to_ecef(lat_deg, lon_deg, h):
+    """Geodetic degrees and ellipsoidal metres -> ECEF X, Y, Z (m), arrays."""
+    e2 = _F * (2 - _F)
+    la, lo = np.radians(lat_deg), np.radians(lon_deg)
+    n = _A / np.sqrt(1 - e2 * np.sin(la) ** 2)
+    h = np.asarray(h, dtype=float)
+    return ((n + h) * np.cos(la) * np.cos(lo), (n + h) * np.cos(la) * np.sin(lo), (n * (1 - e2) + h) * np.sin(la))
+
+
+def enu(lat_deg, lon_deg, h, lat0, lon0, h0):
+    """Exact east, north, up (m) of geodetic points about a geodetic origin."""
+    x, y, z = geodetic_to_ecef(lat_deg, lon_deg, h)
+    x0, y0, z0 = geodetic_to_ecef(lat0, lon0, h0)
+    dx, dy, dz = x - x0, y - y0, z - z0
+    sl, cl = math.sin(math.radians(lon0)), math.cos(math.radians(lon0))
+    sp, cp = math.sin(math.radians(lat0)), math.cos(math.radians(lat0))
+    return (-sl * dx + cl * dy, -sp * cl * dx - sp * sl * dy + cp * dz, cp * cl * dx + cp * sl * dy + sp * dz)
+
+
 @dataclass
 class Site:
     """Where local (0, 0, 0) is. `origin` is UTM (E, N) in the given zone; `z0` is
-    subtracted from every height. Never print these."""
+    subtracted from every height. If `origin_geodetic` (lat, lon, h) is set, local
+    coordinates are exact ENU about that point instead (UTM settings unused; z0 is
+    still subtracted, normally 0). Never print these."""
     zone: int = 19
     origin: tuple = (0.0, 0.0)
     z0: float = 0.0
     northern: bool = True
+    origin_geodetic: tuple | None = None
 
     @classmethod
     def from_config(cls, cfg: dict, base_dir: Path | None = None):
         site = dict(cfg.get("site", {}))
         sc = site.get("site_config")
-        if sc and "origin" not in site:
+        og = site.get("origin_geodetic")
+        if og is not None and "origin" in site:
+            raise ValueError("[site]: give origin (UTM) or origin_geodetic (ENU), not both")
+        if sc and "origin" not in site and og is None:
             p = Path(sc)
             if base_dir is not None and not p.is_absolute():
                 p = base_dir / p
@@ -139,9 +167,15 @@ class Site:
         return cls(zone=int(site.get("utm_zone", 19)),
                    origin=tuple(float(v) for v in site.get("origin", (0.0, 0.0))),
                    z0=float(site.get("z0", 0.0)),
-                   northern=bool(site.get("northern", True)))
+                   northern=bool(site.get("northern", True)),
+                   origin_geodetic=None if og is None else tuple(float(v) for v in og))
 
     def local(self, lat, lon, h):
+        if self.origin_geodetic is not None:
+            lat0, lon0, h0 = self.origin_geodetic
+            hh = np.broadcast_to(np.asarray(h, dtype=float), np.shape(lat))
+            x, y, z = enu(lat, lon, hh, lat0, lon0, h0)
+            return x, y, z - self.z0
         x, y = utm_forward(lat, lon, self.zone, self.northern)
         return x - self.origin[0], y - self.origin[1], np.asarray(h, dtype=float) - self.z0
 

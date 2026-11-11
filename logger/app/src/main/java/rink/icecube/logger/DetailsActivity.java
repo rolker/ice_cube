@@ -21,10 +21,12 @@ import java.util.List;
 import java.util.Locale;
 
 import rink.icecube.logger.core.Gga;
+import rink.icecube.logger.core.MapOrigin;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.Rtcm3Parser;
 import rink.icecube.logger.core.StreamParser;
+import rink.icecube.logger.core.TrackPoint;
 
 /**
  * Details: the full status (links, counts, caster statistics, heights, frame, folder) and
@@ -183,6 +185,11 @@ public final class DetailsActivity extends Activity {
         }
         t.append("\npole      ").append(PoleHeight.format(pole)).append(" m");
         t.append("\n(ellipsoidal = GGA alt + geoid sep)\n").append(Status.frameText(s, this));
+        MapOrigin o = MainActivity.shownOrigin();
+        t.append("\nmap frame ").append(o == null ? "none yet (open the map)" : o.name + " (" + o.note + ")");
+        TrackPoint fx = s == null ? null : s.currentFix();
+        String xyz = o == null || fx == null ? null : o.readout(fx.lat, fx.lon, Double.isNaN(fx.h) ? Double.NaN : fx.h - pole);
+        if (xyz != null) t.append("\nground    ").append(xyz);
         String ok = Status.layerOkText(s);
         if (ok != null) t.append('\n').append(ok);
         heights.setText(t);

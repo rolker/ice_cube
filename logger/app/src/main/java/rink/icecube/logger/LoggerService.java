@@ -119,6 +119,9 @@ public final class LoggerService extends Service {
             }
         } else if (Settings.FRAME.equals(key) || Settings.FRAME_EPOCH.equals(key)) {
             updateFrame();
+        } else if (Settings.SETTLE_S.equals(key) || Settings.JUMP_M.equals(key)) {
+            Survey sv = survey;
+            if (sv != null) sv.applyGuardSettings();
         }
     };
 
@@ -323,6 +326,28 @@ public final class LoggerService extends Service {
             return new Survey.Outcome(false, "No session: tap REC to start one");
         }
         return sv.mark(mode);
+    }
+
+    /** Tilt capture actions (see Survey); refused with an error cue when no session is open. */
+    Survey.Outcome tilt(String action, SurveyMode mode) {
+        Survey sv = survey;
+        if (sv == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            return new Survey.Outcome(false, "No session: tap REC to start one");
+        }
+        switch (action) {
+            case "start": return sv.startTilt(mode);
+            case "lean": return sv.lean();
+            case "finish": return sv.finishTilt(false);
+            case "finish_confirmed": return sv.finishTilt(true);
+            default: return sv.cancelTilt("cancelled by user");
+        }
+    }
+
+    /** Mean phone gravity vector over [fromNs, toNs] plus the sample count as a 4th element, or null. */
+    double[] gravityMean(long fromNs, long toNs) {
+        Session s = session;
+        return s == null ? null : s.imu.gravityMean(fromNs, toNs);
     }
 
     /** The open session's captures, or null. */

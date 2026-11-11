@@ -47,7 +47,7 @@ import java.util.Set;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.LinkState;
-import rink.icecube.logger.core.LocalFrame;
+import rink.icecube.logger.core.MapOrigin;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.PoleHeight;
@@ -67,16 +67,22 @@ import rink.icecube.logger.core.TrackPoint;
  *   portrait: MODE (Surface, Object, Ref), MARK, PHOTO and MENU (a panel from the right
  *   with the links, session, pole height, layers, share, sessions, Details and Settings).
  * - Volume down = MARK, volume up = MODE while this screen is in front (Settings).
+ * - Tilt capture: long-press MARK (or hold volume down, or MENU > Tilt capture) starts a set
+ *   in the current mode; then MODE reads LEAN (and volume down, or a long-press of MARK,
+ *   takes a lean), MARK or volume up finishes (asking first if a gate warns), and back or
+ *   MENU > Cancel tilt capture drops it. The map shows a compass rose of the leans.
  *
- * Map origin: the first point of a kind="base" feature in the switched-on layers; else the
- * session's first GPS fix; else, so layers can still be viewed, the first vertex of the
- * first layer (the map moves to the fix origin once one arrives). The screen stays on.
+ * Map origin ({@link MapOrigin}): the first point of a kind="origin" feature in the
+ * switched-on layers (the project frame, e.g. monument G); else of a kind="base" feature;
+ * else the session's first GPS fix; else, so layers can still be viewed, the first vertex
+ * of the first layer (the map moves to the fix origin once one arrives). The info box and
+ * the capture notices give positions as x/y/z in that frame. The screen stays on.
  *
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
 public final class MainActivity extends Activity {
     private static final int REQ_PHOTO = 21;
-    private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121;
+    private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121, AMBER = 0xFFFFA000;
 
     private MapView map;
     private TextView info, warnBar, noticeBar;
@@ -89,10 +95,12 @@ public final class MainActivity extends Activity {
     private List<Layers.LayerFile> files = new ArrayList<>();
     private String layerKey = "";
     private int layerErrors;
-    private double[] baseOrigin;          // lon, lat, h of the base point in switched-on layers
-    private String baseName;
-    private double[] firstVertex;
-    private String originKind = "";
+    private MapOrigin.Candidate originPoint, basePoint, firstVertex;   // from the switched-on layers
+    private String originKey = "";
+    /** The origin the map shows, for Details. */
+    private static volatile MapOrigin shownOrigin;
+
+    static MapOrigin shownOrigin() { return shownOrigin; }
 
     private int refsLoadedGen = -1;
     private String refsLoadedFor = "";
@@ -151,6 +159,7 @@ public final class MainActivity extends Activity {
 
         modeB = bigButton(v -> onMode());
         markB = bigButton(v -> onMark());
+        markB.setOnLongClickListener(v -> { onMarkLong(); return true; });
         photoB = bigButton(v -> onPhoto());
         photoB.setText("PHOTO");
         style(photoB, MapView.PHOTO_COLOR, Color.WHITE);
@@ -373,9 +382,17 @@ public final class MainActivity extends Activity {
         SurveyMode m = mode();
         Survey sv = survey();
         boolean running = sv != null && sv.refRunning();
-        String state = m.key + running;
+        Survey.TiltView tv = sv == null ? null : sv.tiltView();
+        String state = m.key + running + (tv == null ? "" : "tilt" + tv.count);
         if (state.equals(buttonState)) return;
         buttonState = state;
+        if (tv != null) {
+            modeB.setText("LEAN\n" + (tv.count + 1));
+            style(modeB, 0xFF00897B, Color.WHITE);
+            markB.setText(tv.count >= 4 ? "FINISH\nTILT" : "TILT\n" + tv.count + "/4");
+            style(markB, tv.count >= 4 ? 0xFF2E7D32 : 0xFF263238, Color.WHITE);
+            return;
+        }
         modeB.setText(m.label);
         style(modeB, m.color, Color.WHITE);
         if (running) {
@@ -396,6 +413,7 @@ public final class MainActivity extends Activity {
 
     private void onMode() {
         Survey sv = survey();
+        if (sv != null && sv.tiltRunning()) { tiltAction("lean"); return; }
         if (sv != null && sv.refRunning()) {
             Feedback.play(this, Feedback.Cue.ERROR);
             toast("Ref running: MARK cancels it");
@@ -416,9 +434,42 @@ public final class MainActivity extends Activity {
             return;
         }
         Survey.Outcome o = s.mark(mode());
-        if (!o.ok && o.text != null) toast(o.text);
+        handle(o);
+    }
+
+    /** Long-press MARK: start a tilt capture, or take a lean while one runs. */
+    private void onMarkLong() {
+        Survey sv = survey();
+        tiltAction(sv != null && sv.tiltRunning() ? "lean" : "start");
+    }
+
+    private void tiltAction(String action) {
+        LoggerService s = LoggerService.current;
+        if (s == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("No session: tap REC to start one");
+            return;
+        }
+        handle(s.tilt(action, mode()));
+    }
+
+    /** Toasts an outcome's text; a tilt finish with warnings asks first. */
+    private void handle(Survey.Outcome o) {
+        if (o.confirm) {
+            new AlertDialog.Builder(this).setTitle("Tilt capture: save anyway?").setMessage(o.text)
+                    .setPositiveButton("Save", (d, w) -> tiltAction("finish_confirmed"))
+                    .setNegativeButton("More leans", null)
+                    .setNeutralButton("Cancel tilt", (d, w) -> tiltAction("cancel")).show();
+        } else if (o.text != null) {
+            Toast.makeText(this, o.text, o.ok ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
+        }
         updateModeButtons();
         refresh();
+    }
+
+    private void confirmCancelTilt() {
+        confirm("Cancel tilt capture?", "The leans are kept in tilt_obs.csv but no point is written.", "Cancel tilt",
+                () -> tiltAction("cancel"));
     }
 
     private void onPhoto() {
@@ -492,18 +543,47 @@ public final class MainActivity extends Activity {
         return code == KeyEvent.KEYCODE_VOLUME_DOWN || code == KeyEvent.KEYCODE_VOLUME_UP;
     }
 
+    private boolean volumeDownLong;
+
+    /**
+     * Volume down acts on release (MARK, or a lean during a tilt capture); held about 1 s it
+     * starts a tilt capture instead. Volume up acts at once: MODE, or finish during a tilt.
+     */
     @Override public boolean onKeyDown(int code, KeyEvent e) {
         if (isVolume(code) && Settings.volumeKeys(Settings.prefs(this))) {
             if (e.getRepeatCount() == 0) {
-                if (code == KeyEvent.KEYCODE_VOLUME_DOWN) onMark(); else onMode();
+                if (code == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                    volumeDownLong = false;
+                    e.startTracking();
+                } else {
+                    Survey sv = survey();
+                    if (sv != null && sv.tiltRunning()) onMark(); else onMode();
+                }
             }
             return true;   // consumed: the media volume does not change
         }
         return super.onKeyDown(code, e);
     }
 
+    @Override public boolean onKeyLongPress(int code, KeyEvent e) {
+        if (code == KeyEvent.KEYCODE_VOLUME_DOWN && Settings.volumeKeys(Settings.prefs(this))) {
+            volumeDownLong = true;
+            Survey sv = survey();
+            if (sv == null || !sv.tiltRunning()) tiltAction("start");
+            return true;
+        }
+        return super.onKeyLongPress(code, e);
+    }
+
     @Override public boolean onKeyUp(int code, KeyEvent e) {
-        if (isVolume(code) && Settings.volumeKeys(Settings.prefs(this))) return true;
+        if (isVolume(code) && Settings.volumeKeys(Settings.prefs(this))) {
+            if (code == KeyEvent.KEYCODE_VOLUME_DOWN && !volumeDownLong && !e.isCanceled()) {
+                Survey sv = survey();
+                if (sv != null && sv.tiltRunning()) tiltAction("lean"); else onMark();
+            }
+            volumeDownLong = false;
+            return true;
+        }
         return super.onKeyUp(code, e);
     }
 
@@ -591,6 +671,8 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override public void onBackPressed() {
         if (drawer.getVisibility() == View.VISIBLE) { closeDrawer(); return; }
+        Survey sv = survey();
+        if (sv != null && sv.tiltRunning()) { confirmCancelTilt(); return; }
         super.onBackPressed();
     }
 
@@ -605,6 +687,9 @@ public final class MainActivity extends Activity {
                 this::onCasterDot);
         item(session ? "Stop session" : "Start session", this::onRec);
         item("Pole height (" + PoleHeight.format(Settings.poleHeight(Settings.prefs(this))) + " m)…", this::pickPole);
+        Survey sv = survey();
+        if (sv != null && sv.tiltRunning()) item("Cancel tilt capture", this::confirmCancelTilt);
+        else item("Tilt capture (" + mode().key + ")", () -> tiltAction("start"));
         item("Layers…", this::pickLayers);
         item("Share last session", () -> {
             List<File> all = Storage.sessions(this);
@@ -671,34 +756,24 @@ public final class MainActivity extends Activity {
     private void applyLayers() {
         Set<String> off = Settings.layersOff(Settings.prefs(this));
         List<GeoJson.Feature> fs = new ArrayList<>();
+        List<GeoJson.Layer> on = new ArrayList<>();
+        List<String> names = new ArrayList<>();
         StringBuilder key = new StringBuilder().append(Layers.generation()).append('|');
-        baseOrigin = null;
-        baseName = null;
-        firstVertex = null;
         layerErrors = 0;
         for (Layers.LayerFile lf : files) {
             if (lf.layer == null) { layerErrors++; continue; }
             if (off.contains(lf.name())) continue;
             key.append(lf.name()).append('|');
             fs.addAll(lf.layer.features);
-            if (baseOrigin == null) {
-                for (GeoJson.Feature f : lf.layer.features) {
-                    if (f.isBase()) {
-                        double[] p = f.parts.get(0);
-                        baseOrigin = new double[] {p[0], p[1], p[2]};
-                        baseName = (f.name != null ? "'" + f.name + "' in " : "") + lf.name();
-                        break;
-                    }
-                }
-            }
-            if (firstVertex == null && !lf.layer.features.isEmpty()) {
-                double[] p = lf.layer.features.get(0).parts.get(0);
-                firstVertex = new double[] {p[0], p[1], p[2]};
-            }
+            on.add(lf.layer);
+            names.add(lf.name());
         }
+        originPoint = MapOrigin.find(on, names, "origin");
+        basePoint = MapOrigin.find(on, names, "base");
+        firstVertex = MapOrigin.firstVertex(on, names);
         if (!key.toString().equals(layerKey)) {
             layerKey = key.toString();
-            originKind = "";   // forces the origin to be chosen again
+            originKey = "";   // forces the origin to be chosen again
             chooseOrigin(LoggerService.current);
             map.setFeatures(fs);
         }
@@ -706,24 +781,11 @@ public final class MainActivity extends Activity {
 
     private void chooseOrigin(LoggerService s) {
         TrackPoint first = s == null ? null : s.firstFix();
-        String kind;
-        double lat, lon, h;
-        String note;
-        if (baseOrigin != null) {
-            kind = "base"; lon = baseOrigin[0]; lat = baseOrigin[1]; h = baseOrigin[2];
-            note = "origin: base point " + baseName;
-        } else if (first != null) {
-            kind = "fix" + first.elapsedMs; lat = first.lat; lon = first.lon; h = first.h;
-            note = "origin: first fix of this session";
-        } else if (firstVertex != null) {
-            kind = "vertex"; lon = firstVertex[0]; lat = firstVertex[1]; h = firstVertex[2];
-            note = "origin: first layer vertex (no base point, no fix yet)";
-        } else {
-            return;
-        }
-        if (kind.equals(originKind)) return;
-        originKind = kind;
-        map.setFrame(new LocalFrame(lat, lon, h), note);
+        MapOrigin o = MapOrigin.choose(originPoint, basePoint, first, firstVertex);
+        if (o == null || o.key.equals(originKey)) return;
+        originKey = o.key;
+        shownOrigin = o;
+        map.setFrame(o.frame, o.note);
     }
 
     /** Earlier refs from refs.csv (other sessions), when Settings > Survey asks for them. */
@@ -763,7 +825,7 @@ public final class MainActivity extends Activity {
         Survey sv = s == null ? null : s.survey();
         TrackPoint fix = s == null ? null : s.currentFix();
         map.setLive(fix, s == null ? new TrackPoint[0] : s.trail(), sv == null ? new PointRow[0] : sv.rows(),
-                sv == null ? null : sv.refView());
+                sv == null ? null : sv.refView(), sv == null ? null : sv.tiltView());
         if (s != null) s.layersMaybeChanged();
         maybeLoadRefs(sv);
 
@@ -774,12 +836,21 @@ public final class MainActivity extends Activity {
         if (s == null || !s.gpsConnected()) { chipColor = 0xFFB0BEC5; chipText = "NO GPS"; }
         else if (g == null) { chipColor = 0xFFB0BEC5; chipText = "NO GGA"; }
         else if (fix == null) { chipColor = MapView.qualityColor(0); chipText = "NO FIX"; }
-        else { chipColor = MapView.qualityColor(g.quality); chipText = Survey.fixName(g.quality) + " " + age(g); }
+        else {
+            chipColor = MapView.qualityColor(g.quality);
+            chipText = Survey.fixName(g.quality) + " " + age(g);
+            Survey.FixState fs = g.quality == 4 && sv != null ? sv.fixState() : null;
+            if (fs != null && fs.settleS > 0) { chipColor = AMBER; chipText = "FIX settling " + fs.settleS + "s"; }
+            else if (fs != null && fs.suspect) {
+                chipColor = AMBER;
+                chipText = String.format(Locale.US, "FIXED? jump %.1fm", fs.jump);
+            }
+        }
         fixChip.setText(chipText);
         if (!chipState.equals(String.valueOf(chipColor))) {
             chipState = String.valueOf(chipColor);
             fixChip.setBackground(pressable(chipColor, Screen.dp(this, 6)));
-            fixChip.setTextColor(chipColor == MapView.qualityColor(5) || chipColor == 0xFFB0BEC5 ? TEXT : Color.WHITE);
+            fixChip.setTextColor(chipColor == AMBER || chipColor == 0xFFB0BEC5 ? TEXT : Color.WHITE);
         }
 
         // link dots
@@ -806,14 +877,20 @@ public final class MainActivity extends Activity {
         Survey.Notice nt = sv == null ? null : sv.notice();
         noticeBar.setVisibility(nt == null ? View.GONE : View.VISIBLE);
         if (nt != null) {
-            noticeBar.setText(nt.text);
-            noticeBar.setBackgroundColor(nt.ok ? 0xFF2E7D32 : 0xFFC62828);
+            MapOrigin o = shownOrigin;
+            String at = o == null || nt.at == null ? null : o.readout(nt.at.lat, nt.at.lon, nt.at.hGround);
+            noticeBar.setText(at == null ? nt.text : nt.text + "\n" + at);
+            noticeBar.setBackgroundColor(nt.warn ? AMBER : nt.ok ? 0xFF2E7D32 : 0xFFC62828);
+            noticeBar.setTextColor(nt.warn ? TEXT : Color.WHITE);
         }
 
         StringBuilder t = new StringBuilder();
         if (fix != null && g != null) {
             t.append(String.format(Locale.US, "sats %d", g.sats));
             if (!Double.isNaN(fix.h)) t.append(String.format(Locale.US, "  ground %.3f m", fix.h - pole));
+            MapOrigin o = shownOrigin;
+            String xyz = o == null ? null : o.readout(fix.lat, fix.lon, Double.isNaN(fix.h) ? Double.NaN : fix.h - pole);
+            if (xyz != null) t.append('\n').append(xyz).append(" (ground)");
             t.append('\n');
         }
         t.append(map.frame() == null ? "origin: none yet" : map.originNote());

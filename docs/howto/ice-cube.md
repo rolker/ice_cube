@@ -133,8 +133,22 @@ metre here, which would otherwise look like a metre of ice.
 `--out` and `--set section.key=value` override the config (arguments take priority).
 
 The config gives the site origin (UTM metres; `site_config = "analysis/site_config.json"`
-reuses the siting scripts' origin so both tools share local coordinates), sigma
+reuses the siting scripts' origin so both tools share local coordinates; or
+`origin_geodetic = [lat, lon, h]` for exact ENU about that point, see "Local frame" below), sigma
 defaults, the grid, an optional outline polygon, the surveys and the growth pairs.
+Local frame: the project's local frame is exact ENU about a surveyed monument (x east,
+y north, z up; the monument top is 0), which the QGIS session import (`[site.origin]` in
+its private `site.toml`) and the logger map (a `kind = "origin"` layer point) use. To make
+this tool's x, y, z the same, put that origin's lat, lon and ellipsoidal h in your private
+config as `[site] origin_geodetic = [lat, lon, h]` and leave out `origin` and
+`site_config`. Without it, x, y are UTM grid metres minus the UTM origin: even with the
+same origin point these are turned by the grid convergence (about a degree, depending on
+the longitude in the zone) and scaled by the UTM point scale (up to a few hundred ppm)
+relative to ENU, so do not mix the two. In ENU mode z is the height above the origin's
+tangent plane (the ellipsoidal height difference less d^2/2R, 0.8 mm at 100 m); `z0` is
+still subtracted (leave it 0). Heights difference between surveys the same way in either
+mode, so growth results do not depend on the choice.
+
 Each `[[surveys]]` entry has an `id`, a `date`, a `frame`, a `reader`, filters
 (`keep_quality`, `exclude_remarks`, `drop_seq`, `z_min`/`z_max`, `offset`,
 `pole_height`) and a `pass_rule` (`gap_s`, `jump_m`, `markers`, `fixed_only`, `max_s`,

@@ -12,6 +12,11 @@ origin = [0.0, 0.0]
 # site_config = "analysis/site_config.json"
 # Height subtracted from every point (m); 0 keeps the file's heights.
 z0 = 0.0
+# Or use the project's local frame: exact ENU (x east, y north, z up) about a geodetic
+# origin, the same frame as the QGIS session import ([site.origin] of its site.toml) and
+# the logger map (kind="origin" layer point). Copy lat, lon and ellipsoidal h of that
+# origin here (in your private copy only) and leave out `origin` and `site_config`:
+# origin_geodetic = [0.0, 0.0, 0.0]   # lat, lon (degrees), h (m, ellipsoidal)
 
 [defaults]
 sigma_z = 0.015           # m, per-point vertical sigma when the file has none

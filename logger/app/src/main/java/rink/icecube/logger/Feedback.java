@@ -26,7 +26,11 @@ final class Feedback {
         /** A capture written. */
         SURFACE, OBJECT,
         REF_START, REF_PAUSED, REF_RESUMED, REF_END, REF_CANCEL,
-        PHOTO, POLE_OK, POLE_ALARM, ERROR
+        PHOTO, POLE_OK, POLE_ALARM, ERROR,
+        /** A capture written in a fix stretch that began with a large jump (fix may be false). */
+        SUSPECT,
+        /** Tilt capture: set started, lean taken, set written, set cancelled. */
+        TILT_START, LEAN, TILT_END
     }
 
     private static final int BEEP = ToneGenerator.TONE_DTMF_5, HIGH = ToneGenerator.TONE_DTMF_D,
@@ -54,6 +58,10 @@ final class Feedback {
             case PHOTO: return new int[] {ToneGenerator.TONE_DTMF_9, 80, 60};
             case POLE_OK: return new int[] {BEEP, 100, 60, HIGH, 100, 100};
             case POLE_ALARM: return new int[] {HIGH, 180, 70, LOW, 180, 70, HIGH, 180, 70, LOW, 180, 70, HIGH, 180, 70, LOW, 400, 150};
+            case SUSPECT: return new int[] {HIGH, 70, 40, MID, 70, 40, HIGH, 70, 40, MID, 70, 40, LOW, 250, 100};
+            case TILT_START: return new int[] {LOW, 120, 60, MID, 120, 60, BEEP, 120, 100};
+            case LEAN: return new int[] {BEEP, 70, 30, BEEP, 70, 60};
+            case TILT_END: return new int[] {BEEP, 120, 40, HIGH2, 120, 40, HIGH, 300, 150};
             default: return new int[] {ToneGenerator.TONE_PROP_NACK, 450, 100};   // ERROR: low buzz
         }
     }
@@ -74,6 +82,10 @@ final class Feedback {
             case PHOTO: return new long[] {0, 40};
             case POLE_OK: return new long[] {0, 60, 80, 60};
             case POLE_ALARM: return new long[] {0, 300, 100, 300, 100, 300, 100, 800};
+            case SUSPECT: return new long[] {0, 60, 50, 60, 50, 60, 50, 250};
+            case TILT_START: return new long[] {0, 80, 80, 80, 80, 80};
+            case LEAN: return new long[] {0, 40, 40, 40};
+            case TILT_END: return new long[] {0, 100, 60, 300};
             default: return new long[] {0, 450};
         }
     }
