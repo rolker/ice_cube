@@ -72,7 +72,7 @@ max_pass_s = 600.0       # a pass (one RTK bias for icecube) is cut after this l
 # [[soundings.sources]]
 # id = "logger"
 # type = "logger"
-# station = 290                          # the base's reference station id (others: excluded)
+# station = 1234                         # the base's reference station id (others: excluded)
 # prior_m = 0.015                        # expected RTK wander per pass on the home base
 # session_paths = ["data/sessions/2026-2027"]
 # [[soundings.sources.exclude]]          # known-bad captures (or utc = [[start, end]])
@@ -86,7 +86,7 @@ max_pass_s = 600.0       # a pass (one RTK bias for icecube) is cut after this l
 # type = "swmaps"
 # session = "2026-12-05_walk"
 # date = "2026-12-05"
-# station = 290
+# station = 1234
 # pole_m = 1.8
 # prior_m = 0.015
 # points_csv = ["data/swmaps/walk_Layer1.csv"]
