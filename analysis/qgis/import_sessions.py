@@ -3,7 +3,8 @@
 
     python3 analysis/qgis/import_sessions.py [INPUT ...] [--config config.toml]
             [--gpkg OUT.gpkg] [--season NAME] [--layers F.geojson ...]
-            [--base-geojson F.geojson | --base LAT LON H] [--force] [--no-photos]
+            [--base-geojson F.geojson | --base LAT LON H]
+            [--origin LAT LON H [--origin-name NAME]] [--force] [--no-photos]
 
 Inputs: session share zips (IceCubeLogger_<session>.zip, or older names without .zip),
 session folders, or folders holding them (searched recursively). Without INPUT the
@@ -26,13 +27,19 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
   sessions      table   one row per session: times, app, link, caster mount, frame
                         lines, base station, pole heights, counts, losses; `note` is yours.
   layer_<file>_<points|lines|polygons>  the map-layer GeoJSON files, replaced on import.
-  icecube_meta  table   season name, local frame origin and its proj string.
+  icecube_meta  table   season name, the local frame origin, the base, and the display
+                        CRS (WKT2 and proj string) for build_project.py.
 
 Geometries are EPSG:4326 lon/lat with ellipsoidal heights as Z; lat, lon and heights are
-also plain columns. When the site config gives a local frame (an explicit base, a
-GeoJSON with a kind=base point, or the first RTCM 1005 logged in the sessions), E/N/U
-columns about it are filled and the local transverse Mercator CRS is stored in
-gpkg_spatial_ref_sys and icecube_meta for qgis/build_project.py.
+also plain columns. Every point table (captures, photos, refs, track_points and the
+layer_*_points tables) also has x_m, y_m, z_m: the exact local ENU coordinates (x east,
+y north, z up, metres; see local_frame.py) about the origin, `[site.origin]` of the
+config (for the yard: lot monument G). The base (`[site].base`, `base_geojson`, a
+kind=base point in the layers, or an RTCM 1005 in the sessions) is kept as a separate
+known point in icecube_meta; it is the origin only when no origin is configured. When
+the origin changes, x_m/y_m/z_m of every existing row are recomputed (user columns are
+untouched). The display CRS (orthographic at the origin) is stored in
+gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta.
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it); rows are matched by their keys and updated in place, so
@@ -52,12 +59,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from gpkg_writer import GeoPackage, gpkg_geometry, point  # noqa: E402
+from gpkg_writer import GeoPackage, gpkg_geometry, point, point_xyz  # noqa: E402
 from local_frame import LocalFrame, ecef_to_geodetic  # noqa: E402
 from logger_session import find_sessions, load_session, read_refs_csv  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
+SCHEMA_VERSION = 2
 USER_COLUMNS = {"captures": ("note", "label"), "photos": ("note",), "refs": ("note",),
                 "sessions": ("note",)}
 TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line
@@ -66,13 +74,16 @@ REF_SITE_M = 0.30      # refs this close horizontally are the same mark (as the 
 R, I, T = "REAL", "INTEGER", "TEXT"
 MEAS = [("utc", T), ("lat", R), ("lon", R), ("h_ant", R), ("pole_m", R), ("h_ground", R),
         ("fix", I), ("n_epochs", I), ("sd_e_m", R), ("sd_n_m", R), ("sd_u_m", R), ("age_s", R)]
-ENU = [("e_m", R), ("n_m", R), ("u_m", R)]
+ENU = [("x_m", R), ("y_m", R), ("z_m", R)]
+LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
+POINT_TABLES = ("captures", "photos", "refs", "track_points")
+NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
                 [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)],
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
-               ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R), ("note", T)],
+               ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
@@ -80,7 +91,7 @@ SCHEMA = {
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
-                     ("age_s", R), ("h_ant", R)],
+                     ("age_s", R), ("h_ant", R)] + ENU,
     "sessions": [("session", T), ("format", T), ("app", T), ("device", T), ("snapshot", I),
                  ("start_utc", T), ("end_utc", T), ("duration_min", R), ("link", T),
                  ("caster_mount", T), ("frame", T), ("base_station", T), ("base_type", T),
@@ -125,35 +136,56 @@ def base_from_geojson(path):
     return None
 
 
-def resolve_frame(args, cfg, cfg_dir, layer_files, sessions):
-    """The local frame, by priority: --base, --base-geojson, [site].base,
-    [site].base_geojson, a kind=base point in the layer files, then (only if
+def resolve_base(args, cfg, cfg_dir, layer_files, sessions):
+    """The base as a LocalFrame named "base", by priority: --base, --base-geojson,
+    [site].base, [site].base_geojson, a kind=base point in the layer files, then (only if
     [site].base_from_sessions = true) the first RTCM 1005 logged in the sessions."""
     site = cfg.get("site", {})
+    b = lambda *llh, source: LocalFrame(*llh, name="base", source=source)
     if args.base:
-        return LocalFrame(*args.base, source="command line")
+        return b(*args.base, source="command line")
     if args.base_geojson:
-        b = base_from_geojson(args.base_geojson)
-        if b:
-            return LocalFrame(*b, source=f"base point in {Path(args.base_geojson).name}")
+        p = base_from_geojson(args.base_geojson)
+        if p:
+            return b(*p, source=f"base point in {Path(args.base_geojson).name}")
     if "base" in site:
-        return LocalFrame(*site["base"], source="config [site].base")
+        return b(*site["base"], source="config [site].base")
     if "base_geojson" in site:
-        p = _abs(site["base_geojson"], cfg_dir)
-        b = base_from_geojson(p)
-        if b:
-            return LocalFrame(*b, source=f"base point in {p.name}")
+        f = _abs(site["base_geojson"], cfg_dir)
+        p = base_from_geojson(f)
+        if p:
+            return b(*p, source=f"base point in {f.name}")
     for f in layer_files:
-        b = base_from_geojson(f)
-        if b:
-            return LocalFrame(*b, source=f"base point in {Path(f).name}")
+        p = base_from_geojson(f)
+        if p:
+            return b(*p, source=f"base point in {Path(f).name}")
     if site.get("base_from_sessions"):
         for s in sessions:
             e = s.info.get("base_ecef")
             if e:
                 x, y, z = (float(v) for v in e.split(";"))
-                return LocalFrame(*ecef_to_geodetic(x, y, z),
-                                  source=f"RTCM 1005 of station {s.info.get('base_station')} in {s.name}")
+                return b(*ecef_to_geodetic(x, y, z),
+                         source=f"RTCM 1005 of station {s.info.get('base_station')} in {s.name}")
+    return None
+
+
+def resolve_origin(args, cfg, base, meta):
+    """The local frame origin, by priority: --origin, [site.origin] of the config, the
+    origin already stored in the gpkg, then the base. None when there is none of these."""
+    o = cfg.get("site", {}).get("origin")
+    if args.origin:
+        return LocalFrame(*args.origin, name=args.origin_name or "origin", source="command line")
+    if o:
+        missing = [k for k in ("lat", "lon", "h") if k not in o]
+        if missing:
+            raise SystemExit(f"[site.origin] lacks {', '.join(missing)}")
+        return LocalFrame(o["lat"], o["lon"], o["h"], name=str(o.get("name", "origin")),
+                          source=str(o.get("source", "config [site.origin]")))
+    if meta.get("origin_lat"):
+        return LocalFrame(float(meta["origin_lat"]), float(meta["origin_lon"]), float(meta["origin_h"]),
+                          name=meta.get("origin_name", "origin"), source=meta.get("origin_source", ""))
+    if base is not None:
+        return LocalFrame(base.lat, base.lon, base.h, name="base", source=base.source)
     return None
 
 
@@ -174,6 +206,11 @@ def ensure_schema(gp):
                                description="One row per logger session")
     gp.ensure_attributes_table("icecube_meta", [("key", T), ("value", T)], unique=("key",),
                                description="Season and local frame settings")
+    for table in ("captures", "refs"):
+        left = gp.drop_columns(table, LEGACY_ENU)
+        for c in left:   # SQLite older than 3.35: keep the column, empty
+            gp.con.execute(f'UPDATE {table} SET "{c}" = NULL')
+    gp.commit()
 
 
 def set_meta(gp, **kv):
@@ -207,7 +244,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "sd_u_m": c.get("sd_u_m"), "age_s": c.get("age_s"),
             "photo": rel(files[0]) if files else None, "photo_count": len(files),
             "source": c.get("source"), "elapsed_ns": c.get("elapsed_ns"), "note": c.get("note"),
-            "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")),
+            "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
 
@@ -218,7 +255,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         rows.append({"session": s.name, "n": p["n"], "name": p["name"], "photo": rel(p["name"]),
                      "utc": p["utc"], "attached": p["attached"], "bytes": p["bytes"],
                      "lat": c.get("lat"), "lon": c.get("lon"), "h_ground": c.get("h_ground"),
-                     "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
+                     "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ})
     gp.upsert("photos", rows, key=("session", "name"), preserve=USER_COLUMNS["photos"])
 
     refs = []
@@ -226,7 +263,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         if c["class"] != "ref":
             continue
         r = {k: c.get(k) for k, _ in MEAS}
-        r.update({"session": s.name, "n": c["n"], "source": "points.csv",
+        r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
         for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok"):
             r[k] = s.refs.get(c["n"], {}).get(k)
@@ -294,18 +331,29 @@ def import_refs_csv(gp, texts):
     return len(out)
 
 
-def update_local(gp, frame):
-    """Fill E/N/U of captures and refs about the frame, and group refs into sites."""
-    for table, hcol in (("captures", "h_ground"), ("refs", "h_ground")):
-        rows = gp.con.execute(f"SELECT fid, lat, lon, {hcol} FROM {table}").fetchall()
-        upd = []
-        for fid, lat, lon, h in rows:
-            if frame is None or lat is None or lon is None:
-                upd.append((None, None, None, fid))
-            else:
-                e, n, u = frame.enu(lat, lon, h if h is not None else frame.h)
-                upd.append((round(e, 4), round(n, 4), round(u, 4) if h is not None else None, fid))
-        gp.con.executemany(f"UPDATE {table} SET e_m=?, n_m=?, u_m=? WHERE fid=?", upd)
+def local_xyz(frame, lat, lon, h):
+    """Exact ENU (x_m, y_m, z_m) rounded to 0.01 mm; z None when h is None (x, y then use
+    the origin height: 5 m of height error moves x, y by 0.02 mm at 30 m)."""
+    if frame is None or lat is None or lon is None:
+        return None, None, None
+    x, y, z = frame.enu(lat, lon, frame.h if h is None else h)
+    return round(x, 5), round(y, 5), (None if h is None else round(z, 5))
+
+
+def update_local(gp, frame, recompute=False):
+    """Fill x_m, y_m, z_m of the point tables about the frame (rows still empty, or all rows
+    when `recompute`), and group refs into sites. Only these columns are written."""
+    for table in POINT_TABLES:
+        where = "" if recompute else " WHERE x_m IS NULL"
+        if table == "track_points":   # position only in the geometry: lon, lat, antenna h
+            rows = []
+            for fid, blob in gp.con.execute(f"SELECT fid, geom FROM {table}{where}"):
+                p = point_xyz(blob)
+                rows.append((fid,) + ((p[1], p[0], p[2]) if p else (None, None, None)))
+        else:
+            rows = gp.con.execute(f"SELECT fid, lat, lon, h_ground FROM {table}{where}").fetchall()
+        gp.con.executemany(f"UPDATE {table} SET x_m=?, y_m=?, z_m=? WHERE fid=?",
+                           [local_xyz(frame, lat, lon, h) + (fid,) for fid, lat, lon, h in rows])
     rows = gp.con.execute("SELECT fid, lat, lon FROM refs WHERE lat IS NOT NULL "
                           "ORDER BY utc, session, n").fetchall()
     if rows:
@@ -348,8 +396,9 @@ def _parts(geom):
             "MultiPolygon": ("polygons", c)}.get(t, (None, []))
 
 
-def import_layers(gp, files):
-    """Replace all layer_* tables by the given GeoJSON files. Returns {table: rows}."""
+def import_layers(gp, files, frame=None):
+    """Replace all layer_* tables by the given GeoJSON files; point tables get x_m, y_m,
+    z_m about `frame`. Returns {table: rows}."""
     for t in [t for t in gp.tables() if t.startswith("layer_")]:
         gp.drop_table(t)
     counts = {}
@@ -370,7 +419,8 @@ def import_layers(gp, files):
             for pr, _ in items:
                 for k, v in pr.items():
                     col = _slug(k)
-                    if col in ("fid", "geom", "source_file", "h", "stroke_rgba", "fill_rgba", "part"):
+                    if col in ("fid", "geom", "source_file", "h", "stroke_rgba", "fill_rgba", "part",
+                               "x_m", "y_m", "z_m"):
                         col = "prop_" + col
                     if col not in types:
                         props.append((k, col))
@@ -384,7 +434,7 @@ def import_layers(gp, files):
             cols = [(c, types[c]) for _, c in props] + [("stroke_rgba", T), ("fill_rgba", T),
                                                         ("source_file", T)]
             if family == "points":
-                cols += [("h", R), ("part", I)]
+                cols += [("h", R), ("part", I)] + ENU
             gtype = {"points": "POINT", "lines": "MULTILINESTRING", "polygons": "MULTIPOLYGON"}[family]
             gp.ensure_feature_table(table, cols, gtype, z=z,
                                     description=f"{f.name}: {family}, imported from GeoJSON")
@@ -403,7 +453,9 @@ def import_layers(gp, files):
                 base["source_file"] = f.name
                 if family == "points":
                     for i, p in enumerate(parts):
-                        rows.append(dict(base, h=p[2] if len(p) > 2 else None, part=i,
+                        h = p[2] if len(p) > 2 else None
+                        x, y, zz = local_xyz(frame, p[1], p[0], h)
+                        rows.append(dict(base, h=h, part=i, x_m=x, y_m=y, z_m=zz,
                                          geom=gpkg_geometry("POINT", tuple(p[:3] if z else p[:2]), 4326, z)))
                 else:
                     gt = "MULTILINESTRING" if family == "lines" else "MULTIPOLYGON"
@@ -433,7 +485,10 @@ def main(argv=None):
     ap.add_argument("--layers", nargs="*", help="map-layer GeoJSON files (default [season].layers)")
     ap.add_argument("--base-geojson", help="GeoJSON with a kind=base Point [lon, lat, h]")
     ap.add_argument("--base", nargs=3, type=float, metavar=("LAT", "LON", "H"),
-                    help="local frame origin (ellipsoidal h)")
+                    help="the base position (ellipsoidal h); the origin too when none is set")
+    ap.add_argument("--origin", nargs=3, type=float, metavar=("LAT", "LON", "H"),
+                    help="local frame origin (ellipsoidal h), instead of [site.origin]")
+    ap.add_argument("--origin-name", help="name of the --origin point (shown in the CRS name)")
     ap.add_argument("--force", action="store_true", help="re-read sessions even if unchanged")
     ap.add_argument("--no-photos", action="store_true", help="do not extract photos")
     args = ap.parse_args(argv)
@@ -485,20 +540,34 @@ def main(argv=None):
     n_refs = import_refs_csv(gp, refs_texts)
 
     meta = get_meta(gp)
-    frame = resolve_frame(args, cfg, cfg_dir, layer_files, parsed)
-    if frame is None and meta.get("base_lat"):
-        frame = LocalFrame(float(meta["base_lat"]), float(meta["base_lon"]), float(meta["base_h"]),
-                           source=meta.get("frame_source", ""))
+    base = resolve_base(args, cfg, cfg_dir, layer_files, parsed)
+    if base is None and meta.get("base_lat"):
+        base = LocalFrame(float(meta["base_lat"]), float(meta["base_lon"]), float(meta["base_h"]),
+                          name="base", source=meta.get("base_source") or meta.get("frame_source", ""))
+    frame = resolve_origin(args, cfg, base, meta)
+    recompute = frame is not None and (meta.get("origin_key") != frame.key()
+                                       or meta.get("schema_version") != str(SCHEMA_VERSION))
     if frame is not None:
-        gp.add_srs(LOCAL_SRS_ID, f"Ice Cube local {name} (tmerc at base)", "ICECUBE", 1, frame.wkt(),
-                   "Transverse Mercator, k=1, origin at the base; metres east and north of it")
-        set_meta(gp, base_lat=f"{frame.lat:.9f}", base_lon=f"{frame.lon:.9f}", base_h=f"{frame.h:.4f}",
-                 frame_source=frame.source, local_proj=frame.proj_string(), local_srs_id=LOCAL_SRS_ID)
-    set_meta(gp, season=name, schema_version=1)
-    update_local(gp, frame)
+        gp.add_srs(LOCAL_SRS_ID, frame.crs_name(), "ICECUBE", 1, frame.wkt1(),
+                   f"Local ENU display CRS: orthographic at {frame.name}, metres east and north of it",
+                   wkt2=frame.wkt2())
+        set_meta(gp, origin_name=frame.name, origin_lat=f"{frame.lat:.10f}", origin_lon=f"{frame.lon:.10f}",
+                 origin_h=f"{frame.h:.5f}", origin_source=frame.source, origin_key=frame.key(),
+                 local_crs_name=frame.crs_name(), local_wkt=frame.wkt2(), local_proj=frame.proj_string(),
+                 local_proj_tmerc=frame.tmerc_proj_string(), local_srs_id=LOCAL_SRS_ID,
+                 local_frame="ENU: x east, y north, z up (m) about the origin, exact; WGS84")
+    if base is not None:
+        set_meta(gp, base_lat=f"{base.lat:.10f}", base_lon=f"{base.lon:.10f}", base_h=f"{base.h:.5f}",
+                 base_source=base.source)
+        if frame is not None:
+            bx, by, bz = frame.enu(base.lat, base.lon, base.h)
+            set_meta(gp, base_x_m=f"{bx:.5f}", base_y_m=f"{by:.5f}", base_z_m=f"{bz:.5f}")
+    gp.con.execute("DELETE FROM icecube_meta WHERE key IN ('frame_source')")   # schema 1 key
+    set_meta(gp, season=name, schema_version=SCHEMA_VERSION)
+    update_local(gp, frame, recompute)
 
     if layer_files:
-        counts = import_layers(gp, layer_files)
+        counts = import_layers(gp, layer_files, frame)
         print(f"layers: {', '.join(f'{t} ({n})' for t, n in counts.items())}")
     for t in ("captures", "photos", "refs", "tracks", "track_points"):
         gp.update_extent(t)
@@ -508,7 +577,13 @@ def main(argv=None):
                for t in ("sessions", "captures", "photos", "refs", "tracks", "track_points")}
     gp.close()
     print(f"refs.csv rows seen: {n_refs}; photos extracted this run: {n_photos}")
-    print(f"local frame: {frame.source if frame else 'none (no base given; E/N/U left empty)'}")
+    if frame is None:
+        print("local frame: none (no origin or base given; x_m/y_m/z_m left empty)")
+    else:
+        print(f"local frame: ENU about {frame.name} ({frame.source})"
+              + ("; x/y/z_m recomputed for all rows" if recompute else ""))
+    if base is not None:
+        print(f"base: {base.source}")
     print(f"{gpkg_path}: " + ", ".join(f"{t} {n}" for t, n in summary.items()))
     return 0
 

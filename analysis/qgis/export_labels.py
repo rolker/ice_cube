@@ -15,7 +15,8 @@ Columns: the SW Maps CSV columns that icecube's `swmaps_csv` reader already unde
     Fix ID, Remarks (= "<class> <label>"), Horizontal Accuracy, Vertical Accuracy,
 
 followed by session, n, class, label, note, utc, h_ant, pole_m, fix, n_epochs, sd_e_m,
-sd_n_m, sd_u_m, age_s, e_m, n_m, u_m. So an icecube survey entry can use the file as is:
+sd_n_m, sd_u_m, age_s, x_m, y_m, z_m (exact local ENU about the origin, e.g. monument G;
+see local_frame.py). So an icecube survey entry can use the file as is:
 
     [[surveys]]
     reader = "swmaps_csv"
@@ -39,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from import_sessions import _abs, load_config  # noqa: E402
 
 FIELDS = ["session", "n", "class", "label", "note", "utc", "h_ant", "pole_m", "fix", "n_epochs",
-          "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "e_m", "n_m", "u_m"]
+          "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "x_m", "y_m", "z_m"]
 SWMAPS = ["Latitude", "Longitude", "Elevation", "Time", "Fix ID", "Remarks",
           "Horizontal Accuracy", "Vertical Accuracy"]
 

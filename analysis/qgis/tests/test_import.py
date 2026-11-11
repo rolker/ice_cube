@@ -1,8 +1,9 @@
 """Session import on synthetic sessions (made-up positions near 0 N 0 E): tables, photos,
 idempotent re-import keeping user columns, older formats, layers and the label export.
-Run: python3 -m unittest discover analysis/qgis/tests"""
+Run: python3 -m unittest discover -s analysis/qgis/tests"""
 import contextlib
 import csv
+import math
 import io
 import shutil
 import sqlite3
@@ -62,11 +63,11 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(sorted(r[0] for r in self.q("SELECT fix FROM tracks")), [4, 4, 5])
 
         n, cls, photo, pc, h, e, nn, u = self.q(
-            "SELECT n, class, photo, photo_count, h_ground, e_m, n_m, u_m FROM captures WHERE n=2")[0]
+            "SELECT n, class, photo, photo_count, h_ground, x_m, y_m, z_m FROM captures WHERE n=2")[0]
         self.assertEqual((cls, photo, pc), ("object", "photos/2026-12-01_10-00-00/photo_2_20261201T100010Z.jpg", 1))
         self.assertAlmostEqual(e, 3.0, delta=0.01)
         self.assertAlmostEqual(nn, 2.0, delta=0.01)
-        self.assertAlmostEqual(u, 0.1, places=3)    # ground height minus base height
+        self.assertAlmostEqual(u, 0.1, places=3)    # origin = base here (no [site.origin])
         blob = self.q("SELECT geom FROM captures WHERE n=2")[0][0]
         self.assertAlmostEqual(gw.struct.unpack_from("<d", blob, 29)[0], h)   # Z = ground height
         self.assertTrue((self.gpkg.parent / photo).is_file())
@@ -82,7 +83,11 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(s, ("points.csv", "0.5", "bluetooth", "TEST01", "7", "1.800, 1.800 at 10:00:09Z",
                              1, 1, 1, 1, 1, 0))
         meta = dict(self.q("SELECT key, value FROM icecube_meta"))
-        self.assertTrue(meta["local_proj"].startswith("+proj=tmerc +lat_0=0.000100000"))
+        self.assertTrue(meta["local_proj"].startswith("+proj=ortho +lat_0=0.0001 +lon_0=0.0002 "))
+        self.assertTrue(meta["local_wkt"].startswith('PROJCRS["Ice Cube local ENU (origin base)"'))
+        self.assertEqual((meta["origin_name"], meta["base_source"]), ("base", "command line"))
+        for t in ("photos", "refs", "track_points"):
+            self.assertEqual(self.q(f"SELECT count(*) FROM {t} WHERE x_m IS NULL"), [(0,)], t)
         self.assertEqual(self.q("SELECT organization FROM gpkg_spatial_ref_sys WHERE srs_id=?",
                                 imp.LOCAL_SRS_ID), [("ICECUBE",)])
         self.assertEqual(self.q("PRAGMA integrity_check"), [("ok",)])
@@ -134,7 +139,7 @@ class ImportTest(unittest.TestCase):
     def test_v03_control_marks(self):
         root = synth.write_dir(self.d / "in", synth.session_v03())
         run(root.parent, "--gpkg", self.gpkg, "--base", *self.base)
-        rows = self.q("SELECT n, class, pole_m, fix, n_epochs, h_ant, h_ground, e_m, n_m FROM captures ORDER BY n")
+        rows = self.q("SELECT n, class, pole_m, fix, n_epochs, h_ant, h_ground, x_m, y_m FROM captures ORDER BY n")
         self.assertEqual([r[:5] for r in rows], [(1, "control", 1.8, 4, 5), (2, "control", 1.6, 4, 5)])
         for n, _, pole, _, _, h_ant, h_ground, e, nn in rows:
             self.assertAlmostEqual(h_ant - h_ground, pole, places=6)
@@ -162,6 +167,53 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(len(a.track), len(b.track))
         self.assertEqual(a.photos, b.photos)
 
+    # -- origin
+    def test_origin_from_config_and_change_recomputes(self):
+        z = synth.write_zip(self.d / "IceCubeLogger_2026-12-01_10-00-00.zip", synth.session_v05())
+        cfg = self.d / "site.toml"
+        def write_cfg(e, n, u, name):
+            lat, lon, h = synth.offset(e, n, u)
+            cfg.write_text(f'[season]\nname = "s"\ngpkg = "out/season.gpkg"\n[site]\n'
+                           f'base = [{synth.BASE[0]}, {synth.BASE[1]}, {synth.BASE[2]}]\n'
+                           f'[site.origin]\nname = "{name}"\nlat = {lat:.10f}\nlon = {lon:.10f}\n'
+                           f'h = {h:.5f}\nsource = "made up"\n')
+        write_cfg(0.0, 0.0, 0.0, "B0")
+        run(z, "--config", cfg)
+        x0, y0, z0 = self.q("SELECT x_m, y_m, z_m FROM captures WHERE n=2")[0]
+        con = gw.connect(self.gpkg)
+        con.execute("UPDATE captures SET note='kept', label='spigot' WHERE n=2")
+        con.commit()
+        con.close()
+        write_cfg(1.0, -2.0, -0.5, "G")             # move the origin 1 m E, 2 m S, 0.5 m down
+        out = run(z, "--config", cfg)
+        self.assertIn("recomputed for all rows", out)
+        self.assertIn("ENU about G (made up)", out)
+        x1, y1, z1 = self.q("SELECT x_m, y_m, z_m FROM captures WHERE n=2")[0]
+        self.assertAlmostEqual(x1 - x0, -1.0, delta=0.001)
+        self.assertAlmostEqual(y1 - y0, 2.0, delta=0.001)
+        self.assertAlmostEqual(z1 - z0, 0.5, delta=0.001)
+        tp = self.q("SELECT x_m FROM track_points ORDER BY utc LIMIT 1")[0][0]
+        self.assertIsNotNone(tp)
+        self.assertEqual(self.q("SELECT note, label FROM captures WHERE n=2"), [("kept", "spigot")])
+        meta = dict(self.q("SELECT key, value FROM icecube_meta"))
+        self.assertEqual((meta["origin_name"], meta["origin_source"]), ("G", "made up"))
+        self.assertEqual(meta["local_crs_name"], "Ice Cube local ENU (origin G)")
+        self.assertAlmostEqual(float(meta["base_x_m"]), -1.0, delta=0.001)   # base kept separately
+        self.assertEqual(self.q("SELECT srs_name FROM gpkg_spatial_ref_sys WHERE srs_id=?", imp.LOCAL_SRS_ID),
+                         [("Ice Cube local ENU (origin G)",)])
+        self.assertNotIn("recomputed", run(z, "--config", cfg, "--force"))   # same origin: no recompute
+
+    def test_schema1_columns_migrated(self):
+        z = synth.write_zip(self.d / "s.zip", synth.session_v05())
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        con = gw.connect(self.gpkg)                 # make it look like a schema 1 gpkg
+        con.execute("ALTER TABLE captures ADD COLUMN e_m REAL")
+        con.execute("UPDATE icecube_meta SET value='1' WHERE key='schema_version'")
+        con.commit()
+        con.close()
+        self.assertIn("recomputed", run(z, "--gpkg", self.gpkg, "--base", *self.base))
+        self.assertNotIn("e_m", [r[1] for r in self.q("PRAGMA table_info(captures)")])
+
     # -- layers, config and export
     def test_layers_config_and_export(self):
         lay = synth.layers_geojson(self.d / "plan.geojson")
@@ -182,8 +234,10 @@ class ImportTest(unittest.TestCase):
                                 "FROM layer_plan_points WHERE label='A'"),
                          [("A", "predicted", 0.5, "[1.0, 2.0]", "true")])
         self.assertEqual(dict(self.q("SELECT key, value FROM icecube_meta"))["season"], "test-season")
-        e = self.q("SELECT e_m FROM captures WHERE n=1")[0][0]
+        e = self.q("SELECT x_m FROM captures WHERE n=1")[0][0]
         self.assertAlmostEqual(e, 2.0, delta=0.01)
+        x, y = self.q("SELECT x_m, y_m FROM layer_plan_points WHERE kind='base'")[0]
+        self.assertAlmostEqual(math.hypot(x, y), 0.0, places=6)
 
         con = gw.connect(self.gpkg)
         con.execute("UPDATE captures SET label='deck' WHERE n=1")

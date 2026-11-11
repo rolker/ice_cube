@@ -6,10 +6,14 @@ ICECUBE_GPKG environment variable), replaces the current project (it asks first 
 is open), and saves `<season>.qgz` next to the gpkg.
 
 What it sets up:
-- Project CRS: the local transverse Mercator at the base, read from the gpkg's
-  `icecube_meta.local_proj` (written by the import from your private site config), so
-  the map is in metres east/north of the base; measurements are planar metres. Without
-  a local frame the project stays in EPSG:4326. No basemap.
+- Project CRS: "Ice Cube local ENU (origin G)" (or whatever the origin is named), an
+  orthographic projection at the origin, so the map is in metres east (x) and north (y)
+  of the origin; measurements are planar metres (ellipsoid NONE). It is read from the
+  gpkg's `icecube_meta.local_wkt` (WKT2, written by the import from your private site
+  config) with QgsCoordinateReferenceSystem.fromWkt, falling back to the proj strings.
+  When the registry allows it the CRS is saved as a user CRS under that name (so the
+  status bar shows the name, not "Unknown CRS"). If no form gives a valid CRS the script
+  STOPS with an error: it never falls back to longitude/latitude. No basemap.
 - Layers (group "Survey", top to bottom): photos, captures, refs, tracks, track_points
   (off), then a "Map layers" group with every layer_* table, and the sessions table.
 - Styles: captures by class (surface cyan dots, object magenta squares, ref dark slate
@@ -139,8 +143,9 @@ def style_captures(lyr):
         '<b>[% upper(left("class", 1)) || to_string("n") %]</b> [% "class" %] '
         '<i>[% coalesce("label", \'\') %]</i><br>[% "session" %] [% "utc" %]<br>'
         'fix [% "fix" %], [% "n_epochs" %] epochs, sd up [% format_number("sd_u_m" * 100, 1) %] cm'
-        '[% CASE WHEN "u_m" IS NOT NULL THEN \', ground \' || format_number("u_m", 3) || '
-        '\' m vs base\' ELSE \'\' END %]<br>[% coalesce("note", \'\') %]' + PHOTO_TIP)
+        '[% CASE WHEN "x_m" IS NOT NULL THEN \'<br>x \' || format_number("x_m", 3) || \' y \' || '
+        'format_number("y_m", 3) || \' z \' || format_number("z_m", 3) || \' m\' ELSE \'\' END %]'
+        '<br>[% coalesce("note", \'\') %]' + PHOTO_TIP)
     form(lyr, editable=("note", "label"), photo_field="photo", suggest=("label",))
 
 
@@ -225,6 +230,69 @@ def style_map_layer(lyr):
 
 # ----------------------------------------------------------------------------- main
 
+class CrsError(RuntimeError):
+    pass
+
+
+def local_crs(meta):
+    """The project CRS from icecube_meta: WKT2 (fromWkt), then the orthographic and
+    transverse Mercator proj strings (fromProj). Registered as a user CRS when possible.
+    Raises CrsError (never falls back to EPSG:4326)."""
+    name = meta.get("local_crs_name") or "Ice Cube local ENU"
+    tried = []
+    crs = None
+    for kind, key in (("WKT2", "local_wkt"), ("proj", "local_proj"), ("proj tmerc", "local_proj_tmerc")):
+        text = meta.get(key)
+        if not text:
+            continue
+        maker = QgsCoordinateReferenceSystem.fromWkt if kind == "WKT2" else QgsCoordinateReferenceSystem.fromProj
+        try:
+            c = maker(text)
+        except Exception as e:   # noqa: BLE001 (any binding error: try the next form)
+            tried.append(f"{key}: {e}")
+            continue
+        if c.isValid():
+            crs = c
+            print(f"local CRS from {key} ({kind})")
+            break
+        tried.append(f"{key}: not valid")
+    if crs is None:
+        raise CrsError(
+            "Ice Cube: no valid local CRS in the GeoPackage (" + ("; ".join(tried) or
+            "icecube_meta has no local_wkt/local_proj: was an origin given at import?") +
+            "). Re-run import_sessions.py with [site.origin] in the site config; see "
+            "docs/howto/qgis.md, Troubleshooting. Stopped: the project was not built.")
+    return register_user_crs(crs, name)
+
+
+def register_user_crs(crs, name):
+    """Save the CRS as a user CRS called `name` (QGIS 3.18+) and return the registered one,
+    so the status bar shows the name; otherwise return `crs` as is."""
+    try:
+        from qgis.core import Qgis, QgsApplication
+        reg = QgsApplication.coordinateReferenceSystemRegistry()
+        fmt = getattr(getattr(Qgis, "CrsDefinitionFormat", None), "Wkt", None)
+        if fmt is None:
+            from qgis.core import QgsCoordinateReferenceSystem as C
+            fmt = C.FormatWkt
+        existing = [d for d in reg.userCrsList() if d.name == name]
+        if existing:
+            sid = existing[0].id
+            reg.updateUserCrs(sid, crs, name, fmt)
+        else:
+            sid = reg.addUserCrs(crs, name, fmt)
+        if sid is None or sid < 0:
+            raise RuntimeError("addUserCrs returned no id")
+        user = QgsCoordinateReferenceSystem(f"USER:{sid}")
+        if user.isValid():
+            print(f"user CRS {user.authid()} \"{name}\"")
+            return user
+        print("user CRS registered but not readable back; using the CRS as built")
+    except Exception as e:   # noqa: BLE001 (older QGIS: no registry; the CRS still works)
+        print(f"user CRS not registered ({e}); using the CRS as built")
+    return crs
+
+
 def read_gpkg(gpkg):
     con = sqlite3.connect(f"file:{gpkg}?mode=ro", uri=True)
     try:
@@ -250,6 +318,7 @@ def build(gpkg, ask=True):
     tables, meta = read_gpkg(gpkg)
     season = meta.get("season") or os.path.splitext(os.path.basename(gpkg))[0]
     qgz = os.path.join(os.path.dirname(gpkg), season + ".qgz")
+    crs = local_crs(meta)   # before touching the open project: a CRS error stops here
     project = QgsProject.instance()
     if ask and iface is not None and project.mapLayers():
         from qgis.PyQt.QtWidgets import QMessageBox
@@ -263,14 +332,6 @@ def build(gpkg, ask=True):
     project.setTitle(f"Ice Cube {season}")
     project.writeEntryBool("Paths", "/Absolute", False)
 
-    crs = None
-    if meta.get("local_proj"):
-        crs = QgsCoordinateReferenceSystem.fromProj(meta["local_proj"])
-        if not crs.isValid():
-            print("local CRS not understood; keeping EPSG:4326")
-            crs = None
-    if crs is None:
-        crs = QgsCoordinateReferenceSystem("EPSG:4326")
     project.setCrs(crs)
     project.setEllipsoid("NONE")   # planar measurements in the local metres
 
@@ -327,12 +388,19 @@ def build(gpkg, ask=True):
         iface.mapCanvas().setExtent(ext.buffered(max(ext.width(), ext.height()) * 0.05))
         iface.mapCanvas().refresh()
     ok = project.write(qgz)
-    print(f"{'saved' if ok else 'COULD NOT SAVE'} {qgz}; CRS {crs.description() or crs.authid()}")
+    print(f"{'saved' if ok else 'COULD NOT SAVE'} {qgz}; CRS {crs.description() or crs.authid()} "
+          f"(origin {meta.get('origin_name', '?')}, x east, y north, metres)")
     return qgz
 
 
 gpkg_path = choose_gpkg()
 if gpkg_path:
-    build(gpkg_path)
+    try:
+        build(gpkg_path)
+    except CrsError as err:
+        print("ERROR: " + str(err))
+        if iface is not None:
+            from qgis.PyQt.QtWidgets import QMessageBox
+            QMessageBox.critical(None, "Ice Cube: CRS error", str(err))
 else:
     print("no GeoPackage chosen")

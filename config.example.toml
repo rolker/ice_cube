@@ -24,9 +24,23 @@ layers = ["data/layers/base.geojson", "data/layers/lot-boundary.geojson"]
 # labels_csv = "data/qgis/2026-2027-captures.csv"
 
 [site]
-# Local frame (E/N/U columns and the QGIS local CRS: transverse Mercator at the base).
-# First found wins: base, base_geojson, a kind=base Point in the layers above, then (if
-# true) the first RTCM 1005 logged in the sessions. Never commit real values.
+# The base: a known point kept in the gpkg (icecube_meta base_*), and the origin when
+# [site.origin] is not set. First found wins: base, base_geojson, a kind=base Point in the
+# layers above, then (if true) the first RTCM 1005 logged in the sessions. Never commit
+# real values.
 # base = [0.0, 0.0, 0.0]                     # lat, lon (degrees), ellipsoidal h (m)
 base_geojson = "data/layers/base.geojson"    # a GeoJSON with a kind=base Point [lon, lat, h]
 base_from_sessions = false
+
+# Origin of the local frame: ROS-style ENU tangent plane, x east, y north, z up in metres
+# (columns x_m, y_m, z_m of every point table, and the QGIS CRS "Ice Cube local ENU
+# (origin <name>)", an orthographic projection at lat/lon). Use a durable, well-measured
+# mark on the ground (a monument), measured position (not a fitted one), its ground
+# height as h so the mark is z = 0. Changing it makes the next import recompute x/y/z_m
+# of every row. Without it the base is the origin. Never commit real values.
+# [site.origin]
+# name = "G"                                   # short name, shown in the CRS name
+# lat = 0.0                                    # degrees, WGS84 (the RTK frame of the base)
+# lon = 0.0                                    # degrees
+# h = 0.0                                      # ellipsoidal height of the mark (m)
+# source = "where the numbers come from"

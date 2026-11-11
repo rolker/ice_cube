@@ -1,21 +1,25 @@
-"""Geodesy for the session import: WGS84 geodetic <-> ECEF, local E/N/U about a base, and
-the local projected CRS for QGIS.
+"""Geodesy for the session import: WGS84 geodetic <-> ECEF, the local ENU frame, and the
+display CRS for QGIS.
 
 Standard library only, so the import runs with a bare Windows Python too.
 
-The local frame has its origin at the base (the base antenna as broadcast in RTCM 1005, or
-whatever point the site config names). Two flavours, which agree to well under a
-millimetre within a few hundred metres of the origin:
+The local frame is a local tangent plane, ROS style (REP 103, as GeographicLib's
+LocalCartesian): x east, y north, z up, metres, with its origin at a named point given as
+WGS84 geodetic lat, lon and ellipsoidal h (for the Ice Cube yard: lot monument G, from the
+private site config). `LocalFrame.enu()` is exact: ECEF of the point minus ECEF of the
+origin, rotated by the ENU matrix at the origin's lat/lon. z is height above the tangent
+plane at the origin, so it includes the earth-curvature drop (d^2 / 2R: 0.8 mm at 100 m).
 
-- `LocalFrame.enu()`: exact east/north on the tangent plane at the base (what the logger's
-  map uses), and up = ellipsoidal height minus the base height (no earth-curvature drop, so
-  "up" compares heights the way a level does).
-- `LocalFrame.proj_string()` / `wkt()`: a transverse Mercator projection centred on the
-  base with scale 1 and no false easting/northing, for QGIS. A transverse Mercator with
-  k=1 is conformal and true to scale along its central meridian; within 200 m of the
-  origin its scale error is under 1 ppm (0.1 mm at 100 m), so distances and areas measured
-  in QGIS are true metres. An orthographic projection would match the tangent plane more
-  literally but is not conformal and QGIS handles it less well; tmerc is the usual choice.
+The display CRS (`LocalFrame.wkt2()`) is the ellipsoidal orthographic projection (EPSG
+method 9840) at the origin's lat/lon, false easting/northing 0, axes east and north in
+metres. It is exactly the ENU east/north of the point dropped to the ellipsoid surface
+(h = 0) about the origin dropped to the surface. For a point at height h the true x, y are
+larger by the factor (N + h) / N (N about 6390 km): 1.6 ppm per 10 m of height, so under
+1 mm within 100 m of the origin for the heights of a backyard. The table columns x_m, y_m,
+z_m are the exact values; the CRS only places the map. `proj_string()` and `wkt1()` give
+the same projection for programs that want those forms; `tmerc_proj_string()` is a
+transverse Mercator fallback (k = 1 at the origin, agrees with the orthographic to well
+under a millimetre within 100 m).
 """
 from __future__ import annotations
 
@@ -49,11 +53,18 @@ def ecef_to_geodetic(x, y, z):
     return math.degrees(lat), math.degrees(lon), h
 
 
-class LocalFrame:
-    """Local frame about an origin given as geodetic lat, lon (degrees) and ellipsoidal h (m)."""
+def _fmt(v):
+    """A WKT/proj number: enough digits for 0.01 mm, no trailing zeros."""
+    s = f"{v:.10f}".rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
 
-    def __init__(self, lat, lon, h, source=""):
+
+class LocalFrame:
+    """Local ENU frame about an origin: geodetic lat, lon (degrees), ellipsoidal h (m)."""
+
+    def __init__(self, lat, lon, h, name="origin", source=""):
         self.lat, self.lon, self.h = float(lat), float(lon), float(h)
+        self.name = name
         self.source = source
         self._x0 = geodetic_to_ecef(self.lat, self.lon, self.h)
         la, lo = math.radians(self.lat), math.radians(self.lon)
@@ -61,27 +72,65 @@ class LocalFrame:
                    (-math.sin(la) * math.cos(lo), -math.sin(la) * math.sin(lo), math.cos(la)),
                    (math.cos(la) * math.cos(lo), math.cos(la) * math.sin(lo), math.sin(la)))
 
+    def key(self):
+        """A string that changes when the origin moves by more than ~0.01 mm."""
+        return f"{self.lat:.10f} {self.lon:.10f} {self.h:.5f}"
+
     def enu(self, lat, lon, h):
-        """(east, north, up) in metres; up = h - origin h (see the module docstring)."""
+        """Exact (x east, y north, z up) in metres of a geodetic point."""
         x = geodetic_to_ecef(lat, lon, h)
         d = [x[i] - self._x0[i] for i in range(3)]
-        e = sum(self._r[0][i] * d[i] for i in range(3))
-        n = sum(self._r[1][i] * d[i] for i in range(3))
-        return e, n, h - self.h
+        return tuple(sum(self._r[k][i] * d[i] for i in range(3)) for k in range(3))
 
-    def proj_string(self):
-        return (f"+proj=tmerc +lat_0={self.lat:.9f} +lon_0={self.lon:.9f} +k=1 +x_0=0 +y_0=0 "
-                f"+ellps=WGS84 +units=m +no_defs")
+    def geodetic(self, e, n, u):
+        """Inverse of enu(): (lat, lon, h) of a point given in the local frame."""
+        x = [self._x0[i] + self._r[0][i] * e + self._r[1][i] * n + self._r[2][i] * u for i in range(3)]
+        return ecef_to_geodetic(*x)
 
-    def wkt(self, name="Ice Cube local (tmerc at base)"):
-        """OGC WKT 1 of the same projection, for gpkg_spatial_ref_sys."""
+    # -- display CRS
+    def crs_name(self):
+        return f"Ice Cube local ENU (origin {self.name})"
+
+    def wkt2(self, name=None):
+        """WKT2 (ISO 19162:2019) PROJCRS: ellipsoidal orthographic at the origin, metres."""
+        name = name or self.crs_name()
+        deg = 'ANGLEUNIT["degree",0.0174532925199433]'
+        return (
+            f'PROJCRS["{name}",'
+            'BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",'
+            'ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],'
+            f'PRIMEM["Greenwich",0,{deg}],ID["EPSG",4326]],'
+            'CONVERSION["Orthographic at the origin",'
+            'METHOD["Orthographic",ID["EPSG",9840]],'
+            f'PARAMETER["Latitude of natural origin",{_fmt(self.lat)},{deg},ID["EPSG",8801]],'
+            f'PARAMETER["Longitude of natural origin",{_fmt(self.lon)},{deg},ID["EPSG",8802]],'
+            'PARAMETER["False easting",0,LENGTHUNIT["metre",1],ID["EPSG",8806]],'
+            'PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],'
+            'CS[Cartesian,2],'
+            'AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["metre",1]],'
+            'AXIS["northing (Y)",north,ORDER[2],LENGTHUNIT["metre",1]],'
+            'USAGE[SCOPE["Local site map: metres east and north of the origin"],'
+            f'BBOX[{_fmt(self.lat - 0.01)},{_fmt(self.lon - 0.01)},'
+            f'{_fmt(self.lat + 0.01)},{_fmt(self.lon + 0.01)}]]]')
+
+    def wkt1(self, name=None):
+        """OGC WKT 1 of the same projection, for gpkg_spatial_ref_sys.definition."""
+        name = name or self.crs_name()
         return (
             f'PROJCS["{name}",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,'
             f'298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],'
-            f'PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",{self.lat:.9f}],'
-            f'PARAMETER["central_meridian",{self.lon:.9f}],PARAMETER["scale_factor",1],'
+            f'PROJECTION["Orthographic"],PARAMETER["latitude_of_origin",{_fmt(self.lat)}],'
+            f'PARAMETER["central_meridian",{_fmt(self.lon)}],'
             f'PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],'
             f'AXIS["Easting",EAST],AXIS["Northing",NORTH]]')
+
+    def proj_string(self):
+        return (f"+proj=ortho +lat_0={_fmt(self.lat)} +lon_0={_fmt(self.lon)} +x_0=0 +y_0=0 "
+                f"+ellps=WGS84 +units=m +no_defs +type=crs")
+
+    def tmerc_proj_string(self):
+        return (f"+proj=tmerc +lat_0={_fmt(self.lat)} +lon_0={_fmt(self.lon)} +k=1 +x_0=0 +y_0=0 "
+                f"+ellps=WGS84 +units=m +no_defs +type=crs")
 
 
 def enu_scatter(points):

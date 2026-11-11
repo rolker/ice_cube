@@ -10,7 +10,7 @@ The pipeline:
 2. `import_sessions.py` reads every zip (and any extracted session folder) in that folder
    into one GeoPackage per season, `<season>.gpkg`, and copies the photos next to it.
 3. `build_project.py`, run once inside QGIS, makes `<season>.qgz` with the layers styled,
-   the map in local metres about the base, and forms for labelling.
+   the map in local metres about the origin (monument G), and forms for labelling.
 4. You label captures in QGIS. Re-running the import after new sessions adds them and
    keeps your labels. `export_labels.py` writes the captures with labels to a CSV that
    icecube reads.
@@ -44,16 +44,36 @@ copy it to Drive now and then.
 
 Copy `config.example.toml` at the repo root to `config.toml` (git-ignored) and set the
 `[season]` and `[site]` sections: the season name, `input_dir` (the sessions folder),
-`gpkg` (the output file), `layers` (the GeoJSON files) and the local frame source, usually
-`base_geojson` pointing at the layer file with the `kind: base` point. Relative paths are
-relative to the config file. Or keep a private config anywhere and pass `--config`.
+`gpkg` (the output file), `layers` (the GeoJSON files), the base (usually `base_geojson`
+pointing at the layer file with the `kind: base` point) and the origin of the local frame,
+`[site.origin]` with `name`, `lat`, `lon`, `h` (ellipsoidal) and `source`. Relative paths
+are relative to the config file. Or keep a private config anywhere and pass `--config`.
 
-The local frame is a transverse Mercator projection centred on the base, scale 1, metres
-east and north of the base (`+proj=tmerc +lat_0=<base lat> +lon_0=<base lon> +k=1
-+ellps=WGS84`). It is built from your config at import time and stored in the gpkg; the
-repository holds no coordinates. Within a few hundred metres it agrees with the logger
-map's east/north to well under a millimetre, and distances measured in QGIS are true
-metres.
+## The local frame
+
+ROS style local tangent plane (ENU, as GeographicLib's LocalCartesian): **x east, y north,
+z up, in metres, origin at lot monument G**, the upright granite bound next to corner A
+(the most reliable monument). G's position is its measured one (the mean of its four
+visits on 2026-11-11), and its height is the ground at the bound, so G is x = y = z = 0.
+The numbers are only in the private site config; the repository holds no coordinates.
+
+- Every point table (captures, photos, refs, track_points, the `layer_*_points` tables)
+  has `x_m`, `y_m`, `z_m`, computed exactly: ECEF of the point minus ECEF of G, rotated
+  to east/north/up at G (WGS84). `z_m` is height above the tangent plane at G, so it
+  includes the earth-curvature drop (0.8 mm at 100 m). They replace the old `e_m`,
+  `n_m`, `u_m` about the base.
+- The base is kept as a separate known point (`icecube_meta`: `base_lat/lon/h` and its
+  `base_x_m/y_m/z_m` from G). Without `[site.origin]` the base is the origin.
+- If the origin changes in the config, the next import recomputes `x_m`/`y_m`/`z_m` of
+  every row; your `note` and `label` values are not touched.
+- The QGIS CRS is called **"Ice Cube local ENU (origin G)"**: an orthographic projection
+  (EPSG method 9840, on the WGS84 ellipsoid) at G with no false easting/northing, axes
+  east and north in metres. The cursor coordinates in the status bar are x, y from G.
+  The orthographic map is the exact ENU east/north of points on the ellipsoid; for a point
+  h metres above it, true x/y are larger by h / 6390 km (under 0.2 mm across the yard,
+  under 1 mm within 100 m). Use the `x_m`, `y_m`, `z_m` columns for numbers; the map
+  places things to well under a millimetre. Distances measured in QGIS are planar metres
+  (the project's ellipsoid is set to None).
 
 ## Run the import
 
@@ -67,8 +87,9 @@ or from the OSGeo4W Shell (or any Windows Python 3.11+):
 
 Without arguments it reads `[season].input_dir`. You can also name zips or folders:
 `import_sessions.py "G:\My Drive\...\IceCubeLogger_2026-11-20_13-05-00.zip"`. Other
-options: `--gpkg`, `--season`, `--layers`, `--base-geojson`, `--force` (re-read sessions
-that look unchanged), `--no-photos`; `--help` lists them.
+options: `--gpkg`, `--season`, `--layers`, `--base-geojson`, `--origin LAT LON H` (with
+`--origin-name`), `--force` (re-read sessions that look unchanged), `--no-photos`; `--help`
+lists them.
 
 It prints one line per session (format, app version, captures, photos, track epochs) and
 the row counts. **Close the project in QGIS first**: QGIS keeps the file open.
@@ -87,7 +108,7 @@ What it handles:
 
 | table | what | yours to edit |
 |---|---|---|
-| `captures` | one point per capture, key session + n; class, time, heights, fix, scatter, photo, E/N/U about the base | `note`, `label` |
+| `captures` | one point per capture, key session + n; class, time, heights, fix, scatter, photo, x/y/z from G | `note`, `label` |
 | `photos` | one point per photo, at its capture | `note` |
 | `refs` | ref occupations, with pole-check result, visits, and `site` (refs within 0.30 m share a site number) | `note` |
 | `tracks` | the GGA track at 1 Hz, one line per stretch of the same fix quality | |
@@ -96,7 +117,8 @@ What it handles:
 | `layer_*` | your map-layer GeoJSON files, one table per file and geometry type | (replaced on import) |
 
 Point heights (Z) are ellipsoidal: the ground height for captures, photos and refs, the
-antenna height for tracks. `u_m` is the ground height minus the base's height.
+antenna height for tracks. `z_m` is the ground (antenna for track points) above the
+tangent plane at G.
 
 ## Build the QGIS project (once)
 
@@ -105,7 +127,11 @@ antenna height for tracks. `u_m` is the ground height minus the base's height.
    (from Windows the WSL repo is under `\\wsl$\<distro>\home\...`).
 3. Click "Run Script". Pick your `<season>.gpkg` when asked.
 
-It saves `<season>.qgz` next to the gpkg and opens it. From then on, open the .qgz
+It reads the CRS from the gpkg (`fromWkt`, then the proj strings as fallbacks), saves it
+as a user CRS "Ice Cube local ENU (origin G)" (Settings > Custom Projections shows it), and
+prints "local CRS from local_wkt (WKT2)" and "user CRS USER:1000xx ..." in the console.
+The status bar's CRS button then shows that name, not "Unknown CRS" or EPSG:4326. It
+saves `<season>.qgz` next to the gpkg and opens it. From then on, open the .qgz
 (Project > Open). Run the script again only to get fresh styles; it rewrites the .qgz,
 never the data.
 
@@ -172,6 +198,12 @@ survey date; `label` and `class` replace remarks).
 - "no such function: ST_IsEmpty" when changing the gpkg with another SQLite tool: the
   spatial index triggers need GeoPackage functions. Edit in QGIS, or open the file with
   `gpkg_writer.connect()` from Python.
-- QGIS asks for a CRS or the map is empty: check that the import printed a local frame
-  ("local frame: base point in ..."); without one the project stays in longitude/latitude.
-- The tests use only made-up data: `python3 -m unittest discover analysis/qgis/tests`.
+- The script stops with "ERROR: Ice Cube: no valid local CRS in the GeoPackage": the
+  project is not built (it never falls back to longitude/latitude). Check that the
+  import printed "local frame: ENU about G (...)"; if not, add `[site.origin]` to the
+  site config and import again. If it did, the message lists what QGIS rejected; send
+  that line, the QGIS version (Help > About) and the PROJ version shown there.
+- The status bar says "Unknown CRS" or the cursor shows degrees: the project was made
+  by an older build_project.py, or with the old gpkg. Close QGIS, delete the .qgz, and
+  run the current build_project.py again.
+- The tests use only made-up data: `python3 -m unittest discover -s analysis/qgis/tests`.

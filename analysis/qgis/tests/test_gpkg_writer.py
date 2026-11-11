@@ -1,5 +1,5 @@
 """GeoPackage writer: header, WKB, core tables, SRS, upserts and the RTree.
-Run: python3 -m unittest discover analysis/qgis/tests"""
+Run: python3 -m unittest discover -s analysis/qgis/tests"""
 import sqlite3
 import struct
 import sys
@@ -79,15 +79,34 @@ class TestPackage(unittest.TestCase):
     def test_extra_srs(self):
         fr = LocalFrame(0.0001, 0.0002, 30.0)
         gp = gw.GeoPackage(self.path)
-        gp.add_srs(100001, "local", "ICECUBE", 1, fr.wkt())
-        gp.add_srs(100001, "local again", "ICECUBE", 1, fr.wkt())   # replace, not duplicate
+        gp.add_srs(100001, "local", "ICECUBE", 1, fr.wkt1())
+        gp.add_srs(100001, "local again", "ICECUBE", 1, fr.wkt1(), wkt2=fr.wkt2())   # replace
         gp.close()
         con = sqlite3.connect(self.path)
-        rows = con.execute("SELECT srs_name, definition FROM gpkg_spatial_ref_sys WHERE srs_id=100001").fetchall()
+        rows = con.execute("SELECT srs_name, definition, definition_12_063 FROM gpkg_spatial_ref_sys "
+                           "WHERE srs_id=100001").fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], "local again")
-        self.assertIn('PROJECTION["Transverse_Mercator"]', rows[0][1])
-        self.assertIn("+proj=tmerc +lat_0=0.000100000 +lon_0=0.000200000 +k=1", fr.proj_string())
+        self.assertIn('PROJECTION["Orthographic"]', rows[0][1])
+        self.assertTrue(rows[0][2].startswith('PROJCRS["Ice Cube local ENU (origin origin)"'))
+        self.assertEqual(con.execute("SELECT definition_12_063 FROM gpkg_spatial_ref_sys WHERE srs_id=4326")
+                         .fetchone()[0], "undefined")
+        self.assertIn(("gpkg_spatial_ref_sys", "definition_12_063", "gpkg_crs_wkt"),
+                      con.execute("SELECT table_name, column_name, extension_name FROM gpkg_extensions").fetchall())
+        self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        con.close()
+        gw.GeoPackage(self.path).close()    # reopening (core rows re-upserted) still works
+
+    def test_point_xyz_and_drop_columns(self):
+        self.assertEqual(gw.point_xyz(gw.point(1.5, -2.5, 3.0)), (1.5, -2.5, 3.0))
+        self.assertEqual(gw.point_xyz(gw.point(1.5, -2.5)), (1.5, -2.5, None))
+        self.assertIsNone(gw.point_xyz(None))
+        gp = gw.GeoPackage(self.path)
+        gp.ensure_feature_table("pts", [("a", "REAL"), ("e_m", "REAL")], "POINT", z=True)
+        gp.insert("pts", [{"a": 1.0, "e_m": 2.0, "geom": gw.point(0, 0, 0)}])
+        self.assertEqual(gp.drop_columns("pts", ["e_m", "nope"]), [])
+        self.assertNotIn("e_m", gp.columns("pts"))
+        gp.close()
 
     def test_upsert_preserves_user_columns_and_rtree(self):
         gp = gw.GeoPackage(self.path)
@@ -142,7 +161,7 @@ class TestFrame(unittest.TestCase):
         e, n, u = fr.enu(0.001, 0.001, 12.0)
         self.assertAlmostEqual(n, 0.001 * 110574.27, delta=0.05)   # meridian arc at the equator
         self.assertAlmostEqual(e, 0.001 * 111319.49, delta=0.05)
-        self.assertAlmostEqual(u, 2.0, places=9)
+        self.assertAlmostEqual(u, 2.0 - (e * e + n * n) / (2 * 6371000), delta=0.0005)   # curvature drop
 
 
 if __name__ == "__main__":

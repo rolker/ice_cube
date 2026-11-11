@@ -142,6 +142,24 @@ def _wkb_xy(buf, off=0):
     return pts, off
 
 
+def point_xyz(blob):
+    """(x, y, z or None) of a Point/PointZ geometry blob, or None when null or empty."""
+    if blob is None:
+        return None
+    _, _, empty, off = parse_header(blob)
+    if empty:
+        return None
+    order = "<" if blob[off] == 1 else ">"
+    code = struct.unpack_from(order + "I", blob, off + 1)[0]
+    if code % 1000 != 1:
+        raise ValueError("not a point")
+    dim = {0: 2, 1: 3, 2: 3, 3: 4}[code // 1000]
+    v = struct.unpack_from(order + "d" * dim, blob, off + 5)
+    if math.isnan(v[0]):
+        return None
+    return v[0], v[1], (v[2] if code // 1000 in (1, 3) else None)
+
+
 def envelope(blob):
     """(minx, maxx, miny, maxy) of a geometry blob, or None when null or empty."""
     if blob is None:
@@ -226,14 +244,32 @@ class GeoPackage:
                      "longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid")
         c.commit()
 
-    def add_srs(self, srs_id, name, organization, org_id, definition, description=""):
-        """Insert or replace a row of gpkg_spatial_ref_sys."""
+    def add_srs(self, srs_id, name, organization, org_id, definition, description="", wkt2=None):
+        """Insert or replace a row of gpkg_spatial_ref_sys. `definition` is WKT 1; `wkt2`
+        (optional) goes in definition_12_063 of the gpkg_crs_wkt extension, which GDAL and
+        QGIS prefer when present."""
         self.con.execute(
-            "INSERT INTO gpkg_spatial_ref_sys VALUES (?,?,?,?,?,?) ON CONFLICT(srs_id) DO UPDATE SET "
+            "INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
+            "organization_coordsys_id, definition, description) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(srs_id) DO UPDATE SET "
             "srs_name=excluded.srs_name, organization=excluded.organization, "
             "organization_coordsys_id=excluded.organization_coordsys_id, "
             "definition=excluded.definition, description=excluded.description",
             (name, srs_id, organization, org_id, definition, description))
+        if wkt2:
+            self._ensure_crs_wkt()
+            self.con.execute("UPDATE gpkg_spatial_ref_sys SET definition_12_063=? WHERE srs_id=?",
+                             (wkt2, srs_id))
+
+    def _ensure_crs_wkt(self):
+        """Add the gpkg_crs_wkt extension column (WKT 2) to gpkg_spatial_ref_sys."""
+        cols = [r[1] for r in self.con.execute("PRAGMA table_info(gpkg_spatial_ref_sys)")]
+        if "definition_12_063" not in cols:
+            self.con.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 "
+                             "TEXT NOT NULL DEFAULT 'undefined'")
+        self.con.execute("INSERT OR IGNORE INTO gpkg_extensions VALUES (?,?,?,?,?)",
+                         ("gpkg_spatial_ref_sys", "definition_12_063", "gpkg_crs_wkt",
+                          "http://www.geopackage.org/spec120/#extension_crs_wkt", "read-write"))
 
     # -- tables
     def tables(self):
@@ -241,6 +277,16 @@ class GeoPackage:
 
     def columns(self, table):
         return [r[1] for r in self.con.execute(f"PRAGMA table_info({_q(table)})")]
+
+    def drop_columns(self, table, names):
+        """Drop columns that exist (SQLite 3.35+); returns the ones that could not be dropped."""
+        left = []
+        for n in [n for n in names if n in self.columns(table)]:
+            try:
+                self.con.execute(f"ALTER TABLE {_q(table)} DROP COLUMN {_q(n)}")
+            except sqlite3.OperationalError:
+                left.append(n)
+        return left
 
     def _create(self, table, columns, extra_sql, unique):
         cols = ", ".join(f"{_q(n)} {t}" for n, t in columns)
