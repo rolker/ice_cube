@@ -169,6 +169,9 @@ def reference_settings(settings, entry, index):
 
     if not isinstance(entry, dict):
         entry = {}
+    # A field given as "!secret <name>" text (send_gga, port, enabled too, which are
+    # converted below): the entry does not run, and problem() names the field.
+    secret_field = next((k for k in REFERENCE_FIELDS if unresolved_secret(entry.get(k))), "")
     values = dict(REFERENCE_FIELDS, **{k: v for k, v in entry.items() if v is not None
                                        or k == "expect_station"})
     password = Secret(str(entry.pop("password", "") or ""))
@@ -183,7 +186,7 @@ def reference_settings(settings, entry, index):
         gga_position=_text(values["gga_position"]),
         expect_station=_station(values["expect_station"]),
         name=values["name"].strip() if isinstance(values["name"], str) else values["name"],
-        index=index, binary=str(settings["rtkrcv"]),
+        index=index, secret_field=secret_field, binary=str(settings["rtkrcv"]),
         elevation_mask=number("measured_elevation_mask"),
         snr_mask=number("measured_snr_mask"))
     made.work_dir = Path(settings["data_dir"]).absolute() / f"reference-{made.slug}"

@@ -305,6 +305,7 @@ class ReferenceSettings:
     name: str = "reference1"
     index: int = 1
     blocked: str = ""
+    secret_field: str = ""          # the first field given as an unresolved !secret
 
     def option(self, field_name):
         """The option's name as the messages give it: `references[<index>].<field>`."""
@@ -318,16 +319,19 @@ class ReferenceSettings:
     def problem(self):
         """Why the check cannot run with these options ("not configured"), or ""."""
         o = self.option
-        for name, value in (("name", self.name), ("host", self.host),
-                            ("mountpoint", self.mountpoint), ("user", self.user),
-                            ("password", self.password.reveal()), ("frame", self.frame),
-                            ("epoch", self.epoch), ("reset_utc", self.reset_utc),
-                            ("gga_position", self.gga_position),
-                            ("expect_station", self.expect_station)):
-            if unresolved_secret(value):
-                return (f"{o(name)} is a !secret the app cannot read (Home Assistant "
-                        "resolves it only in the configuration it saves): enter this "
-                        "entry in the references list, with the real value or !secret")
+        secret = self.secret_field or next(
+            (name for name, value in (("name", self.name), ("host", self.host),
+                                      ("mountpoint", self.mountpoint), ("user", self.user),
+                                      ("password", self.password.reveal()),
+                                      ("frame", self.frame), ("epoch", self.epoch),
+                                      ("reset_utc", self.reset_utc),
+                                      ("gga_position", self.gga_position),
+                                      ("expect_station", self.expect_station))
+             if unresolved_secret(value)), "")
+        if secret:
+            return (f"{o(secret)} is a !secret the app cannot read (Home Assistant "
+                    "resolves it only in the configuration it saves): enter this "
+                    "entry in the references list, with the real value or !secret")
         if not isinstance(self.name, str) or not re.fullmatch(NAME_PATTERN, self.name):
             return (f"{o('name')} must be 1 to 24 letters, digits, spaces, '_', '.' or "
                     "'-', starting with a letter or digit")

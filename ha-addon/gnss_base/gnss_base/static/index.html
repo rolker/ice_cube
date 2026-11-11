@@ -606,7 +606,7 @@ function renderSummary(sum,refs){
     const v=r.residual_enu||r.raw_enu,raw=!r.residual_enu&&r.raw_enu,c=cls(r.verdict);
     const value=i=>v?(raw?(v[i]<0?"−":"+")+Math.abs(v[i]).toFixed(3)+" m":cm(v[i])):"—";
     // No colour unless current (the app sets verdict null then, as on the card).
-    const why=r.problem||(raw?`raw (station frame minus ours): ${r.no_residual}`:r.residual_enu?r.verdict_reason:r.no_residual||r.verdict_reason);
+    const why=r.problem||(raw?`raw (station frame minus ours): ${r.no_residual}`+(r.not_current?` · not current: ${r.not_current}`:""):r.residual_enu?r.verdict_reason:r.no_residual||r.verdict_reason);
     return `<tr><td><span class="sk ${esc(sk(r.index))}"></span>${esc(r.name)}</td><td>${esc(r.station_id==null?null:"ID "+r.station_id)}</td><td>${esc(r.baseline_km==null?null:r.baseline_km.toFixed(1)+" km")}</td>`+
       [0,1,2].map(i=>`<td class="${esc(c)}">${esc(value(i))}</td>`).join("")+
       `<td>${esc(r.fixed_share==null?null:(r.fixed_share*100).toFixed(0)+" %")}</td><td>${esc(r.session_age_s==null?null:duration(r.session_age_s))}</td><td class="wrap ${esc(c)}">${esc(why)}</td></tr>`}).join("");

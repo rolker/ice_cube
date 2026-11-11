@@ -1368,6 +1368,14 @@ class Migration(unittest.TestCase):
         self.assertTrue(second.problem().startswith("references[2].user is a !secret"))
         self.assertNotIn("cors_pw_name", first.problem())
         self.assertNotIn("other_user_name", second.problem())
+        # A field that is converted (send_gga to a bool) still blocks its entry.
+        settings_ = self.loaded({"references": []})
+        saved = dict(DEFAULTS, **dict(self.OLD, reference2_send_gga="!secret gga_on"))
+        notice = migrate_references(settings_, fetch=lambda: saved)
+        self.assertIn("references[2].send_gga is a !secret,", notice["text"])
+        _, second = all_reference_settings(settings_)
+        self.assertTrue(second.problem().startswith("references[2].send_gga is a !secret"),
+                        second.problem())
         # One secret alone: singular.
         settings_ = self.loaded({"references": []})
         saved = dict(DEFAULTS, **dict(self.OLD, reference_password="!secret x"))
@@ -1869,6 +1877,25 @@ class History(unittest.TestCase):
         self.assertEqual(history.error, "")
         self.assertEqual(len(history.path.read_text().splitlines()), 2)
         self.assertEqual(json.loads(history.daily_path.read_text())["2027-01-01"][0], 2)
+        # An append that failed after writing a line writes it again: read once.
+        with open(history.path, "a") as stream:
+            stream.write(history.path.read_text().splitlines()[-1] + "\n")
+        self.assertEqual(len(self.history().load().bins), 2)
+        # The bins appended but the daily file failed: only the daily file again.
+        history.add(self.wall + 30, (0.52, -1.19, 1.13))
+        history.close_bin()
+        job = history.take()
+        real_replace = os.replace
+        with mock.patch("os.replace", side_effect=OSError(5, "EIO")):
+            self.assertFalse(history.write(job))
+        lines = len(history.path.read_text().splitlines())   # with the line added above
+        history.restore(job)
+        again = history.take()
+        self.assertEqual((again["lines"], again["daily"] is None), ([], False),
+                         "the appended line is not written twice")
+        self.assertTrue(history.write(again))
+        self.assertIs(os.replace, real_replace)
+        self.assertEqual(len(history.path.read_text().splitlines()), lines)
         # A failed rewrite is done again, from the bins.
         self.wall += 2 * 86400
         history.add(self.wall, (0.5, -1.2, 1.1))
@@ -1880,7 +1907,7 @@ class History(unittest.TestCase):
         history.restore(job)
         job = history.take()
         self.assertTrue(job["rewrite"], "tried again")
-        self.assertEqual(len(job["lines"]), 3)
+        self.assertEqual(len(job["lines"]), 4)
         self.assertIsNotNone(job["daily"])
 
     def test_flush_restores_on_failure(self):
@@ -1915,6 +1942,11 @@ class History(unittest.TestCase):
         self.assertEqual(list(json.loads(history.daily_path.read_text())), ["2027-01-01"])
         self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.', "untouched")
         self.assertEqual(self.history().load().error, "", "the next start reads it fine")
+        # Damaged again within the same second: the first copy is kept.
+        history.daily_path.write_text("{")
+        self.history().load()
+        self.assertEqual(aside.read_text(), '{"2026-12-30": [5, 0.')
+        self.assertEqual(aside.with_name(aside.name + "-2").read_text(), "{")
 
     def test_a_daily_file_that_cannot_be_moved_is_not_overwritten(self):
         self.folder.joinpath("reference-abcd-daily.json").write_text("[1, 2")
@@ -2471,7 +2503,8 @@ class Page(unittest.TestCase):
         self.assertNotIn("r.slug", marks, "map markers too")
         summary_ = html[html.index("function renderSummary"):html.index("const refMarks")]
         self.assertIn("c=cls(r.verdict)", summary_, "colour only from the app's verdict")
-        self.assertNotIn("not current: ${r.not_current}", summary_)
+        self.assertIn('raw (station frame minus ours): ${r.no_residual}`+(r.not_current?',
+                      summary_, "a raw row says when it is not current")
         self.assertIn("sp.horizontal_m", summary_)
         self.assertNotIn("sp.enu", summary_)
 

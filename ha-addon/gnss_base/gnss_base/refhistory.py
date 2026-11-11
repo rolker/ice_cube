@@ -112,6 +112,8 @@ class ReferenceHistory:
                         res = item.get("res")
                         if start < cutoff or count < 1 or len(raw) != 3:
                             continue
+                        if self.bins and start <= self.bins[-1][0]:
+                            continue     # a line written again after a failed append
                         if res is not None and len(res) != 3:
                             res = None
                         sid = item.get("sid")
@@ -152,6 +154,11 @@ class ReferenceHistory:
         the only copy of the past daily means; if that fails, write no daily file."""
         stamp = datetime.fromtimestamp(self._wall(), timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         aside = self.daily_path.with_name(f"{self.daily_path.name}.corrupt-{stamp}")
+        number = 1
+        while aside.exists():      # never replace a file moved aside before
+            number += 1
+            aside = self.daily_path.with_name(
+                f"{self.daily_path.name}.corrupt-{stamp}-{number}")
         try:
             os.replace(self.daily_path, aside)
         except OSError as move_error:
@@ -238,7 +245,9 @@ class ReferenceHistory:
         again (from the bins, which hold its lines); the daily file is written again."""
         if job is None:
             return
-        if job["rewrite"]:
+        if job.get("lines_done"):
+            pass                 # the bins file was written; only the daily file failed
+        elif job["rewrite"]:
             self._rewritten = None
         else:
             self._pending[:0] = job["lines"]
@@ -258,6 +267,7 @@ class ReferenceHistory:
             elif text:
                 with open(self.path, "a") as stream:
                     stream.write(text)
+            job["lines_done"] = True     # for restore: not to be written again
             if job["daily"] is not None:
                 _replace(self.daily_path, job["daily"])
             self.write_error = ""
