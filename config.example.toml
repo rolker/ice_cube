@@ -7,8 +7,10 @@ data_dir = "data"
 # Where generated figures and results are written
 output_dir = "output"
 
-# Season GeoPackage for QGIS: analysis/qgis/import_sessions.py, export_labels.py and
-# build_project.py (see docs/howto/qgis.md). The outputs hold positions: keep them out of
+# Season GeoPackage for QGIS: analysis/qgis/import_sessions.py, export_labels.py,
+# build_project.py and the Ice Cube QGIS plugin, whose "Site config" setting takes this
+# file (its own Settings, kept by QGIS, override gpkg, input_dir and layers; see
+# docs/howto/qgis.md). The outputs hold positions: keep them out of
 # the repository (your Drive season folder, or a local folder).
 [season]
 name = "2026-2027"

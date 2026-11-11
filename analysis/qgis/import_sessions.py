@@ -44,7 +44,8 @@ gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it); rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
-importing.
+importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
+`run()` is the same import as a function (the plugin calls it in a background task).
 """
 from __future__ import annotations
 

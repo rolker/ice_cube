@@ -44,7 +44,9 @@ QGIS. Standard library only (Python 3.11+); settings in the repo-root `config.to
 | Script | Does |
 |---|---|
 | `qgis/import_sessions.py [zips/folders]` | Sessions (0.5 points.csv, 0.3 control marks, 0.2 tracks), photos, refs, tracks and map layers into `<season>.gpkg`; incremental, keeps the `note`/`label` columns edited in QGIS |
-| `qgis/build_project.py` | Run inside QGIS: `<season>.qgz` with the local CRS, styles, forms and photo map tips |
+| `qgis/build_project.py` | Run inside QGIS: `<season>.qgz` with the local CRS, styles, forms and photo map tips (keeps the previous one as `.qgz.bak`) |
+| `qgis/plugin/icecube_qgis/` | The Ice Cube QGIS plugin (3.34+ and 4.x): Import new sessions (in a background task), Build / refresh project, Export labels, Open photos folder, Settings |
+| `qgis/package_plugin.py OUT_DIR` | Builds `OUT_DIR/icecube_qgis.zip` with the pipeline modules copied in, for Plugins > Install from ZIP |
 | `qgis/export_labels.py` | Captures with labels to a CSV in the SW Maps columns icecube's `swmaps_csv` reader takes |
 | `qgis/gpkg_writer.py`, `logger_session.py`, `local_frame.py` | GeoPackage 1.3 writer on sqlite3, session parsing, local frame |
 
