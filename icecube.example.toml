@@ -17,6 +17,9 @@ z0 = 0.0
 # the logger map (kind="origin" layer point). Copy lat, lon and ellipsoidal h of that
 # origin here (in your private copy only) and leave out `origin` and `site_config`:
 # origin_geodetic = [0.0, 0.0, 0.0]   # lat, lon (degrees), h (m, ellipsoidal)
+# Or read that origin from the season GeoPackage (icecube_meta origin_lat/lon/h), so no
+# number is copied anywhere (use alone, without origin / origin_geodetic / site_config):
+# origin_from_gpkg = "data/qgis/2026-2027.gpkg"
 
 [defaults]
 sigma_z = 0.015           # m, per-point vertical sigma when the file has none
@@ -91,3 +94,71 @@ surface = "ground"
 # level = 0.0    # local metres; default: `percentile` of the surface + `margin`
 margin = 0.05
 percentile = 99.0
+
+# ----------------------------------------------------------------------------------------
+# Topography mode: with one or more [[grids]] the run grids every surface on every grid,
+# applies [[masks]], and writes ESRI ASCII grids, contours and a points-by-pass table
+# (icecube/topo.py; docs/howto/ice-cube.md "Property topography"). [grid] and [outline]
+# are then not used.
+#
+# [output]
+# prj_from_gpkg = "data/qgis/2026-2027.gpkg"   # .prj next to each .asc: the gpkg's local CRS
+#
+# [[masks]]                     # no ground here: soundings inside dropped, nodes left empty
+# path = "data/masks.geojson"   # Polygons, lon/lat
+# kinds = ["structure", "rock"] # and/or names = ["deck", "garden shed"]
+#
+# [[grids]]
+# name = "lot"
+# cell = 1.0
+# capture_radius = 1.5
+# extent_polygon = { path = "data/regions.geojson", name = "lot" }   # or extent = [xmin, xmax, ymin, ymax]
+# margin = 10.0
+# lot = true                    # draw this polygon on every map
+# slope_from_dem = { survey = "lidar", factor = 0.5, floor = 0.05, cap = 0.5 }   # or slope = 0.10
+# contour_interval = 0.25
+#
+# [[surveys]]                   # the soundings table (analysis/qgis/soundings.py)
+# id = "logger"
+# surface = "ground"
+# frame = "local"
+# date = "2026-11-11"
+# reader = "soundings"
+# path = "data/qgis/2026-2027.gpkg"   # or its CSV export
+# sources = ["logger"]          # rows of these sources; classes ground + anchor, use = 1
+# wander_prior = 0.015          # default: the table's prior_m
+# # common_prior = 0.07         # a bias shared by all passes of this survey
+# [surveys.pass_rule]
+# from_file = true              # the table's passes
+#
+# [[surveys]]                   # a bare-earth DEM as low-weight soundings (icecube/dem.py)
+# id = "lidar"
+# surface = "ground"
+# frame = "local"
+# date = "2022-04-01"
+# reader = "dem"
+# path = "data/lidar_local.npz" # xs, ys (local m), Z; or an .asc in local metres
+# tie = 0.0                     # added to Z (e.g. NAVD88 -> local z), measured against RTK
+# extent = [-80.0, 80.0, -80.0, 80.0]
+# sigma_open = 0.10
+# sigma_rough = 0.20
+# rough_slope = 0.15
+# rough_rms = 0.05
+# sigma_h = 0.3
+# capture_radius = 1.5          # a floor on every grid's capture radius for this survey
+# check_rtk = true              # samples off nearby RTK by > check_dz get sigma_bad
+# check_radius = 1.0
+# check_dz = 0.20
+# sigma_bad = 0.30
+# tile_m = 10.0                 # tiles are passes: correlated DEM error
+# wander_prior = 0.05           # per tile
+# common_prior = 0.10           # the DEM as a whole
+# [surveys.pass_rule]
+# from_file = true
+#
+# [[fill]]                      # in topography mode: per grid and outline
+# surface = "ground"
+# grid = "rink"
+# outline = { path = "data/regions.geojson", name = "rink" }
+# percentile = 95.0
+# margin = 0.10

@@ -48,6 +48,8 @@ QGIS. Standard library only (Python 3.11+); settings in the repo-root `config.to
 | `qgis/plugin/icecube_qgis/` | The Ice Cube QGIS plugin (3.34+ and 4.x): Import new sessions (in a background task), Build / refresh project, Export labels, Open photos folder, Settings |
 | `qgis/package_plugin.py OUT_DIR` | Builds `OUT_DIR/icecube_qgis.zip` with the pipeline modules copied in, for Plugins > Install from ZIP |
 | `qgis/export_labels.py` | Captures with labels to a CSV in the SW Maps columns icecube's `swmaps_csv` reader takes |
+| `qgis/soundings.py` | The season's ground heights with per-point sigmas, passes and anchors into a `soundings` table of the gpkg (logger captures and IMU-checked pole stops, SW Maps points with their logs, other networks with a frame shift, PPK corrections); icecube's `soundings` reader takes it. Config `[soundings]` |
+| `qgis/topo_to_gpkg.py RUN_DIR` | An icecube topography run's contours and points-by-pass (with biases) into the gpkg (`layer_topo_contours`, `topo_points`) |
 | `qgis/gpkg_writer.py`, `logger_session.py`, `local_frame.py` | GeoPackage 1.3 writer on sqlite3, session parsing, local frame |
 
 Tests (synthetic sessions near 0 N 0 E): `python3 -m unittest discover analysis/qgis/tests`.

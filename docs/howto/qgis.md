@@ -224,6 +224,25 @@ Point heights (Z) are ellipsoidal: the ground height for captures, photos and re
 antenna height for tracks. `z_m` is the ground (antenna for track points) above the
 tangent plane at G.
 
+## Run Ice Cube (ground topography)
+
+The ground model of the season is not a plugin action yet (it can become one: the steps
+are scripts). From the repo, with a site config holding `[soundings]` (see
+`config.example.toml`) and an icecube config with `[[grids]]` (see `icecube.example.toml`):
+
+    python3 analysis/qgis/soundings.py --config <site.toml>          # soundings table in the gpkg
+    python3 -m icecube run <topo.toml>                                 # grids, contours, figures
+    python3 -m icecube validate <topo.toml> --grid lot                 # optional: how good the sigmas are
+    python3 analysis/qgis/topo_to_gpkg.py <run dir> --config <site.toml>
+
+Close the project in QGIS first (the scripts write the gpkg). Then Build / refresh project
+picks up `layer_topo_contours` under Map layers (labelled with their level; whole metres
+darker) and the `soundings` and `topo_points` tables can be added from the gpkg (Layer >
+Add Layer > Add Vector Layer). Add the grids with Layer > Add Raster Layer: `z_*.asc`
+(height, m), `sigma_*.asc` (node uncertainty), `count_*.asc`, `flags_*.asc` (-1 masked, else
+the inconsistency count) from the run folder; each has a `.prj` with the project's local CRS.
+How it works, the error budget and the validation: `docs/howto/ice-cube.md`, section 5.
+
 ## Without the plugin
 
 The scripts the plugin runs work on their own; use them if the plugin is not installed

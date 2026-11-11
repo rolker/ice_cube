@@ -268,7 +268,87 @@ surface is flagged at more than 80 % of the crossing nodes when the pass bias si
 0.5 cm (the home-base case), a +20 cm one when it is 3 cm (last season's case), a
 +10 cm one is then missed, and a bias-free session gets no invented bias.
 
-## 5. Limits
+## 5. Property topography (several grids, a DEM, GIS outputs)
+
+The same estimator, used for the whole property's ground rather than one rink survey:
+every survey of the fall goes in with its own sigma per point, the 2022 state LiDAR fills
+what nobody walked, and the result goes to QGIS. Three steps:
+
+    python3 analysis/qgis/soundings.py --config site.toml        # the soundings table
+    python3 -m icecube run topo.toml                              # [[grids]] in the config
+    python3 -m icecube validate topo.toml --grid lot              # how honest the sigmas are
+    python3 analysis/qgis/topo_to_gpkg.py <run dir> --config site.toml
+
+### The soundings table (`analysis/qgis/soundings.py`)
+
+One row per ground height in the season GeoPackage (`soundings`, rebuilt every run), in the
+project's local frame, with `sigma_z`, `sigma_xy`, `pass_id`, the source's pass prior, a class
+(ground, anchor, object), flags and `use`. Sources: logger captures (from the gpkg) and pole
+stops (from the raw sessions), SW Maps points with the receiver's NMEA log, and SW Maps points
+from another network moved by a measured offset. An RTK rover reports base + baseline, so a
+point taken while an older base coordinate was broadcast is moved by the difference
+(`base_history`). The error budget per point, all terms independent:
+
+| term | value | from |
+|---|---|---|
+| RTK | max(1 cm, 1 s scatter, GST height sigma) | the receiver |
+| correction age | 1 mm per second over 2 s | Nov 4: 3 cm low at 35 s |
+| fix settling | 8 cm x (1 - t/90 s)^2 for logger captures; SW Maps points and stops within 90 s are dropped | Nov 3/4: 10-30 cm for 25-75 s after a re-fix |
+| pole | pole x (1 - cos tilt) + 1 cm tip sink (none on a mark); horizontally pole x sin tilt | tilt 1 deg with the bubble, 2 deg IMU-checked, 5 deg unknown |
+| ground | 1.5 cm (none on a mark) | grass and pole placement |
+
+The slowly varying RTK wander is not in this sigma: it is the pass bias the crossover
+solves. Rows are left out (flags) when float, on another reference station, in a fix that
+began with a float-to-fix jump over 1 m (a false fix) unless other data agree with that
+pass (`suspect_verified`), listed as known bad, or a stop that duplicates a capture.
+
+**Pole stops**: runs of RTK fixed epochs where a 2 s window holds within 3 cm horizontally
+and 1.2 cm height SD. For logger sessions the phone's gravity sensor must also be steady
+(RMS 0.5 deg over the window) and within 2 deg of the median gravity direction during that
+session's refs and controls (taken with the bubble): an uncalibrated plumb reference that
+needs nothing but the phone staying on the pole. Without that check (SW Maps logs have no
+IMU) stops are left out (`require_plumb`): on the Nov 4 walk they read a median 4 cm low
+against nearby points, a leaning pole.
+
+**Anchors**: refs, controls, and any point within 10 cm of a ref site (the deck checkpoint,
+the monuments). They enter the crossover only, paired with other visits to the same mark at
+any distance and without the slope term; they are not gridded (a mark top is not the lawn).
+
+### In icecube
+
+- `reader = "soundings"` (gpkg or CSV; `sources`, `classes`, `use_only`) with
+  `pass_rule.from_file = true`; the gpkg's origin must be the run's (`[site]
+  origin_from_gpkg` reads it).
+- Per-survey `wander_prior`, and `common_prior`: one more bias shared by all passes of a
+  survey (a day on a distant network), so a pass with no overlap of its own takes the
+  survey's bias instead of zero.
+- `reader = "dem"`: a DEM grid as soundings (`dem.py`): 10 cm in the open, 20 cm where steep
+  or rough, 30 cm where it disagrees with RTK; 10 m tiles are passes (the DEM's error is
+  correlated), with a 5 cm tile prior and a 10 cm common prior, so the DEM's offset is solved
+  where RTK overlaps and does not average down where it does not.
+- `[[grids]]`, `[[masks]]`, slope allowance from the DEM (`slope_from_dem`), per-survey
+  capture radius, `[[fill]]` per grid and outline; outputs `z/sigma/count/flags_<surface>_<grid>.asc`
+  with `.prj`, `contours_*.geojson`, `points_<surface>.csv` (every point with its pass,
+  bias and corrected height), maps.
+- `python -m icecube validate`: leave one session out (each session's soundings predicted
+  from the others; z = residual / sqrt(node sigma^2 + point sigma^2 + pass prior^2)),
+  anchor repeat statistics, RTK minus DEM by DEM class, coverage and sigma per grid.
+
+### Fall 2026 (private data, relative numbers)
+
+Soundings: 141 logger surface captures, 21 logger anchors, 9 IMU-verified pole stops (of
+about 900 found; most were captures already, inside 90 s of a fix, or not plumb), 274 Nov 4
+and 21 Nov 3 points, 304 October points, about 4000 LiDAR samples on the lot. The
+crossover put October (another network) at **+10.5 +- 1.0 cm** as a whole (earlier
+comparisons said 7-8 cm, but left out a 3-4 cm change of the base coordinate), home-base
+passes within +-2.3 cm of zero, and the LiDAR at +0.1 +- 2.0 cm after its tie. The 143 anchor
+pairs (deck checkpoint, monuments) agree to 0.4 cm rms after adjustment. Leaving one session
+out, the Nov 4 walk is predicted to 4.2 cm (robust sd, z rms 1.19), the Nov 11 perimeter
+walk to 8.8 cm over mostly LiDAR ground (z rms 0.78: the DEM sigmas are a little
+conservative). On the 0.5 m rink grid the node sigma is 2.3 cm (median) inside the candidate
+outline.
+
+## 6. Limits
 
 - One bias per pass. Wander inside a pass is noise to this tool; keep passes short
   (`max_s`) when there is time, and overlap them.

@@ -46,3 +46,62 @@ base_from_sessions = false
 # lon = 0.0                                    # degrees
 # h = 0.0                                      # ellipsoidal height of the mark (m)
 # source = "where the numbers come from"
+
+# Ground soundings for icecube: analysis/qgis/soundings.py writes a `soundings` table into
+# the season gpkg (one row per ground height, with its sigma, pass and flags; see the
+# script's docstring and docs/howto/ice-cube.md). Paths are relative to this file. Never
+# commit real values (the files hold positions).
+[soundings]
+# gpkg = "data/qgis/2026-2027.gpkg"     # default: [season].gpkg
+# csv = "data/qgis/soundings.csv"       # also write the rows to a CSV
+# The base coordinates broadcast before the current one (the gpkg's base): CSV with
+# start_utc, end_utc, lat, lon, h; positions taken then are moved by (current - then).
+# base_history = "data/base_history.csv"
+# Post-processed (PPK) results per capture: session, n, action (replace | flag), x_m, y_m,
+# z_m, sigma_z, note. Missing file: nothing applied.
+# corrections_csv = "data/ppk_corrections.csv"
+settle_s = 90.0          # points within this many seconds of an RTK fix start are not trusted
+suspect_jump_m = 1.0     # a fix that began with a bigger float-to-fix jump is suspect (false fix)
+max_pass_s = 600.0       # a pass (one RTK bias for icecube) is cut after this long
+# [soundings.sigma]      # the error budget (m): floor, floor_h, age_free_s, age_rate,
+#                        # settle_extra, tip_sink, ground, tilt_bubble_deg, tilt_imu_deg, tilt_unknown_deg
+# [soundings.stops]      # pole-stop detector: window_s = 2, max_h_m = 0.03, max_sd_z_m = 0.012,
+#                        # imu_stable_deg = 0.5, imu_plumb_deg = 2, require_plumb = true
+
+# Logger sessions: captures from the gpkg, pole stops from the raw sessions.
+# [[soundings.sources]]
+# id = "logger"
+# type = "logger"
+# station = 290                          # the base's reference station id (others: excluded)
+# prior_m = 0.015                        # expected RTK wander per pass on the home base
+# session_paths = ["data/sessions/2026-2027"]
+# [[soundings.sources.exclude]]          # known-bad captures (or utc = [[start, end]])
+# session = "2026-12-01_10-00-00"
+# n = [12, 13]
+# reason = "false fix"
+
+# SW Maps points with the receiver's NMEA log (.ubx with GGA and GST).
+# [[soundings.sources]]
+# id = "swmaps_dec"
+# type = "swmaps"
+# session = "2026-12-05_walk"
+# date = "2026-12-05"
+# station = 290
+# pole_m = 1.8
+# prior_m = 0.015
+# points_csv = ["data/swmaps/walk_Layer1.csv"]
+# nmea_log = "data/swmaps/walk.ubx"
+
+# SW Maps points on another network, moved by a measured ours-minus-theirs offset.
+# [[soundings.sources]]
+# id = "cors"
+# type = "swmaps_points"
+# session = "2026-10_cors"
+# pole_m = 1.8
+# base_history = false
+# shift_enu = [0.0, 0.0, 0.0]            # east, north, up (m) added to every point
+# shift_measured_utc = "2026-11-04T03:11:00Z"   # adds (current base - base in force then)
+# prior_m = 0.04
+# common_prior_m = 0.07                  # a bias shared by the whole survey
+# points_csv = ["data/swmaps/topo.csv", "data/swmaps/things.csv"]
+# classes = { "things" = "object" }      # layer file name part -> class (default ground)
