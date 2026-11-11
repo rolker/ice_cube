@@ -1,9 +1,10 @@
-# Ice Cube Logger 0.3
+# Ice Cube Logger 0.4
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. It shows antenna
 and ground heights, a local map with your own GeoJSON layers (no basemap, no network),
-checks the reference frame and base position, and shares a session as a zip.
+checks the reference frame and base position, and shares a session as a zip. It works in
+portrait or landscape, and the screen can be locked to how the phone sits on the pole.
 
 ## Build
 `./gradlew assembleDebug test lint` (needs the Android SDK; set `sdk.dir` in
@@ -12,6 +13,10 @@ folder in Android Studio and press Run.
 
 ## Settings
 Press Settings on the main screen. Changes apply at the next Connect.
+- Display: Screen orientation: Auto (follow the system, including its auto-rotate
+  toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
+  uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
+  pole does not flip. It applies at once. See Screen orientation below.
 - Caster: host, port, mount point, user, password (shown as dots), Log corrections,
   Connect caster at app launch, Frame (Unknown, ITRF2020, ITRF2014, ITRF2008,
   NAD83(2011), WGS84) and an optional Frame epoch (decimal year). See Frames below.
@@ -39,6 +44,28 @@ Press Settings on the main screen. Changes apply at the next Connect.
    session with the pole height in effect, and puts it on the map if there is a fix.
 5. Press Stop session when finished. If a link drops, the app logs it and reconnects
    (Bluetooth every 3 to 30 s, USB on re-attach, caster every 5 to 60 s).
+
+## Screen orientation
+Lock the screen to the mount (Settings > Display): Landscape when the phone sits with its
+top to the left, Reverse landscape when the top is to the right, Portrait when upright.
+Every screen works in both orientations:
+- Main: in landscape, warnings (frame mismatch, base moved, layers don't match) in a red
+  banner across the top, status scrolling on the left, buttons in pairs on the right. The
+  title bar is hidden. In portrait the banner is also at the top, above one scrolling
+  column. Buttons are 56 dp (drawn) for gloves.
+- Map: in landscape Center, Fit and Mark control are a column on the right edge and the
+  status bar is hidden (swipe down to show it); the legend, scale bar and the info lines
+  never sit under them.
+- Settings and Sessions scroll and are at most 640 dp wide, centred.
+
+Rotating (or changing the setting) does not restart a screen: logging goes on in the
+service, the map keeps its zoom, centre and follow mode, an open share dialog stays open
+and typed Settings values stay.
+
+The IMU log is not affected: `imu.csv` is always in the phone's raw sensor axes, whatever
+the screen orientation. Remounting the phone (e.g. portrait to landscape on the pole)
+changes how those axes sit relative to the pole, so a plumb (tilt) calibration from the
+IMU holds only for one mount; redo it after remounting.
 
 ## Heights
 The main screen shows, from the latest GGA (under 5 s old):
@@ -154,7 +181,8 @@ folder path is on the main screen.
 - `gps_chunks.csv`: `elapsed_ns,byte_offset,length` for each read, for USB or Bluetooth
 - `corrections.rtcm`: every byte from the caster, unchanged (when Log corrections is on)
 - `ntrip_chunks.csv`: `elapsed_ns,byte_offset,length` for each caster read
-- `imu.csv`: acc, grav and gyro samples (m/s², rad/s); times are sensor event times
+- `imu.csv`: acc, grav and gyro samples (m/s², rad/s) in the phone's raw sensor axes (not
+  the screen's); times are sensor event times
 - `events.csv`: session start and stop, links connected and lost (with transport and
   device), retries, pole height, control marks, frame, base position and checks, and final
   counts
