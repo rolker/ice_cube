@@ -48,10 +48,13 @@ import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
 import rink.icecube.logger.core.ScreenOrientation;
+import rink.icecube.logger.core.SurveyLimits;
 
 /**
  * Display, caster, GPS link, survey and map settings, saved to SharedPreferences when the
- * screen is left (layer checkboxes and Screen orientation save at once). Caster and link changes take effect at the next
+ * screen is left (layer checkboxes and Screen orientation save at once). Survey also holds
+ * the capture settings: ref duration, pole check tolerance, volume keys, sound, vibration,
+ * earlier refs and capture labels on the map. Caster and link changes take effect at the next
  * Connect; pole height and Frame changes apply at once and are logged in a running session.
  * The password is only shown as dots.
  */
@@ -68,6 +71,9 @@ public final class SettingsActivity extends Activity {
     private TextView frameError, poleError, layersHeader;
     private LinearLayout layerList;
     private Spinner orientationSpinner;
+    private EditText refSeconds, poleTolerance;
+    private TextView refError, toleranceError;
+    private CheckBox volumeKeys, sound, vibration, earlierRefs, labelCaptures;
     private static final int IMPORT_LAYERS = 7;
 
     @Override protected void onCreate(Bundle b) {
@@ -157,6 +163,23 @@ public final class SettingsActivity extends Activity {
         });
         poleOther.addTextChangedListener(watcher(this::updatePoleVisibility));
         updatePoleVisibility();
+        refSeconds = field(c, "Ref duration, s (10 to 300): fixed epochs averaged for a Ref capture",
+                p.getString(Settings.REF_SECONDS, String.valueOf(SurveyLimits.REF_SECONDS_DEFAULT)), InputType.TYPE_CLASS_NUMBER);
+        refError = error(c);
+        refSeconds.addTextChangedListener(watcher(() -> refError.setText(problem(true))));
+        poleTolerance = field(c, "Pole check tolerance, cm (0.5 to 20): ground height difference to the last visit",
+                p.getString(Settings.POLE_TOLERANCE_CM, "3"), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        toleranceError = error(c);
+        poleTolerance.addTextChangedListener(watcher(() -> toleranceError.setText(problem(false))));
+        volumeKeys = check(c, "Volume keys: Mark / Mode (down = MARK, up = MODE on the map)", Settings.volumeKeys(p));
+        sound = check(c, "Sound for captures, modes, refs and errors", Settings.sound(p));
+        vibration = check(c, "Vibration for captures, modes, refs and errors", Settings.vibration(p));
+        earlierRefs = check(c, "Show earlier refs (refs.csv) on the map", Settings.showEarlierRefs(p));
+        labelCaptures = check(c, "Number captures on the map (S12, O13, R14)", Settings.labelCaptures(p));
+        TextView soundHelp = new TextView(this);
+        soundHelp.setText("Sounds play on the media volume, which silent mode does not mute. Set it before going out: "
+                + "the volume keys do not change it while the map is in front and Volume keys is on.");
+        c.addView(soundHelp);
 
         header(c, "Map", pad);
         layersHeader = new TextView(this);
@@ -192,7 +215,7 @@ public final class SettingsActivity extends Activity {
         s.addView(m, new android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER_HORIZONTAL));
         setContentView(s);
-        if (Build.VERSION.SDK_INT >= 31 && !MainActivity.bluetoothAllowed(this)) {
+        if (Build.VERSION.SDK_INT >= 31 && !Control.bluetoothAllowed(this)) {
             requestPermissions(new String[] {Manifest.permission.BLUETOOTH_CONNECT}, 2);
         }
         loadDevices();
@@ -233,6 +256,15 @@ public final class SettingsActivity extends Activity {
     private String epochProblem() {
         try { ReferenceFrame.parseEpoch(frameEpoch.getText().toString()); return ""; }
         catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
+    }
+
+    /** The ref duration (ref) or tolerance problem, or "". */
+    private String problem(boolean ref) {
+        try {
+            if (ref) SurveyLimits.parseRefSeconds(refSeconds.getText().toString());
+            else SurveyLimits.parseToleranceCm(poleTolerance.getText().toString());
+            return "";
+        } catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
     }
 
     private boolean poleIsOther() { return poleSpinner.getSelectedItemPosition() >= PoleHeight.PRESETS.length; }
@@ -377,7 +409,7 @@ public final class SettingsActivity extends Activity {
         BluetoothManager bm = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
         BluetoothAdapter a = bm == null ? null : bm.getAdapter();
         if (a == null) note = "This phone has no Bluetooth.";
-        else if (!MainActivity.bluetoothAllowed(this)) note = "Allow the Nearby devices permission to list paired devices.";
+        else if (!Control.bluetoothAllowed(this)) note = "Allow the Nearby devices permission to list paired devices.";
         else if (!a.isEnabled()) note = "Bluetooth is off. Turn it on, then reopen Settings.";
         else {
             for (BluetoothDevice d : a.getBondedDevices()) {
@@ -436,6 +468,14 @@ public final class SettingsActivity extends Activity {
         } catch (IllegalArgumentException x) {
             Toast.makeText(this, "Pole height not saved: " + x.getMessage(), Toast.LENGTH_LONG).show();
         }
+        e.putBoolean(Settings.VOLUME_KEYS, volumeKeys.isChecked()).putBoolean(Settings.SOUND, sound.isChecked())
+                .putBoolean(Settings.VIBRATION, vibration.isChecked())
+                .putBoolean(Settings.SHOW_EARLIER_REFS, earlierRefs.isChecked())
+                .putBoolean(Settings.LABEL_CAPTURES, labelCaptures.isChecked());
+        if (problem(true).isEmpty()) e.putString(Settings.REF_SECONDS, text(refSeconds));
+        else Toast.makeText(this, "Ref duration not saved: " + problem(true), Toast.LENGTH_LONG).show();
+        if (problem(false).isEmpty()) e.putString(Settings.POLE_TOLERANCE_CM, text(poleTolerance).replace(',', '.'));
+        else Toast.makeText(this, "Pole check tolerance not saved: " + problem(false), Toast.LENGTH_LONG).show();
         int i = device.getSelectedItemPosition();
         if (i >= 0 && i < addresses.size()) {
             e.putString(Settings.BT_ADDRESS, addresses.get(i)).putString(Settings.BT_NAME, names.get(i).replace(" (saved)", ""));

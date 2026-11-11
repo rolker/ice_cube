@@ -21,6 +21,8 @@ import java.util.Locale;
 
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.LocalFrame;
+import rink.icecube.logger.core.PointRow;
+import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TrackPoint;
 
 /**
@@ -28,6 +30,11 @@ import rink.icecube.logger.core.TrackPoint;
  * on a Canvas with no basemap. Layer features are projected once per layer load or origin
  * change into Paths in map units (x = east, y = -north); each frame only transforms them
  * to the screen. Pinch zooms, drag pans (and stops following), double tap recenters.
+ *
+ * On top: the 2-minute trail, this session's captures by class (surface small dots,
+ * object squares, ref rings, in the SurveyMode colours, optionally labelled S12, O13,
+ * R14), photos (a camera icon), earlier refs from refs.csv (grey rings, when switched on),
+ * the live position, and a countdown ring at the top centre while a ref occupation runs.
  */
 final class MapView extends View {
     /** A projected feature with its resolved style. */
@@ -46,7 +53,12 @@ final class MapView extends View {
     private List<GeoJson.Feature> features = new ArrayList<>();
     private final List<Drawn> drawn = new ArrayList<>();
     private TrackPoint fix;
-    private TrackPoint[] trail = new TrackPoint[0], marks = new TrackPoint[0];
+    private TrackPoint[] trail = new TrackPoint[0];
+    private PointRow[] captures = new PointRow[0];
+    private List<PointRow> earlierRefs = new ArrayList<>();
+    private Survey.RefView ref;
+    private boolean labels = true;
+    static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
 
     private double cx, cy;               // view centre, map units
     private float ppm;                   // pixels per metre, 0 until first layout
@@ -134,12 +146,18 @@ final class MapView extends View {
         project();
     }
 
-    void setLive(TrackPoint fix, TrackPoint[] trail, TrackPoint[] marks) {
+    void setLive(TrackPoint fix, TrackPoint[] trail, PointRow[] captures, Survey.RefView ref) {
         this.fix = fix;
         this.trail = trail;
-        this.marks = marks;
+        this.captures = captures;
+        this.ref = ref;
         invalidate();
     }
+
+    /** Earlier refs from refs.csv to draw as grey rings (empty for none). */
+    void setEarlierRefs(List<PointRow> refs) { earlierRefs = refs; invalidate(); }
+
+    void setLabels(boolean on) { labels = on; invalidate(); }
 
     void recenter() {
         follow = true;
@@ -147,17 +165,20 @@ final class MapView extends View {
         invalidate();
     }
 
-    /** Fits the layers, trail and marks on screen and stops following. */
+    /** Fits the layers, trail and captures on screen and stops following. */
     void fit() {
         RectF r = new RectF();
         boolean any = false;
         for (Drawn d : drawn) { if (any) r.union(d.bounds); else { r.set(d.bounds); any = true; } }
-        for (TrackPoint[] ps : new TrackPoint[][] {trail, marks}) {
-            for (TrackPoint p : ps) {
-                if (!local(p)) continue;
-                float x = (float) enu[0], y = (float) -enu[1];
-                if (any) r.union(x, y); else { r.set(x, y, x, y); any = true; }
-            }
+        for (TrackPoint p : trail) {
+            if (!local(p)) continue;
+            float x = (float) enu[0], y = (float) -enu[1];
+            if (any) r.union(x, y); else { r.set(x, y, x, y); any = true; }
+        }
+        for (PointRow p : captures) {
+            if (!local(p)) continue;
+            float x = (float) enu[0], y = (float) -enu[1];
+            if (any) r.union(x, y); else { r.set(x, y, x, y); any = true; }
         }
         if (!any || getWidth() == 0) return;
         follow = false;
@@ -175,6 +196,12 @@ final class MapView extends View {
     private boolean local(TrackPoint p) {
         if (frame == null || p == null) return false;
         frame.toEnu(p.lat, p.lon, p.h, enu);
+        return true;
+    }
+
+    private boolean local(PointRow p) {
+        if (frame == null || p == null || !p.hasPosition()) return false;
+        frame.toEnu(p.lat, p.lon, p.hAnt, enu);
         return true;
     }
 
@@ -299,11 +326,13 @@ final class MapView extends View {
         }
         drawOrigin(c);
         drawTrail(c);
-        drawMarks(c);
+        drawEarlierRefs(c);
+        drawCaptures(c);
         drawLabels(c, w, h);
         drawFix(c);
         drawLegend(c);
         drawScale(c, w, h);
+        drawRefRing(c, w);
     }
 
     private void drawTriangle(Canvas c, float x, float y, float r, int color) {
@@ -343,18 +372,101 @@ final class MapView extends View {
         }
     }
 
-    private void drawMarks(Canvas c) {
-        for (TrackPoint p : marks) {
+    private void drawEarlierRefs(Canvas c) {
+        stroke.setStrokeWidth(2 * dp);
+        stroke.setColor(EARLIER_REF_COLOR);
+        for (PointRow p : earlierRefs) {
             if (!local(p)) continue;
             float[] s = screen(enu[0], enu[1]);
-            float r = 5 * dp;
-            dot.setColor(0xFF6A1B9A);
-            c.drawRect(s[0] - r, s[1] - r, s[0] + r, s[1] + r, dot);
-            stroke.setColor(Color.WHITE);
-            stroke.setStrokeWidth(1.5f * dp);
-            c.drawRect(s[0] - r, s[1] - r, s[0] + r, s[1] + r, stroke);
-            if (p.label != null) label(c, p.label, s[0] + r + 2 * dp, s[1] - r, true);
+            c.drawCircle(s[0], s[1], 9 * dp, stroke);
         }
+    }
+
+    /** This session's captures by class; a camera icon for photo rows and next to captures with a photo. */
+    private void drawCaptures(Canvas c) {
+        for (PointRow p : captures) {
+            if (!local(p)) continue;
+            float[] s = screen(enu[0], enu[1]);
+            float x = s[0], y = s[1];
+            float r;
+            switch (p.cls) {
+                case PointRow.SURFACE:
+                    r = 4 * dp;
+                    dot.setColor(SurveyMode.SURFACE.color);
+                    c.drawCircle(x, y, r, dot);
+                    stroke.setColor(Color.WHITE);
+                    stroke.setStrokeWidth(1 * dp);
+                    c.drawCircle(x, y, r, stroke);
+                    break;
+                case PointRow.OBJECT:
+                    r = 6 * dp;
+                    dot.setColor(SurveyMode.OBJECT.color);
+                    c.drawRect(x - r, y - r, x + r, y + r, dot);
+                    stroke.setColor(Color.WHITE);
+                    stroke.setStrokeWidth(1.5f * dp);
+                    c.drawRect(x - r, y - r, x + r, y + r, stroke);
+                    break;
+                case PointRow.REF:
+                    r = 9 * dp;
+                    stroke.setColor(Color.WHITE);
+                    stroke.setStrokeWidth(5 * dp);
+                    c.drawCircle(x, y, r, stroke);
+                    stroke.setColor(SurveyMode.REF.color);
+                    stroke.setStrokeWidth(3 * dp);
+                    c.drawCircle(x, y, r, stroke);
+                    dot.setColor(SurveyMode.REF.color);
+                    c.drawCircle(x, y, 1.5f * dp, dot);
+                    break;
+                default:   // photo row
+                    r = 7 * dp;
+                    drawCamera(c, x, y, r);
+                    break;
+            }
+            if (p.isCapture() && !p.photo.isEmpty()) drawCamera(c, x + r + 5 * dp, y + r + 3 * dp, 5 * dp);
+            if (labels && p.isCapture()) label(c, Survey.label(p.cls) + p.n, x + r + 2 * dp, y - r, true);
+        }
+    }
+
+    /** A small camera: body and lens, about 2r wide, centred on x, y. */
+    private void drawCamera(Canvas c, float x, float y, float r) {
+        dot.setColor(Color.WHITE);
+        c.drawRoundRect(x - r - dp, y - 0.75f * r - dp, x + r + dp, y + 0.75f * r + dp, 2 * dp, 2 * dp, dot);
+        dot.setColor(PHOTO_COLOR);
+        c.drawRoundRect(x - r, y - 0.75f * r, x + r, y + 0.75f * r, 2 * dp, 2 * dp, dot);
+        c.drawRect(x - 0.4f * r, y - r, x + 0.2f * r, y - 0.6f * r, dot);
+        dot.setColor(Color.WHITE);
+        c.drawCircle(x, y, 0.45f * r, dot);
+        dot.setColor(PHOTO_COLOR);
+        c.drawCircle(x, y, 0.28f * r, dot);
+    }
+
+    /** While a ref occupation runs: a ring at the top centre filling up, seconds to go inside. */
+    private void drawRefRing(Canvas c, int w) {
+        Survey.RefView r = ref;
+        if (r == null) return;
+        float rad = 30 * dp, cx0 = w / 2f, cy0 = 12 * dp + rad;
+        int color = r.paused ? 0xFFFFA000 : SurveyMode.REF.color;
+        dot.setColor(0xE6FFFFFF);
+        c.drawCircle(cx0, cy0, rad + 6 * dp, dot);
+        stroke.setStrokeWidth(6 * dp);
+        stroke.setColor(0xFFCFD8DC);
+        c.drawCircle(cx0, cy0, rad, stroke);
+        stroke.setColor(color);
+        c.drawArc(cx0 - rad, cy0 - rad, cx0 + rad, cy0 + rad, -90, (float) (360 * r.progress), false, stroke);
+        String t = String.format(Locale.US, "%.0f", Math.ceil(r.remainingS));
+        float size = text.getTextSize();
+        text.setTextSize(22 * dp);
+        text.setFakeBoldText(true);
+        c.drawText(t, cx0 - text.measureText(t) / 2, cy0 + 8 * dp, text);
+        text.setTextSize(size);
+        text.setFakeBoldText(false);
+        String sub = r.paused ? "PAUSED: not fixed" : r.epochs + " fixed epochs";
+        float tw = text.measureText(sub);
+        c.drawRoundRect(cx0 - tw / 2 - 4 * dp, cy0 + rad + 8 * dp, cx0 + tw / 2 + 4 * dp, cy0 + rad + 12 * dp + size,
+                4 * dp, 4 * dp, box);
+        text.setColor(r.paused ? 0xFFC62828 : 0xFF212121);
+        c.drawText(sub, cx0 - tw / 2, cy0 + rad + 8 * dp + size, text);
+        text.setColor(0xFF212121);
     }
 
     private void drawFix(Canvas c) {
@@ -388,16 +500,27 @@ final class MapView extends View {
         return true;
     }
 
+    /** Fix colours, then the capture classes. */
     private void drawLegend(Canvas c) {
         float pad = 6 * dp, row = 16 * dp, x = 8 * dp, y = 8 * dp;
         float width = 0;
         for (String n : LEGEND_NAMES) width = Math.max(width, text.measureText(n));
-        c.drawRoundRect(x, y, x + width + 26 * dp, y + row * LEGEND_Q.length + pad, 4 * dp, 4 * dp, box);
+        for (SurveyMode m : SurveyMode.values()) width = Math.max(width, text.measureText(m.key));
+        int rows = LEGEND_Q.length + SurveyMode.values().length;
+        c.drawRoundRect(x, y, x + width + 26 * dp, y + row * rows + pad, 4 * dp, 4 * dp, box);
         for (int i = 0; i < LEGEND_Q.length; i++) {
             float cy0 = y + pad + row * i + row / 2 - 2 * dp;
             dot.setColor(qualityColor(LEGEND_Q[i]));
             c.drawCircle(x + 10 * dp, cy0, 5 * dp, dot);
             c.drawText(LEGEND_NAMES[i], x + 20 * dp, cy0 + text.getTextSize() / 3, text);
+        }
+        for (SurveyMode m : SurveyMode.values()) {
+            float cy0 = y + pad + row * (LEGEND_Q.length + m.ordinal()) + row / 2 - 2 * dp;
+            float cx0 = x + 10 * dp;
+            if (m == SurveyMode.SURFACE) { dot.setColor(m.color); c.drawCircle(cx0, cy0, 3.5f * dp, dot); }
+            else if (m == SurveyMode.OBJECT) { dot.setColor(m.color); c.drawRect(cx0 - 4 * dp, cy0 - 4 * dp, cx0 + 4 * dp, cy0 + 4 * dp, dot); }
+            else { stroke.setColor(m.color); stroke.setStrokeWidth(2 * dp); c.drawCircle(cx0, cy0, 4.5f * dp, stroke); }
+            c.drawText(m.key, x + 20 * dp, cy0 + text.getTextSize() / 3, text);
         }
     }
 
@@ -420,7 +543,7 @@ final class MapView extends View {
     }
 
     // ---- view state ----
-    // A rotation does not recreate MapActivity (configChanges), so this object and its view
+    // A rotation does not recreate MainActivity (configChanges), so this object and its view
     // survive as they are. These cover any other recreation (e.g. a font or theme change, or
     // the process restored after being killed in the background).
 

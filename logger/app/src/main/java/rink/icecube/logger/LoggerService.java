@@ -24,8 +24,6 @@ import android.os.SystemClock;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -33,6 +31,7 @@ import java.util.concurrent.Executors;
 
 import rink.icecube.logger.core.BaseCheck;
 import rink.icecube.logger.core.BaseWatch;
+import rink.icecube.logger.core.Epoch;
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
@@ -42,6 +41,7 @@ import rink.icecube.logger.core.RtcmStats;
 import rink.icecube.logger.core.Sourcetable;
 import rink.icecube.logger.core.StationArp;
 import rink.icecube.logger.core.StreamParser;
+import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TrackPoint;
 import rink.icecube.logger.core.UbxConfig;
 
@@ -55,7 +55,7 @@ import rink.icecube.logger.core.UbxConfig;
  * once the link is up.
  *
  * It also keeps what the map and the warnings need: a 2-minute trail of GGA fixes, the
- * session's control marks, the pole height in effect, the reference frame in use (from
+ * session's captures ({@link Survey}: MARK, refs, photos), the pole height in effect, the reference frame in use (from
  * the caster's sourcetable or the Frame setting), the base position from RTCM 1005/1006
  * and how it compares with a map layer's base point.
  */
@@ -97,8 +97,7 @@ public final class LoggerService extends Service {
     private volatile long lastFixNanos;
     private volatile TrackPoint firstFix;
     private final ArrayDeque<TrackPoint> trail = new ArrayDeque<>();
-    private final List<TrackPoint> marks = new ArrayList<>();
-    private int markCount;
+    private volatile Survey survey;
     private volatile double poleHeight;
 
     private volatile BaseWatch baseWatch = new BaseWatch();
@@ -173,6 +172,8 @@ public final class LoggerService extends Service {
             latestGgaNanos = System.nanoTime();
             Gga g = Gga.parse(s);
             lastFix = g;
+            Survey sv = survey;
+            if (sv != null) sv.onEpoch(Epoch.from(g, SystemClock.elapsedRealtimeNanos()));
             onFix(TrackPoint.from(g, SystemClock.elapsedRealtime()));
         });
     }
@@ -283,7 +284,7 @@ public final class LoggerService extends Service {
             rtcmWriteErrors = 0;
             lastFix = null;
             firstFix = null;
-            synchronized (trail) { trail.clear(); marks.clear(); markCount = 0; }
+            synchronized (trail) { trail.clear(); }
             baseWatch = new BaseWatch();
             layerCheck = null;
             layerCheckFile = null;
@@ -293,6 +294,7 @@ public final class LoggerService extends Service {
                 Session s = Session.open(this);
                 s.event("session start app=" + BuildConfig.VERSION_NAME + " android_sdk=" + Build.VERSION.SDK_INT
                         + " device=" + Build.MODEL);
+                survey = new Survey(this, s.dir);
                 session = s;
                 lastDir = s.dir;
                 s.event("pole_height=" + PoleHeight.format(poleHeight));
@@ -313,15 +315,18 @@ public final class LoggerService extends Service {
         if (s != null) s.event(text);
     }
 
-    /** Writes a control mark with the pole height in effect and keeps it for the map. Returns its number. */
-    int markControl() {
-        TrackPoint p = currentFix();
-        int n;
-        synchronized (trail) { n = ++markCount; if (p != null) marks.add(p.withLabel("C" + n)); }
-        event(String.format(Locale.US, "control n=%d pole_height=%s gga_quality=%s", n, PoleHeight.format(poleHeight),
-                p == null ? "none" : String.valueOf(p.quality)));
-        return n;
+    /** MARK in the given mode (see Survey). Refused with an error cue when no session is open. */
+    Survey.Outcome mark(SurveyMode mode) {
+        Survey sv = survey;
+        if (sv == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            return new Survey.Outcome(false, "No session: tap REC to start one");
+        }
+        return sv.mark(mode);
     }
+
+    /** The open session's captures, or null. */
+    Survey survey() { return survey; }
 
     /** Flushes the open session's files, if any, for a snapshot. */
     void flushSession() { Session s = session; if (s != null) s.flushAll(); }
@@ -331,6 +336,9 @@ public final class LoggerService extends Service {
         stopGps("gps stopped (session stop)");
         synchronized (lock) {
             Session s = session;
+            Survey sv = survey;
+            if (sv != null) sv.close();
+            survey = null;
             session = null;
             if (s != null) {
                 StreamParser p = parser;
@@ -442,7 +450,7 @@ public final class LoggerService extends Service {
     private final class GpsWorker implements Runnable {
         final boolean bluetooth, configure, waitForLink;
         final String address;
-        volatile boolean active = true, connected, usbNeedsPermission;
+        volatile boolean active = true, connected, everConnected, usbNeedsPermission;
         volatile String status = "starting";
         volatile long lastDataNanos;
         private volatile GpsLink link;
@@ -492,6 +500,7 @@ public final class LoggerService extends Service {
                 link = l;
                 gpsLink = l;
                 connected = true;
+                everConnected = true;
                 status = "connected";
                 Session s = session;
                 event("gps connected " + l.describe() + " gps_offset=" + (s == null ? 0 : s.gps.offset()));
@@ -573,6 +582,8 @@ public final class LoggerService extends Service {
     long imuSamples() { Session s = session; return s == null ? 0 : s.imu.samples; }
     boolean gpsActive() { return gps != null; }
     boolean gpsConnected() { GpsWorker w = gps; return w != null && w.connected; }
+    /** The GPS link was up at some point since Connect and is now down (it keeps retrying). */
+    boolean gpsLost() { GpsWorker w = gps; return w != null && w.everConnected && !w.connected; }
     boolean usbNeedsPermission() { GpsWorker w = gps; return w != null && !w.bluetooth && w.usbNeedsPermission; }
     String gpsStatus() { GpsWorker w = gps; return w == null ? "off" : w.status; }
     String gpsLinkName() { GpsLink l = gpsLink; return l == null ? null : l.describe(); }
@@ -591,7 +602,6 @@ public final class LoggerService extends Service {
     }
     TrackPoint firstFix() { return firstFix; }
     TrackPoint[] trail() { synchronized (trail) { return trail.toArray(new TrackPoint[0]); } }
-    TrackPoint[] marks() { synchronized (trail) { return marks.toArray(new TrackPoint[0]); } }
     double poleHeight() { return poleHeight; }
     ReferenceFrame.Resolved frame() { return frame; }
     String sourcetableNote() { return sourcetableNote; }

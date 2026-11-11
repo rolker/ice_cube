@@ -16,7 +16,7 @@ import rink.icecube.logger.core.ScreenOrientation;
  *
  * Rotation: every activity declares configChanges for orientation and size in the manifest,
  * so a rotation does not recreate it. Views, typed text, open dialogs and the map's zoom,
- * centre and follow mode stay as they are; MainActivity and MapActivity rearrange the same
+ * centre and follow mode stay as they are; MainActivity (the map) and DetailsActivity rearrange the same
  * views in onConfigurationChanged.
  */
 final class Screen {

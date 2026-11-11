@@ -12,7 +12,8 @@ import java.util.List;
  * Where the app keeps its files. The primary root is Documents/IceCubeLogger/ on
  * Android 11 and later (it survives uninstall). The fallback root is the app's media
  * folder, Android/media/rink.icecube.logger/, used when Documents cannot be written.
- * Both hold sessions/ and layers/.
+ * Both hold sessions/ and layers/; refs.csv (every ref capture, for the pole check) sits
+ * in the root itself.
  */
 final class Storage {
     private Storage() { }
@@ -57,10 +58,30 @@ final class Storage {
         return out;
     }
 
+    /** Bytes in the folder and its sub folders (a session's photos/). */
     static long size(File dir) {
         long n = 0;
         File[] fs = dir.listFiles();
-        if (fs != null) for (File f : fs) n += f.isFile() ? f.length() : 0;
+        if (fs != null) for (File f : fs) n += f.isFile() ? f.length() : f.isDirectory() ? size(f) : 0;
         return n;
+    }
+
+    static final String REFS = "refs.csv";
+
+    /** refs.csv in each root where it exists, primary first (for reading). */
+    static List<File> refsFiles(Context ctx) {
+        List<File> out = new ArrayList<>();
+        for (File root : roots(ctx)) {
+            File f = new File(root, REFS);
+            if (f.isFile()) out.add(f);
+        }
+        return out;
+    }
+
+    /** Where to append refs: the first root's refs.csv that can be written (created if missing). */
+    static List<File> refsCandidates(Context ctx) {
+        List<File> out = new ArrayList<>();
+        for (File root : roots(ctx)) out.add(new File(root, REFS));
+        return out;
     }
 }

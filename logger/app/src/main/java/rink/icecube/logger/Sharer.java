@@ -15,7 +15,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -101,16 +100,32 @@ final class Sharer {
 
     interface Progress { void update(long done, long total); }
 
-    /** Writes cache/share/<name>.zip with the folder's files under <name>/. Older zips are deleted. */
+    /** The folder's files and those one level down (photos/), sorted by relative path. */
+    static java.util.List<String> filesIn(File dir) throws IOException {
+        File[] top = dir.listFiles();
+        if (top == null) throw new IOException("cannot read " + dir);
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (File f : top) {
+            if (f.isFile()) out.add(f.getName());
+            else if (f.isDirectory()) {
+                File[] sub = f.listFiles(File::isFile);
+                if (sub != null) for (File g : sub) out.add(f.getName() + "/" + g.getName());
+            }
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
+    /** Writes cache/share/<name>.zip with the folder's files (and photos/) under <name>/. Older zips are deleted. */
     static File zip(Activity a, File dir, boolean snapshot, Progress progress) throws IOException {
         File out = ShareProvider.dir(a);
         if (!out.isDirectory() && !out.mkdirs()) throw new IOException("cannot create " + out);
         File[] old = out.listFiles();
         if (old != null) for (File f : old) //noinspection ResultOfMethodCallIgnored
             f.delete();
-        File[] files = dir.listFiles(File::isFile);
-        if (files == null) throw new IOException("cannot read " + dir);
-        Arrays.sort(files);
+        java.util.List<String> names = filesIn(dir);
+        File[] files = new File[names.size()];
+        for (int i = 0; i < files.length; i++) files[i] = new File(dir, names.get(i));
         long[] lengths = new long[files.length];
         long total = 0;
         for (int i = 0; i < files.length; i++) { lengths[i] = files[i].length(); total += lengths[i]; }
@@ -127,7 +142,7 @@ final class Sharer {
                 z.closeEntry();
             }
             for (int i = 0; i < files.length; i++) {
-                z.putNextEntry(new ZipEntry(dir.getName() + "/" + files[i].getName()));
+                z.putNextEntry(new ZipEntry(dir.getName() + "/" + names.get(i)));
                 try (InputStream in = new FileInputStream(files[i])) {
                     long left = lengths[i];
                     int n;

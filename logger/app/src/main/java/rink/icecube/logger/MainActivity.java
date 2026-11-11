@@ -1,54 +1,112 @@
 package rink.icecube.logger;
 
-import android.Manifest;
 import android.app.Activity;
-import android.app.PendingIntent;
-import android.content.Context;
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.Intent;
-import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
-import android.graphics.Typeface;
-import android.hardware.usb.UsbDevice;
-import android.hardware.usb.UsbManager;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
+import android.provider.MediaStore;
+import android.text.InputType;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
+import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
-import rink.icecube.logger.core.BaseCheck;
+import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Gga;
-import rink.icecube.logger.core.PoleHeight;
-import rink.icecube.logger.core.ReferenceFrame;
+import rink.icecube.logger.core.LinkState;
+import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.NtripClient;
-import rink.icecube.logger.core.Rtcm3Parser;
-import rink.icecube.logger.core.StreamParser;
+import rink.icecube.logger.core.PointRow;
+import rink.icecube.logger.core.PoleHeight;
+import rink.icecube.logger.core.SurveyMode;
+import rink.icecube.logger.core.TrackPoint;
 
-/** Main screen: status, heights, warnings and the controls. Settings, map and sessions are their own screens. */
+/**
+ * The main screen: the local map, full screen, for a phone on a survey pole used with gloves.
+ *
+ * - Status strip along the top (one line in landscape, two in portrait), every item a
+ *   button: fix chip with correction age (opens Details), GPS and caster dots (tap to
+ *   connect or disconnect; asks first while a session records), pole height (picker),
+ *   recording dot with elapsed time and capture count (start, or stop after asking).
+ * - Red warnings bar under the strip only when there is a warning (see Status.warnings),
+ *   and a short green or red notice after a capture, a ref or a pole check.
+ * - Four large buttons, a column on the right in landscape or a row at the bottom in
+ *   portrait: MODE (Surface, Object, Ref), MARK, PHOTO and MENU (a panel from the right
+ *   with the links, session, pole height, layers, share, sessions, Details and Settings).
+ * - Volume down = MARK, volume up = MODE while this screen is in front (Settings).
+ *
+ * Map origin: the first point of a kind="base" feature in the switched-on layers; else the
+ * session's first GPS fix; else, so layers can still be viewed, the first vertex of the
+ * first layer (the map moves to the fix origin once one arrives). The screen stays on.
+ *
+ * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
+ */
 public final class MainActivity extends Activity {
-    private TextView status, big, heights, banner;
-    private Button gpsButton, casterButton, sessionButton, markButton, mapButton, settingsButton, shareButton, sessionsButton;
-    static final int BUTTON_DP = 68;
+    private static final int REQ_PHOTO = 21;
+    private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121;
+
+    private MapView map;
+    private TextView info, warnBar, noticeBar;
+    private TextView fixChip, gpsItem, casterItem, poleItem, recItem;
+    private Button modeB, markB, photoB, menuB, centerB, fitB;
+    private FrameLayout mapFrame, drawer;
+    private LinearLayout drawerItems;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private String usbAsked;               // device name we already asked USB permission for
-    private boolean gpsAutostartPending;   // waiting for the Bluetooth permission answer
+
+    private List<Layers.LayerFile> files = new ArrayList<>();
+    private String layerKey = "";
+    private int layerErrors;
+    private double[] baseOrigin;          // lon, lat, h of the base point in switched-on layers
+    private String baseName;
+    private double[] firstVertex;
+    private String originKind = "";
+
+    private int refsLoadedGen = -1;
+    private String refsLoadedFor = "";
+    private boolean refsWanted;
+
+    // The photo being taken (also kept across a recreation while the camera is open).
+    private String photoPath, photoUri;
+    private int photoAttach;
+    private long photoPressNs;
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             refresh();
-            ui.postDelayed(this, 500);
+            ui.postDelayed(this, 250);
         }
     };
 
@@ -56,356 +114,725 @@ public final class MainActivity extends Activity {
         super.onCreate(b);
         Screen.applyOrientation(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        int pad = Screen.dp(this, 16);
-        big = new TextView(this);
-        big.setTextSize(30);
-        big.setTypeface(Typeface.DEFAULT_BOLD);
-        big.setPadding(0, 0, 0, pad / 2);
-        heights = new TextView(this);
-        heights.setTextSize(17);
-        heights.setTypeface(Typeface.MONOSPACE);
-        heights.setPadding(0, 0, 0, pad / 2);
-        banner = new TextView(this);
-        banner.setBackgroundColor(0xFFC62828);
-        banner.setTextColor(0xFFFFFFFF);
-        banner.setTypeface(Typeface.DEFAULT_BOLD);
-        banner.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
-        banner.setVisibility(View.GONE);
-        gpsButton = button(v -> onGps());
-        casterButton = button(v -> onCaster());
-        sessionButton = button(v -> onSession());
-        markButton = button(v -> {
-            LoggerService s = LoggerService.current;
-            if (s != null && s.sessionOpen()) {
-                int n = s.markControl();
-                android.widget.Toast.makeText(this, "Marked C" + n, android.widget.Toast.LENGTH_SHORT).show();
-            }
-        });
-        markButton.setText("Mark control point");
-        mapButton = button(v -> startActivity(new Intent(this, MapActivity.class)));
-        mapButton.setText("Map");
-        settingsButton = button(v -> startActivity(new Intent(this, SettingsActivity.class)));
-        settingsButton.setText("Settings");
-        shareButton = button(v -> shareLast());
-        shareButton.setText("Share last session");
-        sessionsButton = button(v -> startActivity(new Intent(this, SessionsActivity.class)));
-        sessionsButton.setText("Sessions");
-        status = new TextView(this);
-        status.setTypeface(Typeface.MONOSPACE);
-        status.setTextIsSelectable(true);
-        status.setPadding(0, pad / 2, 0, 0);
-        arrange();
+        int pad = Screen.dp(this, 8);
 
-        requestRuntimePermissions();
-        if (b == null) autostart(getIntent(), true);
+        map = new MapView(this);
+        map.setId(R.id.map);   // lets the map save its view if the screen is ever recreated
+        info = new TextView(this);
+        info.setTypeface(Typeface.MONOSPACE);
+        info.setTextSize(12);
+        info.setTextColor(TEXT);
+        info.setBackgroundColor(0xD9FFFFFF);
+        info.setPadding(pad / 2, pad / 4, pad / 2, pad / 4);
+        centerB = smallButton("Center", v -> map.recenter());
+        fitB = smallButton("Fit", v -> map.fit());
+        mapFrame = new FrameLayout(this);
+        mapFrame.addView(map, new FrameLayout.LayoutParams(-1, -1));
+        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.END);
+        ip.setMargins(pad, pad, pad, pad);
+        mapFrame.addView(info, ip);
+        LinearLayout zoom = new LinearLayout(this);
+        zoom.setOrientation(LinearLayout.VERTICAL);
+        zoom.addView(centerB, new LinearLayout.LayoutParams(Screen.dp(this, 72), Screen.dp(this, 48)));
+        zoom.addView(fitB, new LinearLayout.LayoutParams(Screen.dp(this, 72), Screen.dp(this, 48)));
+        FrameLayout.LayoutParams zp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+        zp.setMargins(pad, Screen.dp(this, 32), pad, pad);
+        mapFrame.addView(zoom, zp);
+
+        warnBar = bar(0xFFC62828);
+        warnBar.setOnClickListener(v -> startActivity(new Intent(this, DetailsActivity.class)));
+        noticeBar = bar(0xFF2E7D32);
+
+        fixChip = chip(v -> startActivity(new Intent(this, DetailsActivity.class)));
+        gpsItem = chip(v -> onGpsDot());
+        casterItem = chip(v -> onCasterDot());
+        poleItem = chip(v -> pickPole());
+        recItem = chip(v -> onRec());
+
+        modeB = bigButton(v -> onMode());
+        markB = bigButton(v -> onMark());
+        photoB = bigButton(v -> onPhoto());
+        photoB.setText("PHOTO");
+        style(photoB, MapView.PHOTO_COLOR, Color.WHITE);
+        menuB = bigButton(v -> openDrawer());
+        menuB.setText("☰\nMENU");
+        style(menuB, 0xFF546E7A, Color.WHITE);
+
+        drawer = new FrameLayout(this);
+        drawer.setVisibility(View.GONE);
+        View scrim = new View(this);
+        scrim.setBackgroundColor(0x66000000);
+        scrim.setOnClickListener(v -> closeDrawer());
+        drawer.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
+        drawerItems = new LinearLayout(this);
+        drawerItems.setOrientation(LinearLayout.VERTICAL);
+        drawerItems.setPadding(pad, pad, pad, pad);
+        ScrollView panel = new ScrollView(this);
+        panel.setBackgroundColor(Color.WHITE);
+        panel.setElevation(Screen.dp(this, 8));
+        panel.addView(drawerItems);
+        drawer.addView(panel, new FrameLayout.LayoutParams(Screen.dp(this, 300), -1, Gravity.END));
+
+        if (b != null) {
+            photoPath = b.getString("photoPath");
+            photoUri = b.getString("photoUri");
+            photoAttach = b.getInt("photoAttach");
+            photoPressNs = b.getLong("photoPressNs");
+        }
+        arrange();
+        updateModeButtons();
+        Control.requestRuntimePermissions(this);
+        if (b == null) Control.autostart(this, getIntent(), true);
     }
 
-    /** Rotation does not recreate this screen (see Screen); the same views are rearranged. */
+    @Override protected void onSaveInstanceState(Bundle b) {
+        super.onSaveInstanceState(b);
+        b.putString("photoPath", photoPath);
+        b.putString("photoUri", photoUri);
+        b.putInt("photoAttach", photoAttach);
+        b.putLong("photoPressNs", photoPressNs);
+    }
+
+    @Override protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        Control.autostart(this, i, false);
+    }
+
+    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        Control.permissionsAnswered(this);
+    }
+
+    /** Rotation does not recreate this screen (see Screen): the same views are rearranged. */
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
         arrange();
         refresh();
     }
 
+    // ---- layout ----
+
     /**
-     * Portrait: banner on top, then one scrolling column (status, buttons, details).
-     * Landscape: banner across the top, status scrolling on the left, large buttons in
-     * pairs on the right. The action bar is hidden in landscape to give the rows room.
+     * Landscape: strip, warnings, notice and map on the left; the four buttons as a column
+     * on the right edge over the full height; status bar hidden. Portrait: strip in two
+     * rows, warnings, notice, map, then the buttons in a row along the bottom.
      */
     private void arrange() {
         boolean land = Screen.landscape(this);
-        int pad = Screen.dp(this, 16);
-        if (getActionBar() != null) { if (land) getActionBar().hide(); else getActionBar().show(); }
-        for (View v : new View[] {big, heights, banner, status, gpsButton, casterButton, sessionButton, markButton,
-                mapButton, settingsButton, shareButton, sessionsButton}) Screen.detach(v);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.addView(banner, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        if (!land) {
-            LinearLayout c = column(pad, pad, pad, pad);
-            c.addView(big);
-            c.addView(heights);
-            for (Button x : new Button[] {gpsButton, casterButton, sessionButton, markButton}) c.addView(x, full());
-            pair(c, mapButton, settingsButton);
-            pair(c, shareButton, sessionsButton);
-            c.addView(status);
-            root.addView(scroll(c), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        for (View v : new View[] {mapFrame, warnBar, noticeBar, fixChip, gpsItem, casterItem, poleItem, recItem,
+                modeB, markB, photoB, menuB, drawer}) Screen.detach(v);
+        showStatusBar(!land);
+        int m = Screen.dp(this, 3);
+
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.VERTICAL);
+        strip.setBackgroundColor(STRIP_BG);
+        strip.setPadding(m, m, m, m);
+        if (land) {
+            strip.addView(row(m, fixChip, gpsItem, casterItem, poleItem, recItem));
         } else {
-            LinearLayout cols = new LinearLayout(this);
-            cols.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout left = column(pad, pad / 2, pad / 2, pad / 2);
-            left.addView(big);
-            left.addView(heights);
-            left.addView(status);
-            cols.addView(scroll(left), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 55));
-            LinearLayout right = column(pad / 2, pad / 2, pad, pad / 2);
-            pair(right, gpsButton, casterButton);
-            pair(right, sessionButton, markButton);
-            pair(right, mapButton, settingsButton);
-            pair(right, shareButton, sessionsButton);
-            cols.addView(scroll(right), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 45));
-            root.addView(cols, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+            strip.addView(row(m, fixChip, gpsItem, casterItem));
+            strip.addView(row(m, poleItem, recItem));
         }
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(strip, new LinearLayout.LayoutParams(-1, -2));
+        left.addView(warnBar, new LinearLayout.LayoutParams(-1, -2));
+        left.addView(noticeBar, new LinearLayout.LayoutParams(-1, -2));
+        left.addView(mapFrame, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(land ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        buttons.setBackgroundColor(STRIP_BG);
+        buttons.setPadding(m, m, m, m);
+        for (Button x : new Button[] {modeB, markB, photoB, menuB}) {
+            LinearLayout.LayoutParams lp = land ? new LinearLayout.LayoutParams(-1, 0, 1)
+                    : new LinearLayout.LayoutParams(0, Screen.dp(this, 76), 1);
+            lp.setMargins(m, m, m, m);
+            buttons.addView(x, lp);
+        }
+
+        LinearLayout content = new LinearLayout(this);
+        if (land) {
+            content.setOrientation(LinearLayout.HORIZONTAL);
+            content.addView(left, new LinearLayout.LayoutParams(0, -1, 1));
+            content.addView(buttons, new LinearLayout.LayoutParams(Screen.dp(this, 132), -1));
+        } else {
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.addView(left, new LinearLayout.LayoutParams(-1, 0, 1));
+            content.addView(buttons, new LinearLayout.LayoutParams(-1, -2));
+        }
+        FrameLayout root = new FrameLayout(this);
+        root.addView(content, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(drawer, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
     }
 
-    private LinearLayout column(int l, int t, int r, int b) {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(l, t, r, b);
-        return c;
-    }
-
-    private ScrollView scroll(View v) {
-        ScrollView s = new ScrollView(this);
-        s.addView(v);
-        return s;
-    }
-
-    private static LinearLayout.LayoutParams full() {
-        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-    }
-
-    private void pair(LinearLayout c, Button a, Button b) {
+    private LinearLayout row(int m, View... items) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        r.addView(a, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        r.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        c.addView(r, full());
+        for (View v : items) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2,
+                    v == recItem ? 1.4f : v == gpsItem ? 0.85f : 1f);
+            lp.setMargins(m, m, m, m);
+            r.addView(v, lp);
+        }
+        return r;
     }
 
-    /** A button for gloves: 68 dp tall, so the drawn button (Material insets 6 dp top and bottom) is 56 dp. */
-    private Button button(View.OnClickListener l) {
+    private void showStatusBar(boolean show) {
+        if (Build.VERSION.SDK_INT < 30) return;
+        WindowInsetsController w = getWindow().getInsetsController();
+        if (w == null) return;
+        if (show) w.show(WindowInsets.Type.statusBars());
+        else {
+            w.hide(WindowInsets.Type.statusBars());
+            w.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+    }
+
+    private static RippleDrawable pressable(int color, float radius) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(radius);
+        return new RippleDrawable(ColorStateList.valueOf(0x40000000), g, null);
+    }
+
+    /** A strip item: at least 48 dp tall, bold, centred. */
+    private TextView chip(View.OnClickListener l) {
+        TextView t = new TextView(this);
+        t.setTextSize(15);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(TEXT);
+        t.setGravity(Gravity.CENTER);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        t.setMinHeight(Screen.dp(this, 48));
+        t.setPadding(Screen.dp(this, 6), 0, Screen.dp(this, 6), 0);
+        t.setBackground(pressable(Color.WHITE, Screen.dp(this, 6)));
+        t.setClickable(true);
+        t.setOnClickListener(l);
+        return t;
+    }
+
+    private TextView bar(int color) {
+        TextView t = new TextView(this);
+        int pad = Screen.dp(this, 8);
+        t.setBackgroundColor(color);
+        t.setTextColor(Color.WHITE);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextSize(15);
+        t.setPadding(pad, pad / 2, pad, pad / 2);
+        t.setVisibility(View.GONE);
+        return t;
+    }
+
+    /** One of the four main buttons: at least 64 dp each way, large bold text. */
+    private Button bigButton(View.OnClickListener l) {
         Button x = new Button(this);
-        x.setMinHeight(Screen.dp(this, BUTTON_DP));
-        x.setMinimumHeight(Screen.dp(this, BUTTON_DP));
+        x.setMinHeight(Screen.dp(this, 64));
+        x.setMinimumHeight(Screen.dp(this, 64));
+        x.setMinWidth(Screen.dp(this, 64));
+        x.setMinimumWidth(Screen.dp(this, 64));
+        x.setTextSize(18);
+        x.setTypeface(Typeface.DEFAULT_BOLD);
+        x.setAllCaps(false);
+        x.setStateListAnimator(null);
+        x.setPadding(0, 0, 0, 0);
         x.setOnClickListener(l);
         return x;
     }
 
-    private void shareLast() {
-        List<File> all = Storage.sessions(this);
-        if (all.isEmpty()) { big.setText("No sessions yet"); return; }
-        Sharer.share(this, all.get(0));
+    private void style(Button b, int bg, int fg) {
+        b.setBackground(pressable(bg, Screen.dp(this, 10)));
+        b.setTextColor(fg);
     }
 
-    /** The frame line: in use and its source, or what the setting says when no caster runs. */
-    static String frameText(LoggerService s, Context c) {
-        ReferenceFrame.Resolved r = s == null ? null : s.frame();
-        if (r == null) r = ReferenceFrame.resolve(Settings.frame(Settings.prefs(c)), null);
-        String t = "frame     " + r.describe();
-        String note = s == null || s.caster() == null ? null : s.sourcetableNote();
-        if (note != null && !"sourcetable".equals(r.source)) t += "\n  sourcetable: " + note;
-        return t;
+    private Button smallButton(String t, View.OnClickListener l) {
+        Button x = new Button(this);
+        x.setText(t);
+        x.setTextSize(13);
+        x.setAllCaps(false);
+        x.setStateListAnimator(null);
+        x.setPadding(0, 0, 0, 0);
+        x.setBackground(pressable(0xE6FFFFFF, Screen.dp(this, 6)));
+        x.setTextColor(TEXT);
+        x.setOnClickListener(l);
+        return x;
     }
 
-    /** "layers match base" when a layer base point agrees with the received ARP, else null. */
-    static String layerOkText(LoggerService s) {
-        BaseCheck c = s == null ? null : s.layerCheck();
-        return c != null && c.ok ? c.describe() + " [" + s.layerCheckFile() + "]" : null;
-    }
+    // ---- buttons ----
 
-    /** Warnings for the red banner: frame mismatch, base moved, layers not in the base's frame. */
-    static String warnings(LoggerService s) {
-        if (s == null) return null;
-        List<String> w = new ArrayList<>();
-        ReferenceFrame.Resolved r = s.frame();
-        if (r != null && r.warning != null) w.add(r.warning);
-        String moved = s.baseWatch().warning();
-        if (moved != null) w.add(moved);
-        BaseCheck c = s.layerCheck();
-        if (c != null && !c.ok) w.add(c.describe() + " [" + s.layerCheckFile() + "]");
-        return w.isEmpty() ? null : android.text.TextUtils.join("\n", w);
-    }
+    private SurveyMode mode() { return Settings.mode(Settings.prefs(this)); }
 
-    private void showHeights(LoggerService s) {
-        double pole = s != null ? s.poleHeight() : Settings.poleHeight(Settings.prefs(this));
-        Gga g = s == null || s.currentFix() == null ? null : s.fix();
-        StringBuilder t = new StringBuilder();
-        if (g == null || Double.isNaN(g.height)) {
-            t.append("antenna   --\nground    --");
-            if (g != null && !Double.isNaN(g.alt)) t.append(String.format(Locale.US, "\n(GGA has no geoid separation; alt %.3f m)", g.alt));
+    private String buttonState = "", chipState = "";
+
+    /** MODE shows the mode in its colour; MARK says what it does (CANCEL REF while a ref runs). */
+    private void updateModeButtons() {
+        SurveyMode m = mode();
+        Survey sv = survey();
+        boolean running = sv != null && sv.refRunning();
+        String state = m.key + running;
+        if (state.equals(buttonState)) return;
+        buttonState = state;
+        modeB.setText(m.label);
+        style(modeB, m.color, Color.WHITE);
+        if (running) {
+            markB.setText("CANCEL\nREF");
+            style(markB, 0xFFFFA000, TEXT);
         } else {
-            t.append(String.format(Locale.US, "antenna   %.3f m\nground    %.3f m", g.height, g.height - pole));
-        }
-        t.append("\npole      ").append(PoleHeight.format(pole)).append(" m");
-        t.append("\n(ellipsoidal = GGA alt + geoid sep)\n").append(frameText(s, this));
-        String ok = layerOkText(s);
-        if (ok != null) t.append('\n').append(ok);
-        heights.setText(t);
-        String w = warnings(s);
-        banner.setVisibility(w == null ? View.GONE : View.VISIBLE);
-        if (w != null) banner.setText(w);
-    }
-
-    private void requestRuntimePermissions() {
-        List<String> want = new ArrayList<>();
-        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
-            want.add(Manifest.permission.POST_NOTIFICATIONS);
-        }
-        if (Build.VERSION.SDK_INT >= 31 && !granted(Manifest.permission.BLUETOOTH_CONNECT)) {
-            want.add(Manifest.permission.BLUETOOTH_CONNECT);
-        }
-        if (!want.isEmpty()) requestPermissions(want.toArray(new String[0]), 1);
-    }
-
-    private boolean granted(String p) { return checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED; }
-
-    static boolean bluetoothAllowed(Context c) {
-        return Build.VERSION.SDK_INT < 31
-                || c.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        if (gpsAutostartPending && bluetoothAllowed(this)) {
-            gpsAutostartPending = false;
-            send(LoggerService.ACTION_GPS_CONNECT, true);
+            markB.setText("MARK\n" + m.key);
+            style(markB, 0xFF263238, Color.WHITE);
         }
     }
 
-    @Override protected void onNewIntent(Intent i) {
-        super.onNewIntent(i);
-        setIntent(i);
-        autostart(i, false);
-    }
-
-    /** The two launch options from Settings. A USB re-attach while open only restarts the GPS. */
-    private void autostart(Intent launch, boolean appLaunch) {
-        SharedPreferences p = Settings.prefs(this);
+    private static Survey survey() {
         LoggerService s = LoggerService.current;
-        boolean usbLaunch = launch != null && UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(launch.getAction());
-        if (appLaunch && p.getBoolean(Settings.CASTER_AT_LAUNCH, false)
-                && !p.getString(Settings.HOST, "").trim().isEmpty() && (s == null || s.caster() == null)) {
-            send(LoggerService.ACTION_CASTER_CONNECT, false);
+        return s == null ? null : s.survey();
+    }
+
+    private void toast(String t) { Toast.makeText(this, t, Toast.LENGTH_SHORT).show(); }
+
+    private void onMode() {
+        Survey sv = survey();
+        if (sv != null && sv.refRunning()) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("Ref running: MARK cancels it");
+            return;
         }
-        if (!p.getBoolean(Settings.LOG_ON_GPS_CONNECT, false) || (s != null && s.gpsActive())) return;
-        boolean bt = Settings.bluetooth(p);
-        if (bt && !usbLaunch) {
-            if (bluetoothAllowed(this)) send(LoggerService.ACTION_GPS_CONNECT, true);
-            else gpsAutostartPending = true;
-        } else if (!bt && usbLaunch) {
-            send(LoggerService.ACTION_GPS_CONNECT, true);
+        SurveyMode m = mode().next();
+        Settings.prefs(this).edit().putString(Settings.MODE, m.key).apply();
+        Feedback.play(this, m == SurveyMode.SURFACE ? Feedback.Cue.MODE_SURFACE
+                : m == SurveyMode.OBJECT ? Feedback.Cue.MODE_OBJECT : Feedback.Cue.MODE_REF);
+        updateModeButtons();
+    }
+
+    private void onMark() {
+        LoggerService s = LoggerService.current;
+        if (s == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("No session: tap REC to start one");
+            return;
+        }
+        Survey.Outcome o = s.mark(mode());
+        if (!o.ok && o.text != null) toast(o.text);
+        updateModeButtons();
+        refresh();
+    }
+
+    private void onPhoto() {
+        Survey sv = survey();
+        if (sv == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("No session: tap REC to start one");
+            return;
+        }
+        // A camera result that never came back (we are in front again): drop that empty file first.
+        if (photoPath != null) finishPhoto(RESULT_CANCELED, "abandoned");
+        Survey.PhotoPlan p = sv.planPhoto();
+        try {
+            if (p == null || !p.file.createNewFile()) throw new IOException("cannot create the photo file");
+        } catch (IOException | SecurityException e) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("Photo: " + e.getMessage());
+            return;
+        }
+        Uri uri = PhotoProvider.expose(this, p.file);
+        Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        i.setClipData(ClipData.newRawUri("photo", uri));
+        photoPath = p.file.getAbsolutePath();
+        photoUri = uri.toString();
+        photoAttach = p.attachN;
+        photoPressNs = p.pressNs;
+        try {
+            startActivityForResult(i, REQ_PHOTO);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            finishPhoto(RESULT_CANCELED, "no camera app");
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("No camera app found");
         }
     }
 
-    private void send(String action, boolean wait) {
-        startForegroundService(new Intent(this, LoggerService.class).setAction(action)
-                .putExtra(LoggerService.EXTRA_WAIT, wait));
+    @Override protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code == REQ_PHOTO) finishPhoto(result, null);
     }
+
+    /** The camera came back: keep the photo (onto a capture or its own row) or delete the empty file. */
+    private void finishPhoto(int result, String failure) {
+        if (photoPath == null) return;
+        File f = new File(photoPath);
+        Survey.PhotoPlan p = new Survey.PhotoPlan(f, photoAttach, photoPressNs);
+        try {
+            revokeUriPermission(Uri.parse(photoUri),
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (RuntimeException ignored) { }
+        PhotoProvider.clear(this);
+        photoPath = null;
+        photoUri = null;
+        boolean ok = result == RESULT_OK && f.length() > 0;
+        Survey sv = survey();
+        File photosDir = f.getParentFile();
+        if (sv == null || photosDir == null || !photosDir.equals(sv.photos)) {
+            // The session ended while the camera was open: keep a real photo where it is.
+            if (!ok) { //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            } else toast("Session had ended: photo kept in its folder, not in points.csv");
+            return;
+        }
+        if (ok) sv.photoTaken(p);
+        else sv.photoCancelled(p, failure != null ? failure : result == RESULT_OK ? "empty file" : "cancelled");
+    }
+
+    // ---- volume keys ----
+
+    private static boolean isVolume(int code) {
+        return code == KeyEvent.KEYCODE_VOLUME_DOWN || code == KeyEvent.KEYCODE_VOLUME_UP;
+    }
+
+    @Override public boolean onKeyDown(int code, KeyEvent e) {
+        if (isVolume(code) && Settings.volumeKeys(Settings.prefs(this))) {
+            if (e.getRepeatCount() == 0) {
+                if (code == KeyEvent.KEYCODE_VOLUME_DOWN) onMark(); else onMode();
+            }
+            return true;   // consumed: the media volume does not change
+        }
+        return super.onKeyDown(code, e);
+    }
+
+    @Override public boolean onKeyUp(int code, KeyEvent e) {
+        if (isVolume(code) && Settings.volumeKeys(Settings.prefs(this))) return true;
+        return super.onKeyUp(code, e);
+    }
+
+    // ---- strip actions ----
+
+    private void confirm(String title, String message, String yes, Runnable r) {
+        new AlertDialog.Builder(this).setTitle(title).setMessage(message)
+                .setPositiveButton(yes, (d, w) -> r.run()).setNegativeButton("Cancel", null).show();
+    }
+
+    private void onGpsDot() {
+        LoggerService s = Control.live();
+        if (s != null && s.gpsActive()) {
+            if (s.sessionOpen()) {
+                confirm("Disconnect GPS?", "The session keeps recording, but without GPS data and captures.",
+                        "Disconnect", () -> Control.disconnectGps(this));
+            } else Control.disconnectGps(this);
+            return;
+        }
+        String why = Control.connectGps(this);
+        if (why != null) toast(why);
+    }
+
+    private void onCasterDot() {
+        LoggerService s = Control.live();
+        if (s != null && s.caster() != null) {
+            if (s.sessionOpen()) {
+                confirm("Disconnect caster?", "The session keeps recording, but without RTK corrections.",
+                        "Disconnect", () -> Control.disconnectCaster(this));
+            } else Control.disconnectCaster(this);
+            return;
+        }
+        Control.connectCaster(this);
+    }
+
+    private void onRec() {
+        LoggerService s = Control.live();
+        if (s != null && s.sessionOpen()) {
+            confirm("Stop the session?", "Stops recording and disconnects the GPS and the caster.", "Stop",
+                    () -> Control.stopAll(this));
+        } else Control.startSession(this);
+    }
+
+    /** 1.4 to 1.8 m or Other…, applied at once (and logged in a running session). */
+    private void pickPole() {
+        double[] presets = {1.4, 1.5, 1.6, 1.7, 1.8};
+        String[] items = new String[presets.length + 1];
+        double now = Settings.poleHeight(Settings.prefs(this));
+        for (int i = 0; i < presets.length; i++) {
+            items[i] = String.format(Locale.US, "%.1f m%s", presets[i], Math.abs(presets[i] - now) < 5e-4 ? "  (now)" : "");
+        }
+        items[presets.length] = "Other…" + (PoleHeight.presetIndex(now) < 0 ? "  (now " + PoleHeight.format(now) + ")" : "");
+        new AlertDialog.Builder(this).setTitle("Pole height").setItems(items, (d, which) -> {
+            if (which < presets.length) setPole(presets[which]);
+            else poleOther(now);
+        }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void poleOther(double now) {
+        EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        e.setText(PoleHeight.format(now));
+        e.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this).setTitle("Pole height, m (0 to 5, up to 3 decimals)").setView(e)
+                .setPositiveButton("Set", (d, w) -> {
+                    try { setPole(PoleHeight.parse(e.getText().toString())); }
+                    catch (IllegalArgumentException x) { toast("Not set: " + x.getMessage()); }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void setPole(double m) {
+        Settings.prefs(this).edit().putString(Settings.POLE_HEIGHT, PoleHeight.format(m)).apply();
+        refresh();
+    }
+
+    // ---- menu panel ----
+
+    private void openDrawer() {
+        drawer.setVisibility(View.VISIBLE);
+        fillDrawer();
+    }
+
+    private void closeDrawer() { drawer.setVisibility(View.GONE); }
+
+    @SuppressWarnings("deprecation")
+    @Override public void onBackPressed() {
+        if (drawer.getVisibility() == View.VISIBLE) { closeDrawer(); return; }
+        super.onBackPressed();
+    }
+
+    private void fillDrawer() {
+        drawerItems.removeAllViews();
+        LoggerService s = Control.live();
+        boolean gps = s != null && s.gpsActive(), session = s != null && s.sessionOpen();
+        NtripClient n = s == null ? null : s.caster();
+        item(gps ? "Disconnect GPS (" + (s.gpsConnected() ? "connected" : s.gpsStatus()) + ")" : "Connect GPS",
+                this::onGpsDot);
+        item(n != null ? "Disconnect caster (" + (n.connected ? "connected" : n.status) + ")" : "Connect caster",
+                this::onCasterDot);
+        item(session ? "Stop session" : "Start session", this::onRec);
+        item("Pole height (" + PoleHeight.format(Settings.poleHeight(Settings.prefs(this))) + " m)…", this::pickPole);
+        item("Layers…", this::pickLayers);
+        item("Share last session", () -> {
+            List<File> all = Storage.sessions(this);
+            if (all.isEmpty()) toast("No sessions yet"); else Sharer.share(this, all.get(0));
+        });
+        item("Sessions", () -> startActivity(new Intent(this, SessionsActivity.class)));
+        item("Details", () -> startActivity(new Intent(this, DetailsActivity.class)));
+        item("Settings", () -> startActivity(new Intent(this, SettingsActivity.class)));
+        item("Close menu", () -> { });
+    }
+
+    private void item(String text, Runnable r) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(16);
+        b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        b.setMinHeight(Screen.dp(this, 56));
+        b.setMinimumHeight(Screen.dp(this, 56));
+        b.setOnClickListener(v -> { closeDrawer(); r.run(); });
+        drawerItems.addView(b, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    /** A checkbox per readable layer file, applied at once. */
+    private void pickLayers() {
+        Layers.getAsync(this, l -> {
+            List<Layers.LayerFile> ok = new ArrayList<>();
+            for (Layers.LayerFile f : l) if (f.layer != null) ok.add(f);
+            if (ok.isEmpty()) {
+                new AlertDialog.Builder(this).setTitle("Layers")
+                        .setMessage("No layer files. Import them in Settings > Map.").setPositiveButton("OK", null).show();
+                return;
+            }
+            Set<String> off = Settings.layersOff(Settings.prefs(this));
+            String[] names = new String[ok.size()];
+            boolean[] on = new boolean[ok.size()];
+            for (int i = 0; i < ok.size(); i++) { names[i] = ok.get(i).name(); on[i] = !off.contains(names[i]); }
+            new AlertDialog.Builder(this).setTitle("Layers").setMultiChoiceItems(names, on, (d, which, checked) -> {
+                Settings.setLayerOn(Settings.prefs(this), names[which], checked);
+                files = l;
+                applyLayers();
+            }).setPositiveButton("Done", null).show();
+        });
+    }
+
+    // ---- lifecycle and map ----
 
     @Override protected void onResume() {
         super.onResume();
         Screen.applyOrientation(this);
+        map.setLabels(Settings.labelCaptures(Settings.prefs(this)));
+        refsLoadedGen = -1;   // settings may have changed
+        Layers.getAsync(this, l -> { files = l; applyLayers(); });
+        updateModeButtons();
         ui.post(tick);
     }
-    @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); }
 
-    private static LoggerService live() {
-        LoggerService s = LoggerService.current;
-        return s != null && (s.sessionOpen() || s.gpsActive() || s.caster() != null) ? s : null;
+    @Override protected void onPause() {
+        super.onPause();
+        ui.removeCallbacks(tick);
     }
 
-    private void onGps() {
-        LoggerService s = live();
-        if (s != null && s.gpsActive()) { send(LoggerService.ACTION_GPS_DISCONNECT, false); return; }
-        if (Settings.bluetooth(Settings.prefs(this)) && !bluetoothAllowed(this)) {
-            big.setText("Allow Bluetooth");
-            requestRuntimePermissions();
+    /** Re-projects only when the set of switched-on layers changed. */
+    private void applyLayers() {
+        Set<String> off = Settings.layersOff(Settings.prefs(this));
+        List<GeoJson.Feature> fs = new ArrayList<>();
+        StringBuilder key = new StringBuilder().append(Layers.generation()).append('|');
+        baseOrigin = null;
+        baseName = null;
+        firstVertex = null;
+        layerErrors = 0;
+        for (Layers.LayerFile lf : files) {
+            if (lf.layer == null) { layerErrors++; continue; }
+            if (off.contains(lf.name())) continue;
+            key.append(lf.name()).append('|');
+            fs.addAll(lf.layer.features);
+            if (baseOrigin == null) {
+                for (GeoJson.Feature f : lf.layer.features) {
+                    if (f.isBase()) {
+                        double[] p = f.parts.get(0);
+                        baseOrigin = new double[] {p[0], p[1], p[2]};
+                        baseName = (f.name != null ? "'" + f.name + "' in " : "") + lf.name();
+                        break;
+                    }
+                }
+            }
+            if (firstVertex == null && !lf.layer.features.isEmpty()) {
+                double[] p = lf.layer.features.get(0).parts.get(0);
+                firstVertex = new double[] {p[0], p[1], p[2]};
+            }
+        }
+        if (!key.toString().equals(layerKey)) {
+            layerKey = key.toString();
+            originKind = "";   // forces the origin to be chosen again
+            chooseOrigin(LoggerService.current);
+            map.setFeatures(fs);
+        }
+    }
+
+    private void chooseOrigin(LoggerService s) {
+        TrackPoint first = s == null ? null : s.firstFix();
+        String kind;
+        double lat, lon, h;
+        String note;
+        if (baseOrigin != null) {
+            kind = "base"; lon = baseOrigin[0]; lat = baseOrigin[1]; h = baseOrigin[2];
+            note = "origin: base point " + baseName;
+        } else if (first != null) {
+            kind = "fix" + first.elapsedMs; lat = first.lat; lon = first.lon; h = first.h;
+            note = "origin: first fix of this session";
+        } else if (firstVertex != null) {
+            kind = "vertex"; lon = firstVertex[0]; lat = firstVertex[1]; h = firstVertex[2];
+            note = "origin: first layer vertex (no base point, no fix yet)";
+        } else {
             return;
         }
-        usbAsked = null;
-        send(LoggerService.ACTION_GPS_CONNECT, false);
+        if (kind.equals(originKind)) return;
+        originKind = kind;
+        map.setFrame(new LocalFrame(lat, lon, h), note);
     }
 
-    private void onCaster() {
-        LoggerService s = live();
-        if (s != null && s.caster() != null) { send(LoggerService.ACTION_CASTER_DISCONNECT, false); return; }
-        if (Settings.prefs(this).getString(Settings.HOST, "").trim().isEmpty()) {
-            startActivity(new Intent(this, SettingsActivity.class));
-            return;
-        }
-        send(LoggerService.ACTION_CASTER_CONNECT, false);
+    /** Earlier refs from refs.csv (other sessions), when Settings > Survey asks for them. */
+    private void maybeLoadRefs(Survey sv) {
+        boolean want = Settings.showEarlierRefs(Settings.prefs(this));
+        int gen = sv == null ? 0 : sv.refsGeneration();
+        String session = sv == null ? "" : sv.dir.getName();
+        if (want == refsWanted && gen == refsLoadedGen && session.equals(refsLoadedFor)) return;
+        refsWanted = want;
+        refsLoadedGen = gen;
+        refsLoadedFor = session;
+        if (!want) { map.setEarlierRefs(new ArrayList<PointRow>()); return; }
+        android.content.Context app = getApplicationContext();
+        new Thread(() -> {
+            List<PointRow> out = new ArrayList<>();
+            for (PointRow r : RefsStore.readAll(app)) if (!session.equals(r.session)) out.add(r);
+            ui.post(() -> map.setEarlierRefs(out));
+        }, "refs").start();
     }
 
-    private void onSession() {
-        LoggerService s = live();
-        send(s != null ? LoggerService.ACTION_STOP : LoggerService.ACTION_START_SESSION, false);
+    private static String age(Gga g) {
+        return g == null || Double.isNaN(g.age) ? "–" : String.format(Locale.US, "%.1fs", g.age);
     }
 
-    /** Asks once per attached device for USB permission while the service waits for it. */
-    private void askUsbPermission() {
-        UsbManager m = (UsbManager) getSystemService(Context.USB_SERVICE);
-        UsbDevice d = UsbLink.findGps(m);
-        if (d == null || m.hasPermission(d) || d.getDeviceName().equals(usbAsked)) return;
-        usbAsked = d.getDeviceName();
-        Intent i = new Intent("rink.icecube.logger.USB_PERMISSION").setPackage(getPackageName());
-        m.requestPermission(d, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
+    private CharSequence dot(int color, String label) {
+        SpannableStringBuilder b = new SpannableStringBuilder("● " + label);
+        b.setSpan(new ForegroundColorSpan(color), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        b.setSpan(new RelativeSizeSpan(1.4f), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return b;
     }
 
     private void refresh() {
-        LoggerService s = live();
-        LoggerService last = LoggerService.current;
-        boolean session = s != null && s.sessionOpen();
-        boolean gpsOn = s != null && s.gpsActive();
-        NtripClient n = s == null ? null : s.caster();
-        gpsButton.setText(gpsOn ? "Disconnect GPS" : "Connect GPS");
-        casterButton.setText(n != null ? "Disconnect caster" : "Connect caster");
-        sessionButton.setText(s != null ? "Stop session" : "Start session");
-        markButton.setEnabled(session);
-        if (s != null && s.usbNeedsPermission()) askUsbPermission();
-
+        LoggerService s = Control.live();
+        LoggerService cur = LoggerService.current;
+        chooseOrigin(cur);
+        Control.askUsbPermissionIfNeeded(this);
+        Survey sv = s == null ? null : s.survey();
+        TrackPoint fix = s == null ? null : s.currentFix();
+        map.setLive(fix, s == null ? new TrackPoint[0] : s.trail(), sv == null ? new PointRow[0] : sv.rows(),
+                sv == null ? null : sv.refView());
         if (s != null) s.layersMaybeChanged();
-        showHeights(s);
-        SharedPreferences p = Settings.prefs(this);
-        StringBuilder t = new StringBuilder();
-        if (s == null) {
-            big.setText(last == null ? "Ready" : "Stopped");
-            t.append("gps link  ").append(Settings.bluetooth(p) ? "Bluetooth " + p.getString(Settings.BT_NAME, "(choose in Settings)") : "USB").append('\n');
-            t.append("caster    ").append(p.getString(Settings.HOST, "").trim().isEmpty() ? "(set in Settings)" : p.getString(Settings.MOUNT, "")).append('\n');
-            if (last != null && last.folder() != null) t.append("last folder\n  ").append(last.folder()).append('\n');
-            if (last != null && last.error != null) t.append("ERROR     ").append(last.error).append('\n');
-            status.setText(t);
-            return;
-        }
-        Gga g = s.fix();
-        big.setText(!s.gpsConnected() ? (gpsOn ? "Waiting for GPS" : n != null ? "Caster only" : "Session open")
-                : g == null ? "No GGA yet" : g.qualityName());
-        if (session) {
-            long secs = s.sessionSeconds();
-            t.append(String.format(Locale.US, "session   %d:%02d:%02d\n", secs / 3600, secs / 60 % 60, secs % 60));
-        } else {
-            t.append("session   starts when the GPS connects\n");
-        }
-        t.append("\nGPS       ").append(s.gpsStatus()).append('\n');
-        String link = s.gpsLinkName();
-        if (link != null) t.append("  ").append(link).append('\n');
-        double since = s.gpsSecondsSinceData();
-        if (since >= 0) t.append(String.format(Locale.US, "  last data %.1f s ago\n", since));
-        if (g != null) t.append(String.format(Locale.US, "  sats %d  age %.1f s\n", g.sats, g.age));
-        StreamParser sp = s.parser;
-        t.append(String.format(Locale.US, "  bytes %.2f MB\n", sp.bytes / 1e6));
-        t.append(String.format(Locale.US, "  RAWX %d  lost %.2f%%  max gap %.2f s\n", sp.rawxEpochs, sp.rawxLossPct(), sp.rawxMaxGap));
-        t.append(String.format(Locale.US, "  GGA  %d  lost %.2f%%  max gap %.2f s\n", sp.ggaCount, sp.ggaLossPct(), sp.ggaMaxGap));
-        t.append(String.format(Locale.US, "  bad UBX %d  bad NMEA %d\n", sp.ubxBad, sp.nmeaBad));
-        t.append(String.format(Locale.US, "  config acks %d  naks %d\n", sp.valsetAcks, sp.valsetNaks));
+        maybeLoadRefs(sv);
 
-        t.append("\nCaster    ");
-        if (n == null) t.append("off\n");
-        else {
-            t.append(n.connected ? "connected" : n.status).append('\n');
-            Rtcm3Parser r = s.rtcmParser;
-            double ds = n.secondsSinceData();
-            t.append(String.format(Locale.US, "  received %.1f kB  last %s\n", n.rtcmBytes / 1e3,
-                    ds < 0 ? "never" : String.format(Locale.US, "%.1f s ago", ds)));
-            t.append(String.format(Locale.US, "  frames %d  crc errors %d  gga sent %d\n", r.frames, r.crcErrors, n.ggaSent));
-            t.append(String.format(Locale.US, "  to GPS %.1f kB  write errors %d\n", s.rtcmForwarded / 1e3, s.rtcmWriteErrors));
-            t.append("  logging   ").append(s.loggingCorrections() ? "on" : "off").append('\n');
-            String types = s.rtcmStats.summary(SystemClock.elapsedRealtime());
-            if (!types.isEmpty()) t.append("  type   count   rate\n").append(types);
+        // fix chip
+        Gga g = s == null ? null : s.fix();
+        int chipColor;
+        String chipText;
+        if (s == null || !s.gpsConnected()) { chipColor = 0xFFB0BEC5; chipText = "NO GPS"; }
+        else if (g == null) { chipColor = 0xFFB0BEC5; chipText = "NO GGA"; }
+        else if (fix == null) { chipColor = MapView.qualityColor(0); chipText = "NO FIX"; }
+        else { chipColor = MapView.qualityColor(g.quality); chipText = Survey.fixName(g.quality) + " " + age(g); }
+        fixChip.setText(chipText);
+        if (!chipState.equals(String.valueOf(chipColor))) {
+            chipState = String.valueOf(chipColor);
+            fixChip.setBackground(pressable(chipColor, Screen.dp(this, 6)));
+            fixChip.setTextColor(chipColor == MapView.qualityColor(5) || chipColor == 0xFFB0BEC5 ? TEXT : Color.WHITE);
         }
-        t.append(String.format(Locale.US, "\nIMU       %d samples\n", s.imuSamples()));
-        if (s.folder() != null) t.append("folder\n  ").append(s.folder()).append('\n');
-        if (s.error != null) t.append("ERROR     ").append(s.error).append('\n');
-        status.setText(t);
+
+        // link dots
+        LinkState gs = s == null ? LinkState.OFF : LinkState.gps(s.gpsActive(), s.gpsConnected(), s.gpsStatus());
+        NtripClient n = s == null ? null : s.caster();
+        LinkState cs = n == null ? LinkState.OFF : LinkState.caster(true, n.connected, n.status);
+        gpsItem.setText(dot(gs.color, "GPS"));
+        casterItem.setText(dot(cs.color, "NTRIP"));
+        double pole = cur != null ? cur.poleHeight() : Settings.poleHeight(Settings.prefs(this));
+        poleItem.setText("pole " + PoleHeight.format(pole));
+
+        // recording
+        if (s != null && s.sessionOpen()) {
+            long t = s.sessionSeconds();
+            recItem.setText(dot(0xFFD32F2F, String.format(Locale.US, "%d:%02d:%02d · %d pts", t / 3600, t / 60 % 60,
+                    t % 60, sv == null ? 0 : sv.captures())));
+        } else {
+            recItem.setText(dot(0xFF9E9E9E, "REC off"));
+        }
+
+        String w = Status.warnings(s);
+        warnBar.setVisibility(w == null ? View.GONE : View.VISIBLE);
+        if (w != null) warnBar.setText(w);
+        Survey.Notice nt = sv == null ? null : sv.notice();
+        noticeBar.setVisibility(nt == null ? View.GONE : View.VISIBLE);
+        if (nt != null) {
+            noticeBar.setText(nt.text);
+            noticeBar.setBackgroundColor(nt.ok ? 0xFF2E7D32 : 0xFFC62828);
+        }
+
+        StringBuilder t = new StringBuilder();
+        if (fix != null && g != null) {
+            t.append(String.format(Locale.US, "sats %d", g.sats));
+            if (!Double.isNaN(fix.h)) t.append(String.format(Locale.US, "  ground %.3f m", fix.h - pole));
+            t.append('\n');
+        }
+        t.append(map.frame() == null ? "origin: none yet" : map.originNote());
+        if (layerErrors > 0) t.append(String.format(Locale.US, "\n%d layer file(s) have errors (Settings)", layerErrors));
+        String okLine = Status.layerOkText(s);
+        if (okLine != null) t.append('\n').append(okLine);
+        info.setText(t);
+        updateModeButtons();
+        if (drawer.getVisibility() == View.VISIBLE && drawerItems.getChildCount() > 0) {
+            // keep the link and session labels current while the panel is open
+            ViewGroup d = drawerItems;
+            LoggerService ls = Control.live();
+            boolean gps = ls != null && ls.gpsActive();
+            NtripClient c = ls == null ? null : ls.caster();
+            ((Button) d.getChildAt(0)).setText(gps ? "Disconnect GPS (" + (ls.gpsConnected() ? "connected" : ls.gpsStatus()) + ")"
+                    : "Connect GPS");
+            ((Button) d.getChildAt(1)).setText(c != null ? "Disconnect caster (" + (c.connected ? "connected" : c.status) + ")"
+                    : "Connect caster");
+            ((Button) d.getChildAt(2)).setText(ls != null && ls.sessionOpen() ? "Stop session" : "Start session");
+        }
     }
 }
