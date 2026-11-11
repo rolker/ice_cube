@@ -21,6 +21,7 @@ final class Settings {
     static final String POLE_HEIGHT = "pole_height";      // metres as text, PoleHeight.format
     static final String LAYERS_OFF = "layers_off";        // set of layer file names switched off
     static final String FRAME = "frame", FRAME_EPOCH = "frame_epoch";   // caster's frame when the sourcetable has none
+    static final String ORIENTATION = "orientation";      // core.ScreenOrientation key, default auto
 
     private Settings() { }
 

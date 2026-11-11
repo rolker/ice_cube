@@ -2,10 +2,14 @@ package rink.icecube.logger;
 
 import android.app.Activity;
 import android.graphics.Typeface;
+import android.content.res.Configuration;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -23,8 +27,9 @@ import rink.icecube.logger.core.TrackPoint;
 
 /**
  * Full-screen local map: switched-on layers, the live position coloured by fix quality,
- * a 2-minute trail and this session's control marks. Buttons along the bottom for one
- * thumb: Center (follow the position), Fit, Mark control point. The screen stays on.
+ * a 2-minute trail and this session's control marks. Buttons along the bottom (portrait)
+ * or down the right edge (landscape): Center (follow the position), Fit, Mark control
+ * point. The screen stays on.
  *
  * Origin: the first point of a kind="base" feature in the switched-on layers; otherwise
  * the session's first GPS fix; otherwise, so layers can still be viewed, the first vertex
@@ -32,6 +37,7 @@ import rink.icecube.logger.core.TrackPoint;
  */
 public final class MapActivity extends Activity {
     private MapView map;
+    private Button center, fit, mark;
     private TextView info, banner;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private List<Layers.LayerFile> files = new ArrayList<>();
@@ -51,48 +57,98 @@ public final class MapActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Screen.applyOrientation(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        int pad = (int) (8 * getResources().getDisplayMetrics().density);
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
+        int pad = Screen.dp(this, 8);
         info = new TextView(this);
         info.setTypeface(Typeface.MONOSPACE);
         info.setTextSize(13);
         info.setPadding(pad, pad / 2, pad, pad / 2);
-        c.addView(info);
         banner = new TextView(this);
         banner.setBackgroundColor(0xFFC62828);
         banner.setTextColor(0xFFFFFFFF);
         banner.setTypeface(Typeface.DEFAULT_BOLD);
         banner.setPadding(pad, pad / 2, pad, pad / 2);
         banner.setVisibility(View.GONE);
-        c.addView(banner);
         map = new MapView(this);
-        c.addView(map, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        button(row, "Center", v -> map.recenter());
-        button(row, "Fit", v -> map.fit());
-        button(row, "Mark control", v -> {
+        map.setId(R.id.map);   // lets the map save its view if the screen is ever recreated
+        center = button("Center", v -> map.recenter());
+        fit = button("Fit", v -> map.fit());
+        mark = button("Mark control", v -> {
             LoggerService s = LoggerService.current;
             if (s == null || !s.sessionOpen()) { Toast.makeText(this, "No session open", Toast.LENGTH_SHORT).show(); return; }
             int n = s.markControl();
             Toast.makeText(this, s.currentFix() == null ? "Marked C" + n + " (no fix: not on the map)" : "Marked C" + n,
                     Toast.LENGTH_SHORT).show();
         });
-        c.addView(row);
-        setContentView(c);
+        arrange();
     }
 
-    private void button(LinearLayout row, String t, View.OnClickListener l) {
+    /**
+     * Rotation does not recreate this screen (see Screen): the same MapView, with its zoom,
+     * centre and follow mode, is moved into the layout for the new orientation.
+     */
+    @Override public void onConfigurationChanged(Configuration c) {
+        super.onConfigurationChanged(c);
+        arrange();
+    }
+
+    /**
+     * Portrait: info and banner on top, map, buttons in a row along the bottom. Landscape:
+     * buttons in a column on the right edge, info, banner and map to their left, status bar
+     * hidden. The legend, scale bar and origin cross are drawn inside the map, so they never
+     * sit under a button.
+     */
+    private void arrange() {
+        boolean land = Screen.landscape(this);
+        for (View v : new View[] {info, banner, map, center, fit, mark}) Screen.detach(v);
+        showStatusBar(!land);
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(info);
+        left.addView(banner);
+        left.addView(map, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(land ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        for (Button x : new Button[] {center, fit, mark}) {
+            buttons.addView(x, land ? new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1)
+                    : new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        }
+        if (land) {
+            LinearLayout root = new LinearLayout(this);
+            root.setOrientation(LinearLayout.HORIZONTAL);
+            root.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1));
+            root.addView(buttons, new LinearLayout.LayoutParams(Screen.dp(this, 128), LinearLayout.LayoutParams.MATCH_PARENT));
+            setContentView(root);
+        } else {
+            left.addView(buttons);
+            setContentView(left);
+        }
+    }
+
+    private void showStatusBar(boolean show) {
+        if (Build.VERSION.SDK_INT < 30) return;
+        WindowInsetsController w = getWindow().getInsetsController();
+        if (w == null) return;
+        if (show) w.show(WindowInsets.Type.statusBars());
+        else {
+            w.hide(WindowInsets.Type.statusBars());
+            w.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+    }
+
+    private Button button(String t, View.OnClickListener l) {
         Button x = new Button(this);
         x.setText(t);
+        x.setMinHeight(Screen.dp(this, MainActivity.BUTTON_DP));
+        x.setMinimumHeight(Screen.dp(this, MainActivity.BUTTON_DP));
         x.setOnClickListener(l);
-        row.addView(x, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        return x;
     }
 
     @Override protected void onResume() {
         super.onResume();
+        Screen.applyOrientation(this);
         Layers.getAsync(this, l -> { files = l; applyLayers(); });
         ui.post(tick);
     }

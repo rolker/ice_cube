@@ -16,6 +16,7 @@
         android:theme="@android:style/Theme.Material.Light"
         android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:launchMode="singleTask" android:windowSoftInputMode="stateHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -28,10 +29,13 @@
                 android:resource="@xml/device_filter" />
         </activity>
         <activity android:name=".SettingsActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:windowSoftInputMode="stateHidden" />
         <activity android:name=".MapActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
-        <activity android:name=".SessionsActivity" android:exported="false" />
+        <activity android:name=".SessionsActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
         <provider android:name=".ShareProvider" android:authorities="${applicationId}.share"
             android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".LoggerService" android:exported="false"

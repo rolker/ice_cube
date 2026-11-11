@@ -10,11 +10,13 @@ import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -37,7 +39,8 @@ import rink.icecube.logger.core.StreamParser;
 /** Main screen: status, heights, warnings and the controls. Settings, map and sessions are their own screens. */
 public final class MainActivity extends Activity {
     private TextView status, big, heights, banner;
-    private Button gpsButton, casterButton, sessionButton, markButton;
+    private Button gpsButton, casterButton, sessionButton, markButton, mapButton, settingsButton, shareButton, sessionsButton;
+    static final int BUTTON_DP = 68;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private String usbAsked;               // device name we already asked USB permission for
     private boolean gpsAutostartPending;   // waiting for the Bluetooth permission answer
@@ -51,32 +54,27 @@ public final class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Screen.applyOrientation(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
-        c.setPadding(pad, pad, pad, pad);
+        int pad = Screen.dp(this, 16);
         big = new TextView(this);
         big.setTextSize(30);
         big.setTypeface(Typeface.DEFAULT_BOLD);
         big.setPadding(0, 0, 0, pad / 2);
-        c.addView(big);
         heights = new TextView(this);
         heights.setTextSize(17);
         heights.setTypeface(Typeface.MONOSPACE);
         heights.setPadding(0, 0, 0, pad / 2);
-        c.addView(heights);
         banner = new TextView(this);
         banner.setBackgroundColor(0xFFC62828);
         banner.setTextColor(0xFFFFFFFF);
         banner.setTypeface(Typeface.DEFAULT_BOLD);
         banner.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
-        banner.setVisibility(android.view.View.GONE);
-        c.addView(banner);
-        gpsButton = button(c, v -> onGps());
-        casterButton = button(c, v -> onCaster());
-        sessionButton = button(c, v -> onSession());
-        markButton = button(c, v -> {
+        banner.setVisibility(View.GONE);
+        gpsButton = button(v -> onGps());
+        casterButton = button(v -> onCaster());
+        sessionButton = button(v -> onSession());
+        markButton = button(v -> {
             LoggerService s = LoggerService.current;
             if (s != null && s.sessionOpen()) {
                 int n = s.markControl();
@@ -84,43 +82,105 @@ public final class MainActivity extends Activity {
             }
         });
         markButton.setText("Mark control point");
-        LinearLayout row1 = row(c), row2 = row(c);
-        rowButton(row1, "Map", v -> startActivity(new Intent(this, MapActivity.class)));
-        rowButton(row1, "Settings", v -> startActivity(new Intent(this, SettingsActivity.class)));
-        rowButton(row2, "Share last session", v -> shareLast());
-        rowButton(row2, "Sessions", v -> startActivity(new Intent(this, SessionsActivity.class)));
+        mapButton = button(v -> startActivity(new Intent(this, MapActivity.class)));
+        mapButton.setText("Map");
+        settingsButton = button(v -> startActivity(new Intent(this, SettingsActivity.class)));
+        settingsButton.setText("Settings");
+        shareButton = button(v -> shareLast());
+        shareButton.setText("Share last session");
+        sessionsButton = button(v -> startActivity(new Intent(this, SessionsActivity.class)));
+        sessionsButton.setText("Sessions");
         status = new TextView(this);
         status.setTypeface(Typeface.MONOSPACE);
         status.setTextIsSelectable(true);
         status.setPadding(0, pad / 2, 0, 0);
-        c.addView(status);
-        ScrollView s = new ScrollView(this);
-        s.addView(c);
-        setContentView(s);
+        arrange();
 
         requestRuntimePermissions();
         if (b == null) autostart(getIntent(), true);
     }
 
-    private Button button(LinearLayout c, android.view.View.OnClickListener l) {
-        Button x = new Button(this);
-        x.setOnClickListener(l);
-        c.addView(x);
-        return x;
+    /** Rotation does not recreate this screen (see Screen); the same views are rearranged. */
+    @Override public void onConfigurationChanged(Configuration c) {
+        super.onConfigurationChanged(c);
+        arrange();
+        refresh();
     }
 
-    private LinearLayout row(LinearLayout c) {
+    /**
+     * Portrait: banner on top, then one scrolling column (status, buttons, details).
+     * Landscape: banner across the top, status scrolling on the left, large buttons in
+     * pairs on the right. The action bar is hidden in landscape to give the rows room.
+     */
+    private void arrange() {
+        boolean land = Screen.landscape(this);
+        int pad = Screen.dp(this, 16);
+        if (getActionBar() != null) { if (land) getActionBar().hide(); else getActionBar().show(); }
+        for (View v : new View[] {big, heights, banner, status, gpsButton, casterButton, sessionButton, markButton,
+                mapButton, settingsButton, shareButton, sessionsButton}) Screen.detach(v);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.addView(banner, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        if (!land) {
+            LinearLayout c = column(pad, pad, pad, pad);
+            c.addView(big);
+            c.addView(heights);
+            for (Button x : new Button[] {gpsButton, casterButton, sessionButton, markButton}) c.addView(x, full());
+            pair(c, mapButton, settingsButton);
+            pair(c, shareButton, sessionsButton);
+            c.addView(status);
+            root.addView(scroll(c), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        } else {
+            LinearLayout cols = new LinearLayout(this);
+            cols.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout left = column(pad, pad / 2, pad / 2, pad / 2);
+            left.addView(big);
+            left.addView(heights);
+            left.addView(status);
+            cols.addView(scroll(left), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 55));
+            LinearLayout right = column(pad / 2, pad / 2, pad, pad / 2);
+            pair(right, gpsButton, casterButton);
+            pair(right, sessionButton, markButton);
+            pair(right, mapButton, settingsButton);
+            pair(right, shareButton, sessionsButton);
+            cols.addView(scroll(right), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 45));
+            root.addView(cols, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        }
+        setContentView(root);
+    }
+
+    private LinearLayout column(int l, int t, int r, int b) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(l, t, r, b);
+        return c;
+    }
+
+    private ScrollView scroll(View v) {
+        ScrollView s = new ScrollView(this);
+        s.addView(v);
+        return s;
+    }
+
+    private static LinearLayout.LayoutParams full() {
+        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+    }
+
+    private void pair(LinearLayout c, Button a, Button b) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        c.addView(r);
-        return r;
+        r.addView(a, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        r.addView(b, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        c.addView(r, full());
     }
 
-    private void rowButton(LinearLayout r, String text, android.view.View.OnClickListener l) {
+    /** A button for gloves: 68 dp tall, so the drawn button (Material insets 6 dp top and bottom) is 56 dp. */
+    private Button button(View.OnClickListener l) {
         Button x = new Button(this);
-        x.setText(text);
+        x.setMinHeight(Screen.dp(this, BUTTON_DP));
+        x.setMinimumHeight(Screen.dp(this, BUTTON_DP));
         x.setOnClickListener(l);
-        r.addView(x, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        return x;
     }
 
     private void shareLast() {
@@ -174,7 +234,7 @@ public final class MainActivity extends Activity {
         if (ok != null) t.append('\n').append(ok);
         heights.setText(t);
         String w = warnings(s);
-        banner.setVisibility(w == null ? android.view.View.GONE : android.view.View.VISIBLE);
+        banner.setVisibility(w == null ? View.GONE : View.VISIBLE);
         if (w != null) banner.setText(w);
     }
 
@@ -233,7 +293,11 @@ public final class MainActivity extends Activity {
                 .putExtra(LoggerService.EXTRA_WAIT, wait));
     }
 
-    @Override protected void onResume() { super.onResume(); ui.post(tick); }
+    @Override protected void onResume() {
+        super.onResume();
+        Screen.applyOrientation(this);
+        ui.post(tick);
+    }
     @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); }
 
     private static LoggerService live() {

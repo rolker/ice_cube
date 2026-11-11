@@ -47,10 +47,11 @@ import java.util.Set;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
+import rink.icecube.logger.core.ScreenOrientation;
 
 /**
- * Caster, GPS link, survey and map settings, saved to SharedPreferences when the screen is
- * left (layer checkboxes save at once). Caster and link changes take effect at the next
+ * Display, caster, GPS link, survey and map settings, saved to SharedPreferences when the
+ * screen is left (layer checkboxes and Screen orientation save at once). Caster and link changes take effect at the next
  * Connect; pole height and Frame changes apply at once and are logged in a running session.
  * The password is only shown as dots.
  */
@@ -66,10 +67,12 @@ public final class SettingsActivity extends Activity {
     private EditText frameEpoch, poleOther;
     private TextView frameError, poleError, layersHeader;
     private LinearLayout layerList;
+    private Spinner orientationSpinner;
     private static final int IMPORT_LAYERS = 7;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Screen.applyOrientation(this);
         setTitle("Settings");
         SharedPreferences p = Settings.prefs(this);
         LinearLayout c = new LinearLayout(this);
@@ -77,7 +80,19 @@ public final class SettingsActivity extends Activity {
         int pad = (int) (16 * getResources().getDisplayMetrics().density);
         c.setPadding(pad, pad, pad, pad);
 
-        header(c, "Caster (NTRIP)", 0);
+        header(c, "Display", 0);
+        label(c, "Screen orientation (lock it to how the phone sits on the pole; Auto follows the system)");
+        orientationSpinner = spinner(c, ScreenOrientation.LABELS);
+        orientationSpinner.setSelection(ScreenOrientation.index(p.getString(Settings.ORIENTATION, ScreenOrientation.DEFAULT)));
+        orientationSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> a, View v, int pos, long id) {
+                Settings.prefs(SettingsActivity.this).edit().putString(Settings.ORIENTATION, ScreenOrientation.KEYS[pos]).apply();
+                Screen.applyOrientation(SettingsActivity.this);   // at once, on this screen too
+            }
+            @Override public void onNothingSelected(AdapterView<?> a) { }
+        });
+
+        header(c, "Caster (NTRIP)", pad);
         host = field(c, "Host", p.getString(Settings.HOST, ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         port = field(c, "Port", p.getString(Settings.PORT, "2101"), InputType.TYPE_CLASS_NUMBER);
         mount = field(c, "Mount point", p.getString(Settings.MOUNT, ""), InputType.TYPE_CLASS_TEXT);
@@ -168,8 +183,14 @@ public final class SettingsActivity extends Activity {
             else { configureBt = configure.isChecked(); configure.setChecked(configureUsb); }
             updateDeviceVisibility();
         });
+        // Rotation keeps this screen (configChanges, see Screen), so typed values are not lost.
+        // On a wide landscape screen the fields stay at a readable width, centred.
+        Screen.MaxWidth m = new Screen.MaxWidth(this);
+        m.addView(c, new android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT));
         ScrollView s = new ScrollView(this);
-        s.addView(c);
+        s.addView(m, new android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER_HORIZONTAL));
         setContentView(s);
         if (Build.VERSION.SDK_INT >= 31 && !MainActivity.bluetoothAllowed(this)) {
             requestPermissions(new String[] {Manifest.permission.BLUETOOTH_CONNECT}, 2);
@@ -332,6 +353,8 @@ public final class SettingsActivity extends Activity {
         e.setText(value);
         e.setInputType(type);
         e.setSingleLine(true);
+        // In landscape, keep the screen visible while typing instead of a full-screen editor.
+        e.setImeOptions(e.getImeOptions() | android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         c.addView(e);
         return e;
     }
@@ -383,6 +406,11 @@ public final class SettingsActivity extends Activity {
         int v = bluetooth.isChecked() ? View.VISIBLE : View.GONE;
         device.setVisibility(v);
         deviceNote.setVisibility(v);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        Screen.applyOrientation(this);
     }
 
     @Override protected void onPause() {

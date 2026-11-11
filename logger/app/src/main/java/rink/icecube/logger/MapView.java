@@ -8,6 +8,8 @@ import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.os.Bundle;
+import android.os.Parcelable;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -415,6 +417,32 @@ final class MapView extends View {
         c.drawText(t, x, y - 8 * dp, text);
         String n = "N↑";
         c.drawText(n, w - text.measureText(n) - 12 * dp, 22 * dp, text);
+    }
+
+    // ---- view state ----
+    // A rotation does not recreate MapActivity (configChanges), so this object and its view
+    // survive as they are. These cover any other recreation (e.g. a font or theme change, or
+    // the process restored after being killed in the background).
+
+    @Override protected Parcelable onSaveInstanceState() {
+        Bundle b = new Bundle();
+        b.putParcelable("super", super.onSaveInstanceState());
+        b.putDouble("cx", cx);
+        b.putDouble("cy", cy);
+        b.putFloat("ppm", ppm);
+        b.putBoolean("follow", follow);
+        return b;
+    }
+
+    @Override protected void onRestoreInstanceState(Parcelable state) {
+        if (!(state instanceof Bundle)) { super.onRestoreInstanceState(state); return; }
+        Bundle b = (Bundle) state;
+        super.onRestoreInstanceState(b.getParcelable("super"));
+        cx = b.getDouble("cx");
+        cy = b.getDouble("cy");
+        ppm = b.getFloat("ppm");
+        follow = b.getBoolean("follow", true);
+        invalidate();
     }
 
     @SuppressLint("ClickableViewAccessibility")
