@@ -9,27 +9,40 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
-/** NTRIP v1 client. Sends the latest GGA upstream and hands RTCM bytes to a sink. Reconnects on failure. */
+/**
+ * NTRIP v1 client. Sends the latest GGA upstream when the source has one, and hands
+ * every received byte to a sink unchanged. On failure it reconnects after a delay that
+ * starts at 5 s and doubles up to 60 s; a connection that delivered data resets it.
+ * Events never include the password.
+ */
 public final class NtripClient {
     public interface Sink { void onRtcm(byte[] data, int n); }
     public interface GgaSource { String latest(); }
+    public interface Events { void onEvent(String text); }
+
+    public static final long FIRST_RETRY_MS = 5000, MAX_RETRY_MS = 60000;
 
     private final String host, mount, user, pass;
     private final int port;
     private final Sink sink;
     private final GgaSource gga;
+    private final Events events;
     private volatile boolean running;
     private volatile Socket socket;
     private Thread thread;
 
     public volatile String status = "idle";
-    public volatile long rtcmBytes, connects;
-    public volatile long lastDataMs;
-    public long ggaPeriodMs = 10000, retryMs = 5000;
+    public volatile boolean connected;
+    public volatile long rtcmBytes, connects, ggaSent;
+    /** System.nanoTime() of the last received byte, or 0. */
+    public volatile long lastDataNanos;
+    public long ggaPeriodMs = 10000;
 
-    public NtripClient(String host, int port, String mount, String user, String pass, Sink sink, GgaSource gga) {
+    public NtripClient(String host, int port, String mount, String user, String pass,
+                       Sink sink, GgaSource gga, Events events) {
         this.host = host; this.port = port; this.mount = mount; this.user = user; this.pass = pass;
         this.sink = sink; this.gga = gga;
+        this.events = events != null ? events : t -> { };
     }
 
     public void start() {
@@ -45,16 +58,39 @@ public final class NtripClient {
         if (thread != null) thread.interrupt();
     }
 
+    public void join(long ms) throws InterruptedException { if (thread != null) thread.join(ms); }
+
+    public boolean isRunning() { return running; }
+
+    /** Delay before the next attempt after a failure. */
+    public static long nextRetry(long current) { return Math.min(MAX_RETRY_MS, current * 2); }
+
+    /** Seconds since the last received byte, or -1 if none yet. */
+    public double secondsSinceData() {
+        long t = lastDataNanos;
+        return t == 0 ? -1 : (System.nanoTime() - t) / 1e9;
+    }
+
     private void loop() {
+        long retry = FIRST_RETRY_MS;
         while (running) {
+            long before = rtcmBytes;
+            events.onEvent("caster connecting mount=" + mount);
             try {
                 session();
             } catch (IOException e) {
                 status = "error: " + e.getMessage();
             }
+            boolean wasConnected = connected;
+            connected = false;
             if (!running) break;
-            try { Thread.sleep(retryMs); } catch (InterruptedException e) { break; }
+            if (rtcmBytes > before) retry = FIRST_RETRY_MS;
+            events.onEvent((wasConnected ? "caster lost: " : "caster failed: ") + status
+                    + "; retry in " + retry / 1000 + " s");
+            try { Thread.sleep(retry); } catch (InterruptedException e) { break; }
+            retry = nextRetry(retry);
         }
+        connected = false;
         status = "stopped";
     }
 
@@ -71,8 +107,10 @@ public final class NtripClient {
             out.flush();
             byte[] first = readResponseHead(in);
             connects++;
+            connected = true;
             status = "connected";
-            lastDataMs = System.currentTimeMillis();
+            events.onEvent("caster connected");
+            long connectedAt = System.nanoTime();
             if (first.length > 0) deliver(first, first.length);
             byte[] buf = new byte[4096];
             long nextGga = 0;
@@ -83,6 +121,7 @@ public final class NtripClient {
                     if (g != null) {
                         out.write((g + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
                         out.flush();
+                        ggaSent++;
                         nextGga = now + ggaPeriodMs;
                     } else nextGga = now + 1000;
                 }
@@ -90,7 +129,8 @@ public final class NtripClient {
                 try {
                     n = in.read(buf);
                 } catch (java.net.SocketTimeoutException e) {
-                    if (now - lastDataMs > 30000) throw new IOException("no data for 30 s");
+                    long last = Math.max(lastDataNanos, connectedAt);
+                    if (System.nanoTime() - last > 30_000_000_000L) throw new IOException("no data for 30 s");
                     continue;
                 }
                 if (n < 0) throw new IOException("caster closed the connection");
@@ -103,7 +143,7 @@ public final class NtripClient {
 
     private void deliver(byte[] b, int n) {
         rtcmBytes += n;
-        lastDataMs = System.currentTimeMillis();
+        lastDataNanos = System.nanoTime();
         sink.onRtcm(b, n);
     }
 
@@ -112,7 +152,7 @@ public final class NtripClient {
         r.append("GET /").append(mount).append(" HTTP/1.0\r\n");
         r.append("Host: ").append(host).append("\r\n");
         r.append("Ntrip-Version: Ntrip/1.0\r\n");
-        r.append("User-Agent: NTRIP IceCubeLogger/0.1\r\n");
+        r.append("User-Agent: NTRIP IceCubeLogger/0.2\r\n");
         if (user != null && !user.isEmpty()) {
             String c = user + ":" + (pass == null ? "" : pass);
             r.append("Authorization: Basic ")

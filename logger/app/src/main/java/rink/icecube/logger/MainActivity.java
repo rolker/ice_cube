@@ -6,6 +6,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
@@ -13,27 +14,29 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.InputType;
+import android.os.SystemClock;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.NtripClient;
+import rink.icecube.logger.core.Rtcm3Parser;
 import rink.icecube.logger.core.StreamParser;
 
-/** One screen: NTRIP settings, Start and Stop, and live status. */
+/** Main screen: status and the controls. Settings are on their own screen. */
 public final class MainActivity extends Activity {
-    private EditText host, port, mount, user, pass;
     private TextView status, big;
-    private Button start, tap;
+    private Button gpsButton, casterButton, sessionButton, markButton;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private UsbDevice pending;
+    private String usbAsked;               // device name we already asked USB permission for
+    private boolean gpsAutostartPending;   // waiting for the Bluetooth permission answer
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
@@ -45,126 +48,206 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (16 * getResources().getDisplayMetrics().density);
         c.setPadding(pad, pad, pad, pad);
-        SharedPreferences p = prefs();
-        host = field(c, "NTRIP host (blank for no corrections)", p.getString("host", ""), InputType.TYPE_CLASS_TEXT);
-        port = field(c, "Port", p.getString("port", "2101"), InputType.TYPE_CLASS_NUMBER);
-        mount = field(c, "Mount point", p.getString("mount", ""), InputType.TYPE_CLASS_TEXT);
-        user = field(c, "User", p.getString("user", ""), InputType.TYPE_CLASS_TEXT);
-        pass = field(c, "Password", p.getString("pass", ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        start = new Button(this);
-        start.setOnClickListener(v -> onStartStop());
-        c.addView(start);
-        tap = new Button(this);
-        tap.setText("Mark control point");
-        tap.setOnClickListener(v -> {
-            LoggerService s = LoggerService.current;
-            if (s != null && s.isRunning()) s.mark("control");
-        });
-        c.addView(tap);
         big = new TextView(this);
         big.setTextSize(30);
         big.setTypeface(Typeface.DEFAULT_BOLD);
-        big.setPadding(0, pad, 0, pad / 2);
+        big.setPadding(0, 0, 0, pad / 2);
         c.addView(big);
+        gpsButton = button(c, v -> onGps());
+        casterButton = button(c, v -> onCaster());
+        sessionButton = button(c, v -> onSession());
+        markButton = button(c, v -> {
+            LoggerService s = LoggerService.current;
+            if (s != null && s.sessionOpen()) s.mark("control");
+        });
+        markButton.setText("Mark control point");
+        Button settings = button(c, v -> startActivity(new Intent(this, SettingsActivity.class)));
+        settings.setText("Settings");
         status = new TextView(this);
         status.setTypeface(Typeface.MONOSPACE);
         status.setTextIsSelectable(true);
+        status.setPadding(0, pad / 2, 0, 0);
         c.addView(status);
         ScrollView s = new ScrollView(this);
         s.addView(c);
         setContentView(s);
+
+        requestRuntimePermissions();
+        if (b == null) autostart(getIntent(), true);
     }
 
-    private EditText field(LinearLayout c, String hint, String value, int type) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setText(value);
-        e.setInputType(type);
-        e.setSingleLine(true);
-        c.addView(e);
-        return e;
+    private Button button(LinearLayout c, android.view.View.OnClickListener l) {
+        Button x = new Button(this);
+        x.setOnClickListener(l);
+        c.addView(x);
+        return x;
     }
 
-    private SharedPreferences prefs() { return getSharedPreferences("settings", Context.MODE_PRIVATE); }
+    private void requestRuntimePermissions() {
+        List<String> want = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            want.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (Build.VERSION.SDK_INT >= 31 && !granted(Manifest.permission.BLUETOOTH_CONNECT)) {
+            want.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
+        if (!want.isEmpty()) requestPermissions(want.toArray(new String[0]), 1);
+    }
+
+    private boolean granted(String p) { return checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED; }
+
+    static boolean bluetoothAllowed(Context c) {
+        return Build.VERSION.SDK_INT < 31
+                || c.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        if (gpsAutostartPending && bluetoothAllowed(this)) {
+            gpsAutostartPending = false;
+            send(LoggerService.ACTION_GPS_CONNECT, true);
+        }
+    }
+
+    @Override protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        autostart(i, false);
+    }
+
+    /** The two launch options from Settings. A USB re-attach while open only restarts the GPS. */
+    private void autostart(Intent launch, boolean appLaunch) {
+        SharedPreferences p = Settings.prefs(this);
+        LoggerService s = LoggerService.current;
+        boolean usbLaunch = launch != null && UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(launch.getAction());
+        if (appLaunch && p.getBoolean(Settings.CASTER_AT_LAUNCH, false)
+                && !p.getString(Settings.HOST, "").trim().isEmpty() && (s == null || s.caster() == null)) {
+            send(LoggerService.ACTION_CASTER_CONNECT, false);
+        }
+        if (!p.getBoolean(Settings.LOG_ON_GPS_CONNECT, false) || (s != null && s.gpsActive())) return;
+        boolean bt = Settings.bluetooth(p);
+        if (bt && !usbLaunch) {
+            if (bluetoothAllowed(this)) send(LoggerService.ACTION_GPS_CONNECT, true);
+            else gpsAutostartPending = true;
+        } else if (!bt && usbLaunch) {
+            send(LoggerService.ACTION_GPS_CONNECT, true);
+        }
+    }
+
+    private void send(String action, boolean wait) {
+        startForegroundService(new Intent(this, LoggerService.class).setAction(action)
+                .putExtra(LoggerService.EXTRA_WAIT, wait));
+    }
 
     @Override protected void onResume() { super.onResume(); ui.post(tick); }
     @Override protected void onPause() { super.onPause(); ui.removeCallbacks(tick); }
 
-    private UsbDevice findGps(UsbManager m) {
-        UsbDevice any = null;
-        for (UsbDevice d : m.getDeviceList().values()) {
-            if (d.getVendorId() == 0x1546) return d;
-            if (UsbLink.isCdc(d)) any = d;
-        }
-        return any;
+    private static LoggerService live() {
+        LoggerService s = LoggerService.current;
+        return s != null && (s.sessionOpen() || s.gpsActive() || s.caster() != null) ? s : null;
     }
 
-    private void onStartStop() {
-        LoggerService s = LoggerService.current;
-        if (s != null && s.isRunning()) {
-            stopService(new Intent(this, LoggerService.class));
+    private void onGps() {
+        LoggerService s = live();
+        if (s != null && s.gpsActive()) { send(LoggerService.ACTION_GPS_DISCONNECT, false); return; }
+        if (Settings.bluetooth(Settings.prefs(this)) && !bluetoothAllowed(this)) {
+            big.setText("Allow Bluetooth");
+            requestRuntimePermissions();
             return;
         }
-        prefs().edit().putString("host", text(host)).putString("port", text(port)).putString("mount", text(mount))
-                .putString("user", text(user)).putString("pass", text(pass)).apply();
+        usbAsked = null;
+        send(LoggerService.ACTION_GPS_CONNECT, false);
+    }
+
+    private void onCaster() {
+        LoggerService s = live();
+        if (s != null && s.caster() != null) { send(LoggerService.ACTION_CASTER_DISCONNECT, false); return; }
+        if (Settings.prefs(this).getString(Settings.HOST, "").trim().isEmpty()) {
+            startActivity(new Intent(this, SettingsActivity.class));
+            return;
+        }
+        send(LoggerService.ACTION_CASTER_CONNECT, false);
+    }
+
+    private void onSession() {
+        LoggerService s = live();
+        send(s != null ? LoggerService.ACTION_STOP : LoggerService.ACTION_START_SESSION, false);
+    }
+
+    /** Asks once per attached device for USB permission while the service waits for it. */
+    private void askUsbPermission() {
         UsbManager m = (UsbManager) getSystemService(Context.USB_SERVICE);
-        UsbDevice d = findGps(m);
-        if (d == null) { big.setText("No GPS on USB"); return; }
-        if (m.hasPermission(d)) { launch(d); return; }
-        pending = d;
+        UsbDevice d = UsbLink.findGps(m);
+        if (d == null || m.hasPermission(d) || d.getDeviceName().equals(usbAsked)) return;
+        usbAsked = d.getDeviceName();
         Intent i = new Intent("rink.icecube.logger.USB_PERMISSION").setPackage(getPackageName());
         m.requestPermission(d, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
     }
 
-    private void launch(UsbDevice d) {
-        pending = null;
-        int portNum = 2101;
-        try { portNum = Integer.parseInt(text(port)); } catch (NumberFormatException ignored) { }
-        Intent i = new Intent(this, LoggerService.class)
-                .putExtra(LoggerService.EXTRA_DEVICE, d.getDeviceName())
-                .putExtra(LoggerService.EXTRA_HOST, text(host)).putExtra(LoggerService.EXTRA_PORT, portNum)
-                .putExtra(LoggerService.EXTRA_MOUNT, text(mount)).putExtra(LoggerService.EXTRA_USER, text(user))
-                .putExtra(LoggerService.EXTRA_PASS, text(pass));
-        startForegroundService(i);
-    }
-
-    private static String text(EditText e) { return e.getText().toString().trim(); }
-
     private void refresh() {
-        UsbManager m = (UsbManager) getSystemService(Context.USB_SERVICE);
-        if (pending != null && m.hasPermission(pending)) launch(pending);
-        LoggerService s = LoggerService.current;
-        boolean on = s != null && s.isRunning();
-        start.setText(on ? "Stop" : "Start");
-        tap.setEnabled(on);
+        LoggerService s = live();
+        LoggerService last = LoggerService.current;
+        boolean session = s != null && s.sessionOpen();
+        boolean gpsOn = s != null && s.gpsActive();
+        NtripClient n = s == null ? null : s.caster();
+        gpsButton.setText(gpsOn ? "Disconnect GPS" : "Connect GPS");
+        casterButton.setText(n != null ? "Disconnect caster" : "Connect caster");
+        sessionButton.setText(s != null ? "Stop session" : "Start session");
+        markButton.setEnabled(session);
+        if (s != null && s.usbNeedsPermission()) askUsbPermission();
+
+        SharedPreferences p = Settings.prefs(this);
+        StringBuilder t = new StringBuilder();
         if (s == null) {
-            big.setText("Ready");
-            UsbDevice d = findGps(m);
-            status.setText(d == null ? "Connect the GPS USB port to the phone." :
-                    String.format(Locale.US, "USB device %04x:%04x found.", d.getVendorId(), d.getProductId()));
+            big.setText(last == null ? "Ready" : "Stopped");
+            t.append("gps link  ").append(Settings.bluetooth(p) ? "Bluetooth " + p.getString(Settings.BT_NAME, "(choose in Settings)") : "USB").append('\n');
+            t.append("caster    ").append(p.getString(Settings.HOST, "").trim().isEmpty() ? "(set in Settings)" : p.getString(Settings.MOUNT, "")).append('\n');
+            if (last != null && last.folder() != null) t.append("last folder\n  ").append(last.folder()).append('\n');
+            if (last != null && last.error != null) t.append("ERROR     ").append(last.error).append('\n');
+            status.setText(t);
             return;
         }
         Gga g = s.fix();
-        StreamParser p = s.parser;
-        NtripClient n = s.ntrip();
-        big.setText(!on ? "Stopped" : g == null ? "Waiting for GPS" : g.qualityName());
-        StringBuilder t = new StringBuilder();
-        long secs = s.startMs == 0 ? 0 : (System.currentTimeMillis() - s.startMs) / 1000;
-        t.append(String.format(Locale.US, "time      %d:%02d\n", secs / 60, secs % 60));
-        if (g != null) t.append(String.format(Locale.US, "sats %d  age %.1f s\n", g.sats, g.age));
-        t.append(String.format(Locale.US, "gps bytes %.1f MB\n", p.bytes / 1e6));
-        t.append(String.format(Locale.US, "RAWX      %d  lost %.2f%%  max gap %.2f s\n", p.rawxEpochs, p.rawxLossPct(), p.rawxMaxGap));
-        t.append(String.format(Locale.US, "GGA       %d  lost %.2f%%  max gap %.2f s\n", p.ggaCount, p.ggaLossPct(), p.ggaMaxGap));
-        t.append(String.format(Locale.US, "bad UBX %d  bad NMEA %d\n", p.ubxBad, p.nmeaBad));
-        t.append(String.format(Locale.US, "config acks %d  naks %d\n", p.valsetAcks, p.valsetNaks));
-        if (n != null) t.append(String.format(Locale.US, "ntrip     %s\nrtcm      %.1f kB\n", n.status, n.rtcmBytes / 1e3));
-        t.append(String.format(Locale.US, "imu       %d samples\n", s.imuSamples()));
-        if (s.dir != null) t.append("folder    ").append(s.dir).append('\n');
+        big.setText(!s.gpsConnected() ? (gpsOn ? "Waiting for GPS" : n != null ? "Caster only" : "Session open")
+                : g == null ? "No GGA yet" : g.qualityName());
+        if (session) {
+            long secs = s.sessionSeconds();
+            t.append(String.format(Locale.US, "session   %d:%02d:%02d\n", secs / 3600, secs / 60 % 60, secs % 60));
+        } else {
+            t.append("session   starts when the GPS connects\n");
+        }
+        t.append("\nGPS       ").append(s.gpsStatus()).append('\n');
+        String link = s.gpsLinkName();
+        if (link != null) t.append("  ").append(link).append('\n');
+        double since = s.gpsSecondsSinceData();
+        if (since >= 0) t.append(String.format(Locale.US, "  last data %.1f s ago\n", since));
+        if (g != null) t.append(String.format(Locale.US, "  sats %d  age %.1f s\n", g.sats, g.age));
+        StreamParser sp = s.parser;
+        t.append(String.format(Locale.US, "  bytes %.2f MB\n", sp.bytes / 1e6));
+        t.append(String.format(Locale.US, "  RAWX %d  lost %.2f%%  max gap %.2f s\n", sp.rawxEpochs, sp.rawxLossPct(), sp.rawxMaxGap));
+        t.append(String.format(Locale.US, "  GGA  %d  lost %.2f%%  max gap %.2f s\n", sp.ggaCount, sp.ggaLossPct(), sp.ggaMaxGap));
+        t.append(String.format(Locale.US, "  bad UBX %d  bad NMEA %d\n", sp.ubxBad, sp.nmeaBad));
+        t.append(String.format(Locale.US, "  config acks %d  naks %d\n", sp.valsetAcks, sp.valsetNaks));
+
+        t.append("\nCaster    ");
+        if (n == null) t.append("off\n");
+        else {
+            t.append(n.connected ? "connected" : n.status).append('\n');
+            Rtcm3Parser r = s.rtcmParser;
+            double ds = n.secondsSinceData();
+            t.append(String.format(Locale.US, "  received %.1f kB  last %s\n", n.rtcmBytes / 1e3,
+                    ds < 0 ? "never" : String.format(Locale.US, "%.1f s ago", ds)));
+            t.append(String.format(Locale.US, "  frames %d  crc errors %d  gga sent %d\n", r.frames, r.crcErrors, n.ggaSent));
+            t.append(String.format(Locale.US, "  to GPS %.1f kB  write errors %d\n", s.rtcmForwarded / 1e3, s.rtcmWriteErrors));
+            t.append("  logging   ").append(s.loggingCorrections() ? "on" : "off").append('\n');
+            String types = s.rtcmStats.summary(SystemClock.elapsedRealtime());
+            if (!types.isEmpty()) t.append("  type   count   rate\n").append(types);
+        }
+        t.append(String.format(Locale.US, "\nIMU       %d samples\n", s.imuSamples()));
+        if (s.folder() != null) t.append("folder\n  ").append(s.folder()).append('\n');
         if (s.error != null) t.append("ERROR     ").append(s.error).append('\n');
         status.setText(t);
     }
