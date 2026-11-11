@@ -10,17 +10,17 @@ import android.os.Looper;
 import android.os.SystemClock;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import rink.icecube.logger.core.ShareZip;
+
 /**
- * Zips a session folder into cache/share/<session>.zip and opens the share sheet with it
+ * Zips a session folder (and refs.csv) into cache/share/IceCubeLogger_<session>.zip and opens the share sheet with it
  * (application/zip through {@link ShareProvider}). A session that is still recording is
  * not zipped silently: the user chooses Stop and share, or Share snapshot, which flushes
  * the files and zips each one up to its length at that moment, adding SNAPSHOT.txt.
@@ -93,7 +93,7 @@ final class Sharer {
             ui.post(() -> {
                 d.dismiss();
                 if (z == null) { message(a, "Could not zip the session: " + e); return; }
-                send(a, z, dir.getName());
+                send(a, z);
             });
         }, "share-zip").start();
     }
@@ -116,7 +116,23 @@ final class Sharer {
         return out;
     }
 
-    /** Writes cache/share/<name>.zip with the folder's files (and photos/) under <name>/. Older zips are deleted. */
+    /** refs.csv to include: the one in the session's own storage root, else the first that exists, else null. */
+    static File refsFor(Activity a, File dir) {
+        File parent = dir.getParentFile();
+        File root = parent != null ? parent.getParentFile() : null;
+        if (root != null) {
+            File own = new File(root, Storage.REFS);
+            if (own.isFile()) return own;
+        }
+        java.util.List<File> all = Storage.refsFiles(a);
+        return all.isEmpty() ? null : all.get(0);
+    }
+
+    /**
+     * Writes cache/share/IceCubeLogger_<name>.zip with the folder's files (and photos/) under
+     * <name>/, plus refs.csv from the storage root at the zip's top level when it exists.
+     * Photos and other compressed files are STORED, logs DEFLATED. Older zips are deleted.
+     */
     static File zip(Activity a, File dir, boolean snapshot, Progress progress) throws IOException {
         File out = ShareProvider.dir(a);
         if (!out.isDirectory() && !out.mkdirs()) throw new IOException("cannot create " + out);
@@ -124,13 +140,18 @@ final class Sharer {
         if (old != null) for (File f : old) //noinspection ResultOfMethodCallIgnored
             f.delete();
         java.util.List<String> names = filesIn(dir);
-        File[] files = new File[names.size()];
-        for (int i = 0; i < files.length; i++) files[i] = new File(dir, names.get(i));
-        long[] lengths = new long[files.length];
+        java.util.List<String> entries = new java.util.ArrayList<>();
+        java.util.List<File> files = new java.util.ArrayList<>();
+        for (String n : names) { entries.add(dir.getName() + "/" + n); files.add(new File(dir, n)); }
+        File refs = refsFor(a, dir);
+        if (refs != null) { entries.add(Storage.REFS); files.add(refs); }
+        // Lengths fixed now: a snapshot copies each file up to this length even if it keeps growing.
+        long[] lengths = new long[files.size()];
         long total = 0;
-        for (int i = 0; i < files.length; i++) { lengths[i] = files[i].length(); total += lengths[i]; }
-        File zip = new File(out, dir.getName() + (snapshot ? "_snapshot" : "") + ".zip");
-        long done = 0, lastReport = 0;
+        for (int i = 0; i < lengths.length; i++) { lengths[i] = files.get(i).length(); total += lengths[i]; }
+        File zip = new File(out, ShareZip.fileName(dir.getName(), snapshot));
+        long[] done = {0, 0};
+        long all = total;
         byte[] buf = new byte[1 << 16];
         try (ZipOutputStream z = new ZipOutputStream(new FileOutputStream(zip))) {
             if (snapshot) {
@@ -141,19 +162,11 @@ final class Sharer {
                         .getBytes(StandardCharsets.UTF_8));
                 z.closeEntry();
             }
-            for (int i = 0; i < files.length; i++) {
-                z.putNextEntry(new ZipEntry(dir.getName() + "/" + names.get(i)));
-                try (InputStream in = new FileInputStream(files[i])) {
-                    long left = lengths[i];
-                    int n;
-                    while (left > 0 && (n = in.read(buf, 0, (int) Math.min(buf.length, left))) > 0) {
-                        z.write(buf, 0, n);
-                        left -= n;
-                        done += n;
-                        if (done - lastReport > (4 << 20)) { lastReport = done; progress.update(done, total); }
-                    }
-                }
-                z.closeEntry();
+            for (int i = 0; i < lengths.length; i++) {
+                ShareZip.addFile(z, entries.get(i), files.get(i), lengths[i], buf, n -> {
+                    done[0] += n;
+                    if (done[0] - done[1] > (4 << 20)) { done[1] = done[0]; progress.update(done[0], all); }
+                });
             }
         } catch (IOException e) {
             //noinspection ResultOfMethodCallIgnored
@@ -163,12 +176,14 @@ final class Sharer {
         return zip;
     }
 
-    private static void send(Activity a, File zip, String session) {
+    private static void send(Activity a, File zip) {
         Uri uri = ShareProvider.uriFor(zip);
         Intent i = new Intent(Intent.ACTION_SEND)
-                .setType("application/zip")
+                .setType(ShareProvider.ZIP)
                 .putExtra(Intent.EXTRA_STREAM, uri)
-                .putExtra(Intent.EXTRA_SUBJECT, "Ice Cube Logger session " + session)
+                // Drive's upload dialog names the file from EXTRA_SUBJECT/EXTRA_TITLE when set,
+                // else from the provider's DISPLAY_NAME; all three are the .zip file name.
+                .putExtra(Intent.EXTRA_SUBJECT, zip.getName())
                 .putExtra(Intent.EXTRA_TITLE, zip.getName())
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         i.setClipData(ClipData.newRawUri(zip.getName(), uri));

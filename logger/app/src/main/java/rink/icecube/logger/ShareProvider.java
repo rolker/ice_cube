@@ -17,6 +17,11 @@ import java.util.List;
  * Drive from the share sheet) can read them through a content:// URI with a temporary read
  * grant. Not exported; access only through the grant on the share intent. It serves plain
  * file names in that one folder and nothing else.
+ *
+ * Receivers name the upload from the share intent's EXTRA_SUBJECT/EXTRA_TITLE or from
+ * query()'s DISPLAY_NAME (falling back to the URI's last path segment); Sharer sets all of
+ * them to the same IceCubeLogger_<session>.zip, and getType()/getStreamTypes() and the
+ * mime_type column say application/zip.
  */
 public final class ShareProvider extends ContentProvider {
     static final String AUTHORITY = BuildConfig.APPLICATION_ID + ".share";
@@ -38,23 +43,34 @@ public final class ShareProvider extends ContentProvider {
         return f.isFile() ? f : null;
     }
 
+    static final String ZIP = "application/zip";
+    private static final String MIME_COLUMN = "mime_type"; // DocumentsContract.Document.COLUMN_MIME_TYPE
+
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String sort) {
         File f = fileFor(uri);
         if (f == null) return null;
-        String[] cols = projection != null ? projection : new String[] {OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE};
+        String[] cols = projection != null ? projection
+                : new String[] {OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE, MIME_COLUMN};
         MatrixCursor c = new MatrixCursor(cols, 1);
         Object[] row = new Object[cols.length];
         for (int i = 0; i < cols.length; i++) {
             if (OpenableColumns.DISPLAY_NAME.equals(cols[i])) row[i] = f.getName();
             else if (OpenableColumns.SIZE.equals(cols[i])) row[i] = f.length();
+            else if (MIME_COLUMN.equals(cols[i])) row[i] = typeOf(f.getName());
         }
         c.addRow(row);
         return c;
     }
 
-    @Override public String getType(Uri uri) {
-        String p = uri.getLastPathSegment();
-        return p != null && p.endsWith(".zip") ? "application/zip" : "application/octet-stream";
+    private static String typeOf(String name) {
+        return name != null && name.endsWith(".zip") ? ZIP : "application/octet-stream";
+    }
+
+    @Override public String getType(Uri uri) { return typeOf(uri.getLastPathSegment()); }
+
+    @Override public String[] getStreamTypes(Uri uri, String filter) {
+        String t = getType(uri);
+        return android.content.ClipDescription.compareMimeTypes(t, filter) ? new String[] {t} : null;
     }
 
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {

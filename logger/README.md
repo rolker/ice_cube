@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.5
+# Ice Cube Logger 0.5.1
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -316,11 +316,17 @@ Either is logged as `layer base check: ...` when it changes. No base layer, no m
 
 ## Share
 MENU > Share last session, or Sessions (a list, newest first; tap one), zips the
-session folder (with `photos/`) to the app cache and opens the Android share sheet with an
-`application/zip`; pick Google Drive. If the session is still recording the app asks:
+session folder (with `photos/`) to the app cache as `IceCubeLogger_<session>.zip` and opens
+the Android share sheet with an `application/zip`; pick Google Drive. The share subject and
+title, and the provider's display name, are all that file name, so Drive keeps the `.zip`.
+The zip holds `<session>/...` and, at its top level next to the session folder, a copy of
+`refs.csv` from the storage root (the session's own root, else the first one found; left out
+if there is none). JPEG photos (and other already-compressed files) are stored as they are;
+logs and text are deflated. If the session is still recording the app asks:
 Stop and share (stops the session, then zips the complete files), or Share snapshot (keeps
-recording; flushes the files and zips each one up to its length at that moment, plus a
-`SNAPSHOT.txt` saying so; the last chunk of a log may be cut and there is no stop event).
+recording; flushes the files and zips each one, `refs.csv` included, up to its length at that
+moment, plus a `SNAPSHOT.txt` saying so, in `IceCubeLogger_<session>_snapshot.zip`; the last
+chunk of a log may be cut and there is no stop event).
 Only the newest zip is kept in the cache.
 
 ## Files
