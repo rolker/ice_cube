@@ -55,6 +55,9 @@ def _grid_from(cfg, outline, all_points):
 
 
 def run(cfg, out_dir=None, log=print):
+    if cfg.get("grids"):
+        from . import topo   # several grids, masks, a DEM, GIS exports (topo.py)
+        return topo.run(cfg, out_dir, log)
     base = cfg.get("_base_dir")
     site = io.Site.from_config(cfg, base)
     d = cfg.get("defaults", {})
@@ -202,12 +205,24 @@ def main(argv=None):
     r.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="override a config value, e.g. --set grid.cell=0.25 --set defaults.wander_prior=0.02 "
                         "(TOML syntax for the value; dotted key into the config)")
+    v = sub.add_parser("validate", help="leave-one-session-out, anchors, RTK vs DEM, coverage (configs with [[grids]])")
+    v.add_argument("config")
+    v.add_argument("--out", help="output directory (overrides [output].dir)")
+    v.add_argument("--grid", help="grid for the leave-one-out runs (default: the first [[grids]])")
+    v.add_argument("--group", action="append", help="only these sessions (repeatable)")
+    v.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     a = ap.parse_args(argv)
+    cfg = load_config(a.config)
+    for item in a.set:
+        apply_override(cfg, item)
     if a.cmd == "run":
-        cfg = load_config(a.config)
-        for item in a.set:
-            apply_override(cfg, item)
         run(cfg, a.out)
+        return 0
+    if a.cmd == "validate":
+        if not cfg.get("grids"):
+            raise SystemExit("validate needs [[grids]] in the config")
+        from . import topo
+        topo.validate(cfg, a.out, grid_name=a.grid, groups=a.group)
         return 0
     return 1
 
