@@ -263,12 +263,13 @@ class Points:
         return dict(survey=self.survey, frame=self.frame, date=self.date, prior=self.prior,
                     common_prior=self.common_prior, pass_names=self.pass_names)
 
-    def replace(self, **arrays):
-        """A copy with some per-point arrays replaced (same length)."""
+    def replace(self, **changes):
+        """A copy with some per-point arrays (same length) or table attributes replaced."""
         d = {k: getattr(self, k) for k in ("t", "x", "y", "z", "sz", "sh", "quality", "remark", "seq",
                                            "pass_id", "anchor", "group")}
-        d.update(arrays)
-        return Points(**d, **self._meta())
+        d.update(self._meta())
+        d.update(changes)
+        return Points(**d)
 
     def subset(self, mask):
         mask = np.asarray(mask)

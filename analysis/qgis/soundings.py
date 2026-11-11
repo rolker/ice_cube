@@ -278,7 +278,7 @@ def clock_map(ep: Epochs):
     xs = [v[0] for v in bins.values()]
     ys = [v[1] for v in bins.values()]
     if len(xs) < 2:
-        return (ys[0], 1.0)
+        return (ys[0], 1e9)
     mx, my = st.fmean(xs), st.fmean(ys)
     sxx = sum((x - mx) ** 2 for x in xs)
     slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx if sxx else 0.0
