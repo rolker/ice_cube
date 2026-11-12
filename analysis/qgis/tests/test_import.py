@@ -215,6 +215,27 @@ class ImportTest(unittest.TestCase):
         self.assertNotIn("e_m", [r[1] for r in self.q("PRAGMA table_info(captures)")])
 
     # -- layers, config and export
+    def test_reimport_keeps_topo_tables(self):
+        """An import replaces the map layers but must not drop layer_topo_* (topo_to_gpkg)."""
+        synth.layers_geojson(self.d / "plan.geojson")
+        synth.write_zip(self.d / "sessions" / "a.zip", synth.session_v05())
+        cfg = self.d / "site.toml"
+        cfg.write_text('[season]\nname = "test-season"\ngpkg = "out/season.gpkg"\n'
+                       'input_dir = "sessions"\nlayers = ["plan.geojson"]\n')
+        run("--config", cfg)
+        con = gw.connect(self.gpkg)
+        con.execute("CREATE TABLE layer_topo_contours (fid INTEGER PRIMARY KEY, level REAL)")
+        con.execute("INSERT INTO layer_topo_contours (level) VALUES (1.5)")
+        con.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier) "
+                    "VALUES ('layer_topo_contours', 'attributes', 'layer_topo_contours')")
+        con.commit()
+        con.close()
+        run("--config", cfg, "--force")
+        self.assertEqual(self.q("SELECT level FROM layer_topo_contours"), [(1.5,)])
+        names = [r[0] for r in self.q("SELECT table_name FROM gpkg_contents WHERE table_name LIKE 'layer_%' ORDER BY 1")]
+        self.assertEqual(names, ["layer_plan_lines", "layer_plan_points", "layer_plan_polygons",
+                                 "layer_topo_contours"])
+
     def test_layers_config_and_export(self):
         lay = synth.layers_geojson(self.d / "plan.geojson")
         synth.write_zip(self.d / "sessions" / "a.zip", synth.session_v05())
