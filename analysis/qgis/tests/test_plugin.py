@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s analysis/qgis/tests"""
 import contextlib
 import importlib
 import io
+import json
 import sqlite3
 import subprocess
 import sys
@@ -344,6 +345,63 @@ class BuildProjectTest(unittest.TestCase):
         self.project.mapLayers.return_value = {"a": lyr}
         self.assertEqual(self.bp.unsaved_changes(self.project), ["unsaved edits in layer captures"])
         self.assertTrue(self.bp.confirm_replace(self.project, str(self.qgz), ask=False))
+
+
+class ImageryGroupTest(unittest.TestCase):
+    """The Imagery group: order, visibility and band setup, with qgis.* mocked."""
+    setUp = BuildProjectTest.setUp
+    tearDown = BuildProjectTest.tearDown
+
+    def make(self, names, sidecars=None):
+        d = self.d / "imagery"
+        d.mkdir(exist_ok=True)
+        for n in names:
+            (d / n).write_bytes(b"")
+        for n, side in (sidecars or {}).items():
+            (d / n).write_text(json.dumps(side))
+        return d
+
+    def test_entries_order_and_visibility(self):
+        d = self.make(["NH_2010_2011_1ft_RGB.tif", "NH_2021_2022_6in_RGB.tif", "NH_DOQs_92_98.tif",
+                       "LiDAR_Bare_Earth_DEM_shaded_relief_NH_2022.tif", "notes.txt", "x.tmp.tif"],
+                      {"NH_DOQs_92_98.json": {"dataset": "NH_DOQs_92_98", "acquisition_years": [1992, 1998]}})
+        e = self.bp.imagery_entries(str(d))
+        self.assertEqual([x["dataset"] for x in e], [
+            "NH_2021_2022_6in_RGB", "NH_2010_2011_1ft_RGB", "NH_DOQs_92_98",
+            "LiDAR_Bare_Earth_DEM_shaded_relief_NH_2022"])
+        self.assertEqual([x["visible"] for x in e], [True, False, False, False])
+        self.assertEqual(e[0]["name"], "2021-2022 NH_2021_2022_6in_RGB")
+        self.assertEqual(e[2]["name"], "1992-1998 NH_DOQs_92_98")
+        self.assertTrue(e[3]["relief"])
+        self.assertEqual(self.bp.imagery_entries(str(self.d / "missing")), [])
+
+    def test_group_added_last_with_rgb_bands(self):
+        self.make(["NH_2015_1ft_RGB.tif", "NH_2021_2022_6in_RGB.tif"])
+        made = []
+
+        def raster(path, name, provider):
+            lyr = mock.MagicMock(name=name)
+            lyr.isValid.return_value = True
+            lyr.bandCount.return_value = 4
+            lyr.path = path
+            made.append(lyr)
+            return lyr
+        self.bp.QgsRasterLayer = raster
+        renderer = self.mods["qgis.core"].QgsMultiBandColorRenderer
+        root = self.project.layerTreeRoot.return_value
+        self.bp.build(str(self.gpkg), ask=False)
+        self.assertEqual(root.addGroup.call_args_list[-1], mock.call("Imagery"))
+        group = root.addGroup.return_value
+        self.assertEqual([Path(l.path).name for l in made], ["NH_2021_2022_6in_RGB.tif", "NH_2015_1ft_RGB.tif"])
+        vis = [c.args[0] for c in group.addLayer.return_value.setItemVisibilityChecked.call_args_list]
+        self.assertEqual(vis[-2:], [True, False])
+        renderer.assert_called_with(made[-1].dataProvider(), 1, 2, 3)
+        renderer.return_value.setAlphaBand.assert_called_with(4)
+
+    def test_no_folder_no_group(self):
+        root = self.project.layerTreeRoot.return_value
+        self.bp.build(str(self.gpkg), ask=False)
+        self.assertNotIn(mock.call("Imagery"), root.addGroup.call_args_list)
 
 
 class ImportTaskTest(unittest.TestCase):

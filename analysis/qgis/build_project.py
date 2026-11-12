@@ -20,6 +20,11 @@ What it sets up:
   STOPS with an error: it never falls back to longitude/latitude. No basemap.
 - Layers (group "Survey", top to bottom): photos, captures, refs, tracks, track_points
   (off), then a "Map layers" group with every layer_* table, and the sessions table.
+- "Imagery" group at the bottom: the GeoTIFFs in the `imagery/` folder next to the gpkg
+  (local copies made by fetch_imagery.py, already in the local CRS and datum corrected),
+  newest year first; only the newest photo is checked, older years and the shaded relief
+  are present but unchecked. RGB copies use bands 1, 2, 3 with band 4 as alpha. Nothing
+  is fetched from the web.
 - Styles: captures by class (surface cyan dots, object magenta squares, ref dark slate
   rings, photo brown camera, control orange triangles), labelled S12 / O13 / R14 / P15 /
   C3 plus your label; refs as rings, red when the pole check failed, labelled with the
@@ -32,14 +37,16 @@ What it sets up:
 
 Nothing site-specific is in this file: the CRS and paths come from the gpkg at run time.
 """
+import json
 import os
+import re
 import shutil
 import sqlite3
 
 from qgis.core import (QgsCategorizedSymbolRenderer, QgsCoordinateReferenceSystem,
                        QgsCoordinateTransform, QgsEditorWidgetSetup, QgsFillSymbol,
                        QgsLineSymbol, QgsMarkerSymbol, QgsPalLayerSettings, QgsProject,
-                       QgsProperty, QgsRectangle, QgsRendererCategory, QgsSimpleMarkerSymbolLayer,
+                       QgsProperty, QgsRasterLayer, QgsRectangle, QgsRendererCategory, QgsSimpleMarkerSymbolLayer,
                        QgsSingleSymbolRenderer, QgsSymbolLayer, QgsTextBufferSettings,
                        QgsTextFormat, QgsVectorLayer, QgsVectorLayerSimpleLabeling)
 
@@ -240,6 +247,75 @@ def style_map_layer(lyr):
     form(lyr, editable=())
 
 
+# ----------------------------------------------------------------------------- imagery
+
+def _sidecar(tif):
+    try:
+        with open(os.path.splitext(tif)[0] + ".json", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def imagery_entries(folder):
+    """The GeoTIFFs of `folder` as dicts (path, name, year, relief, visible), in the
+    Imagery group's order: photos newest first, then shaded relief / hillshade. The year is
+    the latest acquisition year in the fetch_imagery.py sidecar (<name>.json), else the
+    latest 4-digit year in the file name. Only the newest photo is visible."""
+    if not folder or not os.path.isdir(folder):
+        return []
+    out = []
+    for fn in sorted(os.listdir(folder)):
+        if not fn.lower().endswith((".tif", ".tiff")) or ".tmp." in fn:
+            continue
+        path = os.path.join(folder, fn)
+        stem = os.path.splitext(fn)[0]
+        side = _sidecar(path)
+        years = side.get("acquisition_years") or [
+            int(y) for y in re.findall(r"(?<!\d)(19\d\d|20\d\d)(?!\d)", stem)]
+        relief = bool(re.search(r"shaded|relief|hillshade|_hs(_|$)", stem, re.I)
+                      or "shaded" in str(side.get("rendering_rule") or "").lower())
+        y0, y1 = (min(years), max(years)) if years else (None, None)
+        label = (f"{y0}" if y0 == y1 else f"{y0}-{y1}") if years else ""
+        out.append({"path": path, "dataset": side.get("dataset") or stem,
+                    "name": f"{label} {stem}".strip(), "year": y1 or 0, "relief": relief,
+                    "visible": False})
+    out.sort(key=lambda e: (e["relief"], -e["year"], e["dataset"]))
+    for e in out:
+        if not e["relief"]:
+            e["visible"] = True
+            break
+    return out
+
+
+def add_imagery(project, root, folder):
+    """Add the Imagery group (at the bottom of `root`); returns the layers added."""
+    entries = imagery_entries(folder)
+    if not entries:
+        return []
+    group = root.addGroup("Imagery")
+    added = []
+    for e in entries:
+        lyr = QgsRasterLayer(e["path"], e["name"], "gdal")
+        if not lyr.isValid():
+            _log(f"imagery: could not open {e['path']}")
+            continue
+        try:
+            if lyr.bandCount() >= 3:
+                from qgis.core import QgsMultiBandColorRenderer
+                r = QgsMultiBandColorRenderer(lyr.dataProvider(), 1, 2, 3)
+                if lyr.bandCount() >= 4:
+                    r.setAlphaBand(4)
+                lyr.setRenderer(r)
+        except Exception as err:   # noqa: BLE001 (the default renderer still shows it)
+            _log(f"imagery {e['name']}: band order not set ({err})")
+        add(project, group, lyr, e["visible"])
+        added.append(lyr)
+    group.setExpanded(False)
+    _log(f"imagery: {len(added)} layer(s) from {folder}")
+    return added
+
+
 # ----------------------------------------------------------------------------- main
 
 class CrsError(RuntimeError):
@@ -432,6 +508,10 @@ def build(gpkg, ask=True, extent=None):
         if lyr is not None:
             form(lyr, editable=("note",))
             add(project, root.addGroup("Tables"), lyr)
+    try:
+        add_imagery(project, root, os.path.join(os.path.dirname(gpkg), "imagery"))
+    except Exception as e:   # imagery is a backdrop: never stop the build for it
+        _log(f"imagery not added ({e})")
 
     # QGIS gives a new project the CRS of the first layer added (WGS84 here), overriding
     # the setCrs above, so set it again now that all layers are in, and check it took.
