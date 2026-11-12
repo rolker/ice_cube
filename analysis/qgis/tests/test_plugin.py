@@ -190,6 +190,34 @@ class ResolveTest(unittest.TestCase):
         self.assertIn("recomputed about G", text)
 
 
+class LogFileTest(unittest.TestCase):
+    def test_path_next_to_gpkg_else_fallback(self):
+        self.assertEqual(Path(core.log_path({"gpkg": "/x/season.gpkg"})), Path("/x/icecube_qgis.log"))
+        self.assertEqual(Path(core.log_path({}, "/profile")), Path("/profile/icecube_qgis.log"))
+        self.assertIsNone(core.log_path(None, None))
+
+    def test_append_multiline_and_rotate(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / core.LOG_NAME
+            self.assertTrue(core.append_log(str(p), "first", "Info", now=0))
+            self.assertTrue(core.append_log(str(p), "Traceback\n  line 1\nError", "Critical", now=0))
+            text = p.read_text()
+            self.assertIn("INFO     first", text)
+            self.assertIn("CRITICAL Traceback\n      line 1\n    Error\n", text)
+            old = core.LOG_MAX_BYTES
+            try:
+                core.LOG_MAX_BYTES = 10
+                core.append_log(str(p), "after rotation", now=0)
+            finally:
+                core.LOG_MAX_BYTES = old
+            self.assertTrue((Path(d) / (core.LOG_NAME + ".1")).is_file())
+            self.assertIn("after rotation", p.read_text())
+
+    def test_never_raises(self):
+        self.assertFalse(core.append_log(None, "x"))
+        self.assertFalse(core.append_log("/nonexistent-dir/sub/icecube_qgis.log", "x"))
+
+
 class PackageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

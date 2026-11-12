@@ -39,8 +39,22 @@ def _level(name):
     return getattr(scoped, name, None) if scoped is not None and hasattr(scoped, name) else getattr(Qgis, name)
 
 
+LOG_FILE = None   # set from the settings (next to the season GeoPackage); see core.log_path
+
+
+def set_log_file(resolved=None):
+    """Point the log file at the season folder (or the QGIS profile folder)."""
+    global LOG_FILE
+    try:
+        LOG_FILE = core.log_path(resolved, QgsApplication.qgisSettingsDirPath())
+    except Exception:
+        LOG_FILE = None
+    return LOG_FILE
+
+
 def log(msg, level="Info"):
     QgsMessageLog.logMessage(str(msg), TAG, _level(level))
+    core.append_log(LOG_FILE, msg, level)
 
 
 def pipeline():
@@ -99,6 +113,15 @@ class IceCubePlugin:
 
     # ------------------------------------------------------------------ GUI setup
     def initGui(self):  # noqa: N802
+        try:
+            self.resolved()   # also points the log file at the season folder
+        except Exception:
+            set_log_file(None)
+        try:
+            qv = Qgis.version()
+        except Exception:
+            qv = "?"
+        log(f"plugin loaded (QGIS {qv}); log file {LOG_FILE}")
         icon = QIcon(str(PLUGIN_DIR / "icon.svg"))
         theme = QgsApplication.getThemeIcon
         self.toolbar = self.iface.addToolBar("Ice Cube")
@@ -137,7 +160,9 @@ class IceCubePlugin:
         self.bar(text + "  (details: View > Panels > Log Messages, Ice Cube tab)", "Critical", 0)
 
     def resolved(self):
-        return core.resolve(core.load_settings(QgsSettings()))
+        r = core.resolve(core.load_settings(QgsSettings()))
+        set_log_file(r)
+        return r
 
     def gpkg_layers(self, gpkg):
         return [lyr for lyr in QgsProject.instance().mapLayers().values()

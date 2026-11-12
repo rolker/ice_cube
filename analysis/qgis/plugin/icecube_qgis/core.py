@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+import threading
+import time
 import tomllib
 from pathlib import Path
 
@@ -225,3 +227,41 @@ def summary_text(result):
     if result.get("recomputed"):
         text += f". x/y/z recomputed about {result.get('origin')}"
     return text + "."
+
+
+# ----------------------------------------------------------------------------- log file
+
+LOG_NAME = "icecube_qgis.log"
+LOG_MAX_BYTES = 1_000_000
+_log_lock = threading.Lock()
+
+
+def log_path(resolved=None, fallback_dir=None):
+    """Where the plugin's log file goes: next to the season GeoPackage when it is known
+    (so it sits with the data), else in `fallback_dir` (the QGIS profile folder)."""
+    gpkg = (resolved or {}).get("gpkg")
+    if gpkg:
+        return str(Path(gpkg).with_name(LOG_NAME))
+    return str(Path(fallback_dir) / LOG_NAME) if fallback_dir else None
+
+
+def append_log(path, msg, level="Info", now=None):
+    """Append one timestamped entry to the log file (thread-safe; the import runs in a
+    background task). Rotates to <name>.1 above LOG_MAX_BYTES. Never raises: a log that
+    cannot be written must not break the action being logged. Returns True if written."""
+    if not path:
+        return False
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+    text = str(msg).rstrip("\n")
+    lines = text.split("\n")
+    entry = f"{stamp} {level.upper():8s} {lines[0]}\n" + "".join(f"    {l}\n" for l in lines[1:])
+    try:
+        with _log_lock:
+            p = Path(path)
+            if p.is_file() and p.stat().st_size > LOG_MAX_BYTES:
+                os.replace(p, p.with_name(p.name + ".1"))
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(entry)
+        return True
+    except OSError:
+        return False
