@@ -263,6 +263,51 @@ estimates one image's offset against another. A consistent offset goes in
 The copies show the site and carry its location in their CRS: **never commit imagery**
 (`*.tif` is git-ignored) or put it in a public figure.
 
+### Development extent
+
+The same datasets are also copied over the whole subdivision, into `imagery/development/`
+next to the gpkg; the project lists them under the lot copies as "... (development)". The
+lot-sized copies stay as they were and draw on top; the newest development photo is ticked
+too, so it fills in around the lot, and the others are unticked. The extent is the bounding
+box of the subdivision's parcels (see below, `group = core`) plus 40 m:
+
+    python3 analysis/qgis/fetch_imagery.py --config <site config> --out-dir <qgis folder>/imagery/development \
+        --extent-layer <parcels GeoJSON> --extent-filter group=core --margin 40
+
+Downloads go in tiles of at most 2048 px (`tile_px`; GRANIT's service advertises 4100 px
+but answers HTTP 500 to 3000 x 3000 four-band requests), one at a time with a pause. Over a
+subdivision-sized area the 6 inch photo is about 100 MB with DEFLATE; for much larger areas
+`[imagery.compress]` can switch a dataset to JPEG-in-TIFF (about 5x smaller, lossy). Every
+copy has overviews, so QGIS stays fast zoomed out.
+
+## Parcels
+
+`analysis/qgis/fetch_parcels.py` writes the tax parcels of a subdivision (the `where` of
+`[parcels]`, e.g. one tax map lot's PID prefix) and the ring of parcels touching it as a
+GeoJSON map layer, from NH GRANIT's ParcelMosaic (the towns' assessing parcels, NAD83 NH
+State Plane). Each polygon is converted to geodetic NAD83 and moved into our frame by the
+same datum shift as the imagery (E -0.561, N +1.193 m here). Properties: `pid`, `map`,
+`lot`, `town`, `land_use`, `area_m2`, `area_ac`, `group` (core or neighbour), `kind =
+parcel`, `source` (with the fetch date) and a `note`. Only those fields are ever requested
+from the service: owner names and street or mailing addresses are not fetched, even
+privately. It also prints the core parcels' extent, used for the development imagery.
+
+    python3 analysis/qgis/fetch_parcels.py --config <site config>
+
+Add the GeoJSON to `[season].layers` of the site config, then **Import new sessions** (it
+reloads the map layers into the gpkg) and **Build / refresh project**: the parcels are in
+"Map layers", thin grey outlines with small PID labels (map tips show area, note and source).
+
+What they are not: tax-map polygons are drawn from the recorded plans and fitted to the
+town's tax-map base; they are typically good to 1-3 m (worse on curves) and are **not
+survey boundaries**. For our lot, the measured boundary (found monuments, RTK) lies about
+2.2 m south of the datum-corrected parcel, with no significant rotation: that offset is the
+tax map's placement, not the datum (without the datum shift the parcel happens to sit
+closer, about 1.2 m off, because the two errors partly cancel). Use the parcels for context
+(neighbours, open space, roads), never to place anything near a line.
+
+The parcels GeoJSON holds the location like the imagery: keep it private.
+
 ## The tables
 
 | table | what | yours to edit |

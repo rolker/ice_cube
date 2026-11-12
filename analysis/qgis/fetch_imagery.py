@@ -11,17 +11,21 @@ the local frame. For each dataset it:
 
 1. reads the service metadata (native spatial reference, pixel size, band count);
 2. maps the local-frame extent (the bounding box of the `extent_layer` GeoJSON plus
-   `margin_m`, or an explicit `bbox`) into the service's native coordinates and snaps it to
-   the native pixel grid, so the server returns its own pixels without resampling;
-3. downloads that area with exportImage (tiles under the service's size limit, one request
-   at a time with a pause), skipping datasets that do not cover it (all-zero result);
+   `margin_m`, optionally only its features matching `extent_filter`, e.g. group=core of
+   fetch_parcels.py's output; or an explicit `bbox`) into the service's native coordinates
+   and snaps it to the native pixel grid, so the server returns its own pixels without
+   resampling;
+3. downloads that area with exportImage (tiles of at most `tile_px`, default 2048, within
+   the service's size limit, one request at a time with a pause, retried on server
+   errors), skipping datasets that do not cover it (all-zero result);
 4. resamples into a north-up grid in the local frame (x east, y north, metres) at the
    native pixel size rounded to the centimetre, bilinear: each output pixel centre ->
    geodetic (our frame, WGS84/ITRF) -> + datum shift (NAD83 minus our frame, metres east,
    north) - extra shift (the image's own registration error) -> native projection ->
    source pixel;
 5. writes `<out_dir>/<dataset>.tif` (RGB + alpha, or grey + alpha; band 4 of the 4-band
-   GRANIT orthos is near-infrared and is dropped) with the local CRS (WKT from the season
+   GRANIT orthos is near-infrared and is dropped; DEFLATE, or JPEG with an internal mask per
+   `[imagery.compress]`; tiled, with overviews) with the local CRS (WKT from the season
    gpkg's `icecube_meta.local_wkt` when given, else built by local_frame.py), and a
    `<dataset>.json` sidecar (dataset, acquisition years, pixel size, shifts, service,
    fetched UTC).
@@ -275,12 +279,17 @@ def resample(frame, proj, src, valid, src_xmin, src_ymax, src_pixel, bbox, pixel
     (array (bands, rows, cols) float32, mask (rows, cols) bool, (x_left, y_top))."""
     xl, yt, nc, nr = output_grid(bbox, pixel)
     xs = xl + (np.arange(nc) + 0.5) * pixel
-    ys = yt - (np.arange(nr) + 0.5) * pixel
-    gx, gy = np.meshgrid(xs, ys)
-    sx, sy = local_to_source(frame, proj, gx, gy, datum_shift, extra_shift)
-    col = (sx - src_xmin) / src_pixel - 0.5
-    row = (src_ymax - sy) / src_pixel - 0.5
-    out, ok = bilinear(src, valid, col, row)
+    out = np.empty((src.shape[0], nr, nc), np.float32)
+    ok = np.empty((nr, nc), bool)
+    step = max(1, 2_000_000 // max(nc, 1))   # rows per block: bounded memory on large extents
+    for r0 in range(0, nr, step):
+        r1 = min(nr, r0 + step)
+        ys = yt - (np.arange(r0, r1) + 0.5) * pixel
+        gx, gy = np.meshgrid(xs, ys)
+        sx, sy = local_to_source(frame, proj, gx, gy, datum_shift, extra_shift)
+        col = (sx - src_xmin) / src_pixel - 0.5
+        row = (src_ymax - sy) / src_pixel - 0.5
+        out[:, r0:r1], ok[r0:r1] = bilinear(src, valid, col, row)
     return out, ok, (xl, yt)
 
 
@@ -352,8 +361,14 @@ def resolve_frame(cfg, meta):
     raise SystemExit("no local frame origin: set [site.origin] in the config or pass --gpkg")
 
 
-def geojson_bbox(path, frame):
-    """Local (x0, y0, x1, y1) of every coordinate in a GeoJSON ([lon, lat, h?])."""
+def feature_matches(props, flt):
+    """True when every key=value of `flt` (a dict) equals the feature's property (as text)."""
+    return all(str((props or {}).get(k)) == str(v) for k, v in (flt or {}).items())
+
+
+def geojson_bbox(path, frame, flt=None):
+    """Local (x0, y0, x1, y1) of every coordinate in a GeoJSON ([lon, lat, h?]), of the
+    features whose properties match `flt` ({key: value}, all of them) when given."""
     d = json.loads(Path(path).read_text())
     pts = []
 
@@ -365,10 +380,10 @@ def geojson_bbox(path, frame):
                 walk(k)
     for f in d.get("features", []):
         g = f.get("geometry") or {}
-        if g.get("coordinates"):
+        if g.get("coordinates") and feature_matches(f.get("properties"), flt):
             walk(g["coordinates"])
     if not pts:
-        raise SystemExit(f"{path}: no coordinates")
+        raise SystemExit(f"{path}: no coordinates" + (f" in features matching {flt}" if flt else ""))
     xy = [frame.enu(p[1], p[0], p[2] if len(p) > 2 else frame.h)[:2] for p in pts]
     xs, ys = [p[0] for p in xy], [p[1] for p in xy]
     return min(xs), min(ys), max(xs), max(ys)
@@ -399,12 +414,17 @@ def settings(args, cfg, cfg_dir):
         "bbox": args.bbox or im.get("bbox"),
         "extent_layer": args.extent_layer or (str(_abs(im["extent_layer"], cfg_dir))
                                               if im.get("extent_layer") else None),
+        "extent_filter": (dict(kv.split("=", 1) for kv in args.extent_filter)
+                          if getattr(args, "extent_filter", None)
+                          else dict(im.get("extent_filter", {}))),
+        "compress": {k: str(v).lower() for k, v in im.get("compress", {}).items()},
         "datum_shift": tuple(map(float, datum)),
         "datum_note": im.get("datum_note", ""),
         "extra_shift": shifts,
         "pixel_m": {k: float(v) for k, v in im.get("pixel_m", {}).items()},
         "rendering_rule": dict(im.get("rendering_rule", {})),
         "pause_s": float(im.get("pause_s", 0.5)),
+        "tile_px": int(im.get("tile_px", 2048)),
     }
 
 
@@ -413,7 +433,7 @@ def local_bbox(s, frame):
         return tuple(map(float, s["bbox"]))
     if not s["extent_layer"]:
         raise SystemExit("no extent: set [imagery].bbox or extent_layer (or --bbox / --extent-layer)")
-    x0, y0, x1, y1 = geojson_bbox(s["extent_layer"], frame)
+    x0, y0, x1, y1 = geojson_bbox(s["extent_layer"], frame, s.get("extent_filter"))
     m = s["margin_m"]
     return x0 - m, y0 - m, x1 + m, y1 + m
 
@@ -453,14 +473,29 @@ def pick_rendering_rule(meta, configured):
     return None
 
 
-def download(service, name, meta, window, wkid, pixel_native, rule, pause):
-    """Mosaic (bands, H, W) uint8/float of the native window, plus the request count."""
+def get_retry(url, params, pause, tries=3):
+    """get(binary) with retries on HTTP 5xx / network errors (pause, then 4x pause, ...)."""
+    import urllib.error
+    for k in range(tries):
+        try:
+            return get(url, params, binary=True)
+        except (urllib.error.URLError, TimeoutError) as e:
+            code = getattr(e, "code", None)
+            if k == tries - 1 or (code is not None and code < 500):
+                raise
+            time.sleep(max(pause, 0.5) * 4 ** (k + 1))
+
+
+def download(service, name, meta, window, wkid, pixel_native, rule, pause, tile_px=2048):
+    """Mosaic (bands, H, W) uint8/float of the native window, plus the request count.
+    Tiles are at most `tile_px` square (and within the service's maxImageWidth/Height):
+    GRANIT advertises 15000 x 4100 but answers HTTP 500 to a 3000 x 3000 4-band request."""
     import rasterio
     xmin, ymin, xmax, ymax = window
     w = int(round((xmax - xmin) / pixel_native))
     h = int(round((ymax - ymin) / pixel_native))
-    lw = min(4000, int(meta.get("maxImageWidth", 4000)))
-    lh = min(4000, int(meta.get("maxImageHeight", 4000)))
+    lw = min(tile_px, int(meta.get("maxImageWidth", 4000)))
+    lh = min(tile_px, int(meta.get("maxImageHeight", 4000)))
     mosaic = None
     n = 0
     for c, r, tw, th in tiles(w, h, lw, lh):
@@ -473,7 +508,7 @@ def download(service, name, meta, window, wkid, pixel_native, rule, pause):
             p["renderingRule"] = json.dumps({"rasterFunction": rule})
         if n:
             time.sleep(pause)
-        raw = get(f"{service}/{name}/ImageServer/exportImage", p, binary=True)
+        raw = get_retry(f"{service}/{name}/ImageServer/exportImage", p, pause)
         n += 1
         if raw[:1] == b"{":
             raise RuntimeError(f"{name}: {raw[:300].decode(errors='replace')}")
@@ -487,11 +522,16 @@ def download(service, name, meta, window, wkid, pixel_native, rule, pause):
     return mosaic, n
 
 
-def write_geotiff(path, arr, mask, x_left, y_top, pixel, wkt, gray):
-    """RGB or grey uint8 + alpha GeoTIFF, DEFLATE, tiled, with overviews."""
+def write_geotiff(path, arr, mask, x_left, y_top, pixel, wkt, gray, compress="deflate"):
+    """RGB or grey uint8 + alpha GeoTIFF, tiled, with overviews. compress "deflate"
+    (lossless, predictor 2; alpha band) or "jpeg" (RGB JPEG-in-TIFF, YCbCr, quality 90, for
+    large photos: about 5x smaller; the no-data area is an internal mask instead of an
+    alpha band, which QGIS honours the same way)."""
     import rasterio
     from rasterio.enums import ColorInterp, Resampling
     from rasterio.transform import from_origin
+    if compress == "jpeg" and not gray:
+        return _write_jpeg_tiff(path, arr, mask, x_left, y_top, pixel, wkt)
     bands = arr.shape[0]
     data = np.concatenate([arr, (mask * 255).astype(np.uint8)[None]], axis=0)
     prof = {"driver": "GTiff", "width": arr.shape[2], "height": arr.shape[1], "count": bands + 1,
@@ -507,6 +547,27 @@ def write_geotiff(path, arr, mask, x_left, y_top, pixel, wkt, gray):
         f = [2 ** k for k in range(1, 8) if max(arr.shape[1:]) / 2 ** k >= 128]
         if f:
             ds.build_overviews(f, Resampling.average)
+    tmp.replace(path)
+
+
+def _write_jpeg_tiff(path, arr, mask, x_left, y_top, pixel, wkt):
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.transform import from_origin
+    prof = {"driver": "GTiff", "width": arr.shape[2], "height": arr.shape[1], "count": 3,
+            "dtype": "uint8", "crs": rasterio.crs.CRS.from_wkt(wkt),
+            "transform": from_origin(x_left, y_top, pixel, pixel), "compress": "jpeg",
+            "jpeg_quality": 90, "photometric": "YCBCR", "tiled": True, "blockxsize": 256,
+            "blockysize": 256}
+    tmp = Path(str(path) + ".tmp.tif")
+    with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True, JPEG_QUALITY_OVERVIEW=85,
+                      PHOTOMETRIC_OVERVIEW="YCBCR", COMPRESS_OVERVIEW="JPEG"):
+        with rasterio.open(tmp, "w", **prof) as ds:
+            ds.write(arr[:3])
+            ds.write_mask((mask * 255).astype(np.uint8))
+            f = [2 ** k for k in range(1, 8) if max(arr.shape[1:]) / 2 ** k >= 128]
+            if f:
+                ds.build_overviews(f, Resampling.average)
     tmp.replace(path)
 
 
@@ -535,7 +596,8 @@ def fetch_one(name, s, frame, bbox, wkt, log=print):
         return None
     rule = pick_rendering_rule(meta, s["rendering_rule"].get(name))
     t0 = time.time()
-    src, nreq = download(s["service"], name, meta, window, wkid, pixel_native, rule, s["pause_s"])
+    src, nreq = download(s["service"], name, meta, window, wkid, pixel_native, rule, s["pause_s"],
+                         s.get("tile_px", 2048))
     gray = src.shape[0] < 3
     src = src[:1] if gray else src[:3]
     valid = np.any(src != 0, axis=0)
@@ -549,7 +611,8 @@ def fetch_one(name, s, frame, bbox, wkt, log=print):
     out_dir = Path(s["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     tif = out_dir / f"{name}.tif"
-    write_geotiff(tif, arr, ok, xl, yt, pixel, wkt, gray)
+    comp = s.get("compress", {}).get(name, "deflate")
+    write_geotiff(tif, arr, ok, xl, yt, pixel, wkt, gray, comp)
     total = (-s["datum_shift"][0] + extra[0], -s["datum_shift"][1] + extra[1])
     side = {
         "dataset": name,
@@ -563,6 +626,7 @@ def fetch_one(name, s, frame, bbox, wkt, log=print):
         if meta.get("bandCount", 3) >= 4 else "RGB",
         "rendering_rule": rule,
         "pixel_m": pixel,
+        "compression": comp if not gray else "deflate",
         "local_bbox_m": [round(v, 3) for v in (xl, yt - arr.shape[1] * pixel, xl + arr.shape[2] * pixel, yt)],
         "size_px": [arr.shape[2], arr.shape[1]],
         "coverage": round(float(ok.mean()), 4),
@@ -592,6 +656,8 @@ def main(argv=None):
     ap.add_argument("--bbox", nargs=4, type=float, metavar=("X0", "Y0", "X1", "Y1"),
                     help="local-frame extent in metres (instead of extent_layer + margin)")
     ap.add_argument("--extent-layer", help="GeoJSON whose bounding box (+ margin) is the extent")
+    ap.add_argument("--extent-filter", nargs="+", metavar="KEY=VALUE",
+                    help="only features of the extent layer with these properties (e.g. group=core)")
     ap.add_argument("--margin", type=float, help="metres around the extent layer (default 30)")
     ap.add_argument("--datum-shift", nargs=2, type=float, metavar=("DE", "DN"),
                     help="image datum minus our frame at the site, metres east, north")

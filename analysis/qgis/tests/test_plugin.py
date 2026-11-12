@@ -398,6 +398,43 @@ class ImageryGroupTest(unittest.TestCase):
         renderer.assert_called_with(made[-1].dataProvider(), 1, 2, 3)
         renderer.return_value.setAlphaBand.assert_called_with(4)
 
+    def test_development_files_under_the_lot_ones(self):
+        d = self.make(["NH_2015_1ft_RGB.tif", "NH_2021_2022_6in_RGB.tif"])
+        dev = d / "development"
+        dev.mkdir()
+        for n in ("NH_2021_2022_6in_RGB.tif", "NH_2015_1ft_RGB.tif",
+                  "LiDAR_Bare_Earth_DEM_shaded_relief_NH_2022.tif"):
+            (dev / n).write_bytes(b"")
+        made = []
+
+        def raster(path, name, provider):
+            lyr = mock.MagicMock(name=name)
+            lyr.isValid.return_value = True
+            lyr.bandCount.return_value = 4
+            lyr.path, lyr.label = path, name
+            made.append(lyr)
+            return lyr
+        self.bp.QgsRasterLayer = raster
+        self.bp.build(str(self.gpkg), ask=False)
+        group = self.project.layerTreeRoot.return_value.addGroup.return_value
+        self.assertEqual([l.label for l in made], [
+            "2021-2022 NH_2021_2022_6in_RGB", "2015 NH_2015_1ft_RGB",
+            "2021-2022 NH_2021_2022_6in_RGB (development)", "2015 NH_2015_1ft_RGB (development)",
+            "2022 LiDAR_Bare_Earth_DEM_shaded_relief_NH_2022 (development)"])
+        self.assertEqual([Path(l.path).parent.name for l in made][2:], ["development"] * 3)
+        vis = [c.args[0] for c in group.addLayer.return_value.setItemVisibilityChecked.call_args_list]
+        self.assertEqual(vis[-5:], [True, False, True, False, False])
+
+    def test_parcel_layer_detected_by_kind(self):
+        lyr = mock.MagicMock()
+        lyr.fields.return_value.indexOf.side_effect = lambda f: 3 if f == "kind" else -1
+        lyr.uniqueValues.return_value = {"parcel"}
+        self.assertTrue(self.bp.is_parcel_layer(lyr))
+        lyr.uniqueValues.return_value = {"parcel", "boundary"}
+        self.assertFalse(self.bp.is_parcel_layer(lyr))
+        lyr.fields.return_value.indexOf.side_effect = lambda f: -1
+        self.assertFalse(self.bp.is_parcel_layer(lyr))
+
     def test_no_folder_no_group(self):
         root = self.project.layerTreeRoot.return_value
         self.bp.build(str(self.gpkg), ask=False)

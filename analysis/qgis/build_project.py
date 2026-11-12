@@ -23,13 +23,16 @@ What it sets up:
 - "Imagery" group at the bottom: the GeoTIFFs in the `imagery/` folder next to the gpkg
   (local copies made by fetch_imagery.py, already in the local CRS and datum corrected),
   newest year first; only the newest photo is checked, older years and the shaded relief
-  are present but unchecked. RGB copies use bands 1, 2, 3 with band 4 as alpha. Nothing
-  is fetched from the web.
+  are present but unchecked. Below them the wider copies in `imagery/development/`
+  (named "... (development)"), whose newest photo is also checked so it fills in around
+  the lot one. RGB copies use bands 1, 2, 3 with band 4 as alpha. Nothing is fetched from
+  the web.
 - Styles: captures by class (surface cyan dots, object magenta squares, ref dark slate
   rings, photo brown camera, control orange triangles), labelled S12 / O13 / R14 / P15 /
   C3 plus your label; refs as rings, red when the pole check failed, labelled with the
   height difference to the last visit; monuments by status (measured green, predicted
-  orange hollow) with uncertainty in the label; other map layers in their GeoJSON
+  orange hollow) with uncertainty in the label; tax parcels (kind=parcel polygons, from
+  fetch_parcels.py) thin grey with PID labels; other map layers in their GeoJSON
   stroke/fill colours; tracks thin grey by fix quality.
 - Forms: on captures, photos, refs and sessions only `note` (and `label` on captures,
   with completion from the labels already used) are editable; the photo field shows
@@ -199,9 +202,29 @@ def style_tracks(lyr, points=False):
     lyr.setRenderer(QgsCategorizedSymbolRenderer("fix", cats))
 
 
+def style_parcels(lyr):
+    """Tax parcels (kind=parcel polygons, fetch_parcels.py): thin grey outlines, no fill,
+    small grey PID labels."""
+    sym = QgsFillSymbol.createSimple({"color": "0,0,0,0", "outline_color": "128,128,128,255",
+                                      "outline_width": "0.15", "style": "no"})
+    lyr.setRenderer(QgsSingleSymbolRenderer(sym))
+    labels(lyr, '"pid"' if has(lyr, "pid") else '"label"', 6.0)
+    lyr.setMapTipTemplate('<b>[% "pid" %]</b> [% coalesce("area_ac", \'\') %] ac<br>'
+                          '<i>[% coalesce("note", \'\') %]</i><br>[% coalesce("source", \'\') %]')
+    form(lyr, editable=())
+
+
+def is_parcel_layer(lyr):
+    if not has(lyr, "kind"):
+        return False
+    kinds = {str(k).lower() for k in lyr.uniqueValues(lyr.fields().indexOf("kind"))}
+    return kinds == {"parcel"}
+
+
 def style_map_layer(lyr):
     """Points: monuments by status, base as a red triangle, others in their stroke colour.
-    Lines and polygons: GeoJSON stroke and fill colours. Labels: label or name."""
+    Lines and polygons: GeoJSON stroke and fill colours. Labels: label or name. Tax
+    parcels (kind=parcel): thin grey with PID labels."""
     name = '"label"' if has(lyr, "label") else '"name"' if has(lyr, "name") else "''"
     if has(lyr, "label") and has(lyr, "name"):
         name = 'coalesce("label", "name")'
@@ -209,6 +232,9 @@ def style_map_layer(lyr):
            '|| \' m\' ELSE \'\' END') if has(lyr, "uncertainty_m") else ""
     geom = lyr.geometryType()
     gtype = int(geom.value) if hasattr(geom, "value") else int(geom)   # 0 point, 1 line, 2 polygon
+    if gtype == 2 and is_parcel_layer(lyr):
+        style_parcels(lyr)
+        return
     if gtype == 0:
         kinds = set(lyr.uniqueValues(lyr.fields().indexOf("kind"))) if has(lyr, "kind") else set()
         if "base" in {str(k).lower() for k in kinds}:
@@ -257,11 +283,15 @@ def _sidecar(tif):
         return {}
 
 
-def imagery_entries(folder):
+DEVELOPMENT_DIR = "development"   # imagery/<this>/: the same datasets over a wider extent
+
+
+def imagery_entries(folder, suffix=""):
     """The GeoTIFFs of `folder` as dicts (path, name, year, relief, visible), in the
     Imagery group's order: photos newest first, then shaded relief / hillshade. The year is
     the latest acquisition year in the fetch_imagery.py sidecar (<name>.json), else the
-    latest 4-digit year in the file name. Only the newest photo is visible."""
+    latest 4-digit year in the file name. Only the newest photo is visible. `suffix` is
+    appended to the layer names."""
     if not folder or not os.path.isdir(folder):
         return []
     out = []
@@ -278,7 +308,7 @@ def imagery_entries(folder):
         y0, y1 = (min(years), max(years)) if years else (None, None)
         label = (f"{y0}" if y0 == y1 else f"{y0}-{y1}") if years else ""
         out.append({"path": path, "dataset": side.get("dataset") or stem,
-                    "name": f"{label} {stem}".strip(), "year": y1 or 0, "relief": relief,
+                    "name": f"{label} {stem}".strip() + suffix, "year": y1 or 0, "relief": relief,
                     "visible": False})
     out.sort(key=lambda e: (e["relief"], -e["year"], e["dataset"]))
     for e in out:
@@ -289,8 +319,13 @@ def imagery_entries(folder):
 
 
 def add_imagery(project, root, folder):
-    """Add the Imagery group (at the bottom of `root`); returns the layers added."""
+    """Add the Imagery group (at the bottom of `root`); returns the layers added. The
+    lot-sized copies in `folder` come first (drawn on top), then the wider copies in
+    `folder`/development, whose newest photo is also ticked so it fills in around the lot
+    one; the rest are unticked."""
     entries = imagery_entries(folder)
+    if folder:
+        entries += imagery_entries(os.path.join(folder, DEVELOPMENT_DIR), " (development)")
     if not entries:
         return []
     group = root.addGroup("Imagery")
