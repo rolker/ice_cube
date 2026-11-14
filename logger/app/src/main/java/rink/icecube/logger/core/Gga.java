@@ -1,8 +1,13 @@
 package rink.icecube.logger.core;
 
-/** Minimal NMEA GGA fields. */
+/**
+ * Minimal NMEA GGA fields. alt is field 9 (height above the receiver's geoid model), sep
+ * is field 11 (geoid separation), and height = alt + sep is the ellipsoidal height of the
+ * antenna, NaN unless both fields are present.
+ */
 public final class Gga {
-    public double tod = Double.NaN, lat = Double.NaN, lon = Double.NaN, height = Double.NaN, age = Double.NaN;
+    public double tod = Double.NaN, lat = Double.NaN, lon = Double.NaN, age = Double.NaN;
+    public double alt = Double.NaN, sep = Double.NaN, height = Double.NaN;
     public int quality, sats;
 
     public static Gga parse(String s) {
@@ -24,7 +29,9 @@ public final class Gga {
             }
             g.quality = f[6].isEmpty() ? 0 : Integer.parseInt(f[6]);
             g.sats = f[7].isEmpty() ? 0 : Integer.parseInt(f[7]);
-            if (!f[9].isEmpty() && !f[11].isEmpty()) g.height = Double.parseDouble(f[9]) + Double.parseDouble(f[11]);
+            if (!f[9].isEmpty()) g.alt = Double.parseDouble(f[9]);
+            if (!f[11].isEmpty()) g.sep = Double.parseDouble(f[11]);
+            g.height = g.alt + g.sep;
             if (!f[13].isEmpty()) g.age = Double.parseDouble(f[13]);
         } catch (NumberFormatException e) {
             return null;

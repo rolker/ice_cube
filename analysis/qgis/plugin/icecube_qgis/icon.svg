@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- An ice cube in isometric view with a survey point on its top face. -->
+  <polygon points="32,6 56,19 32,32 8,19" fill="#d8f3fb" stroke="#1d6f8c" stroke-width="2.5" stroke-linejoin="round"/>
+  <polygon points="8,19 32,32 32,58 8,45" fill="#7fcde6" stroke="#1d6f8c" stroke-width="2.5" stroke-linejoin="round"/>
+  <polygon points="56,19 32,32 32,58 56,45" fill="#4aaecf" stroke="#1d6f8c" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M14,27 L14,37 M50,27 L50,33" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+  <circle cx="32" cy="19" r="4.5" fill="#e0312b" stroke="#ffffff" stroke-width="1.5"/>
+</svg>

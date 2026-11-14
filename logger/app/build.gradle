@@ -6,11 +6,17 @@ android {
         applicationId 'rink.icecube.logger'
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName '0.1'
+        versionCode 8
+        versionName '0.6.1'
     }
+    buildFeatures { buildConfig true }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+}
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    // Android's built-in org.json is a stub in JVM unit tests; this is the same API for the GeoJSON tests.
+    testImplementation 'org.json:json:20231013'
 }

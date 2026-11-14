@@ -118,13 +118,26 @@ class Surface:
 def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
                  capture_radius=0.75, slope=0.05, k_sigma=3.0, name="", date="", frame="") -> Surface:
     """Fuse the (bias-corrected) points of one or more surveys into node estimates.
-    `sb_list[k]` is the per-point bias sigma of `surveys[k]` (from crossover.apply)."""
+    `sb_list[k]` is the per-point bias sigma of `surveys[k]` (from crossover.apply).
+    `slope` is one allowance (m/m) or an array of the grid's shape (ny, nx), one per node
+    (e.g. from a DEM's local slope, so steep ground gets a larger allowance).
+    `capture_radius` is one value or one per survey (a sparse DEM can reach further than
+    the RTK soundings)."""
     frames = {s.frame for s in surveys}
     if len(frames) > 1:
         raise ValueError(f"gridding across frames refused: {sorted(frames)}")
-    xs, ys, zs, vs, sbs, ts, pks = [], [], [], [], [], [], []
+    slope_grid = None
+    if np.ndim(slope):
+        slope_grid = np.asarray(slope, float)
+        if slope_grid.shape != (grid.ny, grid.nx):
+            raise ValueError("slope array must have the grid's shape (ny, nx)")
+    xs, ys, zs, vs, sbs, ts, pks, rrs = [], [], [], [], [], [], [], []
     pass_offset = 0
-    for s, sb in zip(surveys, sb_list):
+    radii = capture_radius if np.ndim(capture_radius) else [capture_radius] * len(surveys)
+    if len(radii) != len(surveys):
+        raise ValueError("capture_radius: one value, or one per survey")
+    for s, sb, rad in zip(surveys, sb_list, radii):
+        rrs.append(np.full(len(s), float(rad)))
         if len(sb) != len(s):
             raise ValueError("sb length mismatch")
         if not np.all(np.isfinite(s.sz)) or not np.all(np.isfinite(s.sh)):
@@ -133,14 +146,13 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
         vs.append(np.c_[s.sz, s.sh]); sbs.append(sb)
         pks.append(s.pass_id + pass_offset)
         pass_offset += int(s.pass_id.max()) + 1 if len(s) else 0
-    x, y, z, t, sb, pk = map(np.concatenate, (xs, ys, zs, ts, sbs, pks))
+    x, y, z, t, sb, pk, rr = map(np.concatenate, (xs, ys, zs, ts, sbs, pks, rrs))
     szsh = np.concatenate(vs)
     npts = len(z)
     # time order; untimed points keep file order after the timed ones of the same survey
     order = np.lexsort((np.arange(npts), np.where(np.isfinite(t), t, np.inf)))
     # contributions: for each point, nodes within capture radius
-    r = capture_radius
-    rc = int(np.ceil(r / grid.cell))
+    rc = int(np.ceil(float(np.max(rr)) / grid.cell)) if len(rr) else 1
     i0 = np.round((x - grid.x0) / grid.cell).astype(int)
     j0 = np.round((y - grid.y0) / grid.cell).astype(int)
     ny, nx = grid.ny, grid.nx
@@ -161,14 +173,15 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
             continue
         ii, jj = ii[ok], jj[ok]
         d = np.hypot(grid.x0 + ii * grid.cell - x[k], grid.y0 + jj * grid.cell - y[k])
-        ok = d <= r
+        ok = d <= rr[k]
         if not ok.any():
             n_outside += 1
             continue
         ii, jj, d = ii[ok], jj[ok], d[ok]
         n_contrib += len(ii)
         sz, sh = szsh[k]
-        v = sz**2 + (slope * (d + sh))**2
+        sl = slope_grid[jj, ii] if slope_grid is not None else slope
+        v = sz**2 + (sl * (d + sh))**2
         sb2 = sb[k] ** 2
         for a, b, vk in zip(jj, ii, v):
             if N[a, b] > 0:

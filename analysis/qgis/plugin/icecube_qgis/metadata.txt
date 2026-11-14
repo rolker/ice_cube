@@ -1,0 +1,18 @@
+[general]
+name=Ice Cube
+qgisMinimumVersion=3.34
+qgisMaximumVersion=4.99
+description=Import Ice Cube Logger sessions into a season GeoPackage, build the styled project and export capture labels.
+about=Tools for a backyard ice rink survey: reads IceCubeLogger_<session>.zip shares into one GeoPackage per season (captures, photos, refs, tracks) in a local ENU frame, builds the QGIS project with styles and labelling forms, and exports the labelled captures to CSV. Install from the zip built by analysis/qgis/package_plugin.py.
+version=0.1.0
+author=ice_cube
+email=noreply@example.invalid
+tracker=https://github.com/rolker/ice_cube/issues
+repository=https://github.com/rolker/ice_cube
+category=Plugins
+icon=icon.svg
+experimental=False
+deprecated=False
+hasProcessingProvider=no
+server=False
+tags=gnss,rtk,survey,geopackage

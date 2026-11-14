@@ -10,14 +10,30 @@ import android.hardware.usb.UsbManager;
 import java.io.IOException;
 
 /** Direct USB CDC-ACM link to the ZED-F9P's own USB port. */
-final class UsbLink {
+final class UsbLink implements GpsLink {
     private final UsbDeviceConnection conn;
     private final UsbInterface data;
     private final UsbInterface ctrl;
     private final UsbEndpoint in, out;
+    private final UsbManager mgr;
+    private final String name, description;
+    private boolean closed;
 
-    private UsbLink(UsbDeviceConnection c, UsbInterface data, UsbInterface ctrl, UsbEndpoint in, UsbEndpoint out) {
-        this.conn = c; this.data = data; this.ctrl = ctrl; this.in = in; this.out = out;
+    private UsbLink(UsbManager mgr, UsbDevice d, UsbDeviceConnection c, UsbInterface data, UsbInterface ctrl,
+                    UsbEndpoint in, UsbEndpoint out) {
+        this.mgr = mgr; this.conn = c; this.data = data; this.ctrl = ctrl; this.in = in; this.out = out;
+        name = d.getDeviceName();
+        description = String.format("usb %04x:%04x %s", d.getVendorId(), d.getProductId(), name);
+    }
+
+    /** The u-blox device if attached, else any CDC serial device, else null. */
+    static UsbDevice findGps(UsbManager m) {
+        UsbDevice any = null;
+        for (UsbDevice d : m.getDeviceList().values()) {
+            if (d.getVendorId() == 0x1546) return d;
+            if (isCdc(d)) any = d;
+        }
+        return any;
     }
 
     /** True if the device exposes a CDC data interface with bulk endpoints. */
@@ -56,13 +72,18 @@ final class UsbLink {
         byte[] line = {0x00, (byte) 0xC2, 0x01, 0x00, 0, 0, 8};     // 115200 8N1, ignored by native USB
         c.controlTransfer(0x21, 0x20, 0, idx, line, line.length, 1000);   // SET_LINE_CODING
         c.controlTransfer(0x21, 0x22, 0x03, idx, null, 0, 1000);          // SET_CONTROL_LINE_STATE, DTR and RTS
-        return new UsbLink(c, dataIf, ctrlIf, in, out);
+        return new UsbLink(mgr, d, c, dataIf, ctrlIf, in, out);
     }
 
-    /** Returns the byte count read, or a negative value on timeout. */
-    int read(byte[] b) { return conn.bulkTransfer(in, b, b.length, 200); }
+    /** Returns the byte count read, or 0 after a 200 ms timeout. Throws once the device is detached. */
+    @Override public int read(byte[] b) throws IOException {
+        int n = conn.bulkTransfer(in, b, b.length, 200);
+        if (n > 0) return n;
+        if (!mgr.getDeviceList().containsKey(name)) throw new IOException("USB device detached");
+        return 0;
+    }
 
-    synchronized void write(byte[] b, int n) throws IOException {
+    @Override public synchronized void write(byte[] b, int n) throws IOException {
         int off = 0;
         byte[] chunk = b;
         while (off < n) {
@@ -76,7 +97,11 @@ final class UsbLink {
         }
     }
 
-    void close() {
+    @Override public String describe() { return description; }
+
+    @Override public synchronized void close() {
+        if (closed) return;
+        closed = true;
         try {
             conn.releaseInterface(data);
             if (ctrl != null) conn.releaseInterface(ctrl);
