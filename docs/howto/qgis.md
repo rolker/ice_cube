@@ -73,6 +73,16 @@ Empty fields fall back to the site config's `[season]` (`gpkg`, `input_dir`, `la
 relative to the config file), so a site config with everything in it is enough. The
 dialog shows the paths in use. QGIS keeps the settings in its profile, not in the repo.
 
+### One site config per survey
+
+The settings are global to your QGIS profile, not per project. To keep more than one
+survey (the rink season, say, and a topo survey of the yard), give each its own site
+config with its own `[season]` (`name`, `gpkg`, `input_dir`, `layers`), and leave the
+GeoPackage, input-folder and map-layer fields empty. All three then come from the site
+config, so switching surveys means changing only the **Site config** path. A path typed
+into one of those fields wins over every site config and would send another survey's
+import into that GeoPackage.
+
 ### The site config
 
 A TOML file in the layout of `config.example.toml` at the repo root (the scripts read
