@@ -78,3 +78,6 @@ logger/.idea/
 
 # Ice Cube QGIS plugin: pipeline modules are copied in by analysis/qgis/package_plugin.py
 analysis/qgis/plugin/icecube_qgis/pipeline/
+
+# Worktrees the agent workspace creates for a branch
+worktrees/
