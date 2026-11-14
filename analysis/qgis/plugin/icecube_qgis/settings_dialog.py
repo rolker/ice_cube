@@ -16,14 +16,19 @@ class SettingsDialog(QDialog):
 
         self.gpkg = self._path_row(form, "Season GeoPackage", values["gpkg"], self._pick_gpkg,
                                    "The season .gpkg the import writes (photos/ and the .qgz go next "
-                                   "to it). Empty: [season].gpkg of the site config.")
+                                   "to it). Empty: [season].gpkg of the site config; leave it empty "
+                                   "to keep one site config per survey.")
         self.input_dir = self._path_row(form, "Season input folder", values["input_dir"], self._pick_dir,
                                         "Folder with the IceCubeLogger_<session>.zip shares (searched "
                                         "recursively), e.g. the Drive sessions folder. Empty: "
-                                        "[season].input_dir of the site config.")
+                                        "[season].input_dir of the site config; leave it empty to keep "
+                                        "one site config per survey.")
         self.site_config = self._path_row(form, "Site config (TOML)", values["site_config"],
                                           self._pick_toml, "Private config with [season] and [site] "
-                                          "(base, origin); relative paths in it are relative to it.")
+                                          "(base, origin); relative paths in it are relative to it. One "
+                                          "site config per survey: with the GeoPackage, input folder "
+                                          "and map layers empty, all come from here, so switching "
+                                          "surveys means changing only this path.")
 
         self.layers = QListWidget()
         self.layers.addItems(values["layers"])
