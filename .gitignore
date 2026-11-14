@@ -29,6 +29,11 @@ analysis/out/
 *.dbf
 *.prj
 *.swmz
+# Imagery copies (analysis/qgis/fetch_imagery.py) show the site
+*.tif
+*.tiff
+*.tfw
+*.aux.xml
 *.ods
 # QGIS projects made by analysis/qgis/build_project.py hold the local CRS (base position)
 *.qgz

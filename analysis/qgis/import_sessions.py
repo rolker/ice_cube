@@ -397,10 +397,14 @@ def _parts(geom):
             "MultiPolygon": ("polygons", c)}.get(t, (None, []))
 
 
+KEEP_LAYER_PREFIXES = ("layer_topo_",)   # written by other tools; an import must not drop them
+
+
 def import_layers(gp, files, frame=None):
-    """Replace all layer_* tables by the given GeoJSON files; point tables get x_m, y_m,
-    z_m about `frame`. Returns {table: rows}."""
-    for t in [t for t in gp.tables() if t.startswith("layer_")]:
+    """Replace the map-layer tables (layer_*) by the given GeoJSON files; point tables get
+    x_m, y_m, z_m about `frame`. Tables other tools add under layer_* (the topography's
+    layer_topo_contours, see topo_to_gpkg.py) are left alone. Returns {table: rows}."""
+    for t in [t for t in gp.tables() if t.startswith("layer_") and not t.startswith(KEEP_LAYER_PREFIXES)]:
         gp.drop_table(t)
     counts = {}
     for f in files:

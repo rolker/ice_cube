@@ -134,7 +134,8 @@ rings, photo brown cameras, control orange triangles) labelled S12, O13, R14 plu
 label; refs as rings, red where the pole check failed, with the height difference to the
 last visit; monuments green (measured) or orange rings (predicted) with their
 uncertainty; boundary, rink, sheds and other layers in the colours of their GeoJSON;
-tracks as thin grey lines (solid fixed, dashed float). No basemap. The track points
+tracks as thin grey lines (solid fixed, dashed float). No web basemap: the Imagery group
+at the bottom holds the local orthophoto copies, if any (see Imagery). The track points
 layer is off; tick it to see each epoch.
 
 ## Label objects
@@ -207,6 +208,105 @@ The numbers are only in the private site config; the repository holds no coordin
   under 1 mm within 100 m). Use the `x_m`, `y_m`, `z_m` columns for numbers; the map
   places things to well under a millimetre. Distances measured in QGIS are planar metres
   (the project's ellipsoid is set to None).
+
+## Imagery
+
+The project's **Imagery** group (at the bottom, collapsed) shows local GeoTIFF copies of the
+NH GRANIT orthophotos from the `imagery/` folder next to the season gpkg: the newest year
+is ticked, older years and the LiDAR shaded relief are there but unticked. They load from
+disk, so QGIS makes no web requests and works offline.
+
+What the copies are: `analysis/qgis/fetch_imagery.py` downloads each dataset once over the
+lot (the lot boundary's box plus 30 m) in the service's own projection and pixels (NH State
+Plane, NAD83; the shaded relief in UTM 19N), then resamples it into the local frame (x east,
+y north from G, north up) at the native pixel size (0.15 m for the 2021-22 6 inch photos,
+0.30 m for the 1 ft years, 1 m for the 1990s DOQs, 0.76 m for the relief), bilinear, and
+writes it with the local CRS. RGB only: band 4 of the GRANIT 4-band orthos is near-infrared
+(the service's CIR view is the same raster) and is dropped. A `<dataset>.json` next to each
+file records the dataset, years, pixel size, the shift applied and when it was fetched.
+
+The datum shift, and why the live layers are off by ~1.3 m: our coordinates are ITRF2020
+(the base's PPP frame) used as WGS84; GRANIT data are NAD83. At the site NAD83(2011) minus
+ITRF2020 is E +0.561, N -1.193 m, so a NAD83 image drawn as if its coordinates were WGS84
+(which is what QGIS does with a live GRANIT layer unless a datum transformation is set,
+and the NAD83-WGS84 "transformations" it offers are null or 1 m class) sits 1.3 m north-east
+of where it belongs relative to our points. The copies are moved by minus that (E -0.561,
+N +1.193 m). NAD83(HARN), the label of the 2021-22 service, differs from NAD83(2011) by
+about 2 cm here; NAD83(1986), if an older dataset really is on it, by about 0.2 m (not
+applied: below what the 1 ft images can show).
+
+The images' own registration is a separate error. Checked on 2026-11-11 with
+`imagery_check.py crops` against RTK-measured features: in the 2021-22 copy, the garden
+shed corners, the boat shed outline and the PPK house corner fall on the image's roof corners
+within about 0.2 m (1-2 pixels; roof overhang and the lean of tall things in a non-true
+ortho limit the check), so no extra shift. The granite bounds are not visible. The 2015 and
+2010-11 copies agree with the 2021-22 one and the outlines to roughly 0.3-0.5 m by eye
+(sheds, driveway edge, house); automatic correlation between years did not give a stable
+answer (leaf, shadow and building changes), so no shift either. The 1992-98 DOQ predates the
+house and has nothing to check against; treat its position as unverified (metres).
+
+Refetch or add years: put an `[imagery]` section in your site config (template in
+`config.example.toml`: datasets, extent, `datum_shift_m`, per-dataset `extra_shift_m`) and
+run, with numpy and rasterio installed (a venv: `pip install numpy rasterio`):
+
+    python3 analysis/qgis/fetch_imagery.py --config <site config> [--datasets NAME ...]
+    python3 analysis/qgis/fetch_imagery.py --config <site config> --list    # which cover the lot
+
+Dataset names are the ImageServer names under the service folder (GRANIT has NAIP years,
+CIR versions and more); the coastal 1 ft sets do not reach Epping. Then Build / refresh
+project. To measure an image's residual, `imagery_check.py crops IMAGE.tif --layers
+<things/fence GeoJSON> --gpkg <season gpkg> --match "<names>"` draws the surveyed features
+on crops of the image; `imagery_check.py align REF.tif IMAGE.tif --window x0 y0 x1 y1`
+estimates one image's offset against another. A consistent offset goes in
+`[imagery.extra_shift_m]`, and the next fetch applies it.
+
+The copies show the site and carry its location in their CRS: **never commit imagery**
+(`*.tif` is git-ignored) or put it in a public figure.
+
+### Development extent
+
+The same datasets are also copied over the whole subdivision, into `imagery/development/`
+next to the gpkg; the project lists them under the lot copies as "... (development)". The
+lot-sized copies stay as they were and draw on top; the newest development photo is ticked
+too, so it fills in around the lot, and the others are unticked. The extent is the bounding
+box of the subdivision's parcels (see below, `group = core`) plus 40 m:
+
+    python3 analysis/qgis/fetch_imagery.py --config <site config> --out-dir <qgis folder>/imagery/development \
+        --extent-layer <parcels GeoJSON> --extent-filter group=core --margin 40
+
+Downloads go in tiles of at most 2048 px (`tile_px`; GRANIT's service advertises 4100 px
+but answers HTTP 500 to 3000 x 3000 four-band requests), one at a time with a pause. Over a
+subdivision-sized area the 6 inch photo is about 100 MB with DEFLATE; for much larger areas
+`[imagery.compress]` can switch a dataset to JPEG-in-TIFF (about 5x smaller, lossy). Every
+copy has overviews, so QGIS stays fast zoomed out.
+
+## Parcels
+
+`analysis/qgis/fetch_parcels.py` writes the tax parcels of a subdivision (the `where` of
+`[parcels]`, e.g. one tax map lot's PID prefix) and the ring of parcels touching it as a
+GeoJSON map layer, from NH GRANIT's ParcelMosaic (the towns' assessing parcels, NAD83 NH
+State Plane). Each polygon is converted to geodetic NAD83 and moved into our frame by the
+same datum shift as the imagery (E -0.561, N +1.193 m here). Properties: `pid`, `map`,
+`lot`, `town`, `land_use`, `area_m2`, `area_ac`, `group` (core or neighbour), `kind =
+parcel`, `source` (with the fetch date) and a `note`. Only those fields are ever requested
+from the service: owner names and street or mailing addresses are not fetched, even
+privately. It also prints the core parcels' extent, used for the development imagery.
+
+    python3 analysis/qgis/fetch_parcels.py --config <site config>
+
+Add the GeoJSON to `[season].layers` of the site config, then **Import new sessions** (it
+reloads the map layers into the gpkg) and **Build / refresh project**: the parcels are in
+"Map layers", thin grey outlines with small PID labels (map tips show area, note and source).
+
+What they are not: tax-map polygons are drawn from the recorded plans and fitted to the
+town's tax-map base; they are typically good to 1-3 m (worse on curves) and are **not
+survey boundaries**. For our lot, the measured boundary (found monuments, RTK) lies about
+2.2 m south of the datum-corrected parcel, with no significant rotation: that offset is the
+tax map's placement, not the datum (without the datum shift the parcel happens to sit
+closer, about 1.2 m off, because the two errors partly cancel). Use the parcels for context
+(neighbours, open space, roads), never to place anything near a line.
+
+The parcels GeoJSON holds the location like the imagery: keep it private.
 
 ## The tables
 

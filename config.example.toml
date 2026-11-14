@@ -25,6 +25,69 @@ layers = ["data/layers/base.geojson", "data/layers/lot-boundary.geojson"]
 # CSV written by export_labels.py (default: <gpkg stem>-captures.csv next to the gpkg)
 # labels_csv = "data/qgis/2026-2027-captures.csv"
 
+# Local copies of public orthophotos for QGIS: analysis/qgis/fetch_imagery.py (needs numpy
+# and rasterio). Downloads each dataset over the extent once, resamples it into the local
+# frame (datum corrected) and writes <out_dir>/<dataset>.tif + <dataset>.json; the QGIS
+# project's "Imagery" group shows the GeoTIFFs in imagery/ next to the gpkg. The images
+# show the site: never commit them. See docs/howto/qgis.md, Imagery.
+[imagery]
+# ArcGIS ImageServices folder (NH GRANIT, public, no token)
+service = "https://granit24a.sr.unh.edu/image/rest/services/ImageServices"
+datasets = ["NH_2021_2022_6in_RGB", "NH_2015_1ft_RGB", "NH_2010_2011_1ft_RGB", "NH_DOQs_92_98",
+            "LiDAR_Bare_Earth_DEM_shaded_relief_NH_2022"]
+# Output folder (default: imagery/ next to [season].gpkg)
+# out_dir = "data/qgis/imagery"
+# Extent: the bounding box of this GeoJSON ([lon, lat, h], our frame) plus margin_m, or an
+# explicit bbox = [x_min, y_min, x_max, y_max] in local metres
+extent_layer = "data/layers/lot-boundary.geojson"
+margin_m = 30
+# bbox = [-80.0, -30.0, 70.0, 95.0]
+# Only the features of extent_layer whose properties match (e.g. the core parcels of
+# fetch_parcels.py's output, for a wider "development" copy into another out_dir):
+# extent_filter = { group = "core" }
+# Download tile size, pixels (GRANIT answers HTTP 500 to 3000 x 3000 4-band requests)
+# tile_px = 2048
+# Image datum minus the frame of your coordinates at the site, metres [east, north]: for
+# GRANIT (NAD83(2011)) against an ITRF2020/WGS84 base, NAD83 minus ITRF2020 there (HTDP or
+# a 14-parameter transform at your epoch; about 1-2 m in the US). The images are moved by
+# minus this. Without it the copies are not datum corrected (a warning says so).
+# datum_shift_m = [0.0, 0.0]
+# datum_note = "how the datum shift was found"
+# Output pixel per dataset, metres (default: the native pixel rounded to the cm)
+# [imagery.pixel_m]
+# NH_2021_2022_6in_RGB = 0.15
+# A measured residual of one image (imagery_check.py), metres [east, north], added to its move
+# [imagery.extra_shift_m]
+# NH_2015_1ft_RGB = [0.0, 0.0]
+# Raster function per dataset ("" = raw pixels; default: raw for 8-bit services, else the
+# service's first raster function, e.g. "Shaded Relief" for the LiDAR shaded relief)
+# [imagery.rendering_rule]
+# LiDAR_Bare_Earth_DEM_shaded_relief_NH_2022 = "Shaded Relief"
+# Compression per dataset: "deflate" (default, lossless, alpha band) or "jpeg" (RGB
+# JPEG-in-TIFF, internal mask, ~5x smaller: for very large photo copies)
+# [imagery.compress]
+# NH_2021_2022_6in_RGB = "jpeg"
+
+# Tax-parcel polygons as a map layer: analysis/qgis/fetch_parcels.py (needs numpy). Owner
+# names and addresses are never requested or written. Datum shift: [parcels].datum_shift_m,
+# else [imagery].datum_shift_m. The output holds your location: keep it out of the repo.
+[parcels]
+# MapServer layer (NH GRANIT ParcelMosaic, layer 1 Parcels, public)
+service = "https://nhgeodata.unh.edu/nhgeodata/rest/services/CAD/ParcelMosaic/MapServer/1"
+# SQL selecting the core parcels (e.g. a subdivision by PID prefix) and/or single PIDs
+where = "Town = 'Sometown' AND PID LIKE '001-002-%'"
+# pids = ["001-003-000"]
+# also the ring of parcels touching the core (vertex within neighbour_tolerance_m of an edge)
+neighbours = true
+neighbour_tolerance_m = 1.0
+# fields kept (default PID, DisplayId, TownID, Town, SLU, SLUC, Shape_Area)
+# fields = ["PID", "Town", "SLU", "Shape_Area"]
+out = "data/layers/parcels.geojson"
+# margin for the printed core extent, metres
+margin_m = 40
+# name of your frame, for the source note
+# frame_name = "ITRF2020"
+
 [site]
 # The base: a known point kept in the gpkg (icecube_meta base_*), and the origin when
 # [site.origin] is not set. First found wins: base, base_geojson, a kind=base Point in the
