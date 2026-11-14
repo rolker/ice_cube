@@ -1,0 +1,104 @@
+configuration:
+  device:
+    name: "Receiver: serial port"
+    description: The receiver's serial port; pick its /dev/serial/by-id entry.
+  device_match:
+    name: "Receiver: name must contain"
+    description: Text the port's stable name must contain, so a Zigbee stick or other serial device is never opened.
+  baud:
+    name: "Receiver: baud rate"
+    description: The receiver's serial speed (460800 for the LG290P setup).
+  base_frame:
+    name: "Our base: frame"
+    description: The reference frame of the base position this receiver broadcasts (RTCM 1005), ITRF2020 for a PPP coordinate; used for the caster's sourcetable and every reference's expected offset.
+  base_epoch:
+    name: "Our base: epoch"
+    description: When our base position was observed (the PPP date YYYY-MM-DD, or a decimal year); empty means today's date.
+  caster_enabled:
+    name: "Local caster: on"
+    description: Serve the receiver's corrections to rovers on your network over NTRIP (port 2101).
+  caster_mountpoint:
+    name: "Local caster: mountpoint"
+    description: The local caster's mountpoint, 1 to 32 letters, digits or _.
+  caster_user:
+    name: "Local caster: user"
+    description: With a password, the user name rovers must give; empty accepts any user.
+  caster_password:
+    name: "Local caster: password"
+    description: Empty means rovers need no login; set, rovers must log in with it.
+  caster_max_clients:
+    name: "Local caster: max rovers"
+    description: How many rovers may connect at once (1 to 16).
+  upload_host:
+    name: "Upload (RTK2go): caster"
+    description: The NTRIP caster the corrections are uploaded to.
+  upload_port:
+    name: "Upload (RTK2go): port"
+    description: That caster's port, 2101 for RTK2go.
+  upload_mountpoint:
+    name: "Upload (RTK2go): mountpoint"
+    description: Your reserved mountpoint there; empty means no upload.
+  upload_password:
+    name: "Upload (RTK2go): password"
+    description: The mountpoint's password; empty means no upload.
+  upload_style:
+    name: "Upload (RTK2go): NTRIP style"
+    description: The NTRIP revision of the reservation; only rev1 works with RTK2go so far.
+  measured_enabled:
+    name: "Measured position: on"
+    description: Run rtkrcv for a live single-point position of the antenna (metre level).
+  measured_elevation_mask:
+    name: "Measured position: elevation mask"
+    description: Satellites below this elevation (degrees, 0 to 45) are left out, here and in every reference check.
+  measured_snr_mask:
+    name: "Measured position: SNR mask"
+    description: Signals weaker than this (dB-Hz, 0 to 50; 0 for none) are left out, here and in every reference check.
+  references:
+    name: Reference stations
+    description: CORS stations that check our antenna by RTK, one entry each (its own login, card and logs); empty means no reference check.
+    fields:
+      name:
+        name: Name
+        description: A short name for the card and the log folder reference-<name>, unique (for example abcd).
+      enabled:
+        name: "On"
+        description: Run this check; off keeps the entry without connecting. Unset means on.
+      host:
+        name: Caster
+        description: The CORS network's NTRIP caster, host name only (caster.example.org).
+      port:
+        name: Port
+        description: The caster's port; unset means 2101.
+      mountpoint:
+        name: Mountpoint
+        description: A single-station RTCM 3 mountpoint with MSM and 1005/1006 (case matters).
+      user:
+        name: User
+        description: Your login at that caster; one login allows one connection, so two entries need two logins.
+      password:
+        name: Password
+        description: The login's password; it goes only into the request's Authorization header.
+      frame:
+        name: Station frame
+        description: The frame the station's coordinates are in, as its network documents it; unset means unknown (no residual).
+      epoch:
+        name: Station epoch
+        description: The epoch of the station's coordinates, if the network documents one (YYYY-MM-DD or a decimal year); shown, not modelled.
+      send_gga:
+        name: Send GGA
+        description: Send our position to the caster (for a "nearest station" mountpoint marked nmea 1); unset means off.
+      gga_position:
+        name: GGA position
+        description: The position the GGA carries, "lat,lon" in decimal degrees; empty means our base's 1005 position.
+      expect_station:
+        name: Expected station ID
+        description: The station ID (0 to 4095) the stream must carry; another shows as a wrong station. Unset means any.
+      reset_utc:
+        name: Daily restart (UTC)
+        description: When rtkrcv restarts each day for a new session, HH:MM UTC; unset means 00:00, never or empty means never.
+  log_dir:
+    name: "Logging: folder"
+    description: Where the logs go (the receiver's raw data, solutions, the stations' streams).
+  min_free_gb:
+    name: "Logging: minimum free space (GB)"
+    description: Logging pauses when the disk has less free space than this, and resumes when space returns.

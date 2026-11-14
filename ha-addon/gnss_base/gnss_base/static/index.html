@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GNSS Base</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="track.js?v=0.8.0"></script>
+<style>
+:root{--bg:#f6f7f8;--card:#fff;--text:#1c2024;--muted:#60676f;--line:#dfe3e7;--good:#16794a;--warn:#a15c00;--bad:#b3261e;--accent:#2a78d6;--age-old:#b7d3f6;--age-new:#0d366b}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2125;--text:#eceff1;--muted:#9aa3ab;--line:#30363c;--good:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--accent:#6da7ec;--age-old:#184f95;--age-new:#cde2fb}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,sans-serif}
+main{max-width:1700px;margin:auto;padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+header{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:20px;margin:0}
+h2{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
+.wide{grid-column:1/-1;overflow-x:auto}
+.big{font-size:24px;font-weight:600}
+dl{display:grid;grid-template-columns:minmax(auto,45%) 1fr;gap:3px 14px;margin:8px 0 0}
+dt{color:var(--muted);min-width:0}dd{margin:0;min-width:0;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+dl.refd{grid-template-columns:minmax(auto,22%) 1fr minmax(auto,22%) 1fr;column-gap:24px}
+@media (max-width:1100px){dl.refd{grid-template-columns:minmax(auto,45%) 1fr}}
+:root{--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;--s5:#e87ba4}
+@media (prefers-color-scheme:dark){:root{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181}}
+.sk{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.sk.s1{background:var(--s1)}.sk.s2{background:var(--s2)}.sk.s3{background:var(--s3)}.sk.s4{background:var(--s4)}.sk.s5{background:var(--s5)}
+#rscatter{display:block;width:100%;max-width:460px;aspect-ratio:1;margin:8px auto 0}
+#rup{display:block;width:100%;height:120px;margin-top:10px}
+#rdaily{display:block;width:100%;height:300px;margin-top:10px}
+.seg button.on{background:var(--accent);border-color:var(--accent);color:var(--card)}
+#sumt td.wrap{max-width:420px}
+.spread{font-weight:600;margin:10px 0 0}
+details.mps{margin-top:8px}details.mps summary{cursor:pointer;color:var(--muted);font-size:13px}
+details.mps td{font-size:13px}tr.sel td{font-weight:600;color:var(--accent)}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-weight:500;text-align:right}th:first-child,td:first-child{text-align:left}
+th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
+.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}table.stale{opacity:.5}
+.note{color:var(--muted);font-size:13px}
+pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px}
+.row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}
+button{font:inherit;font-size:13px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 10px;cursor:pointer}
+#map{height:320px;border-radius:6px;margin-top:4px}
+.leaflet-container{background:var(--bg)}
+#mapnote{margin:6px 0 0}
+.key{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin:0 4px 0 10px}
+.key.fix{background:var(--accent)}.key.base{border:2px solid var(--warn);width:12px;height:12px}
+.key.rover{border-radius:0;width:9px;height:9px;transform:rotate(45deg);background:var(--good)}
+.key.meas{background:var(--muted);border:2px solid var(--accent);width:11px;height:11px}
+.key.mean{border-radius:0;width:16px;height:2px;background:var(--text)}
+.rover{background:var(--good);border:2px solid var(--card);transform:rotate(45deg)}.rover.stale{background:var(--muted)}
+dl.stale{opacity:.5}
+#scatter{display:block;width:100%;max-width:440px;aspect-ratio:1;margin:8px auto 0}
+#up{display:block;width:100%;height:110px;margin-top:10px}
+.legend{text-align:center;margin-top:4px}
+.ramp{display:inline-block;width:70px;height:8px;border-radius:4px;vertical-align:middle;margin:0 6px;background:linear-gradient(90deg,var(--age-old),var(--age-new))}
+dl.posd{grid-template-columns:auto 1fr auto 1fr}
+@media (max-width:560px){dl.posd{grid-template-columns:auto 1fr}}
+h3{font-size:14px;margin:14px 0 6px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
+input,select{font:inherit;font-size:14px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;max-width:100%}
+input[type=number]{width:9em}
+button:disabled{opacity:.5;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--card)}
+.steps{margin:0;padding-left:20px}.steps li{margin:0 0 12px}
+.inline{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px}
+#cmd{flex:1;min-width:0}
+#confirm{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:16px;z-index:2000}
+#confirm.open{display:flex}
+#confirm>div{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:16px;max-width:560px;width:100%;max-height:90vh;overflow:auto}
+#confirm pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0}
+td.wrap{white-space:normal;overflow-wrap:anywhere;text-align:left}
+</style>
+</head>
+<body>
+<main>
+<header><h1>GNSS Base</h1><span id="link" class="note">Connecting…</span></header>
+<section><h2>Base station</h2><div id="station" class="big">—</div><p id="stationnote" class="note"></p><dl id="stationd"></dl>
+<p id="stationrovers" class="note" hidden></p></section>
+<section><h2>Data</h2><div id="rate" class="big">—</div><dl id="data"></dl></section>
+<section><h2>Storage</h2><div id="free" class="big">—</div><dl id="disk"></dl></section>
+<section><h2>NTRIP caster (local network)</h2><div id="caster" class="big">—</div><dl id="casterd"></dl>
+<table id="clients"></table></section>
+<section><h2>Upload (RTK2go)</h2><div id="upload" class="big">—</div><dl id="uploadd"></dl></section>
+<section><h2>Measured position (rtkrcv)</h2><div id="meas" class="big">—</div><dl id="measd"></dl>
+<p id="meascaveat" class="note">Single point positioning: expect 1-2 m scatter, and Up several metres high (RTKLIB's default ionosphere model). A steady offset is normal; look for jumps and trends.</p>
+<pre id="measout" class="note" hidden></pre></section>
+<section class="wide" id="refsum"><h2>Our antenna against the references</h2><div id="sum" class="big">—</div>
+<p id="sumnote" class="note" hidden></p><pre id="sumyaml" class="mono" hidden></pre>
+<table id="sumt"></table><p id="spread" class="spread"></p><p id="spreadout" class="note"></p>
+<p class="note">Each reference station's RTK solution of our antenna, turned into our frame: the session mean (fixed epochs, station frame minus ours) minus the expected offset computed from the declared frames (each entry's frame, base_frame) at our epoch, never guessed from the stream. A consistent reference sits at 0, 0, 0: green within 5 cm horizontal and 10 cm up, amber within 20 cm, red beyond or after 30 min without a fix. A reference whose station frame is unknown is shown raw (station frame minus ours, about a metre between NAD83(2011) and ITRF2020), with the reason, and is not in the spread. A row is coloured only while it is current (streaming, rtkrcv running, a fix in the last 30 min, the expected station, a session from our current 1005). The spread is over the current references: the largest horizontal distance between two of them and the largest difference up, green within 3 cm horizontal and 6 cm up, amber within 10 cm. A fixed solution can still be a false fix: trust a residual that holds for hours, not minutes. Static mode smears an antenna move into a slow drift until the daily reset; the Measured position card catches a move within seconds.</p></section>
+<section class="wide" id="refplots"><div class="row"><h2>Reference solutions (residual in our frame)</h2><span class="seg" id="rwin"><button type="button" data-w="1h">1 h</button> <button type="button" data-w="24h" class="on">24 h</button> <button type="button" data-w="7d">7 d</button></span></div>
+<p id="rplotnote" class="note">Loading…</p>
+<canvas id="rscatter" role="img" aria-label="East and north residuals of each reference's fixed solutions, in centimetres around our base position"></canvas>
+<div id="rlegend" class="note legend"></div>
+<div class="note legend"><span id="rhover">Point at a dot for details</span></div>
+<canvas id="rup" role="img" aria-label="Up residual of each reference over time"></canvas>
+<h3>Daily means</h3>
+<canvas id="rdaily" role="img" aria-label="Daily mean east, north and up residual of each reference"></canvas>
+<p class="note">30-second means of the fixed epochs (merged further for long windows), each the station's solution of our antenna minus our RTCM 1005 and the expected offset: the crosshair is our coordinate. The large dot is the session mean, the ring its 1-sigma ellipse. Daily means are per UTC day, so a drift of the antenna shows in every reference at once, while one station's problem shows in that one only.</p>
+<table id="rtable" class="note" hidden></table></section>
+<section><h2>Position fix</h2><div id="fix" class="big">—</div><p id="fixnote" class="note" hidden></p><dl id="fixd"></dl>
+<h3>Base position (RTCM 1005) <span id="basestale" class="bad"></span></h3><dl id="based"></dl></section>
+<section><h2>Survey-in</h2><div id="svin" class="big">—</div><dl id="svind"></dl><p id="svinnote" class="note"></p></section>
+<section class="wide"><div class="row"><h2>Position</h2><span><button id="fitrefs" type="button" hidden>Show reference stations</button> <button id="centre" type="button">Centre map</button></span></div>
+<div id="map" role="img" aria-label="Map of the current position"></div>
+<p id="mapnote" class="note">Waiting for a position fix</p>
+<div class="note legend"><span class="key fix"></span>GGA fix <span class="key base"></span>Base position (RTCM 1005) <span class="key rover"></span>Rover on the caster (its GGA) <span class="key meas"></span>rtkrcv solution (latest)<span id="refkey" hidden> · reference stations (RTCM 1005) with their baseline</span></div>
+<dl id="posd" class="posd"></dl></section>
+<section class="wide"><h2 id="drifth">Drift around the median position</h2>
+<div id="drifttxt" class="note">No positions yet</div>
+<canvas id="scatter" role="img" aria-label="East and north offsets from the median position, coloured by age"></canvas>
+<div class="note legend">older<span class="ramp"></span>newer<span id="meankey" hidden> · <span class="key mean"></span>5-min running mean</span> · <span id="hover">Point at a dot for details</span></div>
+<canvas id="up" role="img" aria-label="Up offset from the median height over time"></canvas></section>
+<section class="wide"><h2>Signals</h2><table id="sig"></table></section>
+<section><h2>Satellites in RTCM MSM</h2><table id="msm"></table></section>
+<section class="wide"><div class="row"><h2>Receiver</h2><span><button id="check" type="button">Check profile</button> <button id="apply" type="button">Apply differences…</button></span></div>
+<dl id="rcv"></dl><p id="rcvnote" class="note"></p><table id="prof"></table></section>
+<section class="wide"><h2>Base setup</h2>
+<p class="note">Each step shows the exact command first. Steps that change the receiver ask you to confirm.</p>
+<ol class="steps">
+<li><b>Read the firmware version.</b> Sends <code>$PQTMVERNO*58</code> at once (read-only). <button id="s-fw" type="button">Read</button></li>
+<li><b>Check the receiver profile</b> with read-only queries; then apply the differences if you choose. <button id="s-check" type="button">Check</button></li>
+<li><b>Switch to base mode:</b> <code>PQTMCFGRCVRMODE,W,2</code>, save, then restart with <code>PQTMSRR</code>. The receiver restarts and stops sending NMEA. <button id="s-base" type="button">Prepare…</button></li>
+<li><b>Start a survey-in</b> of <input id="s-count" type="number" min="1" max="86400" step="1" value="300" aria-label="Survey-in fixes"> fixes, with no accuracy limit, save, then restart with <code>PQTMSRR</code>: this firmware starts a survey-in only after a restart. <button id="s-svin" type="button">Prepare…</button>
+<div id="s-progress" class="note"></div></li>
+<li><b>Set a fixed base position</b>, save, then restart with <code>PQTMSRR</code> so it takes effect. The survey-in mean is used only once the survey-in has finished (Valid=2), and only while the receiver is not already in fixed mode. The confirmation shows the shift from the base position the receiver now sends.
+<div id="s-fixednote" class="note"></div>
+<div class="inline"><select id="s-src" aria-label="Position source"><option value="survey">from the survey-in mean (once finished)</option><option value="llh">from latitude, longitude, height</option><option value="ecef">from ECEF X, Y, Z</option></select></div>
+<div id="s-llh" class="inline" hidden><input id="s-lat" inputmode="decimal" placeholder="Latitude °" aria-label="Latitude in degrees"><input id="s-lon" inputmode="decimal" placeholder="Longitude °" aria-label="Longitude in degrees"><input id="s-h" inputmode="decimal" placeholder="Ellipsoidal height m" aria-label="Ellipsoidal height in metres"></div>
+<div id="s-ecef" class="inline" hidden><input id="s-x" inputmode="decimal" placeholder="X m" aria-label="ECEF X in metres"><input id="s-y" inputmode="decimal" placeholder="Y m" aria-label="ECEF Y in metres"><input id="s-z" inputmode="decimal" placeholder="Z m" aria-label="ECEF Z in metres"></div>
+<div class="inline"><button id="s-fixed" type="button">Prepare…</button></div></li>
+</ol><pre id="stepout" class="note"></pre></section>
+<section class="wide"><h2>Command console</h2>
+<p class="note">Queries (<code>,R</code> forms and read-only commands) run at once. Anything else asks you to confirm the exact bytes. Factory reset, firmware commands and UART or protocol changes to UART1 or this app's port are refused. The checksum is added for you.</p>
+<form id="console" class="inline" autocomplete="off"><input id="cmd" class="mono" placeholder="PQTMCFGRCVRMODE,R" aria-label="Command"><button type="submit">Send</button></form>
+<pre id="cmdout" class="note"></pre>
+<h3>Recent commands</h3><table id="hist"></table></section>
+<section><h2>RTCM messages</h2><table id="rtcm"></table></section>
+<section><h2>NMEA messages</h2><table id="nmea"></table></section>
+<section class="wide"><h2>Log files</h2><table id="files"></table></section>
+<section class="wide"><h2>Receiver messages</h2><pre id="msgs" class="note">None yet</pre></section>
+</main>
+<div id="confirm" role="dialog" aria-modal="true" aria-labelledby="ctitle"><div>
+<h2 id="ctitle">Confirm</h2><p class="note">These exact bytes will be sent, in order (each ends with CR LF):</p>
+<pre id="cbytes" class="mono"></pre><dl id="cdetails"></dl><div id="cwarn"></div>
+<p id="cexpire" class="note"></p>
+<div class="inline"><button id="cyes" class="primary" type="button">Send to the receiver</button><button id="cno" type="button">Cancel</button></div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??"—").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const size=b=>{if(b==null)return"—";const u=["B","kB","MB","GB"];let i=0;while(b>=1024&&i<3){b/=1024;i++}return b.toFixed(i?1:0)+" "+u[i]};
+const dl=(id,rows)=>$(id).innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+const table=(id,head,rows,empty)=>$(id).innerHTML=rows.length?`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join(""):`<tr><td class="note">${esc(empty)}</td></tr>`;
+const css=name=>getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const metres=v=>v==null?null:Math.abs(v)<1?(v*100).toFixed(1)+" cm":v.toFixed(3)+" m";
+const span=v=>{const a=Math.abs(v),s=a>=1?+v.toFixed(2)+" m":a>=0.01?+(v*100).toFixed(1)+" cm":+(v*1000).toFixed(1)+" mm";return s.replace("-","−")};
+// duration (seconds in words) is in track.js, shared with the base station summary.
+const hsigma=f=>f.lat_sigma_m==null||f.lon_sigma_m==null?null:Math.hypot(f.lat_sigma_m,f.lon_sigma_m);
+
+// Same local tangent plane approximation as the app (WGS84 radii at the reference).
+function frame(ref){
+  const e2=(2-1/298.257223563)/298.257223563, s=Math.sin(ref.lat*Math.PI/180), w=Math.sqrt(1-e2*s*s), k=Math.PI/180*6378137;
+  const north=k*(1-e2)/(w*w*w), east=k/w*Math.cos(ref.lat*Math.PI/180);
+  return (e,n)=>[ref.lat+n/north,ref.lon+(east?e/east:0)];
+}
+
+// ---- map: works without tiles, and without Leaflet at all ----
+let measStale=false;
+let map=null,here=null,ring=null,trail=null,baseMark=null,measMark=null,fitted=false,follow=true,lastFix=null,dim=false,basePos=null,baseStale=false,baseCentredOn=null;
+let fixNote="Waiting for a position fix",tileNote="";
+function note(text){$("mapnote").textContent=text}
+function showNote(){if(map)note(fixNote||tileNote)}
+function mapStyle(){
+  if(!map)return;
+  const accent=css("--accent"),text=css("--card");
+  here.setStyle({color:text,fillColor:dim?css("--muted"):accent,fillOpacity:dim?0.5:1});ring.setStyle({color:accent,fillColor:accent});trail.setStyle({color:accent});
+  baseMark.setStyle(baseStale?{color:css("--muted"),dashArray:"3 4"}:{color:css("--warn"),dashArray:null});
+  measMark.setStyle(measStale?{color:css("--muted"),fillColor:css("--muted"),dashArray:"3 4"}:{color:css("--accent"),fillColor:css("--muted"),dashArray:null});
+}
+try{
+  if(typeof L==="undefined")throw new Error("no Leaflet");
+  map=L.map("map",{maxZoom:22,zoomSnap:0.5});
+  // OSM requires a Referer on browser tile requests; Home Assistant pages may set
+  // no-referrer, so ask for the origin to be sent on tile requests only.
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxNativeZoom:19,maxZoom:22,
+    referrerPolicy:"strict-origin-when-cross-origin",
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'})
+    .on("tileerror",()=>{tileNote="Map tiles could not be loaded, perhaps offline. Position and drift still update.";showNote()})
+    .on("tileload",()=>{tileNote="";showNote()})
+    .addTo(map);
+  trail=L.polyline([],{weight:2,opacity:0.35,interactive:false}).addTo(map);
+  ring=L.circle([0,0],{radius:0,weight:1,opacity:0.6,fillOpacity:0.12,interactive:false});
+  here=L.circleMarker([0,0],{radius:6,weight:2,fillOpacity:1,interactive:false});
+  baseMark=L.circleMarker([0,0],{radius:9,weight:3,fill:false,interactive:false});
+  measMark=L.circleMarker([0,0],{radius:5,weight:2,fillOpacity:0.7,interactive:false});
+  map.on("dragstart",()=>{follow=false});
+  mapStyle();
+}catch(e){map=null;note("The map is unavailable. Position and drift still update.")}
+// Centre on the current fix; with no current measured fix, on the base position.
+$("centre").onclick=()=>{follow=true;const p=(!dim&&lastFix)||basePos||lastFix;if(map&&p)map.setView(p,Math.max(map.getZoom(),18))};
+// A lost or stale fix greys the dot at the last known position and hides the ring.
+// Only measured fixes count: GGA quality 7 (manual input, the fixed base position
+// repeated) is not drawn as a fix. The base position from RTCM 1005 is a hollow ring,
+// separate from any GGA fix, dashed and grey once stale. `reason` is the app's
+// no_measured_reason (why there is no measured position now), or null.
+function updateMap(f,stale,b,reason){
+  const lost=f.lat==null||f.lon==null||!f.measured;
+  if(!lost)lastFix=[f.lat,f.lon];
+  basePos=b&&b.lat!=null?[b.lat,b.lon]:null;
+  if(baseStale!==!!(basePos&&b.stale)){baseStale=!!(basePos&&b.stale);mapStyle()}
+  const baseText=!basePos?"":baseStale?` The dashed ring is the last base position from RTCM 1005, now stale (${b.age_s} s old).`:" The hollow ring is the base position from RTCM 1005.";
+  // Say what the app reports, not a guess: NMEA may still be arriving in base mode.
+  const why=reason||(f.quality===7?"GGA reports the fixed base position (quality 7), not a measured one.":!f.name?"No GGA position received.":"No measured GGA fix.");
+  fixNote=!lastFix?(basePos?why+baseText:f.quality===7||reason?why:"Waiting for a position fix"):lost?(reason||"No measured position fix now.")+" The grey dot is the last known position."+baseText:
+    stale?`The position fix is stale (${f.age_s} s old). The grey dot is the last known position.`+baseText:(basePos?baseText.trim():"");
+  if(map&&basePos){
+    baseMark.setLatLng(basePos);if(!map.hasLayer(baseMark))baseMark.addTo(map);
+    // With no current measured fix (none, lost or stale, as after a switch from rover to
+    // base mode), bring a fresh base into view once, and again only if it moves
+    // materially (baseCentring in track.js), so manual panning is not undone every second.
+    const c=baseCentring(baseCentredOn,baseStale?null:basePos,!lost&&!stale);baseCentredOn=c.centredOn;
+    if(!fitted&&!lastFix||c.centre&&!fitted){map.setView(basePos,19);fitted=true}
+    else if(c.centre&&!map.getBounds().contains(basePos))map.panTo(basePos);
+  }
+  else if(map&&map.hasLayer(baseMark))baseMark.remove();
+  if(!map)return;
+  if(lastFix&&!map.hasLayer(here)){if(!fitted)map.setView(lastFix,19);here.addTo(map);fitted=true}
+  if(dim!==(lost||stale)){dim=lost||stale;mapStyle()}
+  if(lastFix&&fitted&&!dim){
+    here.setLatLng(lastFix);ring.setLatLng(lastFix);ring.setRadius(hsigma(f)||0);
+    if(!map.hasLayer(ring))ring.addTo(map);
+    if(follow&&!map.getBounds().contains(lastFix))map.panTo(lastFix);
+  }else if(map.hasLayer(ring))ring.remove();
+  showNote();
+}
+
+// ---- drift plots: plain canvas ----
+let track=null,dots=[];
+function hex(c){c=c.replace("#","");return[0,2,4].map(i=>parseInt(c.substr(i,2),16))}
+function mix(a,b,t){return"rgb("+a.map((v,i)=>Math.round(v+(b[i]-v)*t)).join(",")+")"}
+function nice(v){const p=Math.pow(10,Math.floor(Math.log10(v))),m=v/p;return(m<=1?1:m<=2?2:m<=2.5?2.5:m<=5?5:10)*p}
+function prep(cv,h){
+  const w=cv.clientWidth,ratio=window.devicePixelRatio||1;h=h||w;
+  cv.width=Math.round(w*ratio);cv.height=Math.round(h*ratio);
+  const c=cv.getContext("2d");c.setTransform(ratio,0,0,ratio,0,0);c.clearRect(0,0,w,h);
+  c.font="11px system-ui,sans-serif";c.lineWidth=1;return[c,w,h];
+}
+function drawDrift(){
+  const pts=track&&track.points||[];
+  const muted=css("--muted"),line=css("--line"),text=css("--text"),old=hex(css("--age-old")),young=hex(css("--age-new"));
+  const oldest=pts.length?pts[0][0]:0,colour=age=>mix(old,young,oldest>0?1-age/oldest:1);
+  const dropped=track&&track.outliers_dropped?` ${track.outliers_dropped} isolated fixes more than 1 km away were left out.`:"";
+  const why=track&&track.no_measured_reason,label=trackLabel(track),measured=!!track&&track.source==="measured";
+  const moved=measured&&track.base_changed_age_s!=null?` The base position (RTCM 1005) changed ${duration(track.base_changed_age_s)} ago; the history is kept.`:"";
+  $("drifth").textContent=label.title;
+  $("drifttxt").textContent=(pts.length?`${pts.length} positions over the last ${duration(oldest)} (one per second, up to ${duration(track.window_s)}). ${label.offsets}`+moved+(measured?" Single point: metres of scatter, Up reads high.":"")+(why?" No new ones now. "+why:""):why||"No positions yet.")+dropped;
+  const mean=measured&&pts.length>1?runningMean(pts):null;$("meankey").hidden=!mean;
+  if(!pts.length)$("hover").textContent="Point at a dot for details";
+  // East/north scatter: square, centred on the reference, at least ±5 cm.
+  let [c,w]=prep($("scatter"));
+  const pad=30,size=w-2*pad,mid=w/2;
+  let half=0.05;for(const p of pts)half=Math.max(half,Math.abs(p[1]),Math.abs(p[2]));
+  const step=nice(half/2);half=2*step;const k=size/2/half;
+  c.strokeStyle=line;c.fillStyle=muted;c.textAlign="center";c.textBaseline="top";
+  for(let i=-2;i<=2;i++){
+    const x=mid+i*step*k;
+    c.beginPath();c.moveTo(x,pad);c.lineTo(x,w-pad);c.moveTo(pad,x);c.lineTo(w-pad,x);c.stroke();
+    if(i)c.fillText(span(i*step),x,w-pad+4);
+  }
+  c.textAlign="right";c.textBaseline="middle";
+  for(let i=-2;i<=2;i++)if(i)c.fillText(span(i*step),pad+22,mid-i*step*k-7);
+  c.textAlign="left";c.textBaseline="top";c.fillText("N ↑",mid+4,pad-16);c.textAlign="right";c.fillText("E →",w-pad,w-pad+16);
+  dots=[];
+  for(const p of pts){
+    const x=mid+p[1]*k,y=mid-p[2]*k;dots.push([x,y,p]);
+    c.fillStyle=colour(p[0]);c.beginPath();c.arc(x,y,2,0,7);c.fill();
+  }
+  if(mean){c.strokeStyle=text;c.lineWidth=1.5;c.beginPath();mean.forEach((m,i)=>{const x=mid+m[1]*k,y=mid-m[2]*k;i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();c.lineWidth=1}
+  if(pts.length){const [x,y]=dots[dots.length-1];c.strokeStyle=text;c.lineWidth=2;c.beginPath();c.arc(x,y,5,0,7);c.stroke()}
+  if(!pts.length){c.fillStyle=muted;c.textAlign="center";c.fillText(why?"No measured position":"No positions yet",mid,mid-20)}
+  // Up over time, same age colours, at least ±5 cm.
+  [c,w]=prep($("up"),110);
+  const h=110,left=48,top=8,bottom=h-18,window_s=Math.max(oldest,60);
+  let uh=0.05;for(const p of pts)uh=Math.max(uh,Math.abs(p[3]));
+  const ustep=nice(uh);const ky=(bottom-top)/2/ustep,ymid=(top+bottom)/2;
+  const tx=age=>left+(1-age/window_s)*(w-left-6);
+  c.strokeStyle=line;c.beginPath();
+  for(const y of[top,ymid,bottom]){c.moveTo(left,y);c.lineTo(w-6,y)}c.stroke();
+  c.fillStyle=muted;c.textAlign="right";c.textBaseline="middle";
+  c.fillText("+"+span(ustep),left-4,top+4);c.fillText("Up 0",left-4,ymid);c.fillText("−"+span(ustep),left-4,bottom-4);
+  c.textBaseline="top";c.fillText("now",w-6,bottom+4);c.textAlign="left";c.fillText("−"+duration(window_s),left,bottom+4);
+  for(const p of pts){c.fillStyle=colour(p[0]);c.fillRect(tx(p[0])-1,ymid-p[3]*ky-1,2,2)}
+  if(mean){c.strokeStyle=text;c.lineWidth=1.5;c.beginPath();mean.forEach((m,i)=>{const x=tx(m[0]),y=ymid-m[3]*ky;i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();c.lineWidth=1}
+}
+function pick(ev){
+  const r=$("scatter").getBoundingClientRect(),x=ev.clientX-r.left,y=ev.clientY-r.top;
+  let best=null,d=144;
+  for(const [px,py,p] of dots){const q=(px-x)**2+(py-y)**2;if(q<d){d=q;best=p}}
+  $("hover").textContent=best?`${duration(best[0])} ago: E ${span(best[1])}, N ${span(best[2])}, U ${span(best[3])}`:"Point at a dot for details";
+}
+$("scatter").addEventListener("pointermove",pick);
+$("scatter").addEventListener("pointerdown",pick);
+function drawTrail(){
+  if(!map)return;
+  if(!track||!track.reference||!track.points.length){trail.setLatLngs([]);if(map.hasLayer(measMark))measMark.remove();return}
+  const toLatLon=frame(track.reference);
+  trail.setLatLngs(track.points.map(p=>toLatLon(p[1],p[2])));
+  // The latest rtkrcv solution, when the plot shows rtkrcv (no measured GGA fix).
+  const last=track.points[track.points.length-1];
+  // Grey and dashed once the latest solution is older than ROVER_STALE_S, like a stale fix.
+  const stale=last[0]>ROVER_STALE_S;if(stale!==measStale){measStale=stale;mapStyle()}
+  if(track.source==="measured"){measMark.setLatLng(toLatLon(last[1],last[2]));if(!map.hasLayer(measMark))measMark.addTo(map);
+    if(!fitted){map.setView(toLatLon(last[1],last[2]),19);fitted=true}}
+  else if(map.hasLayer(measMark))measMark.remove();
+}
+window.addEventListener("resize",drawDrift);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{drawDrift();mapStyle()});
+
+// The two outputs: the local caster and the upload. No password ever reaches the page:
+// the app sends only whether one is set.
+const UPLOAD_STATES={off:"Off",connecting:"Connecting",connected:"Connected",waiting:"Waiting to retry","waiting for RTCM":"Waiting for RTCM","stopped for today":"Stopped for today",stopped:"Stopped"};
+// Rovers on the caster that send GGA with a fix: a diamond each, grey once their GGA is
+// older than ROVER_STALE_S (roverPoints in track.js). Only on this Ingress page.
+const roverMarks=new Map();
+function updateRovers(clients){
+  if(!map)return;
+  const pts=roverPoints(clients),keep=new Set();
+  for(const r of pts){
+    keep.add(r.key);
+    const icon=L.divIcon({className:"rover"+(r.stale?" stale":""),iconSize:[10,10]});
+    let m=roverMarks.get(r.key);
+    if(!m){m=L.marker([r.lat,r.lon],{keyboard:false,icon}).bindTooltip("");roverMarks.set(r.key,m);m.addTo(map)}
+    m.setLatLng([r.lat,r.lon]);
+    if(m.options.icon.options.className!==icon.options.className)m.setIcon(icon);
+    m.setTooltipContent(esc(`Rover ${r.address}: GGA quality ${r.quality??"?"}, ${r.age_s} s ago`));
+  }
+  for(const [k,m] of roverMarks)if(!keep.has(k)){m.remove();roverMarks.delete(k)}
+}
+const logNote=c=>c.log_error||[c.log_suppressed?`${c.log_suppressed} lines held back (rate limit)`:"",c.log_dropped?`${c.log_dropped} dropped`:"",
+  c.log_skipped_low_disk?`${c.log_skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
+function renderOutputs(s){
+  const c=s.caster||{},u=s.upload||{},clients=c.clients||[],age=c.last_rtcm_age_s;
+  $("caster").textContent=!c.enabled?"Off":c.error?"Not running":clients.length+(clients.length===1?" client":" clients");
+  $("caster").className="big "+(c.error?"bad":c.enabled&&(age==null||age>10)?"warn":"");
+  dl("casterd",[["Status",c.error||(!c.enabled?"Off (caster_enabled)":c.listening?"Listening":"Not listening")],["Port in the container",c.port],
+    ["Mountpoint",c.mountpoint],["Login",c.login?"user and password":"none: any login works"],["Frame (sourcetable)",c.frame_error?`not announced: ${c.frame_error}`:c.frame||(c.enabled?"not declared: set base_frame":null)],
+    ["Last RTCM",age==null?"none yet":age>10?`${age} s ago: no corrections now`:`${age} s ago`],
+    ["Connections since start",c.connections],["Refused, failed logins",`${c.refused??0}, ${c.auth_failures??0}`],["Connection log",logNote(c)]]);
+  // "Sent to us" is amber when a client sends anything but GGA (the first lines of it
+  // are in caster.jsonl).
+  const sent=clients.map(x=>sentText(x.sent));
+  table("clients",["Address","Agent","Connected","Sent","Skipped","Rover GGA","Sent to us"],clients.map((x,i)=>[x.address,x.agent||null,duration(x.connected_s),size(x.bytes_sent),x.frames_skipped,
+    x.gga_age_s==null?null:`quality ${x.gga_quality??"?"}, ${x.gga_age_s} s ago`,sent[i].text]),"No clients");
+  if(clients.length)sent.forEach((t,i)=>{$("clients").rows[i+1].lastChild.className=t.warn?"warn":""});
+  updateRovers(clients);
+  $("upload").textContent=UPLOAD_STATES[u.state]||u.state||"—";
+  $("upload").className="big "+(u.alert?"bad":u.state==="connected"?"good":"");
+  dl("uploadd",[["Caster",u.host==null?null:`${u.host}:${u.port}`],["Mountpoint",u.mountpoint||"not set"],["Password",u.password_set?"set":"not set"],["Style",u.style],
+    ["Connected for",u.connected_s==null?null:duration(u.connected_s)],["Retry in",u.retry_in_s==null?null:duration(u.retry_in_s)],
+    ["Why",u.reason||null],["Last error",u.last_error||null],["Sent, this connection",size(u.bytes_sent)],["Sent today (UTC)",size(u.bytes_today)],
+    ["Frames skipped",u.frames_skipped],["Attempts today",u.attempts_today],
+    ["Refusals, ban replies since the last accepted connection",`${u.refusals??0}, ${u.bans??0}`],["State file",u.state_error||null]]);
+}
+// The measured position card: rtkrcv's state and solution, and offsets from the reference.
+const MEAS_STATES={off:"Off","not available":"Not available",idle:"Idle: no MSM from the receiver yet",starting:"Starting",running:"Running","no solution":"No solution",restarting:"Restarting"};
+const signed=v=>v==null?null:(v<0?"−":"+")+Math.abs(v).toFixed(2)+" m";
+const offsets=w=>w?`E ${signed(w.e_mean_m)} ±${w.e_std_m.toFixed(2)}, N ${signed(w.n_mean_m)} ±${w.n_std_m.toFixed(2)}, U ${signed(w.u_mean_m)} ±${w.u_std_m.toFixed(2)} (${w.count})`:null;
+function renderMeasured(m){
+  if(!m)return;
+  const sol=m.solution,state=m.state||"—",live=state!=="off"&&state!=="not available",waiting=(state==="starting"||state==="no solution")&&m.last_solution_age_s==null;
+  $("meas").textContent=(MEAS_STATES[state]||state)+(state==="restarting"&&m.retry_in_s!=null?` in ${duration(m.retry_in_s)}`:"");
+  $("meas").className="big "+(state==="running"?"good":state==="not available"?"bad":state==="no solution"||state==="restarting"?"warn":"");
+  const eph=m.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
+  const why=(state==="off"?"Off (measured_enabled is false)":null)||m.reason||(waiting?`No solution yet: waiting for ephemerides (received so far: ${ephText||"none"})`:null)||(m.last_exit&&state!=="running"?`Last exit: ${m.last_exit.reason}`:null);
+  const dropped=Object.entries((m.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
+  const log=m.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
+  dl("measd",[["Why",why],["Last solution",sol?`${sol.age_s} s ago, ${sol.satellites} satellites, quality ${sol.quality}${sol.quality===5?" (single)":""}`:null],
+    ["σ N, E, U",sol?`${sol.sigma_n_m.toFixed(2)}, ${sol.sigma_e_m.toFixed(2)}, ${sol.sigma_u_m.toFixed(2)} m`:null],
+    ["Offsets from",!live?null:m.reference_kind==="base"?"the RTCM 1005 base position":"the median (no RTCM 1005)"],
+    ["Base position changed",m.base_changed_age_s==null?null:duration(m.base_changed_age_s)+" ago (history kept)"],
+    ["Mean ± std, 10 min",offsets(m.recent)],["Mean ± std, 2 h",offsets(m.window)],
+    ["rtkrcv CPU",m.cpu_percent==null?null:m.cpu_percent+" % of one core"],["rtkrcv memory",m.rss_bytes==null?null:size(m.rss_bytes)],
+    ["Restarts today",live?m.restarts_today:null],["Feed frames skipped",(m.feed||{}).frames_skipped||null],["Lines dropped",dropped||null],
+    ["Masks",!live||m.elevation_mask==null?null:`elevation ${m.elevation_mask}°, SNR ${m.snr_mask?m.snr_mask+" dB-Hz":"off"}`],
+    ["rtkrcv",m.rtkrcv_version],["Solution log",logNote]].filter(([,v])=>v!=null&&v!==""));
+  const out=(m.output||[]).join("\n");$("measout").textContent=out;$("measout").hidden=!out;
+}
+// The base station card: one word for the whole chain (baseSummary in track.js) and
+// why, then a line each for the receiver, the corrections, the outputs and storage.
+// The 1005 position is compared with the receiver's configured position when known,
+// else with the first fresh 1005 this page saw (the app keeps a last 1005 from before a
+// receiver restart, marked stale; that one is not taken as the reference).
+const STATION_CLASS={Serving:"good",Degraded:"warn",Down:"bad"};
+let firstBase=null,errorTrend=null,casterTrend=null,lastStatusAt=null;
+function renderStation(s){
+  const b=s.base_position||{},r=s.receiver||{},c=s.caster||{},u=s.upload||{},d=s.storage||{};
+  if(!firstBase&&Array.isArray(b.ecef)&&!b.stale)firstBase=b.ecef.slice();
+  lastStatusAt=performance.now();
+  errorTrend=riseTrend(errorTrend,s.rtcm_decode_errors,lastStatusAt/1000);
+  // The hub lists a subscriber only once it has errors: absent means 0 (null only for
+  // an older app without the map), so the first error is a rise too.
+  casterTrend=riseTrend(casterTrend,c.subscriber_errors?(c.subscriber_errors.caster||0):null,lastStatusAt/1000);
+  const sum=baseSummary(s,errorTrend,casterTrend);
+  $("station").textContent=sum.word;
+  $("station").className="big "+(STATION_CLASS[sum.word]||"");
+  $("stationnote").textContent=sum.reasons.length?reasonsText(sum.reasons):"Receiver data, RTCM 1005 and GPS observations are fresh, and an output is up.";
+  const rovers=!u.enabled?"":`Rovers using ${uploadLabel(u)==="RTK2go"?"RTK2go":"the upload caster"} are not visible here; the local caster's are listed in its card.`;
+  $("stationrovers").textContent=rovers;$("stationrovers").hidden=!rovers;
+  const shift=baseShift(b.ecef,(r.svin||{}).ecef,firstBase),low=storageLow(d);
+  const casterUp=casterIsUp(c,casterTrend),uploadUp=u.state==="connected";
+  // [label, text, class]: the class marks the row the way the summary counts it.
+  const rows=[["Receiver",`${s.connected?"Connected":"Not connected"}, ${size(s.bytes_per_s)}/s, app up ${duration(s.uptime_s||0)}`,""],
+    ["Firmware, mode",`${r.firmware||"not read"}, ${receiverModeText(r)}`,""],
+    ["Corrections (1005)",b.lat==null?"none received":`${b.age_s==null?"age unknown":duration(b.age_s)+" old"}${b.stale?" (stale)":""}, ${shift.text}`,b.lat==null||b.stale||shift.moved?"warn":""],
+    ["Observations (MSM)",msmText(s.msm)||"none in the last 10 s",""],
+    ["Decode errors",`${s.rtcm_decode_errors??0}${errorTrend.rising?`, ${errorTrend.recent} new in the last minute`:""}`,errorTrend.rising?"warn":""],
+    ["Local caster",casterText(c,casterTrend),c.enabled&&!casterUp?"warn":""],[uploadLabel(u),uploadText(u),u.enabled&&!uploadUp?"warn":""],
+    ["Storage",`${size(d.free_bytes)} free, floor ${size(d.min_free_bytes)}`+(low?" (below the floor)":""),low?"bad":""]];
+  dl("stationd",rows.map(([k,v])=>[k,v]));
+  $("stationd").querySelectorAll("dd").forEach((el,i)=>{el.className=rows[i][2]});
+}
+// Without api/status the card must not keep an old word: say so instead. Not red:
+// the base may be fine while only this browser lost contact.
+function stationLost(){
+  $("station").textContent="No contact";$("station").className="big";
+  $("stationnote").textContent="Lost contact with the app: nothing on this page is current"+(lastStatusAt==null?".":`; last status ${duration((performance.now()-lastStatusAt)/1000)} ago.`);
+}
+// The reference check card: a second rtkrcv (RTK static against a CORS station). No
+// password reaches the page: the app sends only whether one is set.
+const REF_STATES={off:"Off","not configured":"Not configured","not available":"Not available",idle:"Idle: no MSM from the receiver yet",restarting:"Restarting",starting:"Starting",connecting:"Connecting to the caster",sourcetable:"Reading the caster's sourcetable","login refused":"Login refused by the caster","mountpoint not found":"Mountpoint not found","unsuitable mountpoint":"Mountpoint not usable","no data":"No data from the caster","no position":"Waiting for a position for the GGA",backoff:"Connection failed","client stopped":"NTRIP client stopped","no corrections":"No corrections",stale:"No recent solution",fixed:"Fixed",float:"Float",single:"Single: corrections not used yet"};
+const CLIENT_WAITING=["login refused","mountpoint not found","unsuitable mountpoint","no data","no position","backoff"];
+const enu=v=>v?`E ${signed3(v[0])}, N ${signed3(v[1])}, U ${signed3(v[2])}`:null;
+const signed3=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v).toFixed(3)+" m";
+const enuStd=(m,s)=>m&&s?`E ${signed3(m[0])} ±${s[0].toFixed(3)}, N ${signed3(m[1])} ±${s[1].toFixed(3)}, U ${signed3(m[2])} ±${s[2].toFixed(3)}`:null;
+function renderReference(r,id="ref"){
+  if(!r)return;
+  const o=r.option||"references[1]";
+  const state=r.state||"—",live=!["off","not configured","not available"].includes(state),c=r.corrections||{},cors=c.position,d=c.descriptors,sol=r.solution,ses=r.session||{},rec=r.recent,prev=r.previous_session;
+  // Until this session has a fix, the previous session's verdict colours the card
+  // (a daily reset is not an outage), but only while solutions keep coming.
+  const clientBusy=["connecting","sourcetable",...CLIENT_WAITING,"client stopped"].includes(state);
+  // A station other than <option>.expect_station: no colour from any residual.
+  const wrong=r.station_mismatch;
+  const colour=!live||clientBusy||wrong?null:r.verdict||(prev&&["fixed","float","single","starting"].includes(state)?prev.verdict:null);
+  $(id+"mp").textContent=r.mountpoint?`(${r.mountpoint})`:"";
+  const verdictText=r.verdict?{good:"Residual OK",warn:"Residual amber",bad:"Residual red"}[r.verdict]:null;
+  const cl=r.client||{},clientWaiting=CLIENT_WAITING.includes(state),retry=clientWaiting&&cl.retry_in_s!=null?` · retry in ${duration(cl.retry_in_s)}`:"";
+  // While the caster connection is not up, the headline is the client's alone: no
+  // residual verdict (it may be hours old) and no colour from it.
+  const sc=r.station_changed,recentChange=sc&&sc.age_s<3600?" · station changed":"";
+  $(id).textContent=(REF_STATES[state]||state)+(state==="restarting"&&r.retry_in_s!=null?` in ${duration(r.retry_in_s)}`:"")+retry+(live&&!clientBusy&&verdictText?` · ${verdictText}`:!r.verdict&&colour?" · previous session's residual":"")+recentChange+(live&&wrong&&!clientBusy?` · ${wrong}`:"");
+  // Colour: the residual's verdict once there is one (red also after 30 min without a
+  // fix); otherwise red when the caster refused or nothing can run, amber while
+  // connecting or waiting for corrections or a fix. A wrong station is amber, but the
+  // red states come first: a refused login on a wrong station is still red.
+  const red=["not available","login refused","mountpoint not found","unsuitable mountpoint","client stopped"].includes(state);
+  $(id).className="big "+(colour?{good:"good",warn:"warn",bad:"bad"}[colour]:red?"bad":live&&wrong?"warn":["connecting","sourcetable","no data","no position","backoff","no corrections","stale","single","restarting"].includes(state)?"warn":"");
+  const eph=r.ephemerides||{},ephText=Object.entries(eph).map(([k,v])=>`${k} ${v}`).join(", ");
+  const why=(state==="off"?`Off (${o}.enabled is false)`:null)||r.reason||(state==="starting"&&sol==null?`No solution yet (ephemerides so far: ${ephText||"none"})`:null)||(r.last_exit&&!["fixed","float","single"].includes(state)?`Last exit: ${r.last_exit.reason}`:null);
+  const st=cl.sourcetable,stText=st==null?null:!Object.keys(st).length?(cl.listed===false?`not listed in the caster's sourcetable of ${cl.sourcetable_size} mountpoints (the caster's answer to the stream request decides)`:"the caster gave no sourcetable at /"):`${st.format||"?"} ${st.format_details||""}, ${st.nav_system||"?"}, nmea ${st.nmea||"?"}, solution ${st.solution||"?"}${st.identifier?`, "${st.identifier}"`:""}${st.misc?` (${st.misc})`:""}`;
+  const connText=cl.connected_s==null?(cl.last_reply?`not connected (last reply: ${cl.last_reply})`:null):`${duration(cl.connected_s)}, ${cl.bytes_per_s==null?"?":size(cl.bytes_per_s)+"/s"}, ${size(cl.bytes)} this connection, last byte ${cl.last_byte_age_s} s ago`;
+  const dropped=Object.entries((r.solutions||{}).dropped||{}).filter(([k])=>k!=="header").map(([k,v])=>`${v} ${k}`).join(", ");
+  const log=r.log||{},logNote=log.error||[log.dropped?`${log.dropped} dropped`:"",log.skipped_low_disk?`${log.skipped_low_disk} not written (low disk)`:""].filter(Boolean).join(", ")||null;
+  const counts=ses.counts||{},share=ses.fixed_share==null?null:`${(ses.fixed_share*100).toFixed(0)} % of ${ses.epochs} epochs (${counts.fixed||0} fixed, ${counts.float||0} float, ${counts.single||0} single)`;
+  const gga=!r.send_gga?null:`on (${o}.send_gga): position ${r.gga_source==="our 1005"?"our base's 1005":r.gga_source}, ${cl.gga_sent??0} sent${cl.gga_sent_connection?` (${cl.gga_sent_connection} this connection)`:""}${cl.gga_last_age_s!=null?`, last ${cl.gga_last_age_s} s ago`:""}${cl.gga_skipped?`, ${cl.gga_skipped} skipped (no position)`:""}`;
+  dl(id+"d",[["Why",why],["CORS",r.host?`${r.host}:${r.port}, login ${r.user_set?"user set":"no user"}, password ${r.password_set?"set":"not set"}`:null],
+    ["Caster connection",live?connText||"none yet":null],
+    ["Connections, attempts today",live?`${cl.connections??0}, ${cl.attempts_today??0}`:null],
+    ["Sourcetable entry",live?stText:null],
+    ["GGA uplink",live?gga:null],
+    ["Station",cors?`ID ${r.station_id} (${cors.message})${r.expect_station!=null?(wrong?`: ${wrong} (${o}.expect_station)`:`, as expected (${o}.expect_station)`):""}, ${d&&d.receiver?d.receiver:"receiver ?"}, antenna ${d&&d.antenna?d.antenna:"?"} (1033)`:null],
+    ["Station changed",sc?`ID ${sc.from_id} → ${sc.to_id}, ${(sc.moved_m/1000).toFixed(2)} km from the last 1005, ${duration(sc.age_s)} ago (${sc.utc.replace("T"," ").replace("+00:00"," UTC")}); rtkrcv restarted`:null],
+    ["Baseline",r.baseline_km==null?null:r.baseline_km.toFixed(2)+" km"],
+    ["CORS antenna height (1006)",cors&&cors.antenna_height_m!=null?cors.antenna_height_m.toFixed(4)+" m"+(cors.antenna_height_m?" (not applied; see the README)":""):null],
+    ["Corrections",c.age_s==null?(live?"none yet":null):`${c.age_s} s ago (${c.frames} frames, ${size(c.bytes)})`],
+    ["Last solution",sol?`${sol.age_s} s ago, ${sol.satellites} satellites, quality ${sol.quality} (${{1:"fixed",2:"float",5:"single"}[sol.quality]||"other"}), ratio ${sol.ratio}`:null],
+    ["Differential age",sol&&sol.differential_age_s!=null?`${sol.differential_age_s.toFixed(1)} s`:null],
+    ["Current offset",sol?enu(sol.offset_enu):null],
+    ["Mean ± std, 10 min",rec?`${enuStd([rec.e_mean_m,rec.n_mean_m,rec.u_mean_m],[rec.e_std_m,rec.n_std_m,rec.u_std_m])} (${rec.count} ${rec.kind==="fixed"?"fixed":"all"})`:null],
+    ["Session mean ± std (fixed)",enuStd(ses.mean_enu,ses.std_enu)],
+    ["Session",ses.started_utc?`since ${ses.started_utc.replace("T"," ").replace("+00:00"," UTC")}${ses.last_fix_age_s!=null?`, last fix ${duration(ses.last_fix_age_s)} ago`:""}`:null],
+    ["Fixed share",share],
+    ["Station frame",!live?null:r.station_frame?`${r.station_frame} (from ${r.station_frame_source})${r.station_epoch!=null?`, coordinates at epoch ${r.station_epoch.toFixed(2)} (${o}.epoch; not modelled)`:""}`:"unknown: set "+o+".frame"+(r.station_df021!=null?` (the stream's DF021 is ${r.station_df021}: reserved by RTCM, not read as a frame)`:"")],
+    ["Our frame",!live?null:r.base_frame?`${r.base_frame} (base_frame), epoch ${r.epoch.toFixed(2)} (${r.epoch_source==="base_epoch"?"base_epoch":"today's date; set base_epoch"})`:"unknown: set base_frame"],
+    ["Expected offset",!live?null:r.expected_enu?`${enu(r.expected_enu)} (computed, station frame minus ours, epoch ${r.epoch.toFixed(2)})`:`none: ${r.no_expected||"not computed"}`],
+    ["Residual (mean − expected)",!live?null:r.residual_enu?`${enu(r.residual_enu)}: ${r.verdict_reason}`:r.verdict_reason||null],
+    ["Previous session",prev?`${prev.residual_enu?enu(prev.residual_enu)+" residual":"no residual"} (${prev.verdict_reason}), ${prev.fixed} fixed epochs, ended ${prev.ended_utc.replace("T"," ").replace("+00:00"," UTC")} (${prev.ended_because})`:null],
+    ["Next daily reset",r.next_reset_s==null?(live?`never (${o}.reset_utc)`:null):`in ${duration(r.next_reset_s)} (${r.reset_utc} UTC)`],
+    ["Base position changed",r.base_changed_age_s==null?null:duration(r.base_changed_age_s)+" ago (session statistics restarted)"],
+    ["Sessions",live?`${r.sessions} (${r.resets} daily resets, ${r.gap_restarts} gap restarts, ${r.station_changes} station changes)`:null],
+    ["CORS raw log",r.raw_log?`${size(r.raw_log.bytes_today)} today`+(r.raw_log.paused?", paused (disk limit)":"")+(r.raw_log.last_error?`: ${r.raw_log.last_error}`:""):null],
+    ["rtkrcv CPU",r.cpu_percent==null?null:r.cpu_percent+" % of one core"],["rtkrcv memory",r.rss_bytes==null?null:size(r.rss_bytes)],
+    ["Restarts today",live?r.restarts_today:null],["Feed skipped",((r.feed||{}).frames_skipped||0)+(r.cors_feed||{}).frames_skipped?`${(r.feed||{}).frames_skipped||0} of our frames, ${(r.cors_feed||{}).frames_skipped||0} station chunks`:null],["Lines dropped",dropped||null],
+    ["rtkrcv",r.rtkrcv_version],["Solution log",logNote],["Plot history",r.history_error||null]].filter(([,v])=>v!=null&&v!==""));
+  const out=(r.output||[]).join("\n");$(id+"out").textContent=out;$(id+"out").hidden=!out;
+  renderMountpoints(id,cl);
+}
+function render(s){
+  // The same 5 s as the card's rule (DATA_FRESH_S in track.js).
+  const live=s.connected&&s.data_age_s!=null&&!(s.data_age_s>DATA_FRESH_S);
+  renderStation(s);
+  $("link").className=live?"good":"bad";
+  $("link").textContent=live?"Receiving":(s.last_error||"No data from receiver");
+  const f=s.fix||{};
+  const stale=f.age_s!=null&&f.age_s>5;
+  const b=s.base_position||{},fixed=f.quality===7;
+  // Quality 7 is the fixed base position repeated, not a measurement: never green.
+  $("fix").textContent=(fixed?"Fixed position, not measured":f.name||(b.lat!=null?"No measured fix":"—"))+(stale?" (stale)":"");
+  $("fix").className="big "+(stale?"bad":f.measured&&f.quality!==6?"good":f.name||b.lat!=null?"warn":"");
+  const fixNoteText=fixed?"GGA quality 7 (manual input): the receiver repeats its configured base position. It is not plotted as drift.":!f.name&&b.lat!=null?"No GGA received. The base position from RTCM 1005 is below.":"";
+  $("fixnote").textContent=fixNoteText;$("fixnote").hidden=!fixNoteText;
+  dl("fixd",[["Satellites used",f.satellites],["HDOP",f.hdop],["UTC",f.utc],["Age",f.age_s==null?null:f.age_s+" s"],["Antenna",s.antenna||null]]);
+  dl("posd",[["Latitude",f.lat==null?null:f.lat.toFixed(9)+"°"],["σ latitude",metres(f.lat_sigma_m)],
+    ["Longitude",f.lon==null?null:f.lon.toFixed(9)+"°"],["σ longitude",metres(f.lon_sigma_m)],
+    ["Ellipsoidal height",f.height_m==null?null:f.height_m.toFixed(3)+" m"],["σ height",metres(f.height_sigma_m)]]);
+  // Stale once no 1005/1006 has arrived for 10 s, or 3 times their recent interval if
+  // longer, up to 120 s (the app decides: base_position.stale).
+  $("basestale").textContent=b.lat!=null&&b.stale?"(stale)":"";
+  $("based").className=b.lat!=null&&b.stale?"stale":"";
+  dl("based",b.lat==null?[["Status","None received"]]:[["Latitude",b.lat.toFixed(9)+"°"],["Longitude",b.lon.toFixed(9)+"°"],
+    ["Ellipsoidal height",b.height_m.toFixed(3)+" m"],["ECEF X",b.ecef[0].toFixed(4)+" m"],["ECEF Y",b.ecef[1].toFixed(4)+" m"],["ECEF Z",b.ecef[2].toFixed(4)+" m"],
+    ["Station ID",b.station_id],["Message",b.message],["Antenna height",b.antenna_height_m==null?null:b.antenna_height_m.toFixed(4)+" m"],["Age",b.age_s+" s"+(b.stale?" (stale)":"")]]);
+  updateMap(f,stale,s.base_position,s.no_measured_reason||null);
+  $("rate").textContent=size(s.bytes_per_s)+"/s";
+  dl("data",[["Received",size(s.total_bytes)],["Unreadable bytes",s.parser.unknown_bytes],["Bad checksums",s.parser.bad_frames],["Dropped, app overloaded",size(s.parser.queue_dropped_bytes)],["Uptime",Math.round(s.uptime_s/60)+" min"]]);
+  const d=s.storage;
+  $("free").textContent=size(d.free_bytes)+" free";
+  $("free").className="big "+(d.paused||d.last_error?"bad":"");
+  dl("disk",[["Logging",d.paused?"Paused, disk limit":(d.last_error||"On")],["Today",size(d.bytes_today)],["Not logged",size(d.dropped_bytes)],["All logs",size(d.stored_bytes)],["Compressed per day",size(d.compressed_bytes_per_day)],["Days until limit",d.days_until_limit]]);
+  const v=s.survey_in||{};
+  const svinStale=v.age_s!=null&&v.age_s>5;
+  $("svin").textContent=(v.state||"Not reported")+(svinStale?" (stale)":"");
+  // Stale is shown like a stale fix: never green, whatever the last state was.
+  $("svin").className="big "+(svinStale?"bad":v.valid===2?"good":v.valid===1?"":v.state?"warn":"");
+  dl("svind",[["Valid flag",v.valid],["Observations (Obs)",v.observations],["Target (CfgDur)",v.target],["Mean accuracy",v.accuracy_m==null?null:v.accuracy_m+" m"]]);
+  table("sig",["Constellation","Signal","Satellites","Strongest dB-Hz","Median dB-Hz","Source"],s.signals.map(x=>[x.constellation,x.signal,x.satellites,x.strongest,x.median,x.source]),"No signal data yet");
+  table("msm",["Constellation","Satellites","Signals","Message","Age s"],Object.entries(s.msm||{}).map(([k,x])=>[k,x.satellites,x.signals.length,x.message,x.age_s]),"No MSM messages");
+  renderOutputs(s);
+  renderMeasured(s.measured);
+  renderReferences(s.references||[],s.reference_summary||{});
+  if(typeof renderReceiver==="function")renderReceiver(s);
+  table("rtcm",["Type","Count","Age s"],Object.entries(s.rtcm).map(([k,x])=>[k,x.count,x.age_s]),"None: the receiver sends RTCM only in base mode");
+  table("nmea",["Sentence","Count"],Object.entries(s.nmea),"None");
+  table("files",["File","Size"],d.files.map(x=>[x.file,size(x.bytes)]),"No logs yet");
+  $("msgs").textContent=s.messages.length?s.messages.join("\n"):"None yet";
+}
+// The caster's mountpoints (its sourcetable's STR records), for finding a station's
+// own mountpoint; the configured one is highlighted. Redrawn only when the table, the
+// mountpoint or the GGA setting changed, so an open list stays put.
+const mpKeys={};
+function renderMountpoints(id,cl){
+  const list=cl.mountpoints||[],key=[cl.sourcetable_utc,cl.mountpoint,cl.send_gga,list.length].join("|");
+  $(id+"mpl").hidden=!list.length&&!(cl.caster_records||[]).length;
+  if(mpKeys[id]===key)return;mpKeys[id]=key;
+  $(id+"mps").textContent=`Caster mountpoints (${list.length+(cl.mountpoints_cut||0)})`+(cl.sourcetable_utc?`, read ${cl.sourcetable_utc.replace("T"," ").replace("+00:00"," UTC")}${cl.sourcetable_login?` (${cl.sourcetable_login})`:""}`:"")+(cl.mountpoints_cut?`; first ${list.length} shown`:"");
+  const accept=m=>m.accepted?"yes":m.nmea==="1"&&!cl.send_gga?"no (needs the GGA uplink)":"no";
+  const head=["Mountpoint","Identifier","Format","Systems","nmea","Solution","Usable here"];
+  const rows=list.map(m=>[m.configured?"sel":"",[m.mountpoint+(m.configured?" (configured)":""),m.identifier,m.format,m.nav_system,m.nmea,m.solution==="1"?"network":m.solution==="0"?"single":m.solution,accept(m)]]);
+  $(id+"mpt").innerHTML=`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(([sel,r])=>`<tr class="${esc(sel)}">${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("");
+  $(id+"cas").textContent=(cl.caster_records||[]).join("\n");
+}
+// ---- the reference checks: one card each, the summary, the map, the plots ----
+// Each reference keeps its colour by its place in the configuration (never by rank).
+const SERIES=["--s1","--s2","--s3","--s4","--s5"];
+const seriesColour=i=>css(SERIES[(i-1)%SERIES.length]);
+const sk=i=>"s"+((i-1)%SERIES.length+1);
+const cm=v=>v==null?"—":(v<0?"−":"+")+Math.abs(v*100).toFixed(1);
+// A card per entry, created on first sight, after the plots card, in the list's order.
+// Keyed by the entry's place in the list: two entries may have the same name (the later
+// one blocked), and each keeps its own card.
+function refCard(r){
+  const id="ref-"+r.index;
+  if(!$(id+"card")){
+    const el=document.createElement("section");el.className="wide refcard";el.id=id+"card";
+    el.innerHTML=`<h2>Reference check: <span id="${esc(id)}name"></span> <span id="${esc(id)}mp"></span></h2><div id="${esc(id)}" class="big">—</div><dl id="${esc(id)}d" class="refd"></dl><details id="${esc(id)}mpl" class="mps" hidden><summary id="${esc(id)}mps">Caster mountpoints</summary><table id="${esc(id)}mpt"></table><pre id="${esc(id)}cas" class="note"></pre></details><pre id="${esc(id)}out" class="note" hidden></pre>`;
+    const cards=document.querySelectorAll("section.refcard");
+    (cards.length?cards[cards.length-1]:$("refplots")).insertAdjacentElement("afterend",el);
+  }
+  $(id+"name").textContent=r.name;
+  return id;
+}
+function renderReferences(refs,sum){
+  const keep=new Set();
+  for(const r of refs){const id=refCard(r);keep.add(id+"card");renderReference(r,id)}
+  document.querySelectorAll("section.refcard").forEach(el=>{if(!keep.has(el.id))el.remove()});
+  renderSummary(sum,refs);
+  updateRefMap(refs);
+}
+const SPREAD_WORD={good:"References agree",warn:"References differ (amber)",bad:"References disagree"};
+function renderSummary(sum,refs){
+  const rows=sum.rows||[],sp=sum.spread||{},n=sum.notice||{};
+  $("sumnote").textContent=n.text||"";$("sumnote").hidden=!n.text;
+  $("sumnote").className="note"+(n.kind==="migrated"?" warn":"");
+  $("sumyaml").textContent=n.yaml?"Paste into the configuration (Edit in YAML), with the passwords:\n"+n.yaml:"";$("sumyaml").hidden=!n.yaml;
+  const any=rows.some(r=>r.residual_enu);
+  $("sum").textContent=!rows.length?"No reference stations":sp.horizontal_m!=null?SPREAD_WORD[sp.verdict]:any?`${rows.filter(r=>r.residual_enu).length} of ${rows.length} with a residual`:"No residual yet";
+  $("sum").className="big "+(sp.horizontal_m!=null?{good:"good",warn:"warn",bad:"bad"}[sp.verdict]:"");
+  const head=["Reference","Station","Baseline","E cm","N cm","U cm","Fixed share","Session","Verdict"];
+  const cls=v=>v?{good:"good",warn:"warn",bad:"bad"}[v]:"";
+  $("sumt").innerHTML=!rows.length?"":`<tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr>`+rows.map(r=>{
+    const v=r.residual_enu||r.raw_enu,raw=!r.residual_enu&&r.raw_enu,c=cls(r.verdict);
+    const value=i=>v?(raw?(v[i]<0?"−":"+")+Math.abs(v[i]).toFixed(3)+" m":cm(v[i])):"—";
+    // No colour unless current (the app sets verdict null then, as on the card).
+    const why=r.problem||(raw?`raw (station frame minus ours): ${r.no_residual}`+(r.not_current?` · not current: ${r.not_current}`:""):r.residual_enu?r.verdict_reason:r.no_residual||r.verdict_reason);
+    return `<tr><td><span class="sk ${esc(sk(r.index))}"></span>${esc(r.name)}</td><td>${esc(r.station_id==null?null:"ID "+r.station_id)}</td><td>${esc(r.baseline_km==null?null:r.baseline_km.toFixed(1)+" km")}</td>`+
+      [0,1,2].map(i=>`<td class="${esc(c)}">${esc(value(i))}</td>`).join("")+
+      `<td>${esc(r.fixed_share==null?null:(r.fixed_share*100).toFixed(0)+" %")}</td><td>${esc(r.session_age_s==null?null:duration(r.session_age_s))}</td><td class="wrap ${esc(c)}">${esc(why)}</td></tr>`}).join("");
+  const has=sp.horizontal_m!=null;
+  $("spread").textContent=has?`Spread between references (the two farthest apart): ${(sp.horizontal_m*100).toFixed(1)} cm horizontal, ${(sp.up_m*100).toFixed(1)} cm up over ${sp.names.join(", ")}: ${sp.verdict_reason}`:rows.length?`Spread between references: ${sp.verdict_reason||"—"}`:"";
+  $("spread").className="spread "+(has?cls(sp.verdict):"");
+  $("spreadout").textContent=(sp.left_out||[]).length&&rows.length>1?"Not in the spread: "+sp.left_out.map(x=>`${x.name} (${x.why})`).join("; "):"";
+}
+// Each reference station on the map: its 1005 position, a line from our base, and the
+// station ID and baseline. The view is not moved for them: "Show reference stations" fits.
+const refMarks=new Map();
+function updateRefMap(refs){
+  const shown=refs.filter(r=>r.station_position&&basePos);
+  $("fitrefs").hidden=!map||!shown.length;$("refkey").hidden=!map||!shown.length;
+  if(!map)return;
+  const keep=new Set();
+  for(const r of shown){
+    keep.add(r.index);   // by place in the list, as the cards
+    const p=[r.station_position.lat,r.station_position.lon],colour=seriesColour(r.index);
+    let m=refMarks.get(r.index);
+    if(!m){m={dot:L.circleMarker(p,{radius:7,weight:2,fillOpacity:0.9}).bindTooltip("",{permanent:true,direction:"right"}),line:L.polyline([basePos,p],{weight:2,dashArray:"6 6",interactive:false})};
+      m.dot.addTo(map);m.line.addTo(map);refMarks.set(r.index,m)}
+    m.dot.setLatLng(p);m.line.setLatLngs([basePos,p]);
+    m.dot.setStyle({color:css("--card"),fillColor:colour});m.line.setStyle({color:colour});
+    m.dot.setTooltipContent(esc(`${r.name}: ID ${r.station_id??"?"}, ${r.baseline_km==null?"?":r.baseline_km.toFixed(1)} km`));
+  }
+  for(const [k,m] of refMarks)if(!keep.has(k)){m.dot.remove();m.line.remove();refMarks.delete(k)}
+}
+$("fitrefs").onclick=()=>{if(!map||!basePos)return;follow=false;const pts=[basePos];for(const m of refMarks.values())pts.push(m.dot.getLatLng());map.fitBounds(L.latLngBounds(pts),{padding:[30,30]})};
+
+// Plots: api/references/plots (window 1h, 24h or 7d), redrawn on resize and theme change.
+let plots=null,plotWindow="24h",rdots=[];
+document.querySelectorAll("#rwin button").forEach(b=>b.onclick=()=>{plotWindow=b.dataset.w;document.querySelectorAll("#rwin button").forEach(x=>x.classList.toggle("on",x===b));plotTick(true)});
+function ellipse(cov){
+  // 1-sigma ellipse of a 2x2 covariance: semi-axes, and the major axis's angle from east.
+  const a=cov[0][0],b=cov[0][1],d=cov[1][1],t=(a+d)/2,q=Math.sqrt(((a-d)/2)**2+b*b);
+  return {r1:Math.sqrt(Math.max(t+q,0)),r2:Math.sqrt(Math.max(t-q,0)),angle:0.5*Math.atan2(2*b,a-d)};
+}
+const legendText=r=>r.name+(r.points.length||r.session_mean?` (${r.points.length})`:` (not plotted: ${r.no_residual||"no fixed solution in this window"})`);
+function drawPlots(){
+  const refs=plots&&plots.references||[],muted=css("--muted"),line=css("--line"),text=css("--text"),card=css("--card");
+  const shown=refs.filter(r=>r.points.length||r.session_mean);
+  $("rplotnote").textContent=!plots?"Loading…":!refs.length?"No reference stations configured.":!shown.length?"No fixed solutions with a residual in this window yet.":`${shown.reduce((n,r)=>n+r.points.length,0)} points over the last ${duration(plots.window_s)}.`;
+  $("rlegend").innerHTML=refs.map(r=>`<span class="sk ${esc(sk(r.index))}"></span>${esc(legendText(r))}`).join(" · ");
+  // East/north: square, centred on our coordinate, at least ±5 cm.
+  let [c,w]=prep($("rscatter"));
+  const pad=30,mid=w/2;let half=0.05;
+  for(const r of shown){for(const p of r.points)half=Math.max(half,Math.abs(p[1]),Math.abs(p[2]));if(r.session_mean)half=Math.max(half,Math.abs(r.session_mean[0]),Math.abs(r.session_mean[1]))}
+  const step=nice(half/2);half=2*step;const k=(w-2*pad)/2/half;
+  c.strokeStyle=line;c.fillStyle=muted;c.textAlign="center";c.textBaseline="top";
+  for(let i=-2;i<=2;i++){const x=mid+i*step*k;c.beginPath();c.moveTo(x,pad);c.lineTo(x,w-pad);c.moveTo(pad,x);c.lineTo(w-pad,x);c.stroke();if(i)c.fillText(span(i*step),x,w-pad+4)}
+  c.textAlign="right";c.textBaseline="middle";for(let i=-2;i<=2;i++)if(i)c.fillText(span(i*step),pad+22,mid-i*step*k-7);
+  c.textAlign="left";c.textBaseline="top";c.fillText("N ↑",mid+4,pad-16);c.textAlign="right";c.fillText("E →",w-pad,w-pad+16);
+  // The crosshair: our 1005.
+  c.strokeStyle=text;c.lineWidth=1.5;c.beginPath();c.moveTo(mid-12,mid);c.lineTo(mid+12,mid);c.moveTo(mid,mid-12);c.lineTo(mid,mid+12);c.stroke();c.lineWidth=1;
+  rdots=[];
+  for(const r of shown){const col=seriesColour(r.index);c.fillStyle=col;c.globalAlpha=0.55;
+    for(const p of r.points){const x=mid+p[1]*k,y=mid-p[2]*k;rdots.push([x,y,r,p]);c.beginPath();c.arc(x,y,2,0,7);c.fill()}c.globalAlpha=1}
+  for(const r of shown){if(!r.session_mean)continue;const col=seriesColour(r.index),x=mid+r.session_mean[0]*k,y=mid-r.session_mean[1]*k;
+    if(r.covariance_en){const e=ellipse(r.covariance_en);c.strokeStyle=col;c.lineWidth=2;c.beginPath();c.ellipse(x,y,Math.max(e.r1*k,1),Math.max(e.r2*k,1),-e.angle,0,7);c.stroke();c.lineWidth=1}
+    c.fillStyle=col;c.strokeStyle=card;c.lineWidth=2;c.beginPath();c.arc(x,y,6,0,7);c.fill();c.stroke();c.lineWidth=1}
+  if(!shown.length){c.fillStyle=muted;c.textAlign="center";c.fillText("No residuals yet",mid,mid-24)}
+  // Up over time.
+  [c,w]=prep($("rup"),120);
+  const h=120,left=48,top=8,bottom=h-18,win=plots?plots.window_s:86400;
+  let uh=0.05;for(const r of shown)for(const p of r.points)uh=Math.max(uh,Math.abs(p[3]));
+  const ustep=nice(uh),ky=(bottom-top)/2/ustep,ymid=(top+bottom)/2,tx=age=>left+(1-age/win)*(w-left-6);
+  c.strokeStyle=line;c.beginPath();for(const y of[top,ymid,bottom]){c.moveTo(left,y);c.lineTo(w-6,y)}c.stroke();
+  c.fillStyle=muted;c.textAlign="right";c.textBaseline="middle";c.fillText("+"+span(ustep),left-4,top+4);c.fillText("Up 0",left-4,ymid);c.fillText("−"+span(ustep),left-4,bottom-4);
+  c.textBaseline="top";c.fillText("now",w-6,bottom+4);c.textAlign="left";c.fillText("−"+duration(win),left,bottom+4);
+  for(const r of shown){c.fillStyle=seriesColour(r.index);for(const p of r.points)c.fillRect(tx(p[0])-1,ymid-p[3]*ky-1,2,2)}
+  // Daily means: E, N and U strips over the days any reference has.
+  [c,w]=prep($("rdaily"),300);
+  const days=[...new Set(refs.flatMap(r=>r.days.map(d=>d[0])))].sort().slice(-60);
+  const strip=96,gap=6,dl0=48;
+  let dh=0.02;for(const r of refs)for(const d of r.days)if(days.includes(d[0]))for(let i=1;i<=3;i++)dh=Math.max(dh,Math.abs(d[i]));
+  const dstep=nice(dh),dx=i=>dl0+(days.length<2?0.5:i/(days.length-1))*(w-dl0-12);
+  ["E","N","U"].forEach((axis,a)=>{
+    const y0=a*(strip+gap),ym=y0+strip/2,kd=(strip/2-6)/dstep;
+    c.strokeStyle=line;c.beginPath();for(const y of[y0+6,ym,y0+strip-6]){c.moveTo(dl0,y);c.lineTo(w-6,y)}c.stroke();
+    c.fillStyle=muted;c.textAlign="right";c.textBaseline="middle";c.fillText(axis+" 0",dl0-4,ym);c.fillText("+"+span(dstep),dl0-4,y0+8);c.fillText("−"+span(dstep),dl0-4,y0+strip-8);
+    for(const r of refs){const col=seriesColour(r.index),pts=r.days.filter(d=>days.includes(d[0])).map(d=>[dx(days.indexOf(d[0])),ym-d[1+a]*kd]);
+      c.strokeStyle=col;c.fillStyle=col;c.lineWidth=2;c.beginPath();pts.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.stroke();c.lineWidth=1;
+      for(const [x,y] of pts){c.beginPath();c.arc(x,y,4,0,7);c.fill()}}
+  });
+  c.fillStyle=muted;c.textBaseline="top";
+  if(days.length){c.textAlign="left";c.fillText(days[0],dl0,3*(strip+gap)-2);c.textAlign="right";c.fillText(days[days.length-1],w-6,3*(strip+gap)-2)}
+  else{c.textAlign="center";c.fillText("No daily means yet",w/2,strip/2)}
+  // The same numbers as a table, for reading values exactly.
+  const rowsT=refs.flatMap(r=>r.days.filter(d=>days.includes(d[0])).map(d=>[r.name,d[0],cm(d[1]),cm(d[2]),cm(d[3]),d[4]]));
+  $("rtable").hidden=!rowsT.length;table("rtable",["Reference","Day (UTC)","E cm","N cm","U cm","Fixed epochs"],rowsT.slice(-40),"");
+}
+function rpick(ev){
+  const b=$("rscatter").getBoundingClientRect(),x=ev.clientX-b.left,y=ev.clientY-b.top;let best=null,d=144;
+  for(const [px,py,r,p] of rdots){const q=(px-x)**2+(py-y)**2;if(q<d){d=q;best=[r,p]}}
+  $("rhover").textContent=best?`${best[0].name}, ${duration(best[1][0])} ago: E ${cm(best[1][1])}, N ${cm(best[1][2])}, U ${cm(best[1][3])} cm (${best[1][4]} fixed epochs)`:"Point at a dot for details";
+}
+$("rscatter").addEventListener("pointermove",rpick);$("rscatter").addEventListener("pointerdown",rpick);
+let plotTimer=null;
+async function plotTick(now){
+  clearTimeout(plotTimer);
+  try{const r=await fetch("api/references/plots?window="+plotWindow,{cache:"no-store"});if(!r.ok)throw new Error(r.status);plots=await r.json();drawPlots()}catch(e){}
+  plotTimer=setTimeout(plotTick,30000)}
+window.addEventListener("resize",()=>{if(plots)drawPlots()});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{if(plots)drawPlots()});
+async function tick(){
+  let s=null;
+  try{const r=await fetch("api/status",{cache:"no-store"});if(!r.ok)throw new Error(r.status);s=await r.json()}
+  catch(e){$("link").className="bad";$("link").textContent="Lost contact with the app";stationLost()}
+  // A status the page cannot render is not lost contact: log it, keep polling.
+  if(s)try{render(s)}catch(e){console.error(e)}
+  setTimeout(tick,1000)}
+// The page keeps its own copy of the history (mergeTrack in track.js): after the
+// first load it asks only for points after `cursor`, unless the clocks show that
+// the computer slept or the clock was set.
+let kept=null,lastPoll=null;
+async function trackTick(){
+  try{
+    const wall=Date.now(),mono=performance.now();
+    if(clockJumped(lastPoll,wall,mono))kept=null;
+    lastPoll={wall,mono};
+    const url="api/track"+(kept&&kept.cursor?"?since="+encodeURIComponent(kept.cursor):"");
+    const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error(r.status);
+    ({kept,track}=mergeTrack(kept,await r.json(),performance.now()/1000));drawDrift();drawTrail()}
+  catch(e){}
+  setTimeout(trackTick,track&&track.points.length?10000:3000)}
+drawDrift();
+tick();
+trackTick();
+plotTick();
+</script>
+<script src="control.js?v=0.8.0"></script>
+</body>
+</html>

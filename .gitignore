@@ -1,0 +1,68 @@
+# This repo is PUBLIC. Georeferenced data lives in Google Drive.
+# Default-deny for data formats; publish derived, de-georeferenced output under figures/.
+
+# Local working copy of Drive data, and private notes and indexes
+data/
+private/
+
+# Local paths; the *.example.toml files are the committed templates. A real site
+# config holds the origin, so no other TOML at the root is tracked.
+config.toml
+/*.toml
+!/*.example.toml
+
+# Ice-Cube outputs (local coordinates, but generated)
+output/
+*.npz
+
+# Siting scripts: yard location, data paths and generated site-plan pages
+analysis/site_config.json
+analysis/out/
+
+# Survey and GIS data
+*.geojson
+*.gpkg
+*.kml
+*.kmz
+*.shp
+*.shx
+*.dbf
+*.prj
+*.swmz
+*.ods
+*.csv
+*.zip
+
+# GNSS logs and solutions
+*.ubx
+*.rtcm
+*.rtcm3
+*.nmea
+*.obs
+*.nav
+*.pos
+*.??o
+*.??n
+
+# Photos often carry EXIF GPS: strip before publishing, then add with `git add -f`
+*.jpg
+*.jpeg
+*.heic
+
+# Secrets (NTRIP credentials, base position)
+.env
+drive-index*
+*.secret
+base_position.*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Android build output
+logger/.gradle/
+logger/build/
+logger/app/build/
+logger/local.properties
+logger/.idea/

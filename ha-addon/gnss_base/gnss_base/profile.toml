@@ -1,0 +1,117 @@
+# Receiver profile for a Quectel LG290P used as an RTK base station.
+#
+# The app reads every setting here with its `,R` query, at startup and on request, and
+# shows match / differ / unsupported. "Apply" sends only the settings that differ, after
+# you confirm, then PQTMSAVEPAR. Nothing is applied automatically.
+#
+# No coordinates belong in this file. The fixed base position is set on the receiver
+# from the page (PQTMCFGSVIN), never here.
+#
+# Syntax and ranges follow the Quectel LG29xP & LGx80P GNSS Protocol Specification v1.3.
+# The specification asks for PQTMSAVEPAR and then a restart after any Set command
+# "to ensure that all configurations take effect", so restart the receiver after Apply.
+
+# Message rates are set per port with PQTMCFGMSGRATE,W,<PortType>,<PortID>,...
+# PortType 1 is UART; PortID 1 is UART1, the port this app reads.
+[port]
+type = 1
+id = 1
+
+# A setting is read with `<command>,R`, expected to answer `<command>,OK,<value...>`,
+# and written with `<command>,W,<value...>`.
+
+[[setting]]
+label = "Receiver mode: base station"
+command = "PQTMCFGRCVRMODE"
+value = [2]
+restart = true
+note = """Takes effect only after PQTMSAVEPAR and a restart (PQTMSRR). In base mode the \
+receiver stops its NMEA output, turns on MSM4 and 1005, and runs at 1 Hz. Apply this \
+first, restart, then check the profile again."""
+
+[[setting]]
+label = "RTCM: MSM type, elevation mask, ephemeris output"
+command = "PQTMCFGRTCM"
+# MSM_Type, MSM_Mode (always 0), MSM_ElevThd (-90 = no limit), two reserved fields
+# (defaults 07 and 06), EPH_Mode (2 = output when updated and every EPH_Interval
+# seconds; 1 = only when updated), EPH_Interval (0-7200 s, used only with EPH_Mode 2).
+# Every 60 s, so a rover or a restarted solver has all orbits within a minute instead
+# of waiting up to 2 h for the next GPS update: about 40 B/s more.
+value = [4, 0, -90.0, "07", "06", 2, 60]
+# For MSM7 later, which carries finer measurements and extended CNR:
+# value = [7, 0, -90.0, "07", "06", 2, 60]
+note = """MSM4; ephemerides when updated and every 60 s (EPH_Mode 2). The specification \
+does not say how this interacts with the message rates: after applying, count the \
+1019/1020/1042/1046 messages per minute on the page. MSM7 is a commented alternative."""
+
+# Message output rates. Rate N means once every N fixes; base mode runs at 1 Hz.
+# `offset` is the MSM time offset (0 to rate - 1); `version` is the PQTM message version.
+
+[[message]]
+name = "RTCM3-1005"
+rate = 1
+note = "Base position (ARP)."
+
+[[message]]
+name = "RTCM3-107X"
+rate = 1
+offset = 0
+note = "GPS MSM."
+
+[[message]]
+name = "RTCM3-108X"
+rate = 1
+offset = 0
+note = "GLONASS MSM."
+
+[[message]]
+name = "RTCM3-109X"
+rate = 1
+offset = 0
+note = "Galileo MSM."
+
+[[message]]
+name = "RTCM3-112X"
+rate = 1
+offset = 0
+note = "BeiDou MSM."
+
+[[message]]
+name = "RTCM3-1230"
+rate = 1
+note = "GLONASS code-phase biases. Table 7 allows only rate 1."
+
+# Ephemerides: Table 7 allows only rate 1 for these. When they are sent is set by
+# EPH_Mode in PQTMCFGRTCM above; the specification does not say how the two interact.
+[[message]]
+name = "RTCM3-1019"
+rate = 1
+note = "GPS ephemeris."
+
+[[message]]
+name = "RTCM3-1020"
+rate = 1
+note = "GLONASS ephemeris."
+
+[[message]]
+name = "RTCM3-1042"
+rate = 1
+note = "BeiDou ephemeris."
+
+[[message]]
+name = "RTCM3-1046"
+rate = 1
+note = "Galileo I/NAV ephemeris."
+
+[[message]]
+name = "PQTMSVINSTATUS"
+rate = 1
+version = 1
+base_only = true
+note = "Survey-in progress. The specification says the receiver must be in base mode."
+
+[[message]]
+name = "GST"
+rate = 1
+note = """Position error estimates. Once per fix: in base mode that is once a second, \
+about 70 bytes. The page shows GST sigmas only with a GGA fix."""

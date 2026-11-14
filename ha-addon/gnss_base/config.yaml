@@ -1,0 +1,81 @@
+name: GNSS Base Station
+version: "0.8.0"
+slug: gnss_base
+description: Logs a GNSS base receiver, shows its status and a live measured position, checks its antenna against any number of CORS stations by RTK, configures it as a base with confirmed commands, and serves its corrections.
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: manual
+init: true
+uart: true
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:crosshairs-gps
+panel_title: GNSS Base
+map:
+  - type: share
+    read_only: false
+ports:
+  2101/tcp: 2101
+ports_description:
+  2101/tcp: NTRIP caster for rovers on your network (do not forward it on your router)
+# Grouped in the order the configuration page shows them: receiver, our base,
+# corrections out (local caster, RTK2go), measured position, references, logging.
+# Names and one-line descriptions for each are in translations/en.yaml.
+options:
+  device_match: USB_Dual_Serial
+  baud: 460800
+  base_frame: ITRF2020
+  base_epoch: ""
+  caster_enabled: true
+  caster_mountpoint: BASE
+  caster_user: ""
+  caster_password: ""
+  caster_max_clients: 16
+  upload_host: rtk2go.com
+  upload_port: 2101
+  upload_mountpoint: ""
+  upload_password: ""
+  upload_style: rev1
+  measured_enabled: true
+  measured_elevation_mask: 15
+  measured_snr_mask: 35
+  references: []
+  log_dir: /share/gnss_base
+  min_free_gb: 10
+schema:
+  device: device(subsystem=tty)
+  device_match: str
+  baud: int
+  base_frame: list(ITRF2020|ITRF2014|ITRF2008|NAD83(2011))?
+  base_epoch: str
+  caster_enabled: bool
+  caster_mountpoint: match(^[A-Za-z0-9_]{1,32}$)
+  caster_user: str
+  caster_password: password
+  caster_max_clients: int(1,16)
+  upload_host: str
+  upload_port: port
+  upload_mountpoint: match(^[A-Za-z0-9_.-]{0,64}$)
+  upload_password: password
+  upload_style: list(rev1|rev2)
+  measured_enabled: bool
+  measured_elevation_mask: int(0,45)
+  measured_snr_mask: int(0,50)
+  references:
+    - name: match(^[A-Za-z0-9][A-Za-z0-9 _.-]{0,23}$)
+      enabled: bool?
+      host: str
+      port: port?
+      mountpoint: str
+      user: str
+      password: password?
+      frame: list(NAD83(2011)|ITRF2020|ITRF2014|ITRF2008)?
+      epoch: str?
+      send_gga: bool?
+      gga_position: str?
+      expect_station: int(0,4095)?
+      reset_utc: match(^([01]?[0-9]|2[0-3]):[0-5][0-9]$|^$|^never$)?
+  log_dir: str
+  min_free_gb: float
