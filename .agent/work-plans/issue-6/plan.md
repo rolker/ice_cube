@@ -33,9 +33,18 @@ Layer files are imported only from Settings > Map > Import layer files…
 4. Float and `fix_suspect` captures are left out.
 5. Per-capture sigmas: port the `analysis/qgis/soundings.py` per-sounding budget
    (`sigma_terms`), not a fixed floor. Ground term is a new logger setting.
-6. A fixed 1.5 cm pass-wander term goes into the node sigma before the target test.
+6. A 1.5 cm pass-wander term goes into the node sigma before the target test; it is a
+   setting (Settings > Coverage, default 0.015 m), not a constant.
 7. This session only; earlier sessions are not loaded.
 8. The red fringe at the outer edge of the walked area is acceptable for now.
+9. Single captures: pole tilt 1 deg (`tilt_bubble_deg`, as `soundings.py` does).
+10. Tilt captures: the rule below (tilt solution's `tilt_sd_*` in place of the pole tilt
+    term, tilt 0, tip sink and ground kept). `soundings.py` does not get the rule in this
+    PR (follow-up #9); the README notes the temporary difference.
+11. Review findings applied: the clear-radius example is about 0.28 m; the Layers dialog
+    reopens only after the import report is dismissed; the icecube ->
+    `analysis/qgis/soundings.py` import is documented in the generator's docstring and
+    in `.agents/README.md`'s test notes.
 
 ## Approach: coverage overlay (#6)
 
@@ -48,16 +57,16 @@ Layer files are imported only from Settings > Map > Import layer files…
    fusion; then W += 1/v, WZ += z/v. Constants mirrored from `icecube.example.toml`:
    slope 0.05, k_sigma 3.0.
 2. **Status.** Node sigma for display = sqrt(1/W + w^2) with w = `PASS_WANDER_M` =
-   0.015 m (decision 6; the same value as `soundings.py`'s logger-source `prior_m`
-   default, the expected RTK wander per pass, which the live view cannot solve).
+   the pass-wander setting, default 0.015 m (decision 6; the same value as
+   `soundings.py`'s logger-source `prior_m` default, the expected RTK wander per pass,
+   which the live view cannot solve).
    `status(node)`: NO_DATA (n = 0) or DISAGREE (flags > 0) red; THIN (sigma > target)
    amber; OK clear. The wander term is applied only in `status`, not inside the fusion,
    so the parity vectors stay a pure `nodes.py` comparison.
-   Proposed: a named constant, not a setting (owner leans constant). A setting would be
-   one more `Limit` and field, about 10 lines, if wanted later.
    Effect at the defaults: a node is clear when 1/W <= (3^2 - 1.5^2) cm^2, i.e. node
-   sigma before wander <= 2.6 cm. One lawn shot (sigma_z about 2.1 cm) clears nodes within
-   about 0.2 m of it; a node 0.5 m from the only shot is amber (slope term 2.5 cm).
+   sigma before wander <= 2.6 cm. One lawn shot (sigma_z about 2.1 cm, sigma_xy about
+   3.3 cm) clears nodes within about 0.28 m of it; a node 0.5 m from the only shot is
+   amber.
 3. **Per-capture sigma: port of `soundings.sigma_terms` (`core/SoundingSigma.java`, pure
    Java).** Same terms and constants as `soundings.DEFAULTS["sigma"]` and `settle_s`:
 
@@ -84,14 +93,15 @@ Layer files are imported only from Settings > Map > Import layer files…
      `tilt_bubble_deg` = 1.0 deg (the pole is on a bubble); `tilt_unknown_deg` = 5.0 is
      used only for pole stops found in the log without an IMU plumb check (which are
      flagged `plumb_unverified` and left out). The port follows `soundings.py`: 1.0 deg
-     for single captures (pole term 0.3 mm at 1.8 m; 5 deg would give 6.8 mm). See Open
-     Questions.
+     for single captures (pole term 0.3 mm at 1.8 m; 5 deg would give 6.8 mm)
+     (decision 9).
    - **Tilt captures.** Checked: `soundings.py` has no tilt-capture branch (it reads the
      gpkg `captures` table without the `tilt_*` columns and gives every capture the
      bubble pole term). Proposed for the logger, expressed through the same function so
      the reference stays `sigma_terms`: sd_u = `tilt_sd_u_m`, sd_h = hypot(`tilt_sd_e_m`,
      `tilt_sd_n_m`)/sqrt 2, tilt 0 (the solution already places the tip, so no plumb
-     term; tip sink and ground stay), age and fix age from the row. See Open Questions.
+     term; tip sink and ground stay), age and fix age from the row (decision 10;
+     `soundings.py` follows in #9).
    - **Fix age source.** The logger's `fix_age_s` is its own count from the GGA stream;
      `soundings.py` recomputes it from gps.ubx. Small differences are expected and
      noted in the README; the formula is the same.
@@ -124,7 +134,7 @@ Layer files are imported only from Settings > Map > Import layer files…
     sigma target cm (0.5 to 50, default 3.0), grid spacing m (0.1 to 5, default 0.5),
     capture radius m (0.1 to 10, default 0.75), reach m (0.1 to 20, default 2.0), ground
     sigma cm (0 to 10, default 1.5; help text: lawn 1.5 cm, about 0 on ice or a hard
-    surface). Reach below the capture radius is accepted and simply hides gaps (the
+    surface), pass wander cm (0 to 10, default 1.5). Reach below the capture radius is accepted and simply hides gaps (the
     README says so).
 11. **Parity vectors.** `icecube/logger_vectors.py` writes
     `logger/app/src/test/resources/coverage_vectors.json` (`.json` is not gitignored),
@@ -142,6 +152,9 @@ Layer files are imported only from Settings > Map > Import layer files…
       overlapping strips; a 20 cm step that flags; soundings at varied distances for the
       slope term; soundings whose sz/sh come from the `sigma` budget (settle-inflated and
       plain) so the two parts chain. Expected per node i, j, z, sigma, n, flags.
+    The generator imports `analysis/qgis/soundings.py` through `sys.path` (a new
+    icecube -> analysis dependency, standard library only); its docstring and
+    `.agents/README.md`'s test notes say so.
     The generator pins the budget constants it reads from `soundings.DEFAULTS` into the
     JSON, and `SoundingSigmaTest` checks the Java constants against them, so a change in
     `soundings.py`'s defaults fails the Java tests until both sides agree.
@@ -170,7 +183,8 @@ Own commit, before the version bump commit.
    the dialog); the "No layer files" dialog gets the same button instead of only the
    pointer to Settings. A new request code `REQ_IMPORT_LAYERS` in `onActivityResult`
    hands the result to `LayerImport.run`, whose `after` reloads `files`, calls
-   `applyLayers()` and reopens the Layers dialog so the new layers are there at once.
+   `applyLayers()` and reopens the Layers dialog so the new layers are there at once;
+   `after` runs when the import report is dismissed, so the dialogs do not stack.
 4. **Nice to have, included because cheap.** The picker opens where the last import came
    from: the last picked document URI is kept in prefs (`Settings.LAST_LAYER_IMPORT_URI`)
    and passed as `DocumentsContract.EXTRA_INITIAL_URI` (API 26, our minSdk); pickers
@@ -193,7 +207,7 @@ Own commit, before the version bump commit.
 |------|--------|
 | `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java` | New: estimator, area rule, status with pass wander |
 | `logger/app/src/main/java/rink/icecube/logger/core/SoundingSigma.java` | New: port of `soundings.sigma_terms` |
-| `logger/app/src/main/java/rink/icecube/logger/core/Limit.java` | Five coverage limits |
+| `logger/app/src/main/java/rink/icecube/logger/core/Limit.java` | Six coverage limits |
 | `logger/app/src/main/java/rink/icecube/logger/Settings.java` | Keys, getters, COVERAGE_ON, LAST_LAYER_IMPORT_URI |
 | `logger/app/src/main/java/rink/icecube/logger/SettingsActivity.java` | Coverage header and fields; import via LayerImport |
 | `logger/app/src/main/java/rink/icecube/logger/LayerImport.java` | New: shared picker and import flow (#8) |
@@ -261,7 +275,7 @@ describe the parts and are updated in this PR.
 - `CoverageTest` (JVM, `./gradlew test`): every `nodes` vector case, z and sigma to
   1e-9, n and flags exact, nodes absent from the vector have n = 0; NO_DATA in-area node
   between two strips 3 m apart; no node beyond reach; status thresholds at target with
-  the 1.5 cm wander (a node at 2.59 cm clear, 2.61 cm amber); incremental feed equals a
+  the default 1.5 cm wander (a node at 2.59 cm clear, 2.61 cm amber); incremental feed equals a
   rebuild; node cap stops growth without breaking updates; float and `fix_suspect` rows
   not fed.
 - `icecube/tests/test_logger_vectors.py` (`python3 -m unittest discover icecube/tests`):
@@ -275,13 +289,7 @@ describe the parts and are updated in this PR.
 
 ## Open Questions
 
-- Tilt angle for single captures: 1.0 deg (`tilt_bubble_deg`, what `soundings.py` uses
-  for logger captures; proposed) or 5.0 deg (`tilt_unknown_deg`, as the instruction
-  mentioned)? Difference about 6.5 mm in the pole term at 1.8 m.
-- Tilt captures: `soundings.py` has no rule for them; proposed sd from `tilt_sd_*`,
-  tilt 0, tip sink and ground kept. Should `soundings.py` get the same rule (a separate
-  issue), so the post-processing agrees?
-- Pass wander as a constant (proposed) or a setting?
+None; settled by the owner (decisions 9 to 11).
 
 ## Estimated Scope
 
