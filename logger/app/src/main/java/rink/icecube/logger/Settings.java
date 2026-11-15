@@ -40,6 +40,7 @@ final class Settings {
             LEAN_SCATTER_CM = "lean_scatter_cm";
     // 0.7, coverage overlay: shown or not (MENU > Coverage), and its Settings > Coverage values
     static final String COVERAGE_ON = "coverage_on";   // default on
+    static final String LAST_LAYER_IMPORT_URI = "last_layer_import_uri";   // last picked layer file, picker hint
     static final String COV_TARGET_CM = "coverage_target_cm", COV_CELL_M = "coverage_cell_m",
             COV_RADIUS_M = "coverage_radius_m", COV_REACH_M = "coverage_reach_m",
             COV_GROUND_CM = "coverage_ground_cm", COV_WANDER_CM = "coverage_wander_cm";

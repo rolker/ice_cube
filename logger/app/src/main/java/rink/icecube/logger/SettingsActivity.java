@@ -6,13 +6,9 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.database.Cursor;
-import android.net.Uri;
-import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.AdapterView;
@@ -33,18 +29,11 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
@@ -347,64 +336,12 @@ public final class SettingsActivity extends Activity {
         }
     }
 
-    /** Opens the system file picker (Drive and Downloads appear there); picked files are copied to layers/. */
-    private void pickLayers() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        try { startActivityForResult(i, IMPORT_LAYERS); }
-        catch (android.content.ActivityNotFoundException e) { Toast.makeText(this, "No file picker", Toast.LENGTH_LONG).show(); }
-    }
+    /** The shared import flow (LayerImport): picker, checks, copy to layers/, report. */
+    private void pickLayers() { LayerImport.start(this, IMPORT_LAYERS); }
 
     @Override protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
-        if (code != IMPORT_LAYERS || result != RESULT_OK || data == null) return;
-        List<Uri> uris = new ArrayList<>();
-        if (data.getClipData() != null) {
-            for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
-        } else if (data.getData() != null) uris.add(data.getData());
-        File dir = Layers.importDir(this);
-        new Thread(() -> {
-            StringBuilder report = new StringBuilder();
-            for (Uri u : uris) report.append(importOne(u, dir)).append('\n');
-            Layers.reload();
-            runOnUiThread(() -> {
-                if (isFinishing()) return;
-                new AlertDialog.Builder(this).setTitle("Import layers").setMessage(report.toString().trim())
-                        .setPositiveButton("OK", null).show();
-                loadLayers();
-            });
-        }, "import-layers").start();
-    }
-
-    /** Copies one picked file after checking that it parses. Returns a line for the report. */
-    private String importOne(Uri u, File dir) {
-        String name = displayName(u);
-        try {
-            String text;
-            try (InputStream in = getContentResolver().openInputStream(u)) {
-                if (in == null) throw new IOException("cannot open");
-                text = Layers.readText(in, Layers.MAX_BYTES);
-            }
-            GeoJson.Layer l = GeoJson.parse(text);
-            String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
-            if (!Layers.isLayerName(safe)) safe = safe + ".geojson";
-            File out = new File(dir, safe);
-            try (OutputStream o = new FileOutputStream(out)) { o.write(text.getBytes(StandardCharsets.UTF_8)); }
-            return String.format(Locale.US, "%s: %d features%s", safe, l.features.size(),
-                    l.warnings.isEmpty() ? "" : ", " + l.warnings.size() + " skipped");
-        } catch (IOException | SecurityException e) {
-            return name + ": not imported (" + e.getMessage() + ")";
-        } catch (GeoJson.GeoJsonException e) {
-            return name + ": not imported, not a GeoJSON layer (" + e.getMessage() + ")";
-        }
-    }
-
-    private String displayName(Uri u) {
-        try (Cursor c = getContentResolver().query(u, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
-        } catch (RuntimeException ignored) { }
-        String last = u.getLastPathSegment();
-        return last == null ? "layer.geojson" : last.substring(last.lastIndexOf('/') + 1);
+        if (code == IMPORT_LAYERS) LayerImport.run(this, result, data, this::loadLayers, null);
     }
 
     private void header(LinearLayout c, String text, int top) {

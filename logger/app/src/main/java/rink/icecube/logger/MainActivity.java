@@ -88,7 +88,7 @@ import rink.icecube.logger.core.TrackPoint;
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
 public final class MainActivity extends Activity {
-    private static final int REQ_PHOTO = 21;
+    private static final int REQ_PHOTO = 21, REQ_IMPORT_LAYERS = 22;
     private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121, AMBER = 0xFFFFA000;
 
     private MapView map;
@@ -524,6 +524,11 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
         if (code == REQ_PHOTO) finishPhoto(result, null);
+        else if (code == REQ_IMPORT_LAYERS) {
+            // new layers show at once; the Layers dialog comes back when the report is closed
+            LayerImport.run(this, result, data, () -> Layers.getAsync(this, l -> { files = l; applyLayers(); }),
+                    this::pickLayers);
+        }
     }
 
     /** The camera came back: keep the photo (onto a capture or its own row) or delete the empty file. */
@@ -761,14 +766,15 @@ public final class MainActivity extends Activity {
         map.coverageChanged();
     }
 
-    /** A checkbox per readable layer file, applied at once. */
+    /** A checkbox per readable layer file, applied at once, and Import… (the same flow as Settings > Map). */
     private void pickLayers() {
         Layers.getAsync(this, l -> {
             List<Layers.LayerFile> ok = new ArrayList<>();
             for (Layers.LayerFile f : l) if (f.layer != null) ok.add(f);
             if (ok.isEmpty()) {
-                new AlertDialog.Builder(this).setTitle("Layers")
-                        .setMessage("No layer files. Import them in Settings > Map.").setPositiveButton("OK", null).show();
+                new AlertDialog.Builder(this).setTitle("Layers").setMessage("No layer files yet.")
+                        .setNeutralButton("Import…", (d, w) -> LayerImport.start(this, REQ_IMPORT_LAYERS))
+                        .setPositiveButton("OK", null).show();
                 return;
             }
             Set<String> off = Settings.layersOff(Settings.prefs(this));
@@ -779,7 +785,8 @@ public final class MainActivity extends Activity {
                 Settings.setLayerOn(Settings.prefs(this), names[which], checked);
                 files = l;
                 applyLayers();
-            }).setPositiveButton("Done", null).show();
+            }).setNeutralButton("Import…", (d, w) -> LayerImport.start(this, REQ_IMPORT_LAYERS))
+                    .setPositiveButton("Done", null).show();
         });
     }
 
