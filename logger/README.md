@@ -494,11 +494,22 @@ overlay and set in Settings > Coverage.
   when the run's grid origin is a multiple of the grid spacing.
 - Limit: 250,000 nodes (about 6 ha at 0.5 m). Past it no new nodes are added (existing
   ones still update) and the legend reads `coverage: area limit`.
+- Drawing: one pixel per node, at most 2048 nodes a side (1 km at 0.5 m, about 205 m at
+  0.1 m). A larger area is drawn in a 2048-node window that holds the newest captures: it
+  stays put while they are in it and re-centres on them when they leave it, and every
+  move repaints the whole window, so nothing outside the window shows and nothing inside
+  it is left unpainted.
+- Work: the feeding, rebuilding and painting run in order on one background thread
+  (`coverage`), which hands finished frames to the map; a rebuild (new session, origin or
+  setting) cancels the one in progress. The map hides the overlay from the start of a
+  rebuild until its first frame, usually a moment.
 
 The Java ports are checked against icecube: `python3 -m icecube.logger_vectors --out
 logger/app/src/test/resources/coverage_vectors.json` writes test vectors from
 `nodes.grid_surface` and `soundings.sigma_terms`, and the JVM tests (`CoverageTest`,
-`SoundingSigmaTest`) compare against them; regenerate when either changes.
+`SoundingSigmaTest`) compare against them; regenerate when either changes. The drawing
+window and the background thread's order and cancellation have their own JVM tests
+(`CoverageRasterTest`, `CoverageWorkerTest`).
 
 ## Map layers
 Layer files are `*.geojson` or `*.json` in `Documents/IceCubeLogger/layers/` (or the app

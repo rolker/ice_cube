@@ -43,8 +43,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import rink.icecube.logger.core.Coverage;
+import rink.icecube.logger.core.CoverageRaster;
+import rink.icecube.logger.core.CoverageWorker;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.LinkState;
@@ -83,7 +87,9 @@ import rink.icecube.logger.core.TrackPoint;
  * Coverage overlay (MENU > Coverage, on by default): a {@link Coverage} fed with this
  * session's RTK-fixed surface captures as they arrive (rows past the last one fed, on each
  * refresh), rebuilt from the session's rows when the map frame, the session or a Settings >
- * Coverage value changes. Earlier sessions are not loaded.
+ * Coverage value changes. Earlier sessions are not loaded. The feeds and rebuilds run in
+ * order on one "coverage" thread ({@link CoverageWorker}), which owns the Coverage; a new
+ * rebuild cancels the one in flight, and MapView draws the frames it sends back.
  *
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
@@ -109,11 +115,14 @@ public final class MainActivity extends Activity {
 
     static MapOrigin shownOrigin() { return shownOrigin; }
 
-    // The coverage overlay: the estimator, what it was built for, and how many session rows it has seen.
-    private Coverage coverage;
-    private Survey coverageSurvey;
-    private LocalFrame coverageFrame;
-    private int coverageRows;
+    // The coverage overlay: a single worker thread owns the Coverage and its raster; frames
+    // come back to the UI thread and are drawn when still current (see CoverageWorker).
+    private final ExecutorService coverageThread = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "coverage");
+        t.setPriority(Thread.NORM_PRIORITY - 1);
+        return t;
+    });
+    private final CoverageWorker coverageWorker = new CoverageWorker(coverageThread, this::onCoverageFrame);
     private boolean coverageOn = true;
     private Coverage.Params coverageParams = Coverage.Params.defaults();
 
@@ -747,23 +756,19 @@ public final class MainActivity extends Activity {
     private void updateCoverage(Survey sv, PointRow[] rows) {
         LocalFrame f = map.frame();
         if (!coverageOn || f == null || sv == null) {
-            if (coverage != null) { coverage = null; map.setCoverage(null); }
-            coverageSurvey = null;
+            coverageWorker.clear();
+            map.setCoverageOn(false);
             return;
         }
-        if (coverage == null || sv != coverageSurvey || f != coverageFrame || !coverageParams.equals(coverage.params)) {
-            Coverage c = new Coverage(coverageParams);
-            for (PointRow r : rows) c.add(r, f);
-            coverage = c;
-            coverageSurvey = sv;
-            coverageFrame = f;
-            coverageRows = rows.length;
-            map.setCoverage(c);
-            return;
-        }
-        for (int k = coverageRows; k < rows.length; k++) coverage.add(rows[k], f);
-        coverageRows = rows.length;
-        map.coverageChanged();
+        map.setCoverageOn(true);
+        if (coverageWorker.update(sv, f, coverageParams, rows)) map.clearCoverage();
+    }
+
+    /** On the coverage thread: hands a frame to the UI thread, drawn only if no newer rebuild started. */
+    private void onCoverageFrame(CoverageRaster.Frame fr) {
+        ui.post(() -> {
+            if (!isDestroyed() && fr.gen == coverageWorker.generation()) map.applyCoverage(fr);
+        });
     }
 
     /** A checkbox per readable layer file, applied at once, and Import… (the same flow as Settings > Map). */
@@ -807,6 +812,13 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         ui.removeCallbacks(tick);
+    }
+
+    /** Stops the coverage thread: cancels the work in flight and drops frames still on their way. */
+    @Override protected void onDestroy() {
+        coverageWorker.close();
+        coverageThread.shutdownNow();
+        super.onDestroy();
     }
 
     /** Re-projects only when the set of switched-on layers changed. */

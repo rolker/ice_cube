@@ -8,8 +8,6 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffXfermode;
 import android.graphics.RectF;
 import android.os.Bundle;
 import android.os.Parcelable;
@@ -22,7 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import rink.icecube.logger.core.Coverage;
+import rink.icecube.logger.core.CoverageRaster;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.PointRow;
@@ -41,9 +39,12 @@ import rink.icecube.logger.core.TrackPoint;
  * the live position, and a countdown ring at the top centre while a ref occupation runs.
  *
  * Under the trail and captures, when MENU > Coverage is on: the live coverage overlay
- * ({@link Coverage}), one bitmap pixel per grid node over the surveyed area, red for no
+ * (core.Coverage), one bitmap pixel per grid node over the surveyed area, red for no
  * data or disagreement, amber for sigma above the target, clear otherwise, translucent so
- * layers show through. Only the nodes a capture touched are repainted.
+ * layers show through. The pixels come from the coverage worker (MainActivity,
+ * core.CoverageWorker) as CoverageRaster frames: a full frame replaces the bitmap (reused
+ * when its size is unchanged), a patch sets the touched pixels. This view never touches the
+ * Coverage itself.
  */
 final class MapView extends View {
     /** A projected feature with its resolved style. */
@@ -69,15 +70,15 @@ final class MapView extends View {
     private Survey.TiltView tilt;
     private boolean labels = true;
     static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
-    static final int COVER_RED = 0x66D32F2F, COVER_AMBER = 0x55FFA000;
-    /** Largest overlay bitmap side, in nodes (1 km at 0.5 m). */
-    static final int COVER_MAX_SIDE = 2048;
-    private static final int COVER_MARGIN = 32;
+    static final int COVER_RED = CoverageRaster.RED, COVER_AMBER = CoverageRaster.AMBER;
 
-    private Coverage coverage;
+    private boolean covOn, covAreaLimit;
+    /** False from a rebuild until its full frame: the bitmap is kept for reuse but not drawn. */
+    private boolean covValid;
     private Bitmap covBmp;
+    private double covCell;
     private int covI0, covJ1;   // node indices of the bitmap's left column and top row
-    private final Paint covPaint = new Paint(), covCopy = new Paint();
+    private final Paint covPaint = new Paint();
     private final RectF covRect = new RectF();
 
     private double cx, cy;               // view centre, map units
@@ -123,7 +124,6 @@ final class MapView extends View {
         halo.setColor(0xCCFFFFFF);
         box.setColor(0xD9FFFFFF);
         covPaint.setFilterBitmap(false);
-        covCopy.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC));
         scaler = new ScaleGestureDetector(c, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScale(ScaleGestureDetector d) {
                 zoomAt(d.getScaleFactor(), d.getFocusX(), d.getFocusY());
@@ -177,74 +177,47 @@ final class MapView extends View {
         invalidate();
     }
 
-    /** The coverage overlay to draw (null: none). A new object is painted from scratch. */
-    void setCoverage(Coverage c) {
-        if (c == coverage) return;
-        coverage = c;
-        covBmp = null;
-        if (c != null) {
-            c.drainTouched();
-            paintCoverage(c.nodes());
-        }
+    /** Coverage overlay on (legend rows, frames drawn) or off (bitmap dropped). */
+    void setCoverageOn(boolean on) {
+        if (on == covOn) return;
+        covOn = on;
+        if (!on) { covBmp = null; covValid = false; covAreaLimit = false; }
         invalidate();
     }
 
-    /** Repaints the nodes the coverage changed since the last call. */
-    void coverageChanged() {
-        if (coverage == null) return;
-        List<Coverage.Node> t = coverage.drainTouched();
-        if (!t.isEmpty()) { paintCoverage(t); invalidate(); }
+    /** Hides the drawn overlay until the next full frame (a rebuild started). */
+    void clearCoverage() {
+        covValid = false;
+        covAreaLimit = false;
+        invalidate();
     }
 
-    static int coverColor(Coverage.Status s) {
-        switch (s) {
-            case NO_DATA: case DISAGREE: return COVER_RED;
-            case THIN: return COVER_AMBER;
-            default: return 0;
+    /**
+     * Draws a frame from the coverage worker (UI thread; the caller has checked its
+     * generation). A full frame replaces the pixels, reusing the bitmap when the size is
+     * unchanged; a patch sets pixels of the same window and is ignored on any other.
+     */
+    void applyCoverage(CoverageRaster.Frame f) {
+        if (!covOn) return;
+        covAreaLimit = f.areaLimit;
+        if (f.isFull()) {
+            if (f.width == 0 || f.height == 0) { covValid = false; invalidate(); return; }
+            if (covBmp == null || covBmp.getWidth() != f.width || covBmp.getHeight() != f.height) {
+                covBmp = Bitmap.createBitmap(f.width, f.height, Bitmap.Config.ARGB_8888);
+            }
+            covBmp.setPixels(f.pixels, 0, f.width, 0, 0, f.width, f.height);
+            covI0 = f.i0;
+            covJ1 = f.j1;
+            covCell = f.cell;
+            covValid = true;
+        } else {
+            if (!covValid || covBmp == null || f.i0 != covI0 || f.j1 != covJ1 || f.width != covBmp.getWidth()
+                    || f.height != covBmp.getHeight() || f.cell != covCell) {
+                return;
+            }
+            for (int k = 0; k < f.index.length; k++) covBmp.setPixel(f.index[k] % f.width, f.index[k] / f.width, f.color[k]);
         }
-    }
-
-    /** Grows the bitmap (by copy) to the in-area box when needed, capped at COVER_MAX_SIDE, then paints nodes. */
-    private void paintCoverage(Iterable<Coverage.Node> nodes) {
-        Coverage c = coverage;
-        if (c.minI > c.maxI) return;
-        int needI0 = c.minI, needI1 = c.maxI, needJ0 = c.minJ, needJ1 = c.maxJ;
-        boolean fits = covBmp != null && needI0 >= covI0 && needI1 < covI0 + covBmp.getWidth()
-                && needJ1 <= covJ1 && needJ0 > covJ1 - covBmp.getHeight();
-        if (!fits) {
-            int i0 = needI0 - COVER_MARGIN, i1 = needI1 + COVER_MARGIN;
-            int j0 = needJ0 - COVER_MARGIN, j1 = needJ1 + COVER_MARGIN;
-            if (covBmp != null) {   // keep what is there: grow to the union
-                i0 = Math.min(i0, covI0);
-                i1 = Math.max(i1, covI0 + covBmp.getWidth() - 1);
-                j1 = Math.max(j1, covJ1);
-                j0 = Math.min(j0, covJ1 - covBmp.getHeight() + 1);
-            }
-            if (i1 - i0 + 1 > COVER_MAX_SIDE) {   // keep the newest area in view: centre on the latest box
-                int mid = (needI0 + needI1) / 2;
-                i0 = mid - COVER_MAX_SIDE / 2;
-                i1 = i0 + COVER_MAX_SIDE - 1;
-            }
-            if (j1 - j0 + 1 > COVER_MAX_SIDE) {
-                int mid = (needJ0 + needJ1) / 2;
-                j0 = mid - COVER_MAX_SIDE / 2;
-                j1 = j0 + COVER_MAX_SIDE - 1;
-            }
-            Bitmap b = Bitmap.createBitmap(i1 - i0 + 1, j1 - j0 + 1, Bitmap.Config.ARGB_8888);
-            if (covBmp != null) {
-                new Canvas(b).drawBitmap(covBmp, covI0 - i0, j1 - covJ1, covCopy);
-                covBmp.recycle();
-            }
-            covBmp = b;
-            covI0 = i0;
-            covJ1 = j1;
-        }
-        int w = covBmp.getWidth(), h = covBmp.getHeight();
-        for (Coverage.Node nd : nodes) {
-            int x = nd.i - covI0, y = covJ1 - nd.j;
-            if (x < 0 || y < 0 || x >= w || y >= h) continue;
-            covBmp.setPixel(x, y, coverColor(c.status(nd)));
-        }
+        invalidate();
     }
 
     /** Earlier refs from refs.csv to draw as grey rings (empty for none). */
@@ -432,8 +405,8 @@ final class MapView extends View {
 
     /** The coverage bitmap in map units: pixel (x, y) is node (covI0 + x, covJ1 - y), centred on it. */
     private void drawCoverage(Canvas c) {
-        if (coverage == null || covBmp == null) return;
-        double cell = coverage.params.cell;
+        if (!covOn || !covValid || covBmp == null) return;
+        double cell = covCell;
         covRect.set((float) ((covI0 - 0.5) * cell), (float) ((-covJ1 - 0.5) * cell),
                 (float) ((covI0 + covBmp.getWidth() - 0.5) * cell), (float) ((-covJ1 + covBmp.getHeight() - 0.5) * cell));
         c.save();
@@ -670,7 +643,7 @@ final class MapView extends View {
         float width = 0;
         for (String n : LEGEND_NAMES) width = Math.max(width, text.measureText(n));
         for (SurveyMode m : SurveyMode.values()) width = Math.max(width, text.measureText(m.key));
-        String[] cov = coverage == null ? new String[0] : coverage.full()
+        String[] cov = !covOn ? new String[0] : covAreaLimit
                 ? new String[] {"no data / disagree", "σ > target", "coverage: area limit"}
                 : new String[] {"no data / disagree", "σ > target"};
         for (String n : cov) width = Math.max(width, text.measureText(n));
