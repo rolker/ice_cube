@@ -51,6 +51,11 @@ an independent sounding here, so a node fed by many epochs of one pass has a sma
 noise variance and the counter also catches ordinary epoch noise beyond k sigma: on
 such a survey the flag count is not a two-surface count. Average to about 1 s, or
 read the flag table's "worst" column, before reading it as one.
+
+The Ice Cube Logger mirrors the update and inconsistency test (one pass, sb = 0) in
+logger/.../core/Coverage.java for its live coverage overlay; when they change, regenerate
+its test vectors with `python3 -m icecube.logger_vectors --out
+logger/app/src/test/resources/coverage_vectors.json` and port the change.
 """
 from __future__ import annotations
 

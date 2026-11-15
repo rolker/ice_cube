@@ -43,10 +43,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
+import rink.icecube.logger.core.Coverage;
+import rink.icecube.logger.core.CoverageRaster;
+import rink.icecube.logger.core.CoverageWorker;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.LinkState;
+import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.MapOrigin;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.PointRow;
@@ -78,10 +84,17 @@ import rink.icecube.logger.core.TrackPoint;
  * of the first layer (the map moves to the fix origin once one arrives). The info box and
  * the capture notices give positions as x/y/z in that frame. The screen stays on.
  *
+ * Coverage overlay (MENU > Coverage, on by default): a {@link Coverage} fed with this
+ * session's RTK-fixed surface captures as they arrive (rows past the last one fed, on each
+ * refresh), rebuilt from the session's rows when the map frame, the session or a Settings >
+ * Coverage value changes. Earlier sessions are not loaded. The feeds and rebuilds run in
+ * order on one "coverage" thread ({@link CoverageWorker}), which owns the Coverage; a new
+ * rebuild cancels the one in flight, and MapView draws the frames it sends back.
+ *
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
 public final class MainActivity extends Activity {
-    private static final int REQ_PHOTO = 21;
+    private static final int REQ_PHOTO = 21, REQ_IMPORT_LAYERS = 22;
     private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121, AMBER = 0xFFFFA000;
 
     private MapView map;
@@ -101,6 +114,20 @@ public final class MainActivity extends Activity {
     private static volatile MapOrigin shownOrigin;
 
     static MapOrigin shownOrigin() { return shownOrigin; }
+
+    // The coverage overlay: a single worker thread owns the Coverage and its raster; frames
+    // come back to the UI thread and are drawn when still current (see CoverageWorker).
+    private final ExecutorService coverageThread = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "coverage");
+        t.setPriority(Thread.NORM_PRIORITY - 1);
+        return t;
+    });
+    private final CoverageWorker coverageWorker = new CoverageWorker(coverageThread, new CoverageWorker.Sink() {
+        @Override public void frame(CoverageRaster.Frame f) { onCoverageFrame(f); }
+        @Override public void failed(Throwable t) { onCoverageFailed(t); }
+    });
+    private boolean coverageOn = true;
+    private Coverage.Params coverageParams = Coverage.Params.defaults();
 
     private int refsLoadedGen = -1;
     private String refsLoadedFor = "";
@@ -509,6 +536,11 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
         if (code == REQ_PHOTO) finishPhoto(result, null);
+        else if (code == REQ_IMPORT_LAYERS) {
+            // new layers show at once; the Layers dialog comes back when the report is closed
+            LayerImport.run(this, result, data, () -> Layers.getAsync(this, l -> { files = l; applyLayers(); }),
+                    this::pickLayers);
+        }
     }
 
     /** The camera came back: keep the photo (onto a capture or its own row) or delete the empty file. */
@@ -691,6 +723,7 @@ public final class MainActivity extends Activity {
         if (sv != null && sv.tiltRunning()) item("Cancel tilt capture", this::confirmCancelTilt);
         else item("Tilt capture (" + mode().key + ")", () -> tiltAction("start"));
         item("Layers…", this::pickLayers);
+        item((coverageOn ? "☑" : "☐") + " Coverage overlay", this::toggleCoverage);
         item("Share last session", () -> {
             List<File> all = Storage.sessions(this);
             if (all.isEmpty()) toast("No sessions yet"); else Sharer.share(this, all.get(0));
@@ -713,14 +746,58 @@ public final class MainActivity extends Activity {
         drawerItems.addView(b, new LinearLayout.LayoutParams(-1, -2));
     }
 
-    /** A checkbox per readable layer file, applied at once. */
+    private void toggleCoverage() {
+        coverageOn = !coverageOn;
+        Settings.prefs(this).edit().putBoolean(Settings.COVERAGE_ON, coverageOn).apply();
+        refresh();
+    }
+
+    /**
+     * Feeds the session's new rows to the coverage overlay, or rebuilds it from all of them
+     * when the frame, the session or the settings changed; clears it when off or with no session.
+     */
+    private void updateCoverage(Survey sv, PointRow[] rows) {
+        LocalFrame f = map.frame();
+        if (!coverageOn || f == null || sv == null) {
+            coverageWorker.clear();
+            map.setCoverageOn(false);
+            return;
+        }
+        map.setCoverageOn(true);
+        if (coverageWorker.update(sv, f, coverageParams, rows)) map.clearCoverage();
+    }
+
+    /** On the coverage thread: hands a frame to the UI thread, drawn only if no newer rebuild started. */
+    private void onCoverageFrame(CoverageRaster.Frame fr) {
+        ui.post(() -> {
+            if (!isDestroyed() && fr.gen == coverageWorker.generation()) map.applyCoverage(fr);
+        });
+    }
+
+    /**
+     * On the coverage thread: the worker stopped on an error (see CoverageWorker). Logged
+     * (logcat, and the session's events when one is open); the overlay is dropped and the
+     * legend says "coverage stopped: error". Logging and the rest of the app carry on.
+     */
+    private void onCoverageFailed(Throwable t) {
+        android.util.Log.e("IceCubeLogger", "coverage stopped", t);
+        ui.post(() -> {
+            LoggerService s = LoggerService.current;
+            if (s != null) s.event("coverage stopped: " + t);
+            if (!isDestroyed()) map.setCoverageFailed();
+        });
+    }
+
+    /** A checkbox per readable layer file, applied at once, and Import… (the same flow as Settings > Map). */
     private void pickLayers() {
         Layers.getAsync(this, l -> {
+            if (isFinishing() || isDestroyed()) return;   // e.g. reached from the import report's dismiss
             List<Layers.LayerFile> ok = new ArrayList<>();
             for (Layers.LayerFile f : l) if (f.layer != null) ok.add(f);
             if (ok.isEmpty()) {
-                new AlertDialog.Builder(this).setTitle("Layers")
-                        .setMessage("No layer files. Import them in Settings > Map.").setPositiveButton("OK", null).show();
+                new AlertDialog.Builder(this).setTitle("Layers").setMessage("No layer files yet.")
+                        .setNeutralButton("Import…", (d, w) -> LayerImport.start(this, REQ_IMPORT_LAYERS))
+                        .setPositiveButton("OK", null).show();
                 return;
             }
             Set<String> off = Settings.layersOff(Settings.prefs(this));
@@ -731,7 +808,8 @@ public final class MainActivity extends Activity {
                 Settings.setLayerOn(Settings.prefs(this), names[which], checked);
                 files = l;
                 applyLayers();
-            }).setPositiveButton("Done", null).show();
+            }).setNeutralButton("Import…", (d, w) -> LayerImport.start(this, REQ_IMPORT_LAYERS))
+                    .setPositiveButton("Done", null).show();
         });
     }
 
@@ -742,6 +820,8 @@ public final class MainActivity extends Activity {
         Screen.applyOrientation(this);
         map.setLabels(Settings.labelCaptures(Settings.prefs(this)));
         refsLoadedGen = -1;   // settings may have changed
+        coverageOn = Settings.coverageOn(Settings.prefs(this));
+        coverageParams = Settings.coverage(Settings.prefs(this));   // a change rebuilds the overlay
         Layers.getAsync(this, l -> { files = l; applyLayers(); });
         updateModeButtons();
         ui.post(tick);
@@ -750,6 +830,13 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         ui.removeCallbacks(tick);
+    }
+
+    /** Stops the coverage thread: cancels the work in flight and drops frames still on their way. */
+    @Override protected void onDestroy() {
+        coverageWorker.close();
+        coverageThread.shutdownNow();
+        super.onDestroy();
     }
 
     /** Re-projects only when the set of switched-on layers changed. */
@@ -824,7 +911,9 @@ public final class MainActivity extends Activity {
         Control.askUsbPermissionIfNeeded(this);
         Survey sv = s == null ? null : s.survey();
         TrackPoint fix = s == null ? null : s.currentFix();
-        map.setLive(fix, s == null ? new TrackPoint[0] : s.trail(), sv == null ? new PointRow[0] : sv.rows(),
+        PointRow[] rows = sv == null ? new PointRow[0] : sv.rows();
+        updateCoverage(sv, rows);
+        map.setLive(fix, s == null ? new TrackPoint[0] : s.trail(), rows,
                 sv == null ? null : sv.refView(), sv == null ? null : sv.tiltView());
         if (s != null) s.layersMaybeChanged();
         maybeLoadRefs(sv);
