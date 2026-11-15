@@ -11,6 +11,11 @@ judged by the owner.
 Ice-Cube estimator tracks it through the season. It is done when the season's growth
 between survey dates is reported by `icecube` from logger surveys.
 
+**Scope.** The logger, the base station and the QGIS tools are general survey and GIS
+tools, and the rink is their main use. Generalising them is welcome where it is cheap
+(names, optional fields, no hardcoded rink assumptions) and does not slow the rink down;
+rink-specific logic stays in `icecube/` and the siting scripts.
+
 | Line | Check |
 |---|---|
 | The base station runs as a fixed base with a PPP coordinate, and serves corrections to the rover | `file-contains docs/log.md 60 h coordinate applied ; file-exists ha-addon/gnss_base/gnss_base/caster.py` |

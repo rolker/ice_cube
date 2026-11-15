@@ -12,6 +12,11 @@ turned into a geodesy project.
 with the data left out: the georeferenced survey data, logs and coordinates stay private,
 and the scripts take everything site-specific from local config.
 
+The survey tools (the logger, the base station and the QGIS tools in `analysis/qgis/`)
+are general-purpose: they work for any backyard survey or GIS question, not only the
+rink. The rink comes first, though. They are generalised where that is cheap, and the
+rink-specific parts live in `icecube/` and the siting scripts.
+
 **Story.** The narrative, in my voice, in `docs/story/`. Right now the chapters are
 outlines with the facts and prompts; the writing comes later. The journal in
 `docs/log.md` has the dates and numbers.
