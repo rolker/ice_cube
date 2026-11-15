@@ -59,6 +59,20 @@ public class LimitTest {
         assertEquals("", Limit.coverageProblem(1, 0.71, 2));
     }
 
+    @Test public void aFieldThatDoesNotParseCountsWithItsStoredValue() {
+        // #6 review round 2: the radius "9" does not parse, so the reach 20 m is checked
+        // against the 0.1 m spacing with the stored radius, not skipped
+        assertEquals("reach 20.00 m is over 50 grid spacings (5.00 m at 0.10 m spacing)",
+                Limit.coverageProblem("0.1", "9", "20", 0.5, 0.75, 2.0));
+        assertEquals("", Limit.coverageProblem("0.1", "9", "2", 0.5, 0.75, 2.0));
+        // the stored radius itself breaks the bounds at the new spacing
+        assertEquals("reach 6.00 m is over 50 grid spacings (5.00 m at 0.10 m spacing)",
+                Limit.coverageProblem("0.1", "0.75", "x", 0.5, 0.75, 6.0));
+        assertEquals("capture radius 0.50 m is under 0.71 grid spacings (1.42 m at 2.00 m spacing):"
+                + " some captures would feed no node", Limit.coverageProblem("2", "abc", null, 0.5, 0.5, 2.0));
+        assertEquals("", Limit.coverageProblem(null, null, null, 0.5, 0.75, 2.0));   // nothing built yet: stored values
+    }
+
     @Test public void coverageAbsoluteRanges() {
         assertEquals("must be 0.10 to 2.00 m", problem(Limit.COV_CELL_M, "2.5"));
         assertEquals("must be 0.10 to 2.00 m", problem(Limit.COV_CELL_M, "0.05"));

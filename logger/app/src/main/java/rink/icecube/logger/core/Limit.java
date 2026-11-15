@@ -58,6 +58,22 @@ public final class Limit {
     }
 
     /**
+     * {@link #coverageProblem} for the grid spacing, capture radius and reach as typed on the
+     * Settings screen, each text that does not parse (or is null) replaced by `cell`, `radius`
+     * or `reach`, the value that stays stored for it. A field that parses is thus never saved
+     * into a combination that breaks the bounds, whatever state the other two fields are in.
+     */
+    public static String coverageProblem(String cellText, String radiusText, String reachText,
+            double cell, double radius, double reach) {
+        return coverageProblem(parseOr(COV_CELL_M, cellText, cell), parseOr(COV_RADIUS_M, radiusText, radius),
+                parseOr(COV_REACH_M, reachText, reach));
+    }
+
+    private static double parseOr(Limit l, String text, double stored) {
+        try { return l.parse(text); } catch (IllegalArgumentException e) { return stored; }
+    }
+
+    /**
      * The coverage values brought within {@link #coverageProblem}'s bounds, for values saved
      * before the bounds existed: radius and reach cut to COV_MAX_CELLS spacings, the radius
      * raised to COV_MIN_RADIUS_CELLS. Values already within them come back unchanged.

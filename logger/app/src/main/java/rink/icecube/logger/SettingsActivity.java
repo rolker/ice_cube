@@ -309,26 +309,25 @@ public final class SettingsActivity extends Activity {
     /**
      * The problem with limit field i, or "". The grid spacing, capture radius and reach also
      * carry Limit.coverageProblem for the three together, so none of them is saved while the
-     * combination is out of bounds.
+     * combination is out of bounds. A field of the three that does not parse counts with the
+     * value that stays stored for it (Settings.limit), so the other two are still checked.
      */
     private String limitProblem(int i) {
         try { Settings.LIMITS[i].parse(limitFields[i].getText().toString()); }
         catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
         if (!isCoverageGeometry(i)) return "";
-        try {
-            String cross = Limit.coverageProblem(fieldValue(Settings.COV_CELL_M), fieldValue(Settings.COV_RADIUS_M),
-                    fieldValue(Settings.COV_REACH_M));
-            return cross.isEmpty() ? "" : cross + " (not saved)";
-        } catch (IllegalArgumentException e) {
-            return "";   // another of the three does not parse; its own field says why
-        }
+        SharedPreferences p = Settings.prefs(this);
+        String cross = Limit.coverageProblem(fieldText(Settings.COV_CELL_M), fieldText(Settings.COV_RADIUS_M),
+                fieldText(Settings.COV_REACH_M), Settings.limit(p, Settings.COV_CELL_M, Limit.COV_CELL_M),
+                Settings.limit(p, Settings.COV_RADIUS_M, Limit.COV_RADIUS_M),
+                Settings.limit(p, Settings.COV_REACH_M, Limit.COV_REACH_M));
+        return cross.isEmpty() ? "" : cross + " (not saved)";
     }
 
-    /** The parsed value of the limit field for `key`; throws IllegalArgumentException if it does not parse yet. */
-    private double fieldValue(String key) {
+    /** The text of the limit field for `key`, or null before it is built. */
+    private String fieldText(String key) {
         int k = java.util.Arrays.asList(Settings.LIMIT_KEYS).indexOf(key);
-        if (limitFields[k] == null) throw new IllegalArgumentException("not built yet");
-        return Settings.LIMITS[k].parse(limitFields[k].getText().toString());
+        return limitFields[k] == null ? null : limitFields[k].getText().toString();
     }
 
     private boolean poleIsOther() { return poleSpinner.getSelectedItemPosition() >= PoleHeight.PRESETS.length; }
