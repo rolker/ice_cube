@@ -159,6 +159,26 @@ public class CoverageTest {
         assertTrue(b.drainTouched().isEmpty());
     }
 
+    @Test public void onlyChangedNodesAreTouched() {
+        Coverage c = new Coverage(params(0.5, 0.75, 2.0));
+        c.add(0, 0, 0.1, 0.02, 0.03);
+        assertEquals(c.size(), c.drainTouched().size());   // all new: fed or newly in the area
+        c.add(0, 0, 0.1, 0.02, 0.03);                      // the same spot again: only the fed nodes change
+        Set<Coverage.Node> touched = new HashSet<>(c.drainTouched());
+        int fed = 0;
+        for (Coverage.Node nd : c.nodes()) {
+            boolean feeds = Math.hypot(nd.i * 0.5, nd.j * 0.5) <= 0.75;
+            if (feeds) fed++;
+            assertEquals(feeds, touched.contains(nd));
+        }
+        assertEquals(fed, touched.size());
+        assertTrue(fed < c.size());
+        c.add(1.0, 0, 0.1, 0.02, 0.03);                    // 1 m east: the new fringe column is touched too
+        for (Coverage.Node nd : c.drainTouched()) {
+            assertTrue(Math.hypot(nd.i * 0.5 - 1.0, nd.j * 0.5) <= 2.0 + 1e-9);
+        }
+    }
+
     @Test public void nodeCapStopsGrowthButKeepsUpdating() {
         Coverage cov = new Coverage(params(0.1, 0.3, 20));
         cov.add(0, 0, 0, 0.01, 0.01);        // about 126k nodes

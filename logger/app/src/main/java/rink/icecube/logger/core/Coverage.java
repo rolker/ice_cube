@@ -125,7 +125,10 @@ public final class Coverage {
         if (!nd.touched) { nd.touched = true; touched.add(nd); }
     }
 
-    /** Nodes changed since the last call (for repainting only those). */
+    /**
+     * Nodes changed since the last call (for repainting only those): fed, or newly in the
+     * area. A node within reach that was already in the area and not fed is not listed.
+     */
     public List<Node> drainTouched() {
         List<Node> out = new ArrayList<>(touched);
         for (Node nd : touched) nd.touched = false;
@@ -166,14 +169,16 @@ public final class Coverage {
                         nd.wz += z / v;
                         nd.n++;
                     }
+                    boolean changed = feeds;
                     if (marks && !nd.inArea) {
                         nd.inArea = true;
+                        changed = true;
                         if (i < minI) minI = i;
                         if (i > maxI) maxI = i;
                         if (j < minJ) minJ = j;
                         if (j > maxJ) maxJ = j;
                     }
-                    touch(nd);
+                    if (changed) touch(nd);   // a fringe node already in the area is unchanged: not repainted
                 }
             }
         }
