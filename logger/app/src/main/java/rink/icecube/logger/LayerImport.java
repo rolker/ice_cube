@@ -62,7 +62,11 @@ final class LayerImport {
         } else if (data.getData() != null) uris.add(data.getData());
         if (uris.isEmpty()) return;
         Settings.prefs(a).edit().putString(Settings.LAST_LAYER_IMPORT_URI, uris.get(uris.size() - 1).toString()).apply();
-        Context app = a.getApplicationContext();   // the file I/O does not hold on to the activity
+        // The file I/O uses the application context. The thread still holds the activity (and
+        // the callbacks, which capture it) until the import ends, to show the report on it;
+        // a finished or destroyed activity is skipped then, so at worst it is kept a few
+        // seconds longer.
+        Context app = a.getApplicationContext();
         File dir = Layers.importDir(app);
         new Thread(() -> {
             StringBuilder report = new StringBuilder();
