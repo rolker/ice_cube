@@ -251,13 +251,32 @@ class TestBuild(unittest.TestCase):
                 r(sid="a3", **{"class": "anchor"}, x_m=0.05, y_m=0.05, z_m=1.02, pass_id="p4", flags="suspect_jump")]
         for x in rows:
             snd.finish_use(x)
-        sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1)
+        sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
         self.assertEqual(len(sites), 1)
         self.assertEqual({x["anchor"] for x in rows}, {"site1"})
         self.assertEqual(joined, 1)
         ok, bad = snd.verify_suspect(rows)
         self.assertEqual((ok, bad), (1, 0))
         self.assertIn("suspect_verified", rows[3]["flags"])
+
+    def test_anchor_join_removes_configured_ground_sigma(self):
+        sg = snd._merge(snd.DEFAULTS["sigma"], {"ground": 0.05})        # not the default 0.015
+        terms = snd.sigma_terms(sg, sd_u=0.002, age=1.0, fix_age=200, pole_m=1.6, tilt_deg=1.0)
+        want = math.sqrt(terms["sigma_z"] ** 2 - 0.05 ** 2)
+        r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
+        g = snd.new_row(source="s", kind="point", use=1, sid="g1", x_m=0.02, y_m=0.0, z_m=1.0, pass_id="p2",
+                        **{"class": "ground"})
+        g.update(terms)
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.0, pass_id="p1", anchor="site1"), g]
+        for x in rows:
+            snd.finish_use(x)
+        _, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=sg["ground"])
+        self.assertEqual(joined, 1)
+        self.assertEqual(g["class"], "anchor")
+        self.assertEqual(g["sigma_ground"], 0.0)
+        self.assertAlmostEqual(g["sigma_z"], want, places=9)
+        self.assertAlmostEqual(g["sigma_z"], math.sqrt(sum(g[k] ** 2 for k in (
+            "sigma_rtk", "sigma_age", "sigma_settle", "sigma_pole"))), places=9)
 
 
 if __name__ == "__main__":

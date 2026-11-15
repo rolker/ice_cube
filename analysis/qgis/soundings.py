@@ -884,10 +884,12 @@ def swmaps_source(cfg, src, frame, history, log, with_log=True):
 
 # ----------------------------------------------------------------------------- post-processing
 
-def assign_anchors(rows, radius, snap, dz):
+def assign_anchors(rows, radius, snap, dz, *, ground_sigma):
     """Group anchor rows (refs, controls) within `radius` m (single link) into sites, named
     by the existing refs.site where present; then let other usable soundings within `snap` m
-    and `dz` m of a site's median join it as anchors (a repeat spot shot as a plain point)."""
+    and `dz` m of a site's median join it as anchors (a repeat spot shot as a plain point).
+    A joined ground row loses its ground term: `ground_sigma` is the configured
+    [soundings.sigma].ground that sigma_terms added to it."""
     an = [r for r in rows if r["class"] == "anchor" and r["x_m"] is not None]
     parent = list(range(len(an)))
 
@@ -920,7 +922,7 @@ def assign_anchors(rows, radius, snap, dz):
             if math.hypot(r["x_m"] - x, r["y_m"] - y) <= snap and abs(r["z_m"] - z) <= dz:
                 r["class"], r["anchor"] = "anchor", name
                 r["sigma_ground"] = 0.0
-                r["sigma_z"] = math.sqrt(max(r["sigma_z"] ** 2 - DEFAULTS["sigma"]["ground"] ** 2, 0.0))
+                r["sigma_z"] = math.sqrt(max(r["sigma_z"] ** 2 - ground_sigma ** 2, 0.0))
                 joined += 1
                 break
     return sites, joined
@@ -1173,7 +1175,8 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
             log(f"corrections: {p.name} not found, none applied (hook for post-processed positions)")
     for r in rows:
         finish_use(r)
-    sites, joined = assign_anchors(rows, cfg["anchor_radius_m"], cfg["anchor_snap_m"], cfg["anchor_dz_m"])
+    sites, joined = assign_anchors(rows, cfg["anchor_radius_m"], cfg["anchor_snap_m"], cfg["anchor_dz_m"],
+                                   ground_sigma=cfg["sigma"]["ground"])
     for r in rows:
         finish_use(r)
     v_ok, v_bad = verify_suspect(rows)
