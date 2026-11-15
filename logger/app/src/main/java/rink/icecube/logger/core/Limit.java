@@ -19,11 +19,56 @@ public final class Limit {
     public static final Limit TILT_IMU_DEG = new Limit("Tilt: IMU disagreement", "°", 0.5, 20, 3, 1);
     public static final Limit LEAN_SCATTER_CM = new Limit("Tilt: lean scatter", "cm", 0.2, 20, 2, 1);
     public static final Limit COV_TARGET_CM = new Limit("Coverage: sigma target", "cm", 0.5, 50, 3.0, 1);
-    public static final Limit COV_CELL_M = new Limit("Coverage: grid spacing", "m", 0.1, 5, 0.5, 2);
-    public static final Limit COV_RADIUS_M = new Limit("Coverage: capture radius", "m", 0.1, 10, 0.75, 2);
+    public static final Limit COV_CELL_M = new Limit("Coverage: grid spacing", "m", 0.1, 2, 0.5, 2);
+    public static final Limit COV_RADIUS_M = new Limit("Coverage: capture radius", "m", 0.1, 5, 0.75, 2);
     public static final Limit COV_REACH_M = new Limit("Coverage: reach", "m", 0.1, 20, 2.0, 2);
     public static final Limit COV_GROUND_CM = new Limit("Coverage: ground sigma", "cm", 0, 10, 1.5, 1);
     public static final Limit COV_WANDER_CM = new Limit("Coverage: pass wander", "cm", 0, 10, 1.5, 1);
+
+    /**
+     * Capture radius and reach: at most this many grid spacings, so one capture visits at
+     * most about (2 * 50 + 1)^2 = 10k grid cells and the node cap takes dozens of captures to reach.
+     */
+    public static final int COV_MAX_CELLS = 50;
+    /** Capture radius: at least this many grid spacings (half the cell diagonal), so every capture feeds a node. */
+    public static final double COV_MIN_RADIUS_CELLS = Math.sqrt(0.5);
+
+    /**
+     * The problem with this grid spacing, capture radius and reach together (metres), or "".
+     * Each value is assumed in its own range already (COV_CELL_M, COV_RADIUS_M, COV_REACH_M).
+     */
+    public static String coverageProblem(double cell, double radius, double reach) {
+        double tol = 1e-9;
+        if (radius > COV_MAX_CELLS * cell + tol) {
+            return String.format(Locale.US, "capture radius %s m is over %d grid spacings (%s m at %s m spacing)",
+                    COV_RADIUS_M.format(radius), COV_MAX_CELLS, COV_RADIUS_M.format(COV_MAX_CELLS * cell),
+                    COV_CELL_M.format(cell));
+        }
+        if (reach > COV_MAX_CELLS * cell + tol) {
+            return String.format(Locale.US, "reach %s m is over %d grid spacings (%s m at %s m spacing)",
+                    COV_REACH_M.format(reach), COV_MAX_CELLS, COV_REACH_M.format(COV_MAX_CELLS * cell),
+                    COV_CELL_M.format(cell));
+        }
+        if (radius < COV_MIN_RADIUS_CELLS * cell - tol) {
+            return String.format(Locale.US, "capture radius %s m is under 0.71 grid spacings (%s m at %s m spacing):"
+                    + " some captures would feed no node", COV_RADIUS_M.format(radius),
+                    COV_RADIUS_M.format(Math.ceil(COV_MIN_RADIUS_CELLS * cell * 100) / 100), COV_CELL_M.format(cell));
+        }
+        return "";
+    }
+
+    /**
+     * The coverage values brought within {@link #coverageProblem}'s bounds, for values saved
+     * before the bounds existed: radius and reach cut to COV_MAX_CELLS spacings, the radius
+     * raised to COV_MIN_RADIUS_CELLS. Values already within them come back unchanged.
+     */
+    public static Coverage.Params boundCoverage(Coverage.Params p) {
+        double max = COV_MAX_CELLS * p.cell;
+        double radius = Math.max(Math.min(p.captureRadius, max), COV_MIN_RADIUS_CELLS * p.cell);
+        double reach = Math.min(p.reach, max);
+        if (radius == p.captureRadius && reach == p.reach) return p;
+        return new Coverage.Params(p.cell, radius, reach, p.target, p.wander, p.ground);
+    }
 
     public final String name, unit;
     public final double min, max, def;

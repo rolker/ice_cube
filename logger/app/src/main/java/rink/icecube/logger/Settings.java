@@ -119,11 +119,14 @@ final class Settings {
 
     static boolean coverageOn(SharedPreferences p) { return p.getBoolean(COVERAGE_ON, true); }
 
-    /** The Settings > Coverage values in metres. */
+    /**
+     * The Settings > Coverage values in metres, within Limit.coverageProblem's bounds (a
+     * radius or reach saved before them is cut to 50 grid spacings).
+     */
     static Coverage.Params coverage(SharedPreferences p) {
-        return new Coverage.Params(limit(p, COV_CELL_M, Limit.COV_CELL_M), limit(p, COV_RADIUS_M, Limit.COV_RADIUS_M),
+        return Limit.boundCoverage(new Coverage.Params(limit(p, COV_CELL_M, Limit.COV_CELL_M), limit(p, COV_RADIUS_M, Limit.COV_RADIUS_M),
                 limit(p, COV_REACH_M, Limit.COV_REACH_M), limit(p, COV_TARGET_CM, Limit.COV_TARGET_CM) / 100,
-                limit(p, COV_WANDER_CM, Limit.COV_WANDER_CM) / 100, limit(p, COV_GROUND_CM, Limit.COV_GROUND_CM) / 100);
+                limit(p, COV_WANDER_CM, Limit.COV_WANDER_CM) / 100, limit(p, COV_GROUND_CM, Limit.COV_GROUND_CM) / 100));
     }
 
     static TiltSet.Gates tiltGates(SharedPreferences p) {

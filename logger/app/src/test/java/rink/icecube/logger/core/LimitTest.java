@@ -1,6 +1,7 @@
 package rink.icecube.logger.core;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import org.junit.Test;
@@ -42,5 +43,42 @@ public class LimitTest {
         }
         assertEquals(10, Limit.SETTLE_S.orDefault("abc"), 0);
         assertEquals("1.00", Limit.JUMP_M.format(1));
+    }
+
+    @Test public void coverageRadiusAndReachAtMostFiftyCells() {
+        Coverage.Params d = Coverage.Params.defaults();
+        assertEquals("", Limit.coverageProblem(d.cell, d.captureRadius, d.reach));
+        assertEquals("", Limit.coverageProblem(0.1, 5.0, 5.0));          // exactly 50 spacings
+        assertEquals("", Limit.coverageProblem(0.4, 0.75, 20));          // the reach maximum at 0.4 m
+        assertEquals("reach 20.00 m is over 50 grid spacings (5.00 m at 0.10 m spacing)",
+                Limit.coverageProblem(0.1, 0.75, 20));
+        assertEquals("capture radius 5.00 m is over 50 grid spacings (2.50 m at 0.05 m spacing)",
+                Limit.coverageProblem(0.05, 5, 1));
+        assertEquals("capture radius 0.50 m is under 0.71 grid spacings (1.42 m at 2.00 m spacing):"
+                + " some captures would feed no node", Limit.coverageProblem(2, 0.5, 2));
+        assertEquals("", Limit.coverageProblem(1, 0.71, 2));
+    }
+
+    @Test public void coverageAbsoluteRanges() {
+        assertEquals("must be 0.10 to 2.00 m", problem(Limit.COV_CELL_M, "2.5"));
+        assertEquals("must be 0.10 to 2.00 m", problem(Limit.COV_CELL_M, "0.05"));
+        assertEquals("must be 0.10 to 5.00 m", problem(Limit.COV_RADIUS_M, "6"));
+        assertEquals("must be 0.10 to 20.00 m", problem(Limit.COV_REACH_M, "25"));
+    }
+
+    @Test public void boundCoverageClampsOldValuesOnly() {
+        Coverage.Params d = Coverage.Params.defaults();
+        assertTrue(d == Limit.boundCoverage(d));
+        Coverage.Params p = Limit.boundCoverage(new Coverage.Params(0.1, 10, 20, 0.03, 0.015, 0.015));
+        assertEquals(5.0, p.captureRadius, 1e-12);
+        assertEquals(5.0, p.reach, 1e-12);
+        assertEquals(0.1, p.cell, 0);
+        assertEquals("", Limit.coverageProblem(p.cell, p.captureRadius, p.reach));
+        Coverage.Params q = Limit.boundCoverage(new Coverage.Params(2, 0.1, 2, 0.03, 0.015, 0.015));
+        assertEquals(Math.sqrt(0.5) * 2, q.captureRadius, 1e-12);
+    }
+
+    private static String problem(Limit l, String text) {
+        try { l.parse(text); return ""; } catch (IllegalArgumentException e) { return e.getMessage(); }
     }
 }

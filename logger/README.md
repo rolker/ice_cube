@@ -59,10 +59,16 @@ MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest
 - Coverage (see Coverage below), each a typed value checked against its range; a value out
   of range is not saved and the screen says why. A change rebuilds the overlay.
   - Sigma target: cm, 0.5 to 50, default 3.0. A node at or below it is clear.
-  - Grid spacing: m, 0.1 to 5, default 0.5.
-  - Capture radius: m, 0.1 to 10, default 0.75 (icecube's `capture_radius`).
+  - Grid spacing: m, 0.1 to 2, default 0.5.
+  - Capture radius: m, 0.1 to 5, default 0.75 (icecube's `capture_radius`).
   - Reach: m, 0.1 to 20, default 2.0: nodes this close to a capture are in the surveyed
     area. A reach below the capture radius is accepted and simply hides gaps.
+  - Together: capture radius and reach at most 50 grid spacings (so 5 m at 0.1 m, and the
+    20 m reach needs a spacing of 0.4 m or more), which keeps one capture to about 10,000
+    grid cells; and a capture radius of at least 0.71 grid spacings (half the cell
+    diagonal), so every capture feeds a node. While the three break this, none of them is
+    saved and the screen says why; a radius or reach saved before these bounds is cut to
+    50 grid spacings when used.
   - Ground sigma: cm, 0 to 10, default 1.5: how well one shot represents the surface
     around it (lawn 1.5 cm; about 0 on ice or a hard surface).
   - Pass wander: cm, 0 to 10, default 1.5: the RTK wander between passes, added to each
