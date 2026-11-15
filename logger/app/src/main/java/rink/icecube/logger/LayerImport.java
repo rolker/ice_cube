@@ -62,13 +62,14 @@ final class LayerImport {
         } else if (data.getData() != null) uris.add(data.getData());
         if (uris.isEmpty()) return;
         Settings.prefs(a).edit().putString(Settings.LAST_LAYER_IMPORT_URI, uris.get(uris.size() - 1).toString()).apply();
-        File dir = Layers.importDir(a);
+        Context app = a.getApplicationContext();   // the file I/O does not hold on to the activity
+        File dir = Layers.importDir(app);
         new Thread(() -> {
             StringBuilder report = new StringBuilder();
-            for (Uri u : uris) report.append(importOne(a, u, dir)).append('\n');
+            for (Uri u : uris) report.append(importOne(app, u, dir)).append('\n');
             Layers.reload();
             a.runOnUiThread(() -> {
-                if (a.isFinishing()) return;
+                if (a.isFinishing() || a.isDestroyed()) return;
                 if (imported != null) imported.run();
                 AlertDialog d = new AlertDialog.Builder(a).setTitle("Import layers").setMessage(report.toString().trim())
                         .setPositiveButton("OK", null).create();
