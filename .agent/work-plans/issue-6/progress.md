@@ -162,3 +162,22 @@ Owner decision: fix the must-fix and all eight suggestions in this PR, the #8 im
 - `python3 -m unittest discover icecube/tests`: 54 OK.
 - `python3 -m unittest discover -s analysis/qgis/tests`: 94 OK (5 skipped).
 - Not done: on-device check (error legend, area-limit legend, import naming and atomic replace on real shared storage).
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-15 12:06 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #7 at `d8ba8c0`
+**Depth**: Deep (reason: round 3 convergence check per handoff; scope: round-2 findings M1, S1-S8 and the fix diff 2c6222c..d8ba8c0; cross-model skipped (round-3 convergence check, per handoff))
+**Must-fix**: 0 | **Suggestions**: 0
+
+Round-2 findings, all fixed: M1 (Limit.coverageProblem(texts, stored), unparsed field counts at its stored value), S1 (post() catches RuntimeException|Error, drop + Sink.failed once, later tasks and update() no-ops, legend "coverage stopped: error"), S2 (closed flag), S3 (frame when full() changes), S4 (README/Settings doc), S5 (touch only fed or newly-in-area nodes; status depends only on the node and params, so unchanged fringe pixels stay right), S6 (LayerImport comment), S7 (LayerName CRC suffix, empty stem and case clash rejected, temp + sync + rename, temp deleted in finally), S8 (pickLayers isFinishing/isDestroyed). README text matches the code. Checks: `./gradlew testDebugUnitTest --rerun --offline` 145/0 failures (release variant 145/0); `python3 -m unittest discover icecube/tests` 54 OK.
+
+Deferrable (not blocking, no action required this PR):
+- If Sink.failed itself throws (e.g. a second OutOfMemoryError while logging), it escapes post()'s catch to the uncaught handler; wrap the sink call in its own try/catch if it ever matters — `core/CoverageWorker.java:136`
+- Not on a device: error legend, area-limit legend, import naming and atomic replace on the app's media folder (FUSE, case-insensitive).
+
+### Findings
+- [ ] No issues found. LGTM.
