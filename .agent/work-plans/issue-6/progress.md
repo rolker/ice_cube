@@ -55,3 +55,17 @@ The plan reflects all eight owner decisions and adds #8 as its own section and c
 - [ ] Fix the clear-radius example (finding 1)
 - [ ] Reopen the Layers dialog after the report is dismissed (finding 4)
 - [ ] Document the icecube -> analysis/qgis import in the generator (finding 5)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-15 10:29 -05:00
+**By**: claude (claude-opus-5-5)
+**PR**: #7 at `42f2e6e`
+
+- Plan updated with the owner's decisions (1 deg bubble tilt; tilt-capture rule, soundings.py in #9; pass wander a setting; review low findings).
+- core/SoundingSigma (port of soundings.sigma_terms, no GST) and icecube/logger_vectors.py (sigma part) with SoundingSigmaTest and icecube/tests/test_logger_vectors.py.
+- core/Coverage (one-pass nodes.py port, area rule, status with pass wander, 250k node cap), nodes part of the vectors, CoverageTest.
+- Settings > Coverage (six Limit fields), MENU > Coverage overlay toggle, MainActivity feed/rebuild, MapView bitmap overlay and legend.
+- #8: LayerImport shared by Settings > Map and MENU > Layers > Import… (also in the "No layer files" dialog); Layers dialog reopens when the report is dismissed; last picked URI as EXTRA_INITIAL_URI.
+- Docs and version 0.7.0 (versionCode 9): logger README, docs/howto/ice-cube.md, nodes.py and sigma_terms docstrings, .agents/README.md test notes.
+- Tests: ./gradlew clean assembleDebug test lint (117 JUnit, 0 failures; lint: only existing-style SetTextI18n and manifest warnings); icecube/tests 54 OK in the worktree; analysis/qgis/tests 94 OK (5 skipped). Not tested on a phone.
