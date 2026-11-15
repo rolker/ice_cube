@@ -134,3 +134,31 @@ Round-1 findings: all five fixed (capped bitmap window, UI-thread rebuild, Layer
 - [x] (suggestion) Comment says the import thread does not hold the activity, but the lambda still captures it for runOnUiThread; fix the comment or post via a main-looper Handler — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:65`
 - [x] (suggestion) #8 import names (not in the fix diff): "a b" and "a_b" collide silently; a file named ".geojson" is reported imported but never listed; a failed overwrite truncates the old layer (write temp then rename) — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:92`
 - [x] (suggestion) pickLayers shows a dialog from the Layers.getAsync callback without an isFinishing/isDestroyed check (reached from the import report's dismiss) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:776`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-15 12:01 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #7 at `064a0f4`
+**Addressed**: Local Review at `8f0320d` (2026-11-15 11:23 -05:00)
+**Commits**: d037c52, c819fa8, 24a3491, e74b80a, 5cec829, b161395, af7545f, 6b588fb, 064a0f4
+
+Owner decision: fix the must-fix and all eight suggestions in this PR, the #8 import-name edge cases (S7) included.
+
+### Actions
+- [x] (must-fix) A field of spacing/radius/reach that does not parse counts with its stored value (Settings.limit) in Limit.coverageProblem(texts, stored); LimitTest — `SettingsActivity.java`, `core/Limit.java` (d037c52)
+- [x] (suggestion) Worker tasks catch RuntimeException/Error: coverage dropped, worker stopped for good, Sink.failed once; MainActivity logs (logcat, session events) and MapView legend reads "coverage stopped: error"; three CoverageWorkerTest cases — `core/CoverageWorker.java`, `MainActivity.java`, `MapView.java` (24a3491)
+- [x] (suggestion) closed flag: update()/clear() after close() do nothing; test — `core/CoverageWorker.java` (c819fa8)
+- [x] (suggestion) A frame (empty patch) is sent when Coverage.full() changes; test fills MAX_NODES exactly — `core/CoverageWorker.java` (e74b80a)
+- [x] (suggestion) README and Settings.coverage doc: out-of-range saved values fall back to the default; radius/reach cut to 50 spacings, radius raised to 0.71 — `logger/README.md`, `Settings.java` (b161395)
+- [x] (suggestion) Coverage touches a node only when fed or newly in the area; parity vectors pass; CoverageTest case — `core/Coverage.java` (5cec829)
+- [x] (suggestion) Comment corrected (thread holds the activity and callbacks until the import ends); a main-looper Handler would not remove the capture — `LayerImport.java` (af7545f)
+- [x] (suggestion) core/LayerName: plain names kept, others sanitised with a CRC-32 suffix of the original; empty stem and case-only clashes rejected with a reason; temp file + sync + rename; LayerNameTest — `LayerImport.java`, `core/LayerName.java` (6b588fb)
+- [x] (suggestion) pickLayers callback returns when isFinishing()/isDestroyed() — `MainActivity.java` (064a0f4)
+
+### Checks
+- `cd logger && ./gradlew clean assembleDebug test lint --offline`: BUILD SUCCESSFUL, 145 JUnit tests per variant, 0 failures; lint: DataExtractionRules, MissingApplicationIcon (existing kinds).
+- `python3 -m unittest discover icecube/tests`: 54 OK.
+- `python3 -m unittest discover -s analysis/qgis/tests`: 94 OK (5 skipped).
+- Not done: on-device check (error legend, area-limit legend, import naming and atomic replace on real shared storage).
