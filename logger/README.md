@@ -67,8 +67,11 @@ MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest
     20 m reach needs a spacing of 0.4 m or more), which keeps one capture to about 10,000
     grid cells; and a capture radius of at least 0.71 grid spacings (half the cell
     diagonal), so every capture feeds a node. While the three break this, none of them is
-    saved and the screen says why; a radius or reach saved before these bounds is cut to
-    50 grid spacings when used.
+    saved and the screen says why (a field that does not parse counts with its saved
+    value). Values saved by an earlier version are used as follows: one outside its own
+    range (e.g. a spacing over 2 m or a radius over 5 m) falls back to its default; then
+    a radius or reach over 50 grid spacings is cut to 50, and a radius under 0.71 grid
+    spacings is raised to 0.71.
   - Ground sigma: cm, 0 to 10, default 1.5: how well one shot represents the surface
     around it (lawn 1.5 cm; about 0 on ice or a hard surface).
   - Pass wander: cm, 0 to 10, default 1.5: the RTK wander between passes, added to each

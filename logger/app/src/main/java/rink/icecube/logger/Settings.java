@@ -120,8 +120,10 @@ final class Settings {
     static boolean coverageOn(SharedPreferences p) { return p.getBoolean(COVERAGE_ON, true); }
 
     /**
-     * The Settings > Coverage values in metres, within Limit.coverageProblem's bounds (a
-     * radius or reach saved before them is cut to 50 grid spacings).
+     * The Settings > Coverage values in metres, within Limit.coverageProblem's bounds. For
+     * values saved by an earlier version: one outside its own Limit range falls back to its
+     * default (Settings.limit), then Limit.boundCoverage cuts a radius or reach over 50 grid
+     * spacings to 50 and raises a radius under 0.71 grid spacings to 0.71.
      */
     static Coverage.Params coverage(SharedPreferences p) {
         return Limit.boundCoverage(new Coverage.Params(limit(p, COV_CELL_M, Limit.COV_CELL_M), limit(p, COV_RADIUS_M, Limit.COV_RADIUS_M),
