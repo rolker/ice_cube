@@ -791,6 +791,7 @@ public final class MainActivity extends Activity {
     /** A checkbox per readable layer file, applied at once, and Import… (the same flow as Settings > Map). */
     private void pickLayers() {
         Layers.getAsync(this, l -> {
+            if (isFinishing() || isDestroyed()) return;   // e.g. reached from the import report's dismiss
             List<Layers.LayerFile> ok = new ArrayList<>();
             for (Layers.LayerFile f : l) if (f.layer != null) ok.add(f);
             if (ok.isEmpty()) {
