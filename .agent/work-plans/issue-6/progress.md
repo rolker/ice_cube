@@ -69,3 +69,20 @@ The plan reflects all eight owner decisions and adds #8 as its own section and c
 - #8: LayerImport shared by Settings > Map and MENU > Layers > Import… (also in the "No layer files" dialog); Layers dialog reopens when the report is dismissed; last picked URI as EXTRA_INITIAL_URI.
 - Docs and version 0.7.0 (versionCode 9): logger README, docs/howto/ice-cube.md, nodes.py and sigma_terms docstrings, .agents/README.md test notes.
 - Tests: ./gradlew clean assembleDebug test lint (117 JUnit, 0 failures; lint: only existing-style SetTextI18n and manifest warnings); icecube/tests 54 OK in the worktree; analysis/qgis/tests 94 OK (5 skipped). Not tested on a phone.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-15 10:33 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #7 at `40c7145`
+**Depth**: Deep (reason: 3586 changed lines, 23 files)
+**Must-fix**: 1 | **Suggestions**: 4
+
+### Findings
+- [ ] (must-fix) Capped coverage bitmap (over 2048 nodes per side, ~205 m at 0.1 m spacing) centres on the whole in-area box, so the newest captures can fall outside it; nodes moved into view are never repainted and read as clear; a new 16 MB bitmap every capture once capped — `logger/app/src/main/java/rink/icecube/logger/MapView.java:208-237`
+- [ ] (suggestion) Rebuild and per-capture feed run on the UI thread; allowed extremes (cell 0.1 m, reach 20 m) give ~160k cells per capture and hit MAX_NODES in ~2 captures; bound reach/cell in the Settings check or rebuild off the UI thread — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:755`, `core/Limit.java:22-24`
+- [ ] (suggestion) LayerImport guards only isFinishing(); add isDestroyed() and use the application context for file I/O (now also on MainActivity) — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:71`
+- [ ] (suggestion) COVERAGE_FIRST = 9 hard-coded; derive from LIMIT_KEYS.indexOf(COV_TARGET_CM) — `logger/app/src/main/java/rink/icecube/logger/Settings.java:55`
+- [ ] (suggestion) Near MAX_NODES the row-by-row scan of the reach box can spend the remaining budget on fringe nodes before the d <= radius nodes that take the sounding; create feed nodes first — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:117`
