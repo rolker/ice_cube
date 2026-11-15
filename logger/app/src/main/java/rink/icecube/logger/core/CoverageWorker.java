@@ -35,7 +35,7 @@ public final class CoverageWorker {
     private final AtomicInteger gen = new AtomicInteger();
 
     // Caller (UI) thread: what the queued tasks are for.
-    private boolean active;
+    private boolean active, closed;
     private Object session;
     private LocalFrame frame;
     private Coverage.Params params;
@@ -65,6 +65,7 @@ public final class CoverageWorker {
      * of date until its first frame arrives), false for a feed or nothing to do.
      */
     public boolean update(Object session, LocalFrame frame, Coverage.Params p, PointRow[] rows) {
+        if (closed) return false;   // the executor may be shut down
         if (!active || session != this.session || frame != this.frame || !p.equals(params) || rows.length < rowsPosted) {
             int g = gen.incrementAndGet();
             active = true;
@@ -87,7 +88,7 @@ public final class CoverageWorker {
 
     /** Overlay off or no session: drops queued work and, on the worker, the coverage. */
     public void clear() {
-        if (!active) return;
+        if (closed || !active) return;
         active = false;
         session = null;
         frame = null;
@@ -96,8 +97,12 @@ public final class CoverageWorker {
         worker.execute(() -> { if (gen.get() == g) drop(); });
     }
 
-    /** For onDestroy: cancels everything; the caller then shuts the executor down. */
+    /**
+     * For onDestroy: cancels everything; the caller then shuts the executor down. update()
+     * and clear() do nothing afterwards.
+     */
     public void close() {
+        closed = true;
         active = false;
         gen.incrementAndGet();
     }

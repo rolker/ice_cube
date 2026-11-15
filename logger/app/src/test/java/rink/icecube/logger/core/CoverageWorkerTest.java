@@ -157,6 +157,20 @@ public class CoverageWorkerTest {
         assertTrue(got.isEmpty());
     }
 
+    @Test public void updateAndClearAfterCloseDoNothing() {
+        ExecutorService ex = Executors.newSingleThreadExecutor();
+        CoverageWorker w = new CoverageWorker(ex, f -> { });
+        Object session = new Object();
+        PointRow[] rows = walk(5, 0.2);
+        w.update(session, F, P, rows);
+        w.close();
+        ex.shutdownNow();
+        assertFalse(w.update(session, F, P, rows));   // no RejectedExecutionException
+        assertFalse(w.update(new Object(), F, P, rows));
+        w.clear();
+        assertFalse(w.active());
+    }
+
     @Test public void aNewerRebuildOnARealThreadWins() throws Exception {
         ExecutorService ex = Executors.newSingleThreadExecutor();
         List<CoverageRaster.Frame> got = new ArrayList<>();
