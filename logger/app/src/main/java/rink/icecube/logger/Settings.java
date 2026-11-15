@@ -7,6 +7,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
+import rink.icecube.logger.core.Coverage;
 import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
@@ -37,11 +38,20 @@ final class Settings {
     static final String TILT_COVER_DEG = "tilt_cover_deg", TILT_RMS_CM = "tilt_rms_cm", TILT_MIN_DEG = "tilt_min_deg",
             TILT_MAX_DEG = "tilt_max_deg", TILT_SIGMA_CM = "tilt_sigma_cm", TILT_IMU_DEG = "tilt_imu_deg",
             LEAN_SCATTER_CM = "lean_scatter_cm";
-    /** The 0.6 numeric settings: key and its limit, in Settings screen order. */
+    // 0.7, coverage overlay: shown or not (MENU > Coverage), and its Settings > Coverage values
+    static final String COVERAGE_ON = "coverage_on";   // default on
+    static final String COV_TARGET_CM = "coverage_target_cm", COV_CELL_M = "coverage_cell_m",
+            COV_RADIUS_M = "coverage_radius_m", COV_REACH_M = "coverage_reach_m",
+            COV_GROUND_CM = "coverage_ground_cm", COV_WANDER_CM = "coverage_wander_cm";
+    /** The numeric settings: key and its limit, in Settings screen order (Survey, then Coverage from COVERAGE_FIRST). */
     static final String[] LIMIT_KEYS = {SETTLE_S, JUMP_M, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
-            TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM};
+            TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM,
+            COV_TARGET_CM, COV_CELL_M, COV_RADIUS_M, COV_REACH_M, COV_GROUND_CM, COV_WANDER_CM};
     static final Limit[] LIMITS = {Limit.SETTLE_S, Limit.JUMP_M, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
-            Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM};
+            Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM,
+            Limit.COV_TARGET_CM, Limit.COV_CELL_M, Limit.COV_RADIUS_M, Limit.COV_REACH_M, Limit.COV_GROUND_CM,
+            Limit.COV_WANDER_CM};
+    static final int COVERAGE_FIRST = 9;
 
     private Settings() { }
 
@@ -104,6 +114,15 @@ final class Settings {
 
     static long settleNs(SharedPreferences p) { return Math.round(limit(p, SETTLE_S, Limit.SETTLE_S) * 1e9); }
     static double jumpM(SharedPreferences p) { return limit(p, JUMP_M, Limit.JUMP_M); }
+
+    static boolean coverageOn(SharedPreferences p) { return p.getBoolean(COVERAGE_ON, true); }
+
+    /** The Settings > Coverage values in metres. */
+    static Coverage.Params coverage(SharedPreferences p) {
+        return new Coverage.Params(limit(p, COV_CELL_M, Limit.COV_CELL_M), limit(p, COV_RADIUS_M, Limit.COV_RADIUS_M),
+                limit(p, COV_REACH_M, Limit.COV_REACH_M), limit(p, COV_TARGET_CM, Limit.COV_TARGET_CM) / 100,
+                limit(p, COV_WANDER_CM, Limit.COV_WANDER_CM) / 100, limit(p, COV_GROUND_CM, Limit.COV_GROUND_CM) / 100);
+    }
 
     static TiltSet.Gates tiltGates(SharedPreferences p) {
         TiltSet.Gates g = new TiltSet.Gates();

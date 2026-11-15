@@ -18,6 +18,18 @@ public class LimitTest {
         assertEquals(2, Limit.LEAN_SCATTER_CM.def, 0);
     }
 
+    @Test public void coverageDefaultsMatchCoverageParams() {
+        Coverage.Params p = Coverage.Params.defaults();
+        assertEquals(p.target, Limit.COV_TARGET_CM.def / 100, 1e-12);
+        assertEquals(p.cell, Limit.COV_CELL_M.def, 0);
+        assertEquals(p.captureRadius, Limit.COV_RADIUS_M.def, 0);
+        assertEquals(p.reach, Limit.COV_REACH_M.def, 0);
+        assertEquals(p.ground, Limit.COV_GROUND_CM.def / 100, 1e-12);
+        assertEquals(p.wander, Limit.COV_WANDER_CM.def / 100, 1e-12);
+        assertEquals(0, Limit.COV_GROUND_CM.parse("0"), 0);
+        assertEquals(0.75, Limit.COV_RADIUS_M.parse("0.75"), 0);
+    }
+
     @Test public void parseChecksFormatAndRange() {
         assertEquals(0, Limit.SETTLE_S.parse("0"), 0);
         assertEquals(60, Limit.SETTLE_S.parse(" 60 "), 0);

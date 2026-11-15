@@ -2,11 +2,14 @@ package rink.icecube.logger;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.RectF;
 import android.os.Bundle;
 import android.os.Parcelable;
@@ -19,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import rink.icecube.logger.core.Coverage;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.PointRow;
@@ -35,6 +39,11 @@ import rink.icecube.logger.core.TrackPoint;
  * object squares, ref rings, in the SurveyMode colours, optionally labelled S12, O13,
  * R14), photos (a camera icon), earlier refs from refs.csv (grey rings, when switched on),
  * the live position, and a countdown ring at the top centre while a ref occupation runs.
+ *
+ * Under the trail and captures, when MENU > Coverage is on: the live coverage overlay
+ * ({@link Coverage}), one bitmap pixel per grid node over the surveyed area, red for no
+ * data or disagreement, amber for sigma above the target, clear otherwise, translucent so
+ * layers show through. Only the nodes a capture touched are repainted.
  */
 final class MapView extends View {
     /** A projected feature with its resolved style. */
@@ -60,6 +69,16 @@ final class MapView extends View {
     private Survey.TiltView tilt;
     private boolean labels = true;
     static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
+    static final int COVER_RED = 0x66D32F2F, COVER_AMBER = 0x55FFA000;
+    /** Largest overlay bitmap side, in nodes (1 km at 0.5 m). */
+    static final int COVER_MAX_SIDE = 2048;
+    private static final int COVER_MARGIN = 32;
+
+    private Coverage coverage;
+    private Bitmap covBmp;
+    private int covI0, covJ1;   // node indices of the bitmap's left column and top row
+    private final Paint covPaint = new Paint(), covCopy = new Paint();
+    private final RectF covRect = new RectF();
 
     private double cx, cy;               // view centre, map units
     private float ppm;                   // pixels per metre, 0 until first layout
@@ -103,6 +122,8 @@ final class MapView extends View {
         halo.setStrokeWidth(3 * dp);
         halo.setColor(0xCCFFFFFF);
         box.setColor(0xD9FFFFFF);
+        covPaint.setFilterBitmap(false);
+        covCopy.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC));
         scaler = new ScaleGestureDetector(c, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScale(ScaleGestureDetector d) {
                 zoomAt(d.getScaleFactor(), d.getFocusX(), d.getFocusY());
@@ -154,6 +175,76 @@ final class MapView extends View {
         this.ref = ref;
         this.tilt = tilt;
         invalidate();
+    }
+
+    /** The coverage overlay to draw (null: none). A new object is painted from scratch. */
+    void setCoverage(Coverage c) {
+        if (c == coverage) return;
+        coverage = c;
+        covBmp = null;
+        if (c != null) {
+            c.drainTouched();
+            paintCoverage(c.nodes());
+        }
+        invalidate();
+    }
+
+    /** Repaints the nodes the coverage changed since the last call. */
+    void coverageChanged() {
+        if (coverage == null) return;
+        List<Coverage.Node> t = coverage.drainTouched();
+        if (!t.isEmpty()) { paintCoverage(t); invalidate(); }
+    }
+
+    static int coverColor(Coverage.Status s) {
+        switch (s) {
+            case NO_DATA: case DISAGREE: return COVER_RED;
+            case THIN: return COVER_AMBER;
+            default: return 0;
+        }
+    }
+
+    /** Grows the bitmap (by copy) to the in-area box when needed, capped at COVER_MAX_SIDE, then paints nodes. */
+    private void paintCoverage(Iterable<Coverage.Node> nodes) {
+        Coverage c = coverage;
+        if (c.minI > c.maxI) return;
+        int needI0 = c.minI, needI1 = c.maxI, needJ0 = c.minJ, needJ1 = c.maxJ;
+        boolean fits = covBmp != null && needI0 >= covI0 && needI1 < covI0 + covBmp.getWidth()
+                && needJ1 <= covJ1 && needJ0 > covJ1 - covBmp.getHeight();
+        if (!fits) {
+            int i0 = needI0 - COVER_MARGIN, i1 = needI1 + COVER_MARGIN;
+            int j0 = needJ0 - COVER_MARGIN, j1 = needJ1 + COVER_MARGIN;
+            if (covBmp != null) {   // keep what is there: grow to the union
+                i0 = Math.min(i0, covI0);
+                i1 = Math.max(i1, covI0 + covBmp.getWidth() - 1);
+                j1 = Math.max(j1, covJ1);
+                j0 = Math.min(j0, covJ1 - covBmp.getHeight() + 1);
+            }
+            if (i1 - i0 + 1 > COVER_MAX_SIDE) {   // keep the newest area in view: centre on the latest box
+                int mid = (needI0 + needI1) / 2;
+                i0 = mid - COVER_MAX_SIDE / 2;
+                i1 = i0 + COVER_MAX_SIDE - 1;
+            }
+            if (j1 - j0 + 1 > COVER_MAX_SIDE) {
+                int mid = (needJ0 + needJ1) / 2;
+                j0 = mid - COVER_MAX_SIDE / 2;
+                j1 = j0 + COVER_MAX_SIDE - 1;
+            }
+            Bitmap b = Bitmap.createBitmap(i1 - i0 + 1, j1 - j0 + 1, Bitmap.Config.ARGB_8888);
+            if (covBmp != null) {
+                new Canvas(b).drawBitmap(covBmp, covI0 - i0, j1 - covJ1, covCopy);
+                covBmp.recycle();
+            }
+            covBmp = b;
+            covI0 = i0;
+            covJ1 = j1;
+        }
+        int w = covBmp.getWidth(), h = covBmp.getHeight();
+        for (Coverage.Node nd : nodes) {
+            int x = nd.i - covI0, y = covJ1 - nd.j;
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            covBmp.setPixel(x, y, coverColor(c.status(nd)));
+        }
     }
 
     /** Earlier refs from refs.csv to draw as grey rings (empty for none). */
@@ -326,6 +417,7 @@ final class MapView extends View {
                 else c.drawCircle(x, y, 4 * dp, dot);
             }
         }
+        drawCoverage(c);
         drawOrigin(c);
         drawTrail(c);
         drawEarlierRefs(c);
@@ -336,6 +428,18 @@ final class MapView extends View {
         drawScale(c, w, h);
         drawRefRing(c, w);
         drawTiltRose(c, w);
+    }
+
+    /** The coverage bitmap in map units: pixel (x, y) is node (covI0 + x, covJ1 - y), centred on it. */
+    private void drawCoverage(Canvas c) {
+        if (coverage == null || covBmp == null) return;
+        double cell = coverage.params.cell;
+        covRect.set((float) ((covI0 - 0.5) * cell), (float) ((-covJ1 - 0.5) * cell),
+                (float) ((covI0 + covBmp.getWidth() - 0.5) * cell), (float) ((-covJ1 + covBmp.getHeight() - 0.5) * cell));
+        c.save();
+        c.concat(matrix);
+        c.drawBitmap(covBmp, null, covRect, covPaint);
+        c.restore();
     }
 
     private void drawTriangle(Canvas c, float x, float y, float r, int color) {
@@ -566,7 +670,11 @@ final class MapView extends View {
         float width = 0;
         for (String n : LEGEND_NAMES) width = Math.max(width, text.measureText(n));
         for (SurveyMode m : SurveyMode.values()) width = Math.max(width, text.measureText(m.key));
-        int rows = LEGEND_Q.length + SurveyMode.values().length;
+        String[] cov = coverage == null ? new String[0] : coverage.full()
+                ? new String[] {"no data / disagree", "σ > target", "coverage: area limit"}
+                : new String[] {"no data / disagree", "σ > target"};
+        for (String n : cov) width = Math.max(width, text.measureText(n));
+        int rows = LEGEND_Q.length + SurveyMode.values().length + cov.length;
         c.drawRoundRect(x, y, x + width + 26 * dp, y + row * rows + pad, 4 * dp, 4 * dp, box);
         for (int i = 0; i < LEGEND_Q.length; i++) {
             float cy0 = y + pad + row * i + row / 2 - 2 * dp;
@@ -581,6 +689,15 @@ final class MapView extends View {
             else if (m == SurveyMode.OBJECT) { dot.setColor(m.color); c.drawRect(cx0 - 4 * dp, cy0 - 4 * dp, cx0 + 4 * dp, cy0 + 4 * dp, dot); }
             else { stroke.setColor(m.color); stroke.setStrokeWidth(2 * dp); c.drawCircle(cx0, cy0, 4.5f * dp, stroke); }
             c.drawText(m.key, x + 20 * dp, cy0 + text.getTextSize() / 3, text);
+        }
+        for (int k = 0; k < cov.length; k++) {
+            float cy0 = y + pad + row * (LEGEND_Q.length + SurveyMode.values().length + k) + row / 2 - 2 * dp;
+            float cx0 = x + 10 * dp;
+            if (k < 2) {
+                dot.setColor(k == 0 ? COVER_RED : COVER_AMBER);
+                c.drawRect(cx0 - 5 * dp, cy0 - 5 * dp, cx0 + 5 * dp, cy0 + 5 * dp, dot);
+            }
+            c.drawText(cov[k], x + 20 * dp, cy0 + text.getTextSize() / 3, text);
         }
     }
 

@@ -55,7 +55,8 @@ import rink.icecube.logger.core.SurveyLimits;
  * Display, caster, GPS link, survey and map settings, saved to SharedPreferences when the
  * screen is left (layer checkboxes and Screen orientation save at once). Survey also holds
  * the capture settings: ref duration, pole check tolerance, volume keys, sound, vibration,
- * earlier refs and capture labels on the map. Caster and link changes take effect at the next
+ * earlier refs and capture labels on the map. Coverage holds the live coverage overlay's
+ * sigma target, grid and estimator settings (the overlay rebuilds when they change). Caster and link changes take effect at the next
  * Connect; pole height and Frame changes apply at once and are logged in a running session.
  * The password is only shown as dots.
  */
@@ -176,16 +177,10 @@ public final class SettingsActivity extends Activity {
         poleTolerance.addTextChangedListener(watcher(() -> toleranceError.setText(problem(false))));
         label(c, "False-fix guard: after a new RTK fix (or a jump inside one) captures wait for the settle time;"
                 + " a fix that began with a jump over the warning is flagged (amber, fix_suspect).");
-        for (int i = 0; i < Settings.LIMITS.length; i++) {
+        for (int i = 0; i < Settings.COVERAGE_FIRST; i++) {
             if (i == 2) label(c, "Tilt capture gates (see README, Tilt capture): leans outside the tilt range are refused;"
                     + " the others warn before saving.");
-            Limit l = Settings.LIMITS[i];
-            int k = i;
-            limitFields[i] = field(c, l.name + ", " + l.unit + " (" + l.range() + ", default " + l.format(l.def) + ")",
-                    p.getString(Settings.LIMIT_KEYS[i], l.format(l.def)),
-                    InputType.TYPE_CLASS_NUMBER | (l.decimals > 0 ? InputType.TYPE_NUMBER_FLAG_DECIMAL : 0));
-            limitErrors[i] = error(c);
-            limitFields[i].addTextChangedListener(watcher(() -> limitErrors[k].setText(limitProblem(k))));
+            limitField(c, p, i);
         }
         volumeKeys = check(c, "Volume keys: Mark / Mode (down = MARK, up = MODE on the map)", Settings.volumeKeys(p));
         sound = check(c, "Sound for captures, modes, refs and errors", Settings.sound(p));
@@ -196,6 +191,19 @@ public final class SettingsActivity extends Activity {
         soundHelp.setText("Sounds play on the media volume, which silent mode does not mute. Set it before going out: "
                 + "the volume keys do not change it while the map is in front and Volume keys is on.");
         c.addView(soundHelp);
+
+        header(c, "Coverage", pad);
+        label(c, "Live coverage overlay (MENU > Coverage): RTK-fixed surface captures of this session feed a grid;"
+                + " red = no capture within the capture radius, or captures that disagree; amber = node sigma above the"
+                + " target; clear = at or below it. Nodes within reach of a capture are drawn.");
+        for (int i = Settings.COVERAGE_FIRST; i < Settings.LIMITS.length; i++) {
+            if (Settings.LIMIT_KEYS[i].equals(Settings.COV_GROUND_CM)) {
+                label(c, "Ground sigma: how well one shot represents the surface around it (lawn 1.5 cm,"
+                        + " about 0 on ice or a hard surface). Pass wander: the RTK wander between passes that the"
+                        + " live view cannot solve, added to each node's sigma before the target test.");
+            }
+            limitField(c, p, i);
+        }
 
         header(c, "Map", pad);
         layersHeader = new TextView(this);
@@ -281,6 +289,16 @@ public final class SettingsActivity extends Activity {
             else SurveyLimits.parseToleranceCm(poleTolerance.getText().toString());
             return "";
         } catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
+    }
+
+    /** The labelled text field for numeric setting i, with its live parse check. */
+    private void limitField(LinearLayout c, SharedPreferences p, int i) {
+        Limit l = Settings.LIMITS[i];
+        limitFields[i] = field(c, l.name + ", " + l.unit + " (" + l.range() + ", default " + l.format(l.def) + ")",
+                p.getString(Settings.LIMIT_KEYS[i], l.format(l.def)),
+                InputType.TYPE_CLASS_NUMBER | (l.decimals > 0 ? InputType.TYPE_NUMBER_FLAG_DECIMAL : 0));
+        limitErrors[i] = error(c);
+        limitFields[i].addTextChangedListener(watcher(() -> limitErrors[i].setText(limitProblem(i))));
     }
 
     /** The problem with limit field i, or "". */

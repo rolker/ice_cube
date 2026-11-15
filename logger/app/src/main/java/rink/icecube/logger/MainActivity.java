@@ -44,9 +44,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import rink.icecube.logger.core.Coverage;
 import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.LinkState;
+import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.MapOrigin;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.PointRow;
@@ -78,6 +80,11 @@ import rink.icecube.logger.core.TrackPoint;
  * of the first layer (the map moves to the fix origin once one arrives). The info box and
  * the capture notices give positions as x/y/z in that frame. The screen stays on.
  *
+ * Coverage overlay (MENU > Coverage, on by default): a {@link Coverage} fed with this
+ * session's RTK-fixed surface captures as they arrive (rows past the last one fed, on each
+ * refresh), rebuilt from the session's rows when the map frame, the session or a Settings >
+ * Coverage value changes. Earlier sessions are not loaded.
+ *
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
 public final class MainActivity extends Activity {
@@ -101,6 +108,14 @@ public final class MainActivity extends Activity {
     private static volatile MapOrigin shownOrigin;
 
     static MapOrigin shownOrigin() { return shownOrigin; }
+
+    // The coverage overlay: the estimator, what it was built for, and how many session rows it has seen.
+    private Coverage coverage;
+    private Survey coverageSurvey;
+    private LocalFrame coverageFrame;
+    private int coverageRows;
+    private boolean coverageOn = true;
+    private Coverage.Params coverageParams = Coverage.Params.defaults();
 
     private int refsLoadedGen = -1;
     private String refsLoadedFor = "";
@@ -691,6 +706,7 @@ public final class MainActivity extends Activity {
         if (sv != null && sv.tiltRunning()) item("Cancel tilt capture", this::confirmCancelTilt);
         else item("Tilt capture (" + mode().key + ")", () -> tiltAction("start"));
         item("Layers…", this::pickLayers);
+        item((coverageOn ? "☑" : "☐") + " Coverage overlay", this::toggleCoverage);
         item("Share last session", () -> {
             List<File> all = Storage.sessions(this);
             if (all.isEmpty()) toast("No sessions yet"); else Sharer.share(this, all.get(0));
@@ -711,6 +727,38 @@ public final class MainActivity extends Activity {
         b.setMinimumHeight(Screen.dp(this, 56));
         b.setOnClickListener(v -> { closeDrawer(); r.run(); });
         drawerItems.addView(b, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void toggleCoverage() {
+        coverageOn = !coverageOn;
+        Settings.prefs(this).edit().putBoolean(Settings.COVERAGE_ON, coverageOn).apply();
+        refresh();
+    }
+
+    /**
+     * Feeds the session's new rows to the coverage overlay, or rebuilds it from all of them
+     * when the frame, the session or the settings changed; clears it when off or with no session.
+     */
+    private void updateCoverage(Survey sv, PointRow[] rows) {
+        LocalFrame f = map.frame();
+        if (!coverageOn || f == null || sv == null) {
+            if (coverage != null) { coverage = null; map.setCoverage(null); }
+            coverageSurvey = null;
+            return;
+        }
+        if (coverage == null || sv != coverageSurvey || f != coverageFrame || !coverageParams.equals(coverage.params)) {
+            Coverage c = new Coverage(coverageParams);
+            for (PointRow r : rows) c.add(r, f);
+            coverage = c;
+            coverageSurvey = sv;
+            coverageFrame = f;
+            coverageRows = rows.length;
+            map.setCoverage(c);
+            return;
+        }
+        for (int k = coverageRows; k < rows.length; k++) coverage.add(rows[k], f);
+        coverageRows = rows.length;
+        map.coverageChanged();
     }
 
     /** A checkbox per readable layer file, applied at once. */
@@ -742,6 +790,8 @@ public final class MainActivity extends Activity {
         Screen.applyOrientation(this);
         map.setLabels(Settings.labelCaptures(Settings.prefs(this)));
         refsLoadedGen = -1;   // settings may have changed
+        coverageOn = Settings.coverageOn(Settings.prefs(this));
+        coverageParams = Settings.coverage(Settings.prefs(this));   // a change rebuilds the overlay
         Layers.getAsync(this, l -> { files = l; applyLayers(); });
         updateModeButtons();
         ui.post(tick);
@@ -824,7 +874,9 @@ public final class MainActivity extends Activity {
         Control.askUsbPermissionIfNeeded(this);
         Survey sv = s == null ? null : s.survey();
         TrackPoint fix = s == null ? null : s.currentFix();
-        map.setLive(fix, s == null ? new TrackPoint[0] : s.trail(), sv == null ? new PointRow[0] : sv.rows(),
+        PointRow[] rows = sv == null ? new PointRow[0] : sv.rows();
+        updateCoverage(sv, rows);
+        map.setLive(fix, s == null ? new TrackPoint[0] : s.trail(), rows,
                 sv == null ? null : sv.refView(), sv == null ? null : sv.tiltView());
         if (s != null) s.layersMaybeChanged();
         maybeLoadRefs(sv);

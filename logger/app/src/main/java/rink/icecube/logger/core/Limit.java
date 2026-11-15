@@ -5,7 +5,8 @@ import java.util.Locale;
 /**
  * A numeric setting typed as text: its range, default and unit, with the parse check the
  * Settings screen shows. The instances are the 0.6 settings for the false-fix guard and
- * tilt capture (see the README, Settings > Survey).
+ * tilt capture (see the README, Settings > Survey), and the 0.7 coverage overlay settings
+ * (Settings > Coverage).
  */
 public final class Limit {
     public static final Limit SETTLE_S = new Limit("Fix settle time", "s", 0, 60, 10, 0);
@@ -17,6 +18,12 @@ public final class Limit {
     public static final Limit TILT_SIGMA_CM = new Limit("Tilt: maximum sigma", "cm", 0.1, 50, 5, 1);
     public static final Limit TILT_IMU_DEG = new Limit("Tilt: IMU disagreement", "°", 0.5, 20, 3, 1);
     public static final Limit LEAN_SCATTER_CM = new Limit("Tilt: lean scatter", "cm", 0.2, 20, 2, 1);
+    public static final Limit COV_TARGET_CM = new Limit("Coverage: sigma target", "cm", 0.5, 50, 3.0, 1);
+    public static final Limit COV_CELL_M = new Limit("Coverage: grid spacing", "m", 0.1, 5, 0.5, 2);
+    public static final Limit COV_RADIUS_M = new Limit("Coverage: capture radius", "m", 0.1, 10, 0.75, 2);
+    public static final Limit COV_REACH_M = new Limit("Coverage: reach", "m", 0.1, 20, 2.0, 2);
+    public static final Limit COV_GROUND_CM = new Limit("Coverage: ground sigma", "cm", 0, 10, 1.5, 1);
+    public static final Limit COV_WANDER_CM = new Limit("Coverage: pass wander", "cm", 0, 10, 1.5, 1);
 
     public final String name, unit;
     public final double min, max, def;
