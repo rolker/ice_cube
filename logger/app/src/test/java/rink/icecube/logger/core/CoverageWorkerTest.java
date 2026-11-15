@@ -234,6 +234,31 @@ public class CoverageWorkerTest {
         synchronized (uncaught) { assertTrue(uncaught.isEmpty()); }
     }
 
+    @Test public void aFeedThatOnlyHitsTheNodeCapStillSendsTheAreaLimit() {
+        // 1 m spacing, radius and reach 1.2 m: an isolated capture on a node makes exactly 5
+        // nodes, so MAX_NODES / 5 captures 3 m apart fill the grid without setting full()
+        Coverage.Params p = new Coverage.Params(1.0, 1.2, 1.2, 0.03, 0.015, 0.015);
+        int n = Coverage.MAX_NODES / 5, side = (int) Math.ceil(Math.sqrt(n));
+        PointRow[] rows = new PointRow[n + 1];
+        for (int k = 0; k < n; k++) rows[k] = surface(3.0 * (k % side), 3.0 * (k / side), 0.2);
+        rows[n] = surface(-30, -30, 0.2);   // fresh ground: no node can be made, none touched
+        Queue q = new Queue();
+        List<CoverageRaster.Frame> got = new ArrayList<>();
+        CoverageWorker w = new CoverageWorker(q, got::add);
+        Object session = new Object();
+        w.update(session, F, p, Arrays.copyOf(rows, n));
+        q.runAll();
+        assertEquals(1, got.size());
+        assertFalse(got.get(0).areaLimit);
+        assertFalse(w.update(session, F, p, rows));
+        q.runAll();
+        assertEquals(2, got.size());
+        CoverageRaster.Frame last = got.get(1);
+        assertTrue(last.areaLimit);
+        assertFalse(last.isFull());
+        assertEquals(0, last.index.length);   // an empty patch: only the legend changes
+    }
+
     @Test public void aNewerRebuildOnARealThreadWins() throws Exception {
         ExecutorService ex = Executors.newSingleThreadExecutor();
         List<CoverageRaster.Frame> got = new ArrayList<>();

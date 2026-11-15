@@ -58,6 +58,9 @@ public final class CoverageWorker {
     private Coverage coverage;
     private CoverageRaster raster;
     private int coverageGen = -1;
+    /** The newest touched box sent, and Coverage.full() at the last frame sent. */
+    private int[] lastNewest;
+    private boolean lastFull;
 
     public CoverageWorker(Executor worker, Sink sink) { this(worker, sink, CoverageRaster.MAX_SIDE, CoverageRaster.MARGIN); }
 
@@ -137,7 +140,7 @@ public final class CoverageWorker {
         });
     }
 
-    private void drop() { coverage = null; raster = null; coverageGen = -1; }
+    private void drop() { coverage = null; raster = null; coverageGen = -1; lastNewest = null; lastFull = false; }
 
     private void rebuild(int g, Coverage.Params p, LocalFrame f, PointRow[] rows) {
         if (gen.get() != g) return;
@@ -156,6 +159,8 @@ public final class CoverageWorker {
         coverage = c;
         raster = ras;
         coverageGen = g;
+        lastNewest = newest;
+        lastFull = fr.areaLimit;
         if (gen.get() == g) sink.frame(fr);
     }
 
@@ -169,8 +174,12 @@ public final class CoverageWorker {
             int[] b = CoverageRaster.box(t);
             if (b != null) { newest = b; touched.addAll(t); }
         }
-        if (touched.isEmpty()) return;
-        CoverageRaster.Frame fr = raster.update(g, coverage, touched, newest);
+        // A capture that first meets MAX_NODES may touch nothing; the frame still carries
+        // the area-limit line for the legend.
+        if (touched.isEmpty() && coverage.full() == lastFull) return;
+        if (newest != null) lastNewest = newest;
+        CoverageRaster.Frame fr = raster.update(g, coverage, touched, lastNewest);
+        lastFull = fr.areaLimit;
         if (gen.get() == g) sink.frame(fr);
     }
 }
