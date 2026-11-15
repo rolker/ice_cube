@@ -14,20 +14,23 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
 import rink.icecube.logger.core.GeoJson;
+import rink.icecube.logger.core.LayerName;
 
 /**
  * Importing layer files, shared by Settings > Map > Import layer files… and MENU > Layers >
  * Import…: the system file picker (Drive and Downloads appear there), then each picked file
- * is checked to parse as GeoJSON and copied to {@link Layers#importDir} under a sanitised
- * name (a file of the same name is replaced). A report dialog lists one line per file
- * (features, skipped features, or why it was not imported).
+ * is checked to parse as GeoJSON and copied to {@link Layers#importDir} under the name from
+ * {@link LayerName#forImport} (the same picked name replaces its earlier import; a name that
+ * needs sanitising gets a suffix so it never replaces another file's), written to a
+ * temporary file first and renamed over the old one only when complete. A report dialog
+ * lists one line per file (features, skipped features, or why it was not imported).
  *
  * The picker is asked to open where the last import came from (EXTRA_INITIAL_URI, the last
  * picked document); pickers that ignore it open at their default.
@@ -93,16 +96,34 @@ final class LayerImport {
                 text = Layers.readText(in, Layers.MAX_BYTES);
             }
             GeoJson.Layer l = GeoJson.parse(text);
-            String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
-            if (!Layers.isLayerName(safe)) safe = safe + ".geojson";
-            File out = new File(dir, safe);
-            try (OutputStream o = new FileOutputStream(out)) { o.write(text.getBytes(StandardCharsets.UTF_8)); }
+            String[] there = dir.list();
+            String safe;
+            try { safe = LayerName.forImport(name, there == null ? null : Arrays.asList(there)); }
+            catch (IllegalArgumentException e) { return name + ": not imported, " + e.getMessage(); }
+            write(new File(dir, safe), text.getBytes(StandardCharsets.UTF_8));
             return String.format(Locale.US, "%s: %d features%s", safe, l.features.size(),
                     l.warnings.isEmpty() ? "" : ", " + l.warnings.size() + " skipped");
         } catch (IOException | SecurityException e) {
             return name + ": not imported (" + e.getMessage() + ")";
         } catch (GeoJson.GeoJsonException e) {
             return name + ": not imported, not a GeoJSON layer (" + e.getMessage() + ")";
+        }
+    }
+
+    /**
+     * Writes `bytes` to a temporary file in out's folder (hidden, not a layer name), syncs it,
+     * then renames it over `out`: a failed write leaves an earlier `out` as it was.
+     */
+    private static void write(File out, byte[] bytes) throws IOException {
+        File tmp = new File(out.getParentFile(), ".import-" + out.getName() + ".tmp");
+        try {
+            try (FileOutputStream o = new FileOutputStream(tmp)) {
+                o.write(bytes);
+                o.getFD().sync();
+            }
+            if (!tmp.renameTo(out)) throw new IOException("cannot replace " + out.getName());
+        } finally {
+            if (tmp.exists() && !tmp.delete()) tmp.deleteOnExit();
         }
     }
 

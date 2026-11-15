@@ -524,9 +524,16 @@ media folder's `layers/`, same as sessions). MENU > Layers switches them on and 
 wrote there itself, so import them: MENU > Layers > Import… (also in the "No layer files"
 dialog) or Settings > Map > Import layer files…, the same flow. It opens the system file
 picker (Google Drive, Downloads, …; where the picker allows it, in the folder last imported
-from), checks each file and copies it into `layers/`, replacing a file of the same name. A
-report lists each file with its feature count, skipped features or the reason it was not
-imported. From MENU > Layers the new layers are drawn at once and the Layers dialog comes
+from), checks each file and copies it into `layers/`. A file whose name is already plain
+(letters, digits, `.`, `_`, `-`, ending in `.geojson` or `.json`) keeps it, and importing it
+again replaces the earlier copy. Any other name is made plain (other characters become `_`,
+`.geojson` is added if missing) and gets a short code from the original name, e.g.
+`a b.geojson` becomes `a_b-1a2b3c4d.geojson`, so it never replaces a different file's
+layer. A file with nothing before the extension (`.geojson`), or whose name differs from a
+layer already there only in upper/lower case, is not imported and the report says why.
+Each copy is written to a temporary file and renamed over the old one only when complete,
+so a failed import leaves the earlier layer as it was. A report lists each file with its
+feature count, skipped features or the reason it was not imported. From MENU > Layers the new layers are drawn at once and the Layers dialog comes
 back when the report is closed. A bad file shows its error in Settings and is skipped.
 
 Format: a GeoJSON FeatureCollection (RFC 7946; a single Feature or a bare geometry also
