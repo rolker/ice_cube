@@ -111,3 +111,26 @@ settings bounds and the background worker.
 - `python3 -m unittest discover icecube/tests`: 54 OK.
 - `python3 -m unittest discover -s analysis/qgis/tests`: 94 OK (5 skipped).
 - Not done: on-device check of the overlay, the window move and the Settings errors.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-15 11:23 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #7 at `8f0320d`
+**Depth**: Deep (reason: whole-PR diff 3500+ lines, 23+ files; fix round re-review scoped to 10461d1..8f0320d and the round-1 findings)
+**Must-fix**: 1 | **Suggestions**: 8
+
+Round-1 findings: all five fixed (capped bitmap window, UI-thread rebuild, LayerImport isDestroyed/app context, COVERAGE_FIRST, feed-first node order). Cross-model: gemini and codex completed.
+
+### Findings
+- [ ] (must-fix) Coverage cross-check skipped when one of grid spacing/radius/reach does not parse: the other two are saved without it (e.g. cell 0.1 + reach 20 saved while radius is "9"), contrary to "none of them is saved"; check against the value that stays stored (Settings.limit) instead of returning "" — `logger/app/src/main/java/rink/icecube/logger/SettingsActivity.java:323`
+- [ ] (suggestion) An exception in rebuild/feed goes to the uncaught handler and kills the process, LoggerService included; catch in the task, log, drop the coverage and stop sending frames — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:107`
+- [ ] (suggestion) After close(), update() would execute on a shut-down executor (RejectedExecutionException on the UI thread); no live path today, add a closed flag — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:100`
+- [ ] (suggestion) A capture that first hits MAX_NODES touching no node sends no frame, so the legend's area-limit line can be missed; send a frame when full() changes — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:137`
+- [ ] (suggestion) README and Settings.coverage doc: saved cell > 2 or radius > 5 fall back to the default (not cut), and the radius can be raised to 0.71 spacings; say so — `logger/README.md:70`, `logger/app/src/main/java/rink/icecube/logger/Settings.java:122`
+- [ ] (suggestion) Pass 1 touches in-area nodes it did not change, so each patch carries up to ~7.8k unchanged pixels at the reach limit; touch only on a change — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:176`
+- [ ] (suggestion) Comment says the import thread does not hold the activity, but the lambda still captures it for runOnUiThread; fix the comment or post via a main-looper Handler — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:65`
+- [ ] (suggestion) #8 import names (not in the fix diff): "a b" and "a_b" collide silently; a file named ".geojson" is reported imported but never listed; a failed overwrite truncates the old layer (write temp then rename) — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:92`
+- [ ] (suggestion) pickLayers shows a dialog from the Layers.getAsync callback without an isFinishing/isDestroyed check (reached from the import report's dismiss) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:776`
