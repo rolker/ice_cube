@@ -52,7 +52,8 @@ final class Settings {
             Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM,
             Limit.COV_TARGET_CM, Limit.COV_CELL_M, Limit.COV_RADIUS_M, Limit.COV_REACH_M, Limit.COV_GROUND_CM,
             Limit.COV_WANDER_CM};
-    static final int COVERAGE_FIRST = 9;
+    /** Index of the first Coverage setting in LIMIT_KEYS and LIMITS. */
+    static final int COVERAGE_FIRST = java.util.Arrays.asList(LIMIT_KEYS).indexOf(COV_TARGET_CM);
 
     private Settings() { }
 
