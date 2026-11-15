@@ -194,6 +194,18 @@ public class CoverageWorkerTest {
         assertEquals(1, errors.size());
     }
 
+    @Test public void aSinkThatThrowsWhileReportingAFailureDoesNotEscape() {
+        Queue q = new Queue();
+        CoverageWorker w = new CoverageWorker(q, new CoverageWorker.Sink() {
+            @Override public void frame(CoverageRaster.Frame f) { }
+            @Override public void failed(Throwable t) { throw new OutOfMemoryError("while reporting"); }
+        });
+        assertTrue(w.update(new Object(), null, P, walk(6, 0.2)));   // the rebuild throws
+        q.runAll();                                                  // and so does the report
+        assertTrue(w.failed());
+        assertTrue(q.q.isEmpty());
+    }
+
     @Test public void anExceptionInAFeedStopsTheWorker() {
         Queue q = new Queue();
         List<CoverageRaster.Frame> got = new ArrayList<>();

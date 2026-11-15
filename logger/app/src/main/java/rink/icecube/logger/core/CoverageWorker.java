@@ -135,7 +135,12 @@ public final class CoverageWorker {
             } catch (RuntimeException | Error e) {
                 failed = true;
                 drop();
-                sink.failed(e);
+                try {
+                    sink.failed(e);
+                } catch (RuntimeException | Error ignored) {
+                    // Reporting the failure must not take the process down either (e.g. a
+                    // second OutOfMemoryError while logging); the overlay is already stopped.
+                }
             }
         });
     }
