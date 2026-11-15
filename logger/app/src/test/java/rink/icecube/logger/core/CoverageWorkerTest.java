@@ -171,6 +171,69 @@ public class CoverageWorkerTest {
         assertFalse(w.active());
     }
 
+    @Test public void anExceptionInATaskStopsTheWorkerWithoutThrowing() {
+        Queue q = new Queue();
+        List<CoverageRaster.Frame> got = new ArrayList<>();
+        List<Throwable> errors = new ArrayList<>();
+        CoverageWorker w = new CoverageWorker(q, new CoverageWorker.Sink() {
+            @Override public void frame(CoverageRaster.Frame f) { got.add(f); }
+            @Override public void failed(Throwable t) { errors.add(t); }
+        });
+        Object session = new Object();
+        PointRow[] rows = walk(6, 0.2);
+        assertTrue(w.update(session, null, P, rows));   // no map frame: Coverage.add throws in the rebuild
+        q.runAll();                                      // caught on the worker, not thrown here
+        assertTrue(w.failed());
+        assertEquals(1, errors.size());
+        assertTrue(errors.get(0) instanceof NullPointerException);
+        assertTrue(got.isEmpty());
+        assertFalse(w.update(session, F, P, rows));     // stopped: nothing more is queued
+        assertTrue(q.q.isEmpty());
+        w.clear();
+        q.runAll();
+        assertEquals(1, errors.size());
+    }
+
+    @Test public void anExceptionInAFeedStopsTheWorker() {
+        Queue q = new Queue();
+        List<CoverageRaster.Frame> got = new ArrayList<>();
+        List<Throwable> errors = new ArrayList<>();
+        CoverageWorker w = new CoverageWorker(q, new CoverageWorker.Sink() {
+            @Override public void frame(CoverageRaster.Frame f) { got.add(f); }
+            @Override public void failed(Throwable t) { errors.add(t); }
+        });
+        Object session = new Object();
+        PointRow[] rows = walk(6, 0.2);
+        w.update(session, F, P, Arrays.copyOf(rows, 5));
+        q.runAll();
+        assertEquals(1, got.size());
+        rows[5] = null;                                  // a feed that throws
+        assertFalse(w.update(session, F, P, rows));
+        q.runAll();
+        assertTrue(w.failed());
+        assertEquals(1, errors.size());
+        assertEquals(1, got.size());                     // no frame after the failure
+    }
+
+    @Test public void aWorkerThreadErrorDoesNotReachTheUncaughtHandler() throws Exception {
+        List<Throwable> uncaught = new ArrayList<>();
+        ExecutorService ex = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "coverage-test");
+            t.setUncaughtExceptionHandler((th, e) -> { synchronized (uncaught) { uncaught.add(e); } });
+            return t;
+        });
+        CountDownLatch failed = new CountDownLatch(1);
+        CoverageWorker w = new CoverageWorker(ex, new CoverageWorker.Sink() {
+            @Override public void frame(CoverageRaster.Frame f) { }
+            @Override public void failed(Throwable t) { failed.countDown(); }
+        });
+        w.update(new Object(), null, P, walk(3, 0.2));
+        assertTrue(failed.await(10, TimeUnit.SECONDS));
+        ex.shutdown();
+        assertTrue(ex.awaitTermination(10, TimeUnit.SECONDS));
+        synchronized (uncaught) { assertTrue(uncaught.isEmpty()); }
+    }
+
     @Test public void aNewerRebuildOnARealThreadWins() throws Exception {
         ExecutorService ex = Executors.newSingleThreadExecutor();
         List<CoverageRaster.Frame> got = new ArrayList<>();

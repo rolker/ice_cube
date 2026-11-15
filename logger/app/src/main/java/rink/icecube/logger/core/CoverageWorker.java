@@ -24,15 +24,28 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Cancellation. Each rebuild, and clear() or close(), starts a new generation. A task of an
  * older generation does nothing, a rebuild in flight stops at its next row, and no frame of
  * an older generation is sent.
+ *
+ * Failure. An exception or error in a task is caught on the worker (it never reaches the
+ * thread's uncaught handler, which would end the app and its LoggerService): the coverage
+ * is dropped, `sink` gets {@link Sink#failed} once, and the worker stops for good: no more
+ * frames, update() queues nothing. The app shows "coverage stopped: error" until the screen
+ * is recreated.
  */
 public final class CoverageWorker {
     /** Receives each frame, on the worker thread. */
-    public interface Sink { void frame(CoverageRaster.Frame f); }
+    public interface Sink {
+        void frame(CoverageRaster.Frame f);
+
+        /** The worker stopped on `t` (on the worker thread, once); no frame follows. */
+        default void failed(Throwable t) { }
+    }
 
     private final Executor worker;
     private final Sink sink;
     private final int maxSide, margin;
     private final AtomicInteger gen = new AtomicInteger();
+    /** Set on the worker thread when a task failed; read on any thread. */
+    private volatile boolean failed;
 
     // Caller (UI) thread: what the queued tasks are for.
     private boolean active, closed;
@@ -56,6 +69,9 @@ public final class CoverageWorker {
     /** The current generation: a frame with another gen is stale. Safe from any thread. */
     public int generation() { return gen.get(); }
 
+    /** True once a task failed: the worker has stopped (see Failure above). */
+    public boolean failed() { return failed; }
+
     /** True between an update() and a clear(). */
     public boolean active() { return active; }
 
@@ -65,7 +81,7 @@ public final class CoverageWorker {
      * of date until its first frame arrives), false for a feed or nothing to do.
      */
     public boolean update(Object session, LocalFrame frame, Coverage.Params p, PointRow[] rows) {
-        if (closed) return false;   // the executor may be shut down
+        if (closed || failed) return false;   // the executor may be shut down; or stopped on an error
         if (!active || session != this.session || frame != this.frame || !p.equals(params) || rows.length < rowsPosted) {
             int g = gen.incrementAndGet();
             active = true;
@@ -74,14 +90,14 @@ public final class CoverageWorker {
             params = p;
             rowsPosted = rows.length;
             PointRow[] all = Arrays.copyOf(rows, rows.length);
-            worker.execute(() -> rebuild(g, p, frame, all));
+            post(() -> rebuild(g, p, frame, all));
             return true;
         }
         if (rows.length > rowsPosted) {
             int g = gen.get();
             PointRow[] add = Arrays.copyOfRange(rows, rowsPosted, rows.length);
             rowsPosted = rows.length;
-            worker.execute(() -> feed(g, frame, add));
+            post(() -> feed(g, frame, add));
         }
         return false;
     }
@@ -94,7 +110,7 @@ public final class CoverageWorker {
         frame = null;
         params = null;
         int g = gen.incrementAndGet();
-        worker.execute(() -> { if (gen.get() == g) drop(); });
+        post(() -> { if (gen.get() == g) drop(); });
     }
 
     /**
@@ -105,6 +121,20 @@ public final class CoverageWorker {
         closed = true;
         active = false;
         gen.incrementAndGet();
+    }
+
+    /** Queues `task` on the worker, catching what it throws (see Failure above). */
+    private void post(Runnable task) {
+        worker.execute(() -> {
+            if (failed) return;
+            try {
+                task.run();
+            } catch (RuntimeException | Error e) {
+                failed = true;
+                drop();
+                sink.failed(e);
+            }
+        });
     }
 
     private void drop() { coverage = null; raster = null; coverageGen = -1; }

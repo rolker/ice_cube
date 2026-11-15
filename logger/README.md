@@ -502,7 +502,11 @@ overlay and set in Settings > Coverage.
 - Work: the feeding, rebuilding and painting run in order on one background thread
   (`coverage`), which hands finished frames to the map; a rebuild (new session, origin or
   setting) cancels the one in progress. The map hides the overlay from the start of a
-  rebuild until its first frame, usually a moment.
+  rebuild until its first frame, usually a moment. If that thread hits an error, the
+  overlay stops (no more frames), the legend reads `coverage stopped: error` and the error
+  is logged (logcat, and the session's events as `coverage stopped: ...`); logging and the
+  rest of the app carry on. It stays stopped until the map screen is created again (for
+  example after the app is swiped away from the recent apps and opened again).
 
 The Java ports are checked against icecube: `python3 -m icecube.logger_vectors --out
 logger/app/src/test/resources/coverage_vectors.json` writes test vectors from

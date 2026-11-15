@@ -126,7 +126,7 @@ Round-1 findings: all five fixed (capped bitmap window, UI-thread rebuild, Layer
 
 ### Findings
 - [x] (must-fix) Coverage cross-check skipped when one of grid spacing/radius/reach does not parse: the other two are saved without it (e.g. cell 0.1 + reach 20 saved while radius is "9"), contrary to "none of them is saved"; check against the value that stays stored (Settings.limit) instead of returning "" — `logger/app/src/main/java/rink/icecube/logger/SettingsActivity.java:323`
-- [ ] (suggestion) An exception in rebuild/feed goes to the uncaught handler and kills the process, LoggerService included; catch in the task, log, drop the coverage and stop sending frames — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:107`
+- [x] (suggestion) An exception in rebuild/feed goes to the uncaught handler and kills the process, LoggerService included; catch in the task, log, drop the coverage and stop sending frames — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:107`
 - [x] (suggestion) After close(), update() would execute on a shut-down executor (RejectedExecutionException on the UI thread); no live path today, add a closed flag — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:100`
 - [ ] (suggestion) A capture that first hits MAX_NODES touching no node sends no frame, so the legend's area-limit line can be missed; send a frame when full() changes — `logger/app/src/main/java/rink/icecube/logger/core/CoverageWorker.java:137`
 - [ ] (suggestion) README and Settings.coverage doc: saved cell > 2 or radius > 5 fall back to the default (not cut), and the radius can be raised to 0.71 spacings; say so — `logger/README.md:70`, `logger/app/src/main/java/rink/icecube/logger/Settings.java:122`

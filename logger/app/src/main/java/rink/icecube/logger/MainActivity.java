@@ -122,7 +122,10 @@ public final class MainActivity extends Activity {
         t.setPriority(Thread.NORM_PRIORITY - 1);
         return t;
     });
-    private final CoverageWorker coverageWorker = new CoverageWorker(coverageThread, this::onCoverageFrame);
+    private final CoverageWorker coverageWorker = new CoverageWorker(coverageThread, new CoverageWorker.Sink() {
+        @Override public void frame(CoverageRaster.Frame f) { onCoverageFrame(f); }
+        @Override public void failed(Throwable t) { onCoverageFailed(t); }
+    });
     private boolean coverageOn = true;
     private Coverage.Params coverageParams = Coverage.Params.defaults();
 
@@ -768,6 +771,20 @@ public final class MainActivity extends Activity {
     private void onCoverageFrame(CoverageRaster.Frame fr) {
         ui.post(() -> {
             if (!isDestroyed() && fr.gen == coverageWorker.generation()) map.applyCoverage(fr);
+        });
+    }
+
+    /**
+     * On the coverage thread: the worker stopped on an error (see CoverageWorker). Logged
+     * (logcat, and the session's events when one is open); the overlay is dropped and the
+     * legend says "coverage stopped: error". Logging and the rest of the app carry on.
+     */
+    private void onCoverageFailed(Throwable t) {
+        android.util.Log.e("IceCubeLogger", "coverage stopped", t);
+        ui.post(() -> {
+            LoggerService s = LoggerService.current;
+            if (s != null) s.event("coverage stopped: " + t);
+            if (!isDestroyed()) map.setCoverageFailed();
         });
     }
 

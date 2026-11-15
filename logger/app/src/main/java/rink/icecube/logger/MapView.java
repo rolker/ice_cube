@@ -72,7 +72,7 @@ final class MapView extends View {
     static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
     static final int COVER_RED = CoverageRaster.RED, COVER_AMBER = CoverageRaster.AMBER;
 
-    private boolean covOn, covAreaLimit;
+    private boolean covOn, covAreaLimit, covFailed;
     /** False from a rebuild until its full frame: the bitmap is kept for reuse but not drawn. */
     private boolean covValid;
     private Bitmap covBmp;
@@ -185,6 +185,15 @@ final class MapView extends View {
         invalidate();
     }
 
+    /** The coverage worker stopped on an error: overlay dropped, the legend says so. */
+    void setCoverageFailed() {
+        covFailed = true;
+        covBmp = null;
+        covValid = false;
+        covAreaLimit = false;
+        invalidate();
+    }
+
     /** Hides the drawn overlay until the next full frame (a rebuild started). */
     void clearCoverage() {
         covValid = false;
@@ -198,7 +207,7 @@ final class MapView extends View {
      * unchanged; a patch sets pixels of the same window and is ignored on any other.
      */
     void applyCoverage(CoverageRaster.Frame f) {
-        if (!covOn) return;
+        if (!covOn || covFailed) return;
         covAreaLimit = f.areaLimit;
         if (f.isFull()) {
             if (f.width == 0 || f.height == 0) { covValid = false; invalidate(); return; }
@@ -643,7 +652,7 @@ final class MapView extends View {
         float width = 0;
         for (String n : LEGEND_NAMES) width = Math.max(width, text.measureText(n));
         for (SurveyMode m : SurveyMode.values()) width = Math.max(width, text.measureText(m.key));
-        String[] cov = !covOn ? new String[0] : covAreaLimit
+        String[] cov = !covOn ? new String[0] : covFailed ? new String[] {"coverage stopped: error"} : covAreaLimit
                 ? new String[] {"no data / disagree", "σ > target", "coverage: area limit"}
                 : new String[] {"no data / disagree", "σ > target"};
         for (String n : cov) width = Math.max(width, text.measureText(n));
@@ -666,7 +675,7 @@ final class MapView extends View {
         for (int k = 0; k < cov.length; k++) {
             float cy0 = y + pad + row * (LEGEND_Q.length + SurveyMode.values().length + k) + row / 2 - 2 * dp;
             float cx0 = x + 10 * dp;
-            if (k < 2) {
+            if (k < 2 && !covFailed) {
                 dot.setColor(k == 0 ? COVER_RED : COVER_AMBER);
                 c.drawRect(cx0 - 5 * dp, cy0 - 5 * dp, cx0 + 5 * dp, cy0 + 5 * dp, dot);
             }
