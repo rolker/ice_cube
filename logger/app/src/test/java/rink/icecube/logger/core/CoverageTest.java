@@ -170,4 +170,27 @@ public class CoverageTest {
         assertEquals(before + 1, cov.node(0, 0).n);
         assertEquals(Coverage.MAX_NODES, cov.size());
     }
+
+    /** Near the cap the nodes a sounding feeds are created before the reach fringe (#6 review). */
+    @Test public void nearTheCapFeedNodesComeFirst() {
+        Coverage cov = new Coverage(params(0.5, 0.75, 20));   // reach 40 cells: ~5000 nodes per sounding
+        double x = 0;
+        cov.add(x, 0, 0, 0.01, 0.01);
+        while (Coverage.MAX_NODES - cov.size() > 100) {   // walk east: each step adds new columns
+            x += Coverage.MAX_NODES - cov.size() > 3000 ? 10 : 0.5;
+            cov.add(x, 0, 0, 0.01, 0.01);
+        }
+        assertFalse(cov.full());
+        int left = Coverage.MAX_NODES - cov.size();
+        assertTrue(left >= 9);   // the 9 nodes within 0.75 m of a node-centred sounding fit; the fringe does not
+        cov.add(-1000, -1000, 1.0, 0.01, 0.01);
+        assertTrue(cov.full());
+        for (int i = -1; i <= 1; i++) {
+            for (int j = -1; j <= 1; j++) {
+                Coverage.Node nd = cov.node(-2000 + i, -2000 + j);
+                assertNotNull(i + "," + j, nd);
+                assertEquals(1, nd.n);
+            }
+        }
+    }
 }

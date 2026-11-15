@@ -133,40 +133,48 @@ public final class Coverage {
         return out;
     }
 
-    /** Feeds one sounding at map position (x, y), height z, with sigmas sz and sh (metres). */
+    /**
+     * Feeds one sounding at map position (x, y), height z, with sigmas sz and sh (metres).
+     * The nodes within the capture radius (the ones the sounding feeds) are visited first,
+     * then the rest of the reach, so near MAX_NODES the remaining budget goes to the nodes
+     * that take the sounding, not to the area fringe. The order changes nothing else: each
+     * node gets at most one update per sounding.
+     */
     public void add(double x, double y, double z, double sz, double sh) {
         double cell = params.cell, rad = params.captureRadius, reach = params.reach;
         double r = Math.max(rad, reach);
         int i0 = (int) Math.ceil((x - r) / cell), i1 = (int) Math.floor((x + r) / cell);
         int j0 = (int) Math.ceil((y - r) / cell), j1 = (int) Math.floor((y + r) / cell);
         fed++;
-        for (int j = j0; j <= j1; j++) {
-            for (int i = i0; i <= i1; i++) {
-                double d = Math.hypot(i * cell - x, j * cell - y);
-                boolean feeds = d <= rad, marks = d <= reach;
-                if (!feeds && !marks) continue;
-                Node nd = getOrCreate(i, j);
-                if (nd == null) continue;
-                if (feeds) {
-                    double s = SLOPE * (d + sh);
-                    double v = sz * sz + s * s;
-                    if (nd.n > 0) {
-                        double nr = Math.abs(z - nd.wz / nd.w) / Math.sqrt(1.0 / nd.w + v);
-                        if (nr > K_SIGMA) nd.flags++;
-                        if (nr > nd.maxNr) nd.maxNr = nr;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int j = j0; j <= j1; j++) {
+                for (int i = i0; i <= i1; i++) {
+                    double d = Math.hypot(i * cell - x, j * cell - y);
+                    boolean feeds = d <= rad, marks = d <= reach;
+                    if (pass == 0 ? !feeds : feeds || !marks) continue;
+                    Node nd = getOrCreate(i, j);
+                    if (nd == null) continue;
+                    if (feeds) {
+                        double s = SLOPE * (d + sh);
+                        double v = sz * sz + s * s;
+                        if (nd.n > 0) {
+                            double nr = Math.abs(z - nd.wz / nd.w) / Math.sqrt(1.0 / nd.w + v);
+                            if (nr > K_SIGMA) nd.flags++;
+                            if (nr > nd.maxNr) nd.maxNr = nr;
+                        }
+                        nd.w += 1.0 / v;
+                        nd.wz += z / v;
+                        nd.n++;
                     }
-                    nd.w += 1.0 / v;
-                    nd.wz += z / v;
-                    nd.n++;
+                    if (marks && !nd.inArea) {
+                        nd.inArea = true;
+                        if (i < minI) minI = i;
+                        if (i > maxI) maxI = i;
+                        if (j < minJ) minJ = j;
+                        if (j > maxJ) maxJ = j;
+                    }
+                    touch(nd);
                 }
-                if (marks && !nd.inArea) {
-                    nd.inArea = true;
-                    if (i < minI) minI = i;
-                    if (i > maxI) maxI = i;
-                    if (j < minJ) minJ = j;
-                    if (j > maxJ) maxJ = j;
-                }
-                touch(nd);
             }
         }
     }
