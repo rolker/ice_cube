@@ -86,3 +86,28 @@ The plan reflects all eight owner decisions and adds #8 as its own section and c
 - [x] (suggestion) LayerImport guards only isFinishing(); add isDestroyed() and use the application context for file I/O (now also on MainActivity) — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:71`
 - [x] (suggestion) COVERAGE_FIRST = 9 hard-coded; derive from LIMIT_KEYS.indexOf(COV_TARGET_CM) — `logger/app/src/main/java/rink/icecube/logger/Settings.java:55`
 - [x] (suggestion) Near MAX_NODES the row-by-row scan of the reach box can spend the remaining budget on fringe nodes before the d <= radius nodes that take the sounding; create feed nodes first — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:117`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-15 11:20 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #7 at `a645597`
+**Addressed**: Local Review at `40c7145` (2026-11-15 10:33 -05:00)
+**Commits**: f345d53, 1974995, fcecf55, a5d0608, c501362, 876ceaa, a645597
+
+Owner's decisions: all five findings fixed; for the UI-thread suggestion, both the
+settings bounds and the background worker.
+
+### Actions
+- [x] (must-fix) Capped coverage bitmap: core/CoverageRaster keeps the window on the newest capture's touched nodes (moves only when they leave it), repaints every node in the window after a move, and sends patches otherwise; MapView reuses its bitmap — `logger/app/src/main/java/rink/icecube/logger/MapView.java`, `core/CoverageRaster.java` (c501362, 876ceaa)
+- [x] (suggestion) UI-thread rebuild: radius and reach at most 50 grid spacings (radius at least 0.71), grid spacing 0.1 to 2 m, radius 0.1 to 5 m, checked together in Settings, old values clamped (a5d0608); core/CoverageWorker owns Coverage and raster on one "coverage" thread, ordered feeds and rebuilds, generation cancellation, stopped in onDestroy (876ceaa) — `core/Limit.java`, `core/CoverageWorker.java`, `MainActivity.java`
+- [x] (suggestion) LayerImport checks isDestroyed() too and does its file I/O on the application context — `logger/app/src/main/java/rink/icecube/logger/LayerImport.java:71` (fcecf55)
+- [x] (suggestion) COVERAGE_FIRST derived from LIMIT_KEYS — `logger/app/src/main/java/rink/icecube/logger/Settings.java:55` (1974995)
+- [x] (suggestion) Coverage.add creates the capture-radius nodes before the reach fringe; new CoverageTest case fails on the old order — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:117` (f345d53)
+
+### Checks
+- `cd logger && ./gradlew clean assembleDebug test lint --offline`: BUILD SUCCESSFUL, 132 JUnit tests per variant, 0 failures; lint only the existing kinds (SetTextI18n, DataExtractionRules, MissingApplicationIcon).
+- `python3 -m unittest discover icecube/tests`: 54 OK.
+- `python3 -m unittest discover -s analysis/qgis/tests`: 94 OK (5 skipped).
+- Not done: on-device check of the overlay, the window move and the Settings errors.
