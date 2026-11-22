@@ -50,6 +50,8 @@ workspace's review skills, which read `.agents/`, check them too.
    component's own reference.
 6. `icecube.example.toml`, `config.example.toml`, `analysis/site_config.example.json`:
    the templates for the ignored local config.
+7. `.agents/workspace-context/research_digest.md`: external research on tools, services
+   and methods (dated entries with sources), for brainstorming and design.
 
 ## Build and test
 
