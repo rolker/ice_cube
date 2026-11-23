@@ -6,13 +6,9 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.database.Cursor;
-import android.net.Uri;
-import android.provider.OpenableColumns;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.AdapterView;
@@ -33,18 +29,11 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-import rink.icecube.logger.core.GeoJson;
 import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
@@ -55,7 +44,8 @@ import rink.icecube.logger.core.SurveyLimits;
  * Display, caster, GPS link, survey and map settings, saved to SharedPreferences when the
  * screen is left (layer checkboxes and Screen orientation save at once). Survey also holds
  * the capture settings: ref duration, pole check tolerance, volume keys, sound, vibration,
- * earlier refs and capture labels on the map. Caster and link changes take effect at the next
+ * earlier refs and capture labels on the map. Coverage holds the live coverage overlay's
+ * sigma target, grid and estimator settings (the overlay rebuilds when they change). Caster and link changes take effect at the next
  * Connect; pole height and Frame changes apply at once and are logged in a running session.
  * The password is only shown as dots.
  */
@@ -176,16 +166,10 @@ public final class SettingsActivity extends Activity {
         poleTolerance.addTextChangedListener(watcher(() -> toleranceError.setText(problem(false))));
         label(c, "False-fix guard: after a new RTK fix (or a jump inside one) captures wait for the settle time;"
                 + " a fix that began with a jump over the warning is flagged (amber, fix_suspect).");
-        for (int i = 0; i < Settings.LIMITS.length; i++) {
+        for (int i = 0; i < Settings.COVERAGE_FIRST; i++) {
             if (i == 2) label(c, "Tilt capture gates (see README, Tilt capture): leans outside the tilt range are refused;"
                     + " the others warn before saving.");
-            Limit l = Settings.LIMITS[i];
-            int k = i;
-            limitFields[i] = field(c, l.name + ", " + l.unit + " (" + l.range() + ", default " + l.format(l.def) + ")",
-                    p.getString(Settings.LIMIT_KEYS[i], l.format(l.def)),
-                    InputType.TYPE_CLASS_NUMBER | (l.decimals > 0 ? InputType.TYPE_NUMBER_FLAG_DECIMAL : 0));
-            limitErrors[i] = error(c);
-            limitFields[i].addTextChangedListener(watcher(() -> limitErrors[k].setText(limitProblem(k))));
+            limitField(c, p, i);
         }
         volumeKeys = check(c, "Volume keys: Mark / Mode (down = MARK, up = MODE on the map)", Settings.volumeKeys(p));
         sound = check(c, "Sound for captures, modes, refs and errors", Settings.sound(p));
@@ -196,6 +180,23 @@ public final class SettingsActivity extends Activity {
         soundHelp.setText("Sounds play on the media volume, which silent mode does not mute. Set it before going out: "
                 + "the volume keys do not change it while the map is in front and Volume keys is on.");
         c.addView(soundHelp);
+
+        header(c, "Coverage", pad);
+        label(c, "Live coverage overlay (MENU > Coverage): RTK-fixed surface captures of this session feed a grid;"
+                + " red = no capture within the capture radius, or captures that disagree; amber = node sigma above the"
+                + " target; clear = at or below it. Nodes within reach of a capture are drawn. Capture radius and reach:"
+                + " at most 50 grid spacings, and the radius at least 0.71 (so every capture feeds a node).");
+        for (int i = Settings.COVERAGE_FIRST; i < Settings.LIMITS.length; i++) {
+            if (Settings.LIMIT_KEYS[i].equals(Settings.COV_GROUND_CM)) {
+                label(c, "Ground sigma: how well one shot represents the surface around it (lawn 1.5 cm,"
+                        + " about 0 on ice or a hard surface). Pass wander: the RTK wander between passes that the"
+                        + " live view cannot solve, added to each node's sigma before the target test.");
+            }
+            limitField(c, p, i);
+        }
+        for (int i = Settings.COVERAGE_FIRST; i < Settings.LIMITS.length; i++) {   // e.g. values saved before the bounds
+            if (isCoverageGeometry(i)) limitErrors[i].setText(limitProblem(i));
+        }
 
         header(c, "Map", pad);
         layersHeader = new TextView(this);
@@ -283,10 +284,50 @@ public final class SettingsActivity extends Activity {
         } catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
     }
 
-    /** The problem with limit field i, or "". */
+    /** The labelled text field for numeric setting i, with its live parse check. */
+    private void limitField(LinearLayout c, SharedPreferences p, int i) {
+        Limit l = Settings.LIMITS[i];
+        limitFields[i] = field(c, l.name + ", " + l.unit + " (" + l.range() + ", default " + l.format(l.def) + ")",
+                p.getString(Settings.LIMIT_KEYS[i], l.format(l.def)),
+                InputType.TYPE_CLASS_NUMBER | (l.decimals > 0 ? InputType.TYPE_NUMBER_FLAG_DECIMAL : 0));
+        limitErrors[i] = error(c);
+        limitFields[i].addTextChangedListener(watcher(() -> {
+            limitErrors[i].setText(limitProblem(i));
+            if (isCoverageGeometry(i)) {   // the grid spacing, radius and reach are checked together
+                for (int k = Settings.COVERAGE_FIRST; k < Settings.LIMITS.length; k++) {
+                    if (k != i && isCoverageGeometry(k) && limitErrors[k] != null) limitErrors[k].setText(limitProblem(k));
+                }
+            }
+        }));
+    }
+
+    private static boolean isCoverageGeometry(int i) {
+        String key = Settings.LIMIT_KEYS[i];
+        return key.equals(Settings.COV_CELL_M) || key.equals(Settings.COV_RADIUS_M) || key.equals(Settings.COV_REACH_M);
+    }
+
+    /**
+     * The problem with limit field i, or "". The grid spacing, capture radius and reach also
+     * carry Limit.coverageProblem for the three together, so none of them is saved while the
+     * combination is out of bounds. A field of the three that does not parse counts with the
+     * value that stays stored for it (Settings.limit), so the other two are still checked.
+     */
     private String limitProblem(int i) {
-        try { Settings.LIMITS[i].parse(limitFields[i].getText().toString()); return ""; }
+        try { Settings.LIMITS[i].parse(limitFields[i].getText().toString()); }
         catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
+        if (!isCoverageGeometry(i)) return "";
+        SharedPreferences p = Settings.prefs(this);
+        String cross = Limit.coverageProblem(fieldText(Settings.COV_CELL_M), fieldText(Settings.COV_RADIUS_M),
+                fieldText(Settings.COV_REACH_M), Settings.limit(p, Settings.COV_CELL_M, Limit.COV_CELL_M),
+                Settings.limit(p, Settings.COV_RADIUS_M, Limit.COV_RADIUS_M),
+                Settings.limit(p, Settings.COV_REACH_M, Limit.COV_REACH_M));
+        return cross.isEmpty() ? "" : cross + " (not saved)";
+    }
+
+    /** The text of the limit field for `key`, or null before it is built. */
+    private String fieldText(String key) {
+        int k = java.util.Arrays.asList(Settings.LIMIT_KEYS).indexOf(key);
+        return limitFields[k] == null ? null : limitFields[k].getText().toString();
     }
 
     private boolean poleIsOther() { return poleSpinner.getSelectedItemPosition() >= PoleHeight.PRESETS.length; }
@@ -329,64 +370,12 @@ public final class SettingsActivity extends Activity {
         }
     }
 
-    /** Opens the system file picker (Drive and Downloads appear there); picked files are copied to layers/. */
-    private void pickLayers() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        try { startActivityForResult(i, IMPORT_LAYERS); }
-        catch (android.content.ActivityNotFoundException e) { Toast.makeText(this, "No file picker", Toast.LENGTH_LONG).show(); }
-    }
+    /** The shared import flow (LayerImport): picker, checks, copy to layers/, report. */
+    private void pickLayers() { LayerImport.start(this, IMPORT_LAYERS); }
 
     @Override protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
-        if (code != IMPORT_LAYERS || result != RESULT_OK || data == null) return;
-        List<Uri> uris = new ArrayList<>();
-        if (data.getClipData() != null) {
-            for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
-        } else if (data.getData() != null) uris.add(data.getData());
-        File dir = Layers.importDir(this);
-        new Thread(() -> {
-            StringBuilder report = new StringBuilder();
-            for (Uri u : uris) report.append(importOne(u, dir)).append('\n');
-            Layers.reload();
-            runOnUiThread(() -> {
-                if (isFinishing()) return;
-                new AlertDialog.Builder(this).setTitle("Import layers").setMessage(report.toString().trim())
-                        .setPositiveButton("OK", null).show();
-                loadLayers();
-            });
-        }, "import-layers").start();
-    }
-
-    /** Copies one picked file after checking that it parses. Returns a line for the report. */
-    private String importOne(Uri u, File dir) {
-        String name = displayName(u);
-        try {
-            String text;
-            try (InputStream in = getContentResolver().openInputStream(u)) {
-                if (in == null) throw new IOException("cannot open");
-                text = Layers.readText(in, Layers.MAX_BYTES);
-            }
-            GeoJson.Layer l = GeoJson.parse(text);
-            String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
-            if (!Layers.isLayerName(safe)) safe = safe + ".geojson";
-            File out = new File(dir, safe);
-            try (OutputStream o = new FileOutputStream(out)) { o.write(text.getBytes(StandardCharsets.UTF_8)); }
-            return String.format(Locale.US, "%s: %d features%s", safe, l.features.size(),
-                    l.warnings.isEmpty() ? "" : ", " + l.warnings.size() + " skipped");
-        } catch (IOException | SecurityException e) {
-            return name + ": not imported (" + e.getMessage() + ")";
-        } catch (GeoJson.GeoJsonException e) {
-            return name + ": not imported, not a GeoJSON layer (" + e.getMessage() + ")";
-        }
-    }
-
-    private String displayName(Uri u) {
-        try (Cursor c = getContentResolver().query(u, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
-        } catch (RuntimeException ignored) { }
-        String last = u.getLastPathSegment();
-        return last == null ? "layer.geojson" : last.substring(last.lastIndexOf('/') + 1);
+        if (code == IMPORT_LAYERS) LayerImport.run(this, result, data, this::loadLayers, null);
     }
 
     private void header(LinearLayout c, String text, int top) {

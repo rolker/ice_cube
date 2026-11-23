@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.6.1
+# Ice Cube Logger 0.7.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -7,7 +7,8 @@ surface, object and reference points with large glove-friendly buttons or the vo
 keys, and take photos. Reference points are averaged and checked against earlier visits
 (the pole check). A false-fix guard holds captures back while a new RTK fix settles and
 flags fixes that began with a suspicious jump, and a tilt capture finds the pole tip from
-several leans when the pole cannot stand plumb (a house corner, a fence post). It checks
+several leans when the pole cannot stand plumb (a house corner, a fence post). A live
+coverage overlay shows where the surface still needs captures (red, amber, clear). It checks
 the reference frame and base position, and shares a session as a zip. It works in portrait or landscape, and the screen can be locked to how the
 phone sits on the pole.
 
@@ -55,6 +56,26 @@ MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest
   - Sound and Vibration (default on): the cues listed under Feedback.
   - Show earlier refs (default off): refs from `refs.csv` of other sessions as grey rings.
   - Number captures on the map (default on): labels S12, O13, R14 next to the points.
+- Coverage (see Coverage below), each a typed value checked against its range; a value out
+  of range is not saved and the screen says why. A change rebuilds the overlay.
+  - Sigma target: cm, 0.5 to 50, default 3.0. A node at or below it is clear.
+  - Grid spacing: m, 0.1 to 2, default 0.5.
+  - Capture radius: m, 0.1 to 5, default 0.75 (icecube's `capture_radius`).
+  - Reach: m, 0.1 to 20, default 2.0: nodes this close to a capture are in the surveyed
+    area. A reach below the capture radius is accepted and simply hides gaps.
+  - Together: capture radius and reach at most 50 grid spacings (so 5 m at 0.1 m, and the
+    20 m reach needs a spacing of 0.4 m or more), which keeps one capture to about 10,000
+    grid cells; and a capture radius of at least 0.71 grid spacings (half the cell
+    diagonal), so every capture feeds a node. While the three break this, none of them is
+    saved and the screen says why (a field that does not parse counts with its saved
+    value). Values saved by an earlier version are used as follows: one outside its own
+    range (e.g. a spacing over 2 m or a radius over 5 m) falls back to its default; then
+    a radius or reach over 50 grid spacings is cut to 50, and a radius under 0.71 grid
+    spacings is raised to 0.71.
+  - Ground sigma: cm, 0 to 10, default 1.5: how well one shot represents the surface
+    around it (lawn 1.5 cm; about 0 on ice or a hard surface).
+  - Pass wander: cm, 0 to 10, default 1.5: the RTK wander between passes, added to each
+    node's sigma before the target test.
 - Map: the layer files found, each with a checkbox (remembered by file name), a summary
   line (features, vertices, skipped features) or the error for a bad file, Import layer
   files… and Reload layers. See Map layers below.
@@ -107,7 +128,9 @@ portrait (each at least 64 dp):
   leans, then `FINISH TILT`.
 - PHOTO: the system camera (see Photos).
 - ☰ MENU: a panel from the right: Connect/Disconnect GPS and caster (with their state),
-  Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs), Layers (a checkbox per layer file, applied at once),
+  Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs),
+  Layers… (a checkbox per layer file, applied at once, and Import…, see Map layers),
+  Coverage overlay (☑ on / ☐ off, remembered, on by default; see Coverage),
   Share last session, Sessions, Details, Settings. Back or a tap outside closes it.
 
 Volume keys (Settings > Survey, default on): volume down = MARK, volume up = MODE while the
@@ -420,18 +443,98 @@ no basemap and no network.
   and the same readout; capture notices add the capture's ground position. This is display
   only: `points.csv` keeps lat/lon/h (the importer computes x/y/z in the project frame).
 - Live: the position dot is coloured by fix quality (red single, blue DGPS, amber float,
-  green fixed, grey other; legend top left, with the capture classes), with a 2-minute
-  trail and this session's captures (see Captures).
+  green fixed, grey other; legend top left, with the capture classes and, while the
+  coverage overlay is on, its two colours), with a 2-minute trail and this session's
+  captures (see Captures), over the coverage overlay (see Coverage).
 - Pinch to zoom, drag to pan (stops following), double tap or Center to follow the
   position again, Fit to show all layers, trail and captures. Scale bar bottom left.
   Labels show feature names and are skipped where they would overlap.
 
+## Coverage
+While surveying, the map shows where the surface still needs captures, so gaps are filled
+in the field rather than found afterwards. It is a light, live version of icecube's node
+estimator (`icecube/nodes.py`, see `docs/howto/ice-cube.md`), switched by MENU > Coverage
+overlay and set in Settings > Coverage.
+
+- Grid: nodes every grid spacing (default 0.5 m) in the map frame, anchored at the map
+  origin.
+- What feeds it: this session's Surface captures with RTK fixed (fix 4) and not
+  `fix_suspect`, single or tilt; not float, object, ref or photo rows. Earlier sessions
+  are not loaded. Each capture is fed once as it arrives; the overlay is rebuilt from the
+  session's captures when the map origin changes, a new session starts, or a Coverage
+  setting changes.
+- Node update (nodes.py with one pass and no pass bias): a capture at height z with
+  sigmas sz, sh feeds every node within the capture radius, at distance d, with variance
+  v = sz² + (0.05 (d + sh))² (slope allowance 0.05 m/m). The node keeps the weighted
+  mean, sigma sqrt(1/Σ(1/v)). Before a capture is fused, it counts as a disagreement if it
+  differs from the node by more than 3 sigma of the difference.
+- Area: nodes within reach (default 2 m) of any capture. Only those are drawn.
+- Colours: **red** where an in-area node has no capture within the capture radius (a gap
+  between passes wider than about 1.5 m at the defaults shows as a red strip) or where
+  captures disagree; **amber** where the node sigma, with the pass wander added
+  (sqrt(sigma² + wander²)), is above the target; **clear** at or below it. Red and amber
+  are translucent so the layers show through. The outer edge of the walked area has a red
+  fringe (reach minus capture radius, 1.25 m at the defaults): the survey ends there.
+- Per-capture sigmas: the budget of `analysis/qgis/soundings.py` (`sigma_terms`, the same
+  constants), core/SoundingSigma:
+  sz² = rtk² + age² + settle² + pole² + ground², with rtk = max(1 cm, `sd_u_m`), age =
+  1 mm/s beyond 2 s of correction age, settle = 8 cm (1 - fix_age/90 s)² for a capture
+  taken within 90 s of its fix starting, pole = pole_m (1 - cos 1°) + 1 cm tip sink,
+  ground the Coverage setting; sh = hypot(max(1 cm, hypot(`sd_e_m`, `sd_n_m`)/√2),
+  pole_m sin 1°). A single capture takes a 1° bubble tilt, as soundings.py does. A tilt
+  capture takes its own `tilt_sd_u_m` and hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2 with
+  tilt 0 (the solution already places the tip), keeping tip sink and ground.
+  - Differences from soundings.py: no GST input (the logger does not parse GST, so a
+    capture whose GST sigma exceeds its 1 s scatter gets a smaller sigma here); the fix
+    age is the logger's own count from the GGA stream, while soundings.py recomputes it
+    from `gps.ubx`; and soundings.py does not have the tilt-capture rule yet (issue #9),
+    so until it does, tilt captures get a different sigma there.
+- Example at the defaults: one lawn shot (sz about 2.1 cm, sh about 3.3 cm) clears nodes
+  within about 0.28 m of it; a node 0.5 m away stays amber. A node needs several
+  overlapping captures to clear.
+- Still optimistic against a full `icecube run`: the live view has no crossover (pass
+  bias) adjustment, only the fixed pass-wander term. Node positions match a run only
+  when the run's grid origin is a multiple of the grid spacing.
+- Limit: 250,000 nodes (about 6 ha at 0.5 m). Past it no new nodes are added (existing
+  ones still update) and the legend reads `coverage: area limit`.
+- Drawing: one pixel per node, at most 2048 nodes a side (1 km at 0.5 m, about 205 m at
+  0.1 m). A larger area is drawn in a 2048-node window that holds the newest captures: it
+  stays put while they are in it and re-centres on them when they leave it, and every
+  move repaints the whole window, so nothing outside the window shows and nothing inside
+  it is left unpainted.
+- Work: the feeding, rebuilding and painting run in order on one background thread
+  (`coverage`), which hands finished frames to the map; a rebuild (new session, origin or
+  setting) cancels the one in progress. The map hides the overlay from the start of a
+  rebuild until its first frame, usually a moment. If that thread hits an error, the
+  overlay stops (no more frames), the legend reads `coverage stopped: error` and the error
+  is logged (logcat, and the session's events as `coverage stopped: ...`); logging and the
+  rest of the app carry on. It stays stopped until the map screen is created again (for
+  example after the app is swiped away from the recent apps and opened again).
+
+The Java ports are checked against icecube: `python3 -m icecube.logger_vectors --out
+logger/app/src/test/resources/coverage_vectors.json` writes test vectors from
+`nodes.grid_surface` and `soundings.sigma_terms`, and the JVM tests (`CoverageTest`,
+`SoundingSigmaTest`) compare against them; regenerate when either changes. The drawing
+window and the background thread's order and cancellation have their own JVM tests
+(`CoverageRasterTest`, `CoverageWorkerTest`).
+
 ## Map layers
 Layer files are `*.geojson` or `*.json` in `Documents/IceCubeLogger/layers/` (or the app
 media folder's `layers/`, same as sessions). MENU > Layers switches them on and off. Android only lets the app read files it
-wrote there itself, so use Settings > Map > Import layer files…: it opens the system file
-picker (Google Drive, Downloads, …), checks each file and copies it into `layers/`,
-replacing a file of the same name. A bad file shows its error in Settings and is skipped.
+wrote there itself, so import them: MENU > Layers > Import… (also in the "No layer files"
+dialog) or Settings > Map > Import layer files…, the same flow. It opens the system file
+picker (Google Drive, Downloads, …; where the picker allows it, in the folder last imported
+from), checks each file and copies it into `layers/`. A file whose name is already plain
+(letters, digits, `.`, `_`, `-`, ending in `.geojson` or `.json`) keeps it, and importing it
+again replaces the earlier copy. Any other name is made plain (other characters become `_`,
+`.geojson` is added if missing) and gets a short code from the original name, e.g.
+`a b.geojson` becomes `a_b-1a2b3c4d.geojson`, so it never replaces a different file's
+layer. A file with nothing before the extension (`.geojson`), or whose name differs from a
+layer already there only in upper/lower case, is not imported and the report says why.
+Each copy is written to a temporary file and renamed over the old one only when complete,
+so a failed import leaves the earlier layer as it was. A report lists each file with its
+feature count, skipped features or the reason it was not imported. From MENU > Layers the new layers are drawn at once and the Layers dialog comes
+back when the report is closed. A bad file shows its error in Settings and is skipped.
 
 Format: a GeoJSON FeatureCollection (RFC 7946; a single Feature or a bare geometry also
 works). Coordinates are WGS84 degrees `[lon, lat]` or `[lon, lat, h]`, h ellipsoidal metres

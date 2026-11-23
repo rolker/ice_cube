@@ -110,6 +110,12 @@ disagreement in sigmas. The test has a floor: with a pass bias sigma of 3 cm it 
 see a second surface closer than about `k * sqrt(2) * sb` = 13 cm, with 1 cm about
 4 cm; "nothing flagged" is a statement at that level.
 
+The Ice Cube Logger (0.7) runs a one-pass copy of this update live on the phone for its
+coverage overlay (`logger/README.md`, Coverage): no pass bias, a fixed pass-wander term
+instead. When this update changes, regenerate its test vectors
+(`python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json`)
+and port the change to `core/Coverage.java`.
+
 ### Growth (`icecube/growth.py`)
 
 Two surfaces on the same grid: `dz = z_b - z_a`, `sigma = sqrt(sigma_a^2 + sigma_b^2)`
@@ -296,6 +302,10 @@ point taken while an older base coordinate was broadcast is moved by the differe
 | fix settling | 8 cm x (1 - t/90 s)^2 for logger captures; SW Maps points and stops within 90 s are dropped | Nov 3/4: 10-30 cm for 25-75 s after a re-fix |
 | pole | pole x (1 - cos tilt) + 1 cm tip sink (none on a mark); horizontally pole x sin tilt | tilt 1 deg with the bubble, 2 deg IMU-checked, 5 deg unknown |
 | ground | 1.5 cm (none on a mark) | grass and pole placement |
+
+The logger's coverage overlay uses the same budget per capture (`core/SoundingSigma.java`,
+without the GST input, and with its own rule for tilt captures until this script has one,
+issue #9); a change here means regenerating `python3 -m icecube.logger_vectors`.
 
 The slowly varying RTK wander is not in this sigma: it is the pass bias the crossover
 solves. Rows are left out (flags) when float, on another reference station, in a fix that

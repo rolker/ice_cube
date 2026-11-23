@@ -476,7 +476,11 @@ def median_direction(dirs):
 
 def sigma_terms(sg, *, sd_u=None, gst_u=None, sd_h=None, gst_h=None, age=None, fix_age=None,
                 settle_s=90.0, pole_m=1.8, tilt_deg=1.0, on_mark=False, inflate_settle=True):
-    """The error budget of one sounding (module docstring). Returns a dict of terms (m)."""
+    """The error budget of one sounding (module docstring). Returns a dict of terms (m).
+
+    The Ice Cube Logger mirrors this (and DEFAULTS["sigma"], settle_s) in
+    logger/.../core/SoundingSigma.java; when either changes, regenerate its test vectors
+    with `python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json`."""
     rtk = max(sg["floor"], sd_u or 0.0, gst_u or 0.0)
     a = sg["age_rate"] * max(0.0, (age or 0.0) - sg["age_free_s"])
     s = 0.0
