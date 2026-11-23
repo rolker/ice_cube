@@ -222,3 +222,13 @@ legend, the area-limit legend, and import naming and atomic replace.
 
 ### False positives
 (none)
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-23 16:53 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner chose "Merge now" at the merge checkpoint, over holding for the on-device check. Integrated Review at 536a536 had no open findings; 146 unit tests pass; no CI on this repository; Copilot does not review it.
