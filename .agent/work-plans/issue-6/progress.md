@@ -181,3 +181,44 @@ Deferrable (not blocking, no action required this PR):
 
 ### Findings
 - [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-23 16:51 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #7 at `572f0f4`
+**Sources**: 3 (Local Review round 3 @ `d8ba8c0` (approved, 0 open findings; does not cover the head, since `572f0f4` changes code), triage's own read of `572f0f4`, PR conversation comments (3 decision summaries by the owner's account))
+**Cross-source confirmations**: 0
+**CI**: all-pass (the branch has no CI checks; local `./gradlew testDebugUnitTest --offline --rerun-tasks --max-workers 4`: 146 tests, 0 failures, 0 skipped)
+
+No PR reviews exist (Copilot does not review this repository). The sources helper returned no
+open local findings and no dropped entries. Round 3 (at `d8ba8c0`) approved the code with 0
+must-fix and 0 suggestions. Its one "can wait" note was that `Sink.failed` throwing escapes
+the worker. Commit `572f0f4`, made after that review, acts on the note.
+
+Assessment of `572f0f4` (no review covered it): in `CoverageWorker.post()`, `sink.failed(e)`
+is now wrapped in its own `try/catch (RuntimeException | Error)`. `failed = true` and
+`drop()` run first, so the worker stays stopped and the coverage is released even when the
+report throws. The catch matches the outer one, and nothing else in `post()` changed. The new
+test `aSinkThatThrowsWhileReportingAFailureDoesNotEscape` triggers a rebuild NPE with a null
+frame and a sink that throws `OutOfMemoryError`. It checks that `runAll()` does not throw,
+that `failed()` is true and that the queue is empty. Without the guard the OOM would
+propagate out of `runAll()`, so the test does guard the change. The commit is correct and in
+scope.
+
+Observation, not an action item: when the report itself fails (in
+`MainActivity.onCoverageFailed`, a throw in `Log.e` happens before `ui.post`), the "coverage
+stopped" legend is not shown, and the map keeps the last frame until the screen is
+recreated. This needs a second error while handling the first. It was accepted in round 3
+as a can-wait item, and the app staying up is the point of the change.
+
+Still open from round 3, for the owner and not for the code: an on-device check of the error
+legend, the area-limit legend, and import naming and atomic replace.
+
+### Findings
+(none open)
+
+### False positives
+(none)
