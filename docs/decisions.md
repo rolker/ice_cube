@@ -110,8 +110,7 @@ Parked details do not block the goals and can be settled later without a redesig
 The goals and the roadmap are drafted on branch `feature/issue-19` (issue #19). A resumed
 session starts here.
 
-- **Not pushed:** at the end of the 2026-11-23 session the branch was on the owner's
-  machine only.
+- The branch is pushed to GitHub (2026-11-23); no pull request yet.
 - "Two halves" in the README overlaps the goals and the general-tools principle: trim or
   fold in.
 - First names of family and friends on the public page: allowed or not.
