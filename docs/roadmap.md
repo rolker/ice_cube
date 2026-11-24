@@ -24,9 +24,16 @@ rink-specific logic stays in `icecube/` and the siting scripts.
 | The base station runs as a fixed base with a PPP coordinate, and serves corrections to the rover | `file-contains docs/log.md 60 h coordinate applied ; file-exists ha-addon/gnss_base/gnss_base/caster.py` |
 | The logger records surveys over USB with its own NTRIP client, and guards against false fixes | `file-contains logger/README.md false-fix guard` |
 | The footprint is chosen and the ground under it surveyed before building | |
+| Photos and notes can be taken on the phone without the RTK receiver | |
+| Last season's page is posted | |
 | The rink is built and flooded | |
-| `icecube` runs on logger sessions in the project's local frame | `file-contains icecube.example.toml origin_geodetic` |
+| `icecube` reads logger sessions directly, in the project's local frame | |
 | Ice growth between survey dates is reported through the season | |
+| The season's surveys, photos, notes and AI recommendations are kept in one record | |
+| Processing runs without the laptop, started when I choose | |
+| The public status page shows the rink's progress | |
+| AI agents read the record and the forecasts and recommend care | |
+| Findings and techniques are written up | |
 
 | Deferral | Revisit check |
 |---|---|

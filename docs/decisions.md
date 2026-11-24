@@ -58,6 +58,14 @@ the record (goal 2), processing off the laptop and the status page (goal 5) all 
 AI help (goal 4) and the write-ups (goal 6) are not covered by it and are lines of their
 own.
 
+**The order of the lines.** Collecting photos and notes without RTK, and posting last
+season's page (nearly ready), come before building, at the owner's request: showing data
+only makes sense once it can be collected. If the cold comes early, building moves up.
+The `icecube` line's old check passed on a commented-out example line while `icecube`
+still could not read a logger session, so the line now says "directly" and is judged by
+the owner until a file shows it. Checks are file-based or left to the owner, not GitHub
+issue states.
+
 ## Principles (2026-11-23)
 
 **General-purpose tools where that is cheap.** The logger has already served surveys
