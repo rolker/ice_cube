@@ -23,6 +23,9 @@ turned into a geodesy project.
 general-purpose survey and GIS tools where that is cheap, with special features for the
 rink.
 
+**Principle:** Nothing public (the repo or the status page) gives away where the rink is
+or who lives there. Town-level location is fine.
+
 ## Two halves
 
 **Tools.** Code that runs the base station, logs the rover and sizes the rink. Published
