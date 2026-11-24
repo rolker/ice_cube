@@ -44,6 +44,20 @@ flavor to, rather than being written separately afterwards.
 **Goal 6, write-ups.** Findings and techniques are written up for whoever wants the
 nerdy bits, and last season's story is edited and posted once.
 
+## Roadmap (2026-11-23)
+
+**One goal for the full product, ordered by the season.** The roadmap's goal was this
+season's rink alone. The owner: "laptop help is fine to start, but we should still aim
+for the full product whenever we can get it done." So the roadmap's goal is the README's
+goals working together; what the rink needs first comes first, and the order of the
+Direction lines is the order of the work.
+
+**Done means without the laptop.** The discussion started from wanting to track the rink
+from the phone rather than at the laptop. The test needs collecting on the phone (goal 3),
+the record (goal 2), processing off the laptop and the status page (goal 5) all to work.
+AI help (goal 4) and the write-ups (goal 6) are not covered by it and are lines of their
+own.
+
 ## Principles (2026-11-23)
 
 **General-purpose tools where that is cheap.** The logger has already served surveys
@@ -71,6 +85,8 @@ direction of 2026-11-21, not re-discussed on 2026-11-23).
 Parked details do not block the goals and can be settled later without a redesign.
 
 - Parked: where the write-ups live, the status page or the repo.
+- Parked: what of an AI conversation the record keeps. Probably the inputs and the
+  recommendations, or a summary, rather than the whole conversation; not decided.
 - Parked: recording the phone's IMU with photos taken without RTK, so the rough position
   comes with the direction the camera pointed.
 - Offered, not settled: starting the processing from the phone after new data comes in.

@@ -7,9 +7,12 @@ whether it is true today, and what was set aside on purpose. The workspace's sit
 runs the checks; this section holds no status and no dates. A line with no check is
 judged by the owner.
 
-**Goal.** This season's rink is sited, surveyed with the logger and built, and the
-Ice-Cube estimator tracks it through the season. It is done when the season's growth
-between survey dates is reported by `icecube` from logger surveys.
+**Goal.** The goals in the README, working as one product. This season's rink is sited,
+surveyed with the logger and built, and the Ice-Cube estimator tracks it through the
+season, with laptop help to start. Collecting from the phone, the record, the status page
+and AI help follow as soon as each can be done, in the order of the lines below. It is
+done when a season's growth, photos and notes reach the status page from data collected on
+the phone, without the laptop.
 
 **Scope.** The logger, the base station and the QGIS tools are general survey and GIS
 tools, and the rink is their main use. Generalising them is welcome where it is cheap
