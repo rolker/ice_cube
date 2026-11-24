@@ -18,6 +18,8 @@ turned into a geodesy project.
 4. A public rink status page that tracks the rink's progress, a bit like a blog, without
    too much work for me to edit and keep up. Some entries carry my notes and flavor, and
    together they make this season's story.
+5. Discussions of my findings and techniques, and last season's story, edited and
+   posted, for anyone interested in the nerdy bits.
 
 **Principle:** The tools (the phone app, the base station, the GIS tools) are
 general-purpose survey and GIS tools where that is cheap, with special features for the
