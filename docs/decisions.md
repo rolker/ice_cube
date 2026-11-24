@@ -10,38 +10,45 @@ current set of decisions with their reasons. The goals live in
 The goals were worked out in a design discussion (issue #19), each in the owner's words
 with the smallest edits.
 
-**Goal 1, the record.** Last season the record started weeks late: photos and GPS data
+**The summary line.** In the owner's words: learning is the point. The rink is what is
+learned on; the record, the tools and the write-ups serve that.
+
+**Goal 1, the rink.** Building the rink comes first: everything else serves it, and the
+roadmap's current goal (this season's rink sited, built and tracked) already treats it
+as the point. Its size and the liner are open details of each season's build (below).
+
+**Goal 2, the record.** Last season the record started weeks late: photos and GPS data
 only after a few weeks, and the Gemini conversations used to care for the rink had to be
 recovered after the fact, so what worked could not be reviewed. The record starts with
 the first planning in the fall (this season, the October yard survey came before any
 ice) and runs through the thaw, which is part of the story. It names the AI
-conversations because AI agents will use the record again (goal 3). "In one place" was
+conversations because AI agents will use the record again (goal 4). "In one place" was
 left out on purpose: where the data lives is a design question.
 
-**Goal 2, collecting from the phone.** Photos and notes should not wait for the RTK
+**Goal 3, collecting from the phone.** Photos and notes should not wait for the RTK
 receiver: the phone's own GPS is enough for them, and only surveys need RTK. Collecting
 comes first in the work, because showing data only makes sense once it can be collected.
 Today the logger positions photos only from the receiver, and its notes column is left
 for a laptop tool.
 
-**Goal 3, AI help with care.** The project started with photos and a forecast going to
+**Goal 4, AI help with care.** The project started with photos and a forecast going to
 an AI on the phone, and a plan for the next 24 to 48 hours coming back. That help is
 wanted again, this time with the agents reading the collected data and the forecasts.
 "To help me decide how to care for the rink" says what the AI is for.
 
-**Goal 4, the status page.** Family and coworkers should be able to follow the rink, and
+**Goal 5, the status page.** Family and coworkers should be able to follow the rink, and
 anyone can see it: the owner chose public over a page shared with chosen people. Upkeep
 has to stay small. This season's story grows out of the entries the owner adds notes and
 flavor to, rather than being written separately afterwards.
 
-**Goal 5, write-ups.** Findings and techniques are written up for whoever wants the
+**Goal 6, write-ups.** Findings and techniques are written up for whoever wants the
 nerdy bits, and last season's story is edited and posted once.
 
 ## Principles (2026-11-23)
 
 **General-purpose tools where that is cheap.** The logger has already served surveys
 beyond the rink. The rule covers the phone app, the base station and the GIS tools alike,
-so it is a principle rather than part of goal 2. "Where that is cheap" was kept over
+so it is a principle rather than part of goal 3. "Where that is cheap" was kept over
 "when possible": the rink comes first.
 
 **Nothing public gives away where the rink is or who lives there.** Local coordinates

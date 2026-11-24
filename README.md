@@ -8,17 +8,21 @@ turned into a geodesy project.
 
 ## Goals
 
-1. A way to keep all the data I use to track and care for the rink, from the first
+Learning how to build and maintain an ice rink, while documenting the process and
+building tools to help me.
+
+1. Build an ice skating rink in my backyard.
+2. A way to keep all the data I use to track and care for the rink, from the first
    planning in the fall through the end of the season: the base map, surveys, photos,
    notes, weather, and my conversations with AI.
-2. An easy way to collect data from my phone, with or without the RTK GPS connected:
+3. An easy way to collect data from my phone, with or without the RTK GPS connected:
    photos and notes work with the phone's own GPS, and only surveys need the RTK.
-3. AI agents can use the data being collected, as well as weather forecasts and such, to
+4. AI agents can use the data being collected, as well as weather forecasts and such, to
    help me decide how to care for the rink.
-4. A public rink status page that tracks the rink's progress, a bit like a blog, without
+5. A public rink status page that tracks the rink's progress, a bit like a blog, without
    too much work for me to edit and keep up. Some entries carry my notes and flavor, and
    together they make this season's story.
-5. Discussions of my findings and techniques, and last season's story, edited and
+6. Discussions of my findings and techniques, and last season's story, edited and
    posted, for anyone interested in the nerdy bits.
 
 **Principle:** The tools (the phone app, the base station, the GIS tools) are
