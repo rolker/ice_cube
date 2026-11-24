@@ -6,6 +6,12 @@ using LLMs to help keep it up: photos and a forecast in, a plan for the next 48 
 (a survey workflow, a home base station, siting scripts) and the story of how a rink
 turned into a geodesy project.
 
+## Goals
+
+1. A way to keep all the data I use to track and care for the rink, from the first
+   planning in the fall through the end of the season: the base map, surveys, photos,
+   notes, weather, and my conversations with AI.
+
 ## Two halves
 
 **Tools.** Code that runs the base station, logs the rover and sizes the rink. Published
