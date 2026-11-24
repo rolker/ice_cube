@@ -11,6 +11,12 @@ turned into a geodesy project.
 1. A way to keep all the data I use to track and care for the rink, from the first
    planning in the fall through the end of the season: the base map, surveys, photos,
    notes, weather, and my conversations with AI.
+2. An easy way to collect data from my phone, with or without the RTK GPS connected:
+   photos and notes work with the phone's own GPS, and only surveys need the RTK.
+
+**Principle:** The tools (the phone app, the base station, the GIS tools) are
+general-purpose survey and GIS tools where that is cheap, with special features for the
+rink.
 
 ## Two halves
 
