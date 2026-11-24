@@ -28,6 +28,8 @@ rink.
 **Principle:** Nothing public (the repo or the status page) gives away where the rink is
 or who lives there. Town-level location is fine.
 
+Why each goal and principle is what it is: [`docs/decisions.md`](docs/decisions.md).
+
 ## Two halves
 
 **Tools.** Code that runs the base station, logs the rover and sizes the rink. Published
