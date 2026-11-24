@@ -2,7 +2,7 @@
 
 Tools and notes for a geodesy-grade backyard ice rink. See README.md for layout.
 
-**This repo is public.** Never commit coordinates (lat/lon, ECEF, UTM, absolute ellipsoidal
+**This repo and the rink status page are public.** Never commit coordinates (lat/lon, ECEF, UTM, absolute ellipsoidal
 heights, or anything that can be converted back), street addresses, NTRIP hosts or
 credentials, people's names, or photos with EXIF GPS. Town-level location ("Epping, NH")
 is fine. Figures must use local coordinates relative to an arbitrary origin, and no
