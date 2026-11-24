@@ -104,3 +104,20 @@ Parked details do not block the goals and can be settled later without a redesig
 - Rink size and the liner are open details of this season's build, not goals: about as
   large as last season, maybe more rectangular; the liner is an option because a milder
   winter was predicted.
+
+## Open (where the design discussion stands, 2026-11-23)
+
+The goals and the roadmap are drafted on branch `feature/issue-19` (issue #19). A resumed
+session starts here.
+
+- **Not pushed:** at the end of the 2026-11-23 session the branch was on the owner's
+  machine only.
+- "Two halves" in the README overlaps the goals and the general-tools principle: trim or
+  fold in.
+- First names of family and friends on the public page: allowed or not.
+- No design document yet. Planned next: carving the pipeline and web app off as a part
+  with its own goals, design and roadmap.
+- The Direction lines have no work items behind them yet, and most have no check.
+- The order assumes photos and notes without RTK fit before the build (about two weeks
+  out); cheapest test: write up and size the logger change.
+- Parked and offered items: see the section above.
