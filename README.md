@@ -13,6 +13,8 @@ turned into a geodesy project.
    notes, weather, and my conversations with AI.
 2. An easy way to collect data from my phone, with or without the RTK GPS connected:
    photos and notes work with the phone's own GPS, and only surveys need the RTK.
+3. AI agents can use the data being collected, as well as weather forecasts and such, to
+   help me decide how to care for the rink.
 
 **Principle:** The tools (the phone app, the base station, the GIS tools) are
 general-purpose survey and GIS tools where that is cheap, with special features for the
