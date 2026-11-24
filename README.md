@@ -15,6 +15,9 @@ turned into a geodesy project.
    photos and notes work with the phone's own GPS, and only surveys need the RTK.
 3. AI agents can use the data being collected, as well as weather forecasts and such, to
    help me decide how to care for the rink.
+4. A public rink status page that tracks the rink's progress, a bit like a blog, without
+   too much work for me to edit and keep up. Some entries carry my notes and flavor, and
+   together they make this season's story.
 
 **Principle:** The tools (the phone app, the base station, the GIS tools) are
 general-purpose survey and GIS tools where that is cheap, with special features for the
