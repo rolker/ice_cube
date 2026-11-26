@@ -24,6 +24,7 @@ import csv
 import io
 import os
 import re
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -112,17 +113,26 @@ class SessionSource:
     def refs_csv(self):
         """Text of the refs.csv shipped with this session (zip top level, or the folder's
         parent), or None."""
+        got = self.refs_csv_dated()
+        return got[0] if got else None
+
+    def refs_csv_dated(self):
+        """(text, mtime) of the refs.csv shipped with this session, or None. mtime is the
+        zip entry's time or the file's modification time (seconds since the epoch); it
+        orders refs.csv copies, so the newest one decides a row's void flag."""
         if self.is_zip:
             inner = self.zip_prefix.rstrip("/")
             parent = inner.rsplit("/", 1)[0] + "/" if "/" in inner else ""
             for cand in (parent + "refs.csv", "refs.csv"):
                 try:
-                    return self._z().read(cand).decode("utf-8", "replace")
+                    info = self._z().getinfo(cand)
                 except KeyError:
-                    pass
+                    continue
+                return (self._z().read(info).decode("utf-8", "replace"),
+                        time.mktime(info.date_time + (0, 0, -1)))
             return None
         p = self.path.parent / "refs.csv"
-        return p.read_text("utf-8", "replace") if p.is_file() else None
+        return (p.read_text("utf-8", "replace"), p.stat().st_mtime) if p.is_file() else None
 
     @property
     def snapshot(self):
@@ -234,31 +244,43 @@ def read_points(text):
     return rows
 
 
+# refs.csv columns as the logger writes them from 0.9.0 (PointRow.REFS_HEADER): rows from
+# before 0.6 have the first 18, rows from 0.6 to 0.8 the first 28, rows from 0.9.0 all 30.
+REFS_COLUMNS = ["session", "n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
+                "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note",
+                "fix_age_s", "fix_jump_m", "fix_suspect", "method", "tilt_n", "tilt_rms_m", "tilt_cover_deg",
+                "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m", "void", "void_reason"]
+
+
 def read_refs_csv(text):
     """refs.csv rows: the session folder name, then the points.csv columns. Accepts a
-    header line (first column `session` or anything not a number) or none. A row flagged
-    void=1 (0.9.0) is returned with `void` True; a file without the column has none."""
+    header line (first column `session` or anything not a number) or none. Columns are read
+    by name; a row longer than its header (none, or one the logger did not upgrade) is read
+    by position in the logger's column order when the header is a prefix of it, so its void
+    column is kept. A row flagged void=1 (0.9.0) is returned with `void` True; `void_known`
+    says whether the row had a void value at all (False: a row from before 0.9.0, read as
+    not voided)."""
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
         return []
-    cols = ["n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
-            "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note"]
-    cols_all = cols + ["void", "void_reason"]   # read by name: a file without a header has no void column
+    cols_all = REFS_COLUMNS[1:18] + ["void", "void_reason"]   # what read_points takes
     first = next(csv.reader([lines[0]]))
     if len(first) > 1 and "n" in first:
         hdr, body = first, lines[1:]
         hdr = ["session" if i == 0 and h != "n" else h for i, h in enumerate(hdr)]
     else:
-        hdr, body = ["session"] + cols, lines
+        hdr, body = REFS_COLUMNS, lines
+    prefix = hdr == REFS_COLUMNS[:len(hdr)]
     rows = []
     for r in csv.reader(body):
-        d = dict(zip(hdr, r))
+        d = dict(zip(REFS_COLUMNS if prefix and len(r) > len(hdr) else hdr, r))
         if not d.get("session") or not (d.get("n") or "").isdigit():
             continue
         p = read_points(",".join(cols_all) + "\n" + ",".join(
             '"' + (d.get(c) or "").replace('"', '""') + '"' for c in cols_all))
         if p:
             p[0]["session"] = d["session"]
+            p[0]["void_known"] = (d.get("void") or "").strip() in ("0", "1")
             rows.append(p[0])
     return rows
 

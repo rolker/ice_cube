@@ -47,7 +47,9 @@ deleted, like flagged soundings in multibeam processing: captures and refs carry
 import gets void=1 and one unflagged since gets void=0 again. Readers that build surfaces
 or checks (soundings.py, export_labels.py) leave void=1 rows out by default and say how
 many; the report and the sessions table (`n_voided`, `remarks`) count them. A file
-without the `void` column has none.
+without the `void` column has none. A flagged ref gets no `site` and plays no part in
+grouping the others. When several refs.csv copies hold a row, the newest copy (zip entry
+or file time) gives it, and the newest copy with a `void` column gives its flag.
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it); rows are matched by their keys and updated in place, so
@@ -328,17 +330,26 @@ def track_lines(session, track):
 
 def import_refs_csv(gp, texts):
     """refs.csv rows of sessions not otherwise imported (rows already there are kept, except
-    that the void flag of a row taken from a refs.csv follows the latest refs.csv read, both
-    ways). Returns (refs.csv rows, of which flagged void=1)."""
-    rows = {}
-    for text in texts:
+    that the void flag of a row taken from a refs.csv follows the refs.csv copies, both ways).
+    `texts` holds refs.csv texts, or (text, mtime) pairs. When copies disagree, the newest
+    copy (by mtime; equal or unknown times keep input order) gives the row, and its void
+    flag comes from the newest copy that has a void column, so a copy from before 0.9.0
+    never clears a flag. Returns (refs.csv rows, of which flagged void=1)."""
+    dated = [(t, None) if isinstance(t, str) else tuple(t) for t in texts]
+    dated = sorted(enumerate(dated), key=lambda it: (it[1][1] if it[1][1] is not None else float("-inf"), it[0]))
+    rows, flags = {}, {}
+    for _, (text, _mtime) in dated:   # oldest first: later copies win
         for r in read_refs_csv(text):
-            rows[(r["session"], r["n"])] = r
+            key = (r["session"], r["n"])
+            rows[key] = r
+            if r.get("void_known"):
+                flags[key] = (bool(r.get("void")), r.get("void_reason"))
     out = []
     for (sess, n), r in sorted(rows.items()):
+        void, reason = flags.get((sess, n), (False, None))
         d = {k: r.get(k) for k, _ in MEAS}
         d.update({"session": sess, "n": n, "source": "refs.csv",
-                  "void": int(bool(r.get("void"))), "void_reason": r.get("void_reason"),
+                  "void": int(void), "void_reason": reason if void else None,
                   "geom": _geom(r.get("lat"), r.get("lon"), r.get("h_ground"))})
         out.append(d)
     if out:
@@ -359,7 +370,8 @@ def local_xyz(frame, lat, lon, h):
 
 def update_local(gp, frame, recompute=False):
     """Fill x_m, y_m, z_m of the point tables about the frame (rows still empty, or all rows
-    when `recompute`), and group refs into sites. Only these columns are written."""
+    when `recompute`), and group refs that are not flagged void into sites (a flagged ref
+    gets no site). Only these columns are written."""
     for table in POINT_TABLES:
         where = "" if recompute else " WHERE x_m IS NULL"
         if table == "track_points":   # position only in the geometry: lon, lat, antenna h
@@ -371,7 +383,9 @@ def update_local(gp, frame, recompute=False):
             rows = gp.con.execute(f"SELECT fid, lat, lon, h_ground FROM {table}{where}").fetchall()
         gp.con.executemany(f"UPDATE {table} SET x_m=?, y_m=?, z_m=? WHERE fid=?",
                            [local_xyz(frame, lat, lon, h) + (fid,) for fid, lat, lon, h in rows])
-    rows = gp.con.execute("SELECT fid, lat, lon FROM refs WHERE lat IS NOT NULL "
+    # a flagged (void) ref neither seeds nor chains a site; its site is cleared
+    gp.con.execute("UPDATE refs SET site=NULL WHERE coalesce(void, 0) = 1")
+    rows = gp.con.execute("SELECT fid, lat, lon FROM refs WHERE lat IS NOT NULL AND coalesce(void, 0) = 0 "
                           "ORDER BY utc, session, n").fetchall()
     if rows:
         fr = frame or LocalFrame(rows[0][1], rows[0][2], 0.0)
@@ -545,7 +559,7 @@ def run(argv=None, log=print, progress=None):
         for k_src, src in enumerate(sources):
             if progress is not None:
                 progress(k_src, len(sources), src.name)
-            t = src.refs_csv()
+            t = src.refs_csv_dated()
             if t:
                 refs_texts.append(t)
             old = done.get(src.name)

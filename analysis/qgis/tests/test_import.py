@@ -140,6 +140,7 @@ class ImportTest(unittest.TestCase):
                          [("2026-11-30_09-00-00", 5, 1, "moved"),
                           ("2026-12-01_10-00-00", 3, 1, "bad pole placement")])
         self.assertEqual(self.q("SELECT n_voided FROM sessions"), [(2,)])
+        self.assertEqual(self.q("SELECT site FROM refs"), [(None,), (None,)])   # flagged refs: no site
         self.assertIn("2 flagged capture(s), kept with void=1: n=1, 3", self.q("SELECT remarks FROM sessions")[0][0])
 
         # unflagged on the phone since: a re-import clears the flags, rows and fids unchanged
@@ -151,6 +152,9 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT n, void, void_reason FROM captures ORDER BY n"),
                          [(1, 0, None), (2, 0, None), (3, 0, None), (4, 0, None)])
         self.assertEqual(self.q("SELECT void FROM refs ORDER BY session"), [(0,), (0,)])
+        sites = self.q("SELECT site FROM refs ORDER BY session")
+        self.assertIsNotNone(sites[0][0])
+        self.assertEqual(sites[0], sites[1])                       # unflagged: one site again
         self.assertEqual(self.q("SELECT n, fid FROM captures ORDER BY n"), fids)
 
         # export_labels leaves voided captures out by default and counts them
@@ -163,6 +167,42 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True, stats=stats), 3)
         rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
         self.assertEqual((rows["2"]["void"], rows["2"]["void_reason"]), ("1", "moved"))
+
+    def test_read_refs_csv_keeps_void_past_a_short_header(self):
+        """Headerless, or under a header the logger did not upgrade, a 0.9.0 row keeps its
+        void column (read by the logger's column order); a pre-0.9.0 row is not voided."""
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        base = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+                "4,30,0.002,0.002,0.004,1.0,,")
+        v09 = base + ",,,,ref,,,,,,," + "1,moved"          # 30 columns
+        old = base                                          # 18 columns, before 0.6
+        for text in (v09 + "\n", "session," + synth.POINTS_HDR + "\n" + v09 + "\n"):
+            r = imp.read_refs_csv(text)
+            self.assertEqual(len(r), 1)
+            self.assertEqual((r[0]["void"], r[0]["void_reason"], r[0]["void_known"]), (True, "moved", True))
+        r = imp.read_refs_csv(old + "\n")
+        self.assertEqual((r[0]["void"], r[0]["void_known"]), (False, False))
+
+    def test_refs_csv_copies_newest_decides_void(self):
+        """Copies of refs.csv that disagree: the newest decides, and an older-format copy
+        (no void column) never clears a flag, whatever the input order."""
+        gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(gp)
+        hdr = "session," + synth.POINTS_HDR
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        flagged = hdr + ",void,void_reason\n" + row + ",1,moved\n"
+        cleared = hdr + ",void,void_reason\n" + row + ",0,\n"
+        pre09 = hdr + "\n" + row + "\n"
+        void = lambda: gp.con.execute("SELECT void, void_reason FROM refs").fetchall()  # noqa: E731
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 200.0), (pre09, 100.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0), (pre09, 200.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])              # the newer copy has no void column
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 100.0)]), (1, 0))
+        self.assertEqual(void(), [(0, None)])                 # unflagged since: newest wins
+        gp.close()
 
     def test_snapshot_does_not_replace_full_import(self):
         full = synth.write_zip(self.d / "full.zip", synth.session_v05())
