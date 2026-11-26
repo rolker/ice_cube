@@ -410,36 +410,61 @@ class TestNodes(unittest.TestCase):
         m = s.n > 0
         err = (s.z - surface_fn(X, Y))[m]
         self.assertGreater(np.mean(np.abs(err) < 3 * s.sigma[m]), 0.95)
-        self.assertEqual(int(s.flags.sum()), 0)
+        # no outlier bins on clean data; Eeg (scale-free) may cull about one in 2500
+        self.assertEqual(int(s.n_out.sum()), int(s.n_eeg.sum()))
+        self.assertLessEqual(int(s.n_eeg.sum()), 0.002 * int(s.n.sum()))
+
+    def test_running_mode_reproduces_0_7(self):
+        """robust = false against values frozen from the 0.7 code (planted +10 cm second surface)."""
+        p = make_crossing_survey("s", [0.0] * 8, noise=0.005, seed=8)
+        z = p.z.copy(); z[p.pass_id >= 4] += 0.10
+        p.z = z
+        g = nodes.Grid.from_extent(0, 10, 0, 10, 0.5)
+        s = nodes.grid_surface([p], [np.full(len(p), 0.005)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0,
+                               robust=False)
+        self.assertAlmostEqual(float(np.nansum(s.z)), 68.20080096364538, places=10)
+        self.assertAlmostEqual(float(np.nansum(s.sigma)), 3.5054049127039137, places=12)
+        self.assertEqual((int(s.n.sum()), int(s.n_out.sum()), int((s.n_out > 0).sum()), int(s.npass.sum())),
+                         (2526, 203, 77, 462))
+        self.assertAlmostEqual(float(s.maxnr.sum()), 622.6319765174471, places=9)
+        for (a, b), (zz, sg, n, fl, mr) in {
+                (0, 0): (0.09491911672797482, 0.0048001760964672645, 8, 2, 10.76339142508154),
+                (4, 4): (0.13244037868372738, 0.004647292496715224, 14, 4, 9.42463145566523),
+                (12, 8): (0.18848020583204925, 0.004647292496715224, 14, 4, 9.715424586020244)}.items():
+            self.assertAlmostEqual(s.z[a, b], zz, places=13)
+            self.assertAlmostEqual(s.sigma[a, b], sg, places=14)
+            self.assertEqual((s.n[a, b], s.n_out[a, b]), (n, fl))
+            self.assertAlmostEqual(s.maxnr[a, b], mr, places=11)
 
     def test_flag_fires_on_second_surface(self):
+        """robust = false (the 0.7 counter, now in n_out)."""
         p = make_crossing_survey("s", [0.0] * 8, noise=0.005, seed=8)
         # plant a second surface: the y-lines are 10 cm higher
         z = p.z.copy(); z[p.pass_id >= 4] += 0.10
         p.z = z
         g = nodes.Grid.from_extent(0, 10, 0, 10, 0.5)
-        s = nodes.grid_surface([p], [np.full(len(p), 0.005)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0)
-        self.assertGreater(int((s.flags > 0).sum()), 10)
+        s = nodes.grid_surface([p], [np.full(len(p), 0.005)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0, robust=False)
+        self.assertGreater(int((s.n_out > 0).sum()), 10)
         # the two-surface nodes are where lines cross
         X, Y = np.meshgrid(g.xs, g.ys)
         on_cross = (np.abs(X % 2) < 1e-9) & (np.abs(Y % 2) < 1e-9) & (X <= 6) & (Y <= 6)
-        self.assertGreater(np.mean(s.flags[on_cross & (s.n > 0)] > 0), 0.8)
+        self.assertGreater(np.mean(s.n_out[on_cross & (s.n > 0)] > 0), 0.8)
         self.assertGreater(s.maxnr.max(), 3.0)
         from icecube import report
-        self.assertIn("| east (m) |", report.table_flags(s))
+        self.assertIn("| east (m) |", report.table_outliers(s))
 
     def test_flag_within_one_pass(self):
         # a 5 cm step inside one pass: the shared bias cancels, only noise counts
         g = nodes.Grid.from_extent(0, 0, 0, 0, 0.5)
         p = local_points("s", [0.0, 0.0], [0.0, 0.0], [0.0, 0.05], t=[0.0, 1.0], sz=[0.01, 0.01], sh=[0.0, 0.0])
         p.pass_id[:] = 0
-        s = nodes.grid_surface([p], [np.full(2, 0.03)], g, capture_radius=0.1, slope=0.0, k_sigma=3.0)
-        self.assertEqual(s.flags[0, 0], 1)
+        s = nodes.grid_surface([p], [np.full(2, 0.03)], g, capture_radius=0.1, slope=0.0, k_sigma=3.0, robust=False)
+        self.assertEqual(s.n_out[0, 0], 1)
         self.assertAlmostEqual(s.maxnr[0, 0], 0.05 / np.sqrt(2 * 0.01**2))
         # the same step from a different pass is inside 3 sigma once both biases count
         p.pass_id = np.array([0, 1])
-        s2 = nodes.grid_surface([p], [np.full(2, 0.03)], g, capture_radius=0.1, slope=0.0, k_sigma=3.0)
-        self.assertEqual(s2.flags[0, 0], 0)
+        s2 = nodes.grid_surface([p], [np.full(2, 0.03)], g, capture_radius=0.1, slope=0.0, k_sigma=3.0, robust=False)
+        self.assertEqual(s2.n_out[0, 0], 0)
         self.assertAlmostEqual(s2.maxnr[0, 0], 0.05 / np.sqrt(2 * 0.01**2 + 2 * 0.03**2))
 
     def test_detection_floor_at_real_bias_sigma(self):
@@ -452,8 +477,8 @@ class TestNodes(unittest.TestCase):
             p = make_crossing_survey("s", [0.0] * 8, noise=0.005, seed=9)
             z = p.z.copy(); z[p.pass_id >= 4] += plant
             p.z = z
-            s = nodes.grid_surface([p], [np.full(len(p), 0.03)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0)
-            frac = np.mean(s.flags[on_cross & (s.n > 0)] > 0)
+            s = nodes.grid_surface([p], [np.full(len(p), 0.03)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0, robust=False)
+            frac = np.mean(s.n_out[on_cross & (s.n > 0)] > 0)
             self.assertEqual(frac > 0.8, expect, (plant, frac))
             if not expect:
                 self.assertLess(frac, 0.2)
@@ -475,6 +500,167 @@ class TestNodes(unittest.TestCase):
         c = local_points("c", [0.0], [0.0], [0.0]); c.pass_id[:] = 0
         with self.assertRaises(ValueError):
             nodes.grid_surface([c], [np.zeros(1)], g)
+
+
+def one_node(zs, szs, passes=None, sb=None, t=None):
+    """A single node at the origin fed by soundings on it (slope 0: v = sz^2)."""
+    n = len(zs)
+    g = nodes.Grid.from_extent(0, 0, 0, 0, 0.5)
+    p = local_points("s", np.zeros(n), np.zeros(n), zs, t=t, sz=szs, sh=np.zeros(n))
+    p.pass_id = np.zeros(n, int) if passes is None else np.asarray(passes)
+    sbs = np.zeros(n) if sb is None else np.asarray(sb, float)
+    return p, sbs, g
+
+
+def node0(zs, szs, **kw):
+    eeg = kw.pop("eeg", 30.0)
+    p, sbs, g = one_node(zs, szs, **kw)
+    s = nodes.grid_surface([p], [sbs], g, capture_radius=0.1, slope=0.0, eeg_quotient_limit=eeg)
+    return {k: getattr(s, k)[0, 0] for k in ("z", "sigma", "n", "n_out", "n_alt", "z_alt", "strength", "n_eeg", "maxnr")}
+
+
+class TestRobustNodes(unittest.TestCase):
+    """The median-first rebuild with outlier bins (issue #24), batch mode."""
+
+    def test_late_outlier_is_binned_and_does_not_pull(self):
+        good = [0.100, 0.104, 0.097, 0.102, 0.099]
+        o = node0(good + [0.25], [0.01] * 6)
+        self.assertAlmostEqual(o["z"], np.mean(good), places=12)
+        self.assertAlmostEqual(o["sigma"], 0.01 / np.sqrt(5), places=12)
+        self.assertEqual((o["n"], o["n_out"], o["n_alt"]), (6, 1, 1))
+        self.assertAlmostEqual(o["z_alt"], 0.25)
+        self.assertAlmostEqual(o["strength"], 0.0)          # 5 - 5/1
+        self.assertGreater(o["maxnr"], 3.0)
+
+    def test_arrival_order_does_not_matter(self):
+        rng = np.random.default_rng(3)
+        n = 40
+        x, y = rng.uniform(0, 3, n), rng.uniform(0, 3, n)
+        z = 0.02 * x + rng.normal(0, 0.006, n)
+        z[[0, 1, 2]] += [0.15, -0.12, 0.2]            # early outliers
+        g = nodes.Grid.from_extent(0, 3, 0, 3, 0.5)
+        out = []
+        for perm in (np.arange(n), rng.permutation(n), rng.permutation(n)):
+            p = local_points("s", x[perm], y[perm], z[perm], sz=np.full(n, 0.01), sh=np.full(n, 0.01))
+            p.pass_id[:] = 0
+            out.append(nodes.grid_surface([p], [np.zeros(n)], g, capture_radius=0.75))
+        for s in out[1:]:
+            np.testing.assert_allclose(s.z, out[0].z, rtol=0, atol=1e-15)
+            np.testing.assert_allclose(s.sigma, out[0].sigma, rtol=0, atol=1e-15)
+            np.testing.assert_array_equal(s.n_out, out[0].n_out)
+        self.assertGreater(int(out[0].n_out.sum()), 0)
+
+    def test_two_passes_within_the_detection_floor_blend(self):
+        # sb = 3 cm on two passes: a 10 cm offset is inside k * sqrt(2 sb^2 + ...) and blends;
+        # 20 cm is outside and the smaller pass goes to the outlier bin
+        for dz, out in ((0.10, 0), (0.20, 2)):
+            o = node0([0.0, 0.002, -0.001, dz, dz + 0.001], [0.01] * 5, passes=[0, 0, 0, 1, 1], sb=[0.03] * 5)
+            self.assertEqual(o["n_out"], out, dz)
+        g = nodes.Grid.from_extent(0, 10, 0, 10, 0.5)
+        X, Y = np.meshgrid(g.xs, g.ys)
+        on_cross = (np.abs(X % 2) < 1e-9) & (np.abs(Y % 2) < 1e-9) & (X <= 6) & (Y <= 6)
+        for plant, expect in ((0.10, False), (0.20, True)):
+            p = make_crossing_survey("s", [0.0] * 8, noise=0.005, seed=9)
+            z = p.z.copy(); z[p.pass_id >= 4] += plant
+            p.z = z
+            s = nodes.grid_surface([p], [np.full(len(p), 0.03)], g, capture_radius=0.75, slope=0.05, k_sigma=3.0)
+            frac = np.mean(s.n_out[on_cross & (s.n > 0)] > 0)
+            self.assertEqual(frac > 0.8, expect, (plant, frac))
+
+    def test_dem_samples_do_not_outvote_rtk(self):
+        # 3 RTK shots (1 cm) and 10 DEM samples (15 cm) 60 cm higher: by count the DEM would
+        # win; promotion by weight keeps the RTK
+        o = node0([0.0, 0.004, -0.003] + [0.6] * 10, [0.01] * 3 + [0.15] * 10, passes=[0] * 3 + [1] * 10)
+        self.assertAlmostEqual(o["z"], 0.001 / 3, places=12)
+        self.assertEqual((o["n_out"], o["n_alt"]), (10, 10))
+        self.assertEqual(o["strength"], 5.0 - 3 / 10)
+
+    def test_two_pass_crossing_heavier_pass_wins(self):
+        # a dense pass (12 epochs) and a sparse one (4) 15 cm apart, no bias: the sparse one is
+        # the outlier bin whatever the order, and the node keeps the dense pass's height
+        dense = [0.0 + 0.001 * (k % 3) for k in range(12)]
+        sparse = [0.15, 0.151, 0.149, 0.15]
+        for zs, ps in ((dense + sparse, [0] * 12 + [1] * 4), (sparse + dense, [1] * 4 + [0] * 12)):
+            o = node0(zs, [0.01] * 16, passes=ps)
+            self.assertAlmostEqual(o["z"], np.mean(dense), places=12)
+            self.assertEqual(o["n_out"], 4)
+
+    def test_weight_promotion(self):
+        # the weighted median is the middle sounding; both sides weigh more and the
+        # earlier-created one (lower id at the equal distance) becomes the main
+        o = node0([-0.2, 0.0, 0.2], [0.008, 0.0095, 0.008])
+        self.assertAlmostEqual(o["z"], -0.2, places=12)
+        self.assertEqual((o["n_out"], o["n_alt"]), (2, 1))
+
+    def test_eeg(self):
+        # pessimistic sigmas (3 cm) and a 6 cm outlier inside the 3-sigma test: Eeg culls it
+        good = [0.100, 0.104, 0.097, 0.102, 0.099, 0.101, 0.098, 0.103, 0.100, 0.102, 0.099]
+        o = node0(good + [0.16], [0.03] * 12)
+        self.assertEqual((o["n_eeg"], o["n_out"], o["n_alt"]), (1, 1, 0))
+        self.assertAlmostEqual(o["z"], np.mean(good), places=12)
+        self.assertEqual(node0(good + [0.16], [0.03] * 12, eeg=0)["n_out"], 0)
+        self.assertEqual(node0(good[:9] + [0.16], [0.03] * 10)["n_eeg"], 0)   # under EEG_MIN_N members
+        # identical heights plus one 1 mm off, and all identical: kept (the denominator guard)
+        self.assertEqual(node0([0.1] * 11 + [0.101], [0.01] * 12)["n_eeg"], 0)
+        self.assertEqual(node0([0.1] * 12, [0.01] * 12)["n_eeg"], 0)
+        # equal weights: CUBE's quotient d^2 / (ssd_k - d^2 / (n - 1))
+        z = np.array(good + [0.16])
+        e = [nodes.entry(float(v), 0.03 ** 2, k) for k, v in enumerate(z)]
+        n1 = len(z) - 1
+        ssd = np.sum((z - z.mean()) ** 2)
+        d2 = (z[-1] - z.mean()) ** 2
+        q_cube = d2 / (n1 * ssd / (n1 * n1 - 1) - d2 / (n1 - 1))
+        self.assertEqual(nodes.eeg_cull(e, list(range(len(z))), q_cube * 0.999), [len(z) - 1])
+        self.assertEqual(nodes.eeg_cull(e, list(range(len(z))), q_cube * 1.001), [])
+
+
+class TestNodeStore(unittest.TestCase):
+    """The logger's capped store (Coverage.java's twin)."""
+
+    def test_count_promotion(self):
+        st = nodes.NodeStore()
+        st.add(0.0, 0.005 ** 2, 1)
+        for k in range(3):
+            st.add(0.2 + 0.001 * k, 0.03 ** 2 + 0.03 ** 2, 2 + k)
+        o = st.outputs()
+        self.assertEqual((o["n_in"], o["n_out"]), (3, 1))
+        self.assertAlmostEqual(o["z"], 0.201, places=12)
+
+    def test_equal_pair_takes_the_lower(self):
+        st = nodes.NodeStore()
+        st.add(0.3, 0.0001, 7)
+        st.add(0.1, 0.0001, 9)
+        o = st.outputs()
+        self.assertEqual((o["z"], o["n_in"], o["n_out"]), (0.1, 1, 1))
+
+    def test_fold_and_drop(self):
+        st = nodes.NodeStore(cap=4)
+        for k in range(6):
+            st.add(0.01 * (k % 2), 0.01 ** 2, k)
+        self.assertEqual((len(st.entries), st.agg_n, st.n_dropped, st.n), (4, 2, 0, 6))
+        o = st.outputs()
+        self.assertEqual((o["n"], o["n_in"], o["n_out"]), (6, 6, 0))
+        self.assertAlmostEqual(o["z"], 0.005, places=12)
+        # a run of outliers: the main's stored members fold, then (the main being the
+        # aggregate alone) the oldest outliers drop; past the cap a side can no longer
+        # outgrow the aggregate, so the height stays and n_out grows: the node goes red
+        for k in range(6, 16):
+            st.add(0.5, 0.01 ** 2, k)
+        o = st.outputs()
+        self.assertEqual((o["n"], o["n_in"], o["n_out"], o["n_alt"]), (16, 6, 10, 4))
+        self.assertEqual((len(st.entries), st.agg_n, st.n_dropped), (4, 6, 6))
+        self.assertAlmostEqual(o["z"], 0.005, places=12)
+        self.assertLess(o["n_in"], nodes.OUTVOTE * o["n_out"])
+        # while the aggregate is still small, a side that outgrows it takes over, and the
+        # next fold drops the aggregate (its members count as outliers from then on)
+        st = nodes.NodeStore(cap=4)
+        for k, z in enumerate([0.0] * 3 + [0.5] * 8):
+            st.add(z, 0.01 ** 2, k)
+            if k == 5:
+                self.assertEqual((st.agg_n, st.n_dropped, st.outputs()["z"]), (2, 0, 0.0))
+        o = st.outputs()
+        self.assertEqual((o["n"], o["n_in"], o["n_out"], st.n_dropped, st.agg_n), (11, 8, 3, 2, 5))
+        self.assertAlmostEqual(o["z"], 0.5, places=12)
 
 
 class TestGrowth(unittest.TestCase):

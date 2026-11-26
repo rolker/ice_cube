@@ -69,6 +69,8 @@ def run(cfg, out_dir=None, log=print):
     g = cfg.get("grid", {})
     capture = float(g.get("capture_radius", 1.5 * float(g.get("cell", 0.5))))
     k_sigma = float(g.get("k_sigma", 3.0))
+    robust = bool(g.get("robust", True))
+    eeg = float(g.get("eeg_quotient_limit", 30.0))
     out = Path(out_dir or cfg.get("output", {}).get("dir", "output/ice-cube"))
     if not out.is_absolute() and base is not None:
         out = base / out
@@ -96,7 +98,7 @@ def run(cfg, out_dir=None, log=print):
         mask = growth.point_in_polygon(X.ravel(), Y.ravel(), outline).reshape(X.shape)
 
     summary = [f"# Ice-Cube run", "", f"Grid: {grid.nx} x {grid.ny} nodes, cell {grid.cell} m, capture radius "
-               f"{capture} m, k_sigma {k_sigma}, slope {slope} m/m. Sigma defaults {sigma_z*100:.1f} cm (z), "
+               f"{capture} m, k_sigma {k_sigma}, slope {slope} m/m, robust {robust}, Eeg limit {eeg:g}. Sigma defaults {sigma_z*100:.1f} cm (z), "
                f"{sigma_h*100:.1f} cm (h). Wander prior {prior*100:.1f} cm, crossover radius {xr} m.", ""]
     surfaces = {}
     results = {}
@@ -116,20 +118,22 @@ def run(cfg, out_dir=None, log=print):
             corrected.append(c); sbs.append(sb)
         date = max(p.date for p in pts_list)
         surf = nodes.grid_surface(corrected, sbs, grid, capture_radius=capture, slope=slope, k_sigma=k_sigma,
+                                  robust=robust, eeg_quotient_limit=eeg,
                                   name=sname, date=date, frame=pts_list[0].frame)
         surfaces[sname] = surf
         results[sname] = res
-        np.savez(out / f"surface_{sname}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, flags=surf.flags,
+        np.savez(out / f"surface_{sname}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, n_out=surf.n_out,
+                 n_alt=surf.n_alt, z_alt=surf.z_alt, strength=surf.strength, n_eeg=surf.n_eeg, maxnr=surf.maxnr,
                  last_t=surf.last_t, npass=surf.npass, **grid.as_dict())
         (out / f"passes_{sname}.md").write_text(report.table_passes(infos) + "\n")
         (out / f"crossover_{sname}.md").write_text(report.table_crossover(res) + "\n")
-        (out / f"flags_{sname}.md").write_text(report.table_flags(surf) + "\n")
+        (out / f"outliers_{sname}.md").write_text(report.table_outliers(surf) + "\n")
         report.fig_points(corrected, out / f"points_{sname}.png", outline, title=f"{sname}: points by pass")
         report.fig_biases(res, out / f"biases_{sname}.png", title=f"{sname}: crossover biases")
         if res.n_obs:
             report.fig_hist(res.residuals * 100, out / f"xover_resid_{sname}.png", "pair residual after adjustment (cm)",
                             f"{sname}: crossover residuals")
-        for what in ("z", "sigma", "n", "flags"):
+        for what in ("z", "sigma", "n", "outliers"):
             report.fig_surface(surf, out / f"{what}_{sname}.png", what, outline, title=f"{sname} ({date}): {what}",
                                mask=mask if (role != "validation" and mask is not None) else None)
         m = mask if (mask is not None and role != "validation") else (surf.n > 0)
@@ -151,7 +155,7 @@ def run(cfg, out_dir=None, log=print):
         if prel.get("n"):
             summary += [f"Point relief inside mask (after bias correction): n {prel['n']}, max-min {prel['range']*100:.1f} cm, "
                         f"sd {prel['sd']*100:.1f} cm; raw points: max-min {praw['range']*100:.1f} cm, sd {praw['sd']*100:.1f} cm.", ""]
-        summary += ["### Flagged nodes", "", report.table_flags(surf, m, limit=15), ""]
+        summary += ["### Nodes with outliers", "", report.table_outliers(surf, m, limit=15), ""]
         log(f"surface {sname}: " + report.table_surface(surf, m))
 
     for gc in cfg.get("growth", []):
