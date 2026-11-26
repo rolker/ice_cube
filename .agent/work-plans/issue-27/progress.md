@@ -217,3 +217,35 @@ Tests (project pass, every hook ran on each commit):
 - icecube/ not touched; its suite not run. C: 115 GB free before, 114 GB after.
 
 Not done here: the issue comments for #20/#21/#23 (plan step 7/4) were not posted; the requirement under the veto is "keep void=1 rows, exclude by default, report the count, option to include; missing column means not voided; drop tilt_obs.csv leans of a voided n; ignore refs.csv void=1 as a visit". QGIS styling of voided captures (build_project.py) unchanged.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 18:48 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `102e6e3`
+**Base**: main
+**Depth**: Standard (reason: 25 files, about 1,250 lines across the logger app and the QGIS readers; data-format change)
+**Must-fix**: 4 | **Suggestions**: 10
+**Round**: 1 | **Ship**: continue (round 1: 4 must-fix; first round always re-reviews after fixes)
+
+Checked against the owner's rule (his words: "So flagged data gets deleted? I wonder if it should only be flagged, which is a common approach in multbeam sonar processing."): nothing is deleted anywhere. The importer keeps voided rows, the flag follows re-import both ways, and soundings.py and export_labels.py exclude flagged rows by default, count them and can include them. Two places in soundings.py still let a flagged row change usable output, and the QGIS project draws flagged rows like live ones. Public-repo check: clean (fixtures use synthetic 10/20 degree or offset coordinates; no names, hosts or addresses). Tests, from the Claude adversarial pass: python qgis 96 OK (5 skipped); logger testDebugUnitTest passes.
+
+Cross-model: codex complete (3 must-fix, all kept: anchors, verify_suspect, poleCheck race); gemini complete (4 must-fix: anchors and the poleCheck race kept; refs.csv order and headerless read moved to suggestions as edge cases).
+
+### Findings
+- [ ] (must-fix) assign_anchors: a voided ref alone at its spot still makes a site (the `or g` fallback), and nearby good ground soundings join it as anchors and lose their ground sigma; leave `void:` rows out of `an` unless include_voided (Claude, codex, gemini) — `analysis/qgis/soundings.py:911-935`
+- [ ] (must-fix) verify_suspect: voided rows in a suspect pass add their dz to the pass's verification and can clear suspect_jump on live rows; leave void-flagged rows out of the members compared (codex) — `analysis/qgis/soundings.py:968-985`
+- [ ] (must-fix) build_project.py styles captures and refs with no use of `void`: flagged rows look like live ones in QGIS; draw them distinctly (hollow/grey or a rule-based category) and show void_reason in the map tip (host check, Claude) — `analysis/qgis/build_project.py:156,181`
+- [ ] (must-fix) poleCheck on the io thread checks `r.voided` once, then sets notice/poleWarning/poleWarningN and the alarm without the Survey lock; a voidCapture in between leaves a warning or alarm on a voided ref; `poleWarningN` is not volatile. Do the final update under the lock with a recheck (Claude, codex, gemini) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:501-530,564`
+- [ ] (suggestion) update_local's refs.site grouping includes voided refs, which can seed or chain sites that soundings uses for anchor names — `analysis/qgis/import_sessions.py:374`
+- [ ] (suggestion) import_refs_csv keeps the last file in input order per (session, n) and then sets void unconditionally, so an older refs.csv (pre-0.9.0 or a snapshot from before the flag) imported later un-flags a ref; prefer the row that has the void column, or the newest file — `analysis/qgis/import_sessions.py:333-348`
+- [ ] (suggestion) read_refs_csv: a headerless file, or one whose header was not upgraded, drops columns past the header, so void is lost — `analysis/qgis/logger_session.py:246-256`
+- [ ] (suggestion) With include_voided, soundings adds no flag, so the output loses the trace that a row was flagged; add a non-excluding marker (e.g. `voided_included`) — `analysis/qgis/soundings.py:648`
+- [ ] (suggestion) RefsStore.setVoid failing on every root leaves only a "(0 rows)" event; the ref still counts as a visit in later sessions. Warn when nothing was rewritten — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:79-88`
+- [ ] (suggestion) README says readers drop tilt_obs.csv leans of a voided n, but no tilt_obs.csv reader exists; say a future reader must — `logger/README.md`
+- [ ] (suggestion) When a voided ref's photos move, refs.csv keeps the old photo names (points.csv is updated); fix or note it — `logger/app/src/main/java/rink/icecube/logger/core/VoidRule.java:105`
+- [ ] (suggestion, PR B) MapView draws voided captures like live ones — `logger/app/src/main/java/rink/icecube/logger/MapView.java:481-515`
+- [ ] (suggestion, PR B) Check that `elapsedNs` is the capture's completion time before the UNDO bar relies on the 8 s window for 30 s refs and tilt sets — `logger/app/src/main/java/rink/icecube/logger/Survey.java:553`
+- [ ] (suggestion) Minor: void_reason is not stripped in the soundings flag; export_labels prints no count with --include-voided and writes "" not 0 for a pre-0.9.0 gpkg — `analysis/qgis/soundings.py:649`, `analysis/qgis/export_labels.py:88`
