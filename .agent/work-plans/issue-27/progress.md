@@ -196,3 +196,24 @@ The revision addresses all four earlier must-fixes and the A/B split is sound: A
 **Decision**: proceed
 
 Implement PR A. Review notes into the handoff: drop the 'session resume' paragraph and the restart-from-file test (the phone never reopens a session; refs.csv is the only void state read back); import_refs_csv also skips and counts void=1 refs, with a test; host decision on minor 3: re-import DELETES (session, n) rows that are now voided, with a test; README labels the new columns and flag/unflag/photo moved events 'from 0.9.0'.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:43 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Branch**: feature/issue-27 at `17ede67`
+
+PR A (plan steps 1-9). Owner veto during the pass, verbatim: "So flagged data gets deleted? I wonder if it should only be flagged, which is a common approach in multbeam sonar processing." It replaces the host decisions "importer drops voided rows" and "re-import deletes now-voided rows": nothing is deleted anywhere; readers filter by default and count.
+
+- `3f400d4` PointRow: volatile `voided`/`voidReason`, columns `void,void_reason` (COLUMNS 29; 17- and 27-column rows read as not voided), `isLive()`. New `core/VoidRule` (UNDO_WINDOW_MS 8000, UNDO_ARM_MS 750, reasons, reason sanitising, photo target, lastLive/liveCount, photo row for a voided row, refs.csv row rewrite). PhotoRule `attachTo(PointRow, ns)` refuses a voided last capture; PoleCheck.matches skips voided refs.
+- `89eecd8` Coverage.feeds() adds `!r.voided` (only change to Coverage.java); CoverageWorker.update gains a void-generation overload that forces a rebuild; MainActivity passes `sv.voidGeneration()` (one line). No coverage vectors regenerated.
+- `df8ade9` Survey.voidCapture(n, reason, via) / unvoidCapture(n): refusals (photo row, already voided, ref/tilt running, via=undo past 8 s), events `flag`/`unflag`/`photo moved`, photos to nearest earlier live capture or a new photo row, lastCapture/captures from live rows, voidGeneration bump, capture notice and poleWarning cleared for a voided ref, pole check skipped if voided while queued. RefsStore.setVoid rewrites the (session, n) row in every refs.csv (tmp + rename) on the io thread after the append, then bumps refsGeneration; readAll skips voided rows. Nothing calls voidCapture yet (UI in PR B).
+- `b487b69` Python, per the veto: importer keeps voided captures/refs with `void`, `void_reason` (captures, refs) and `n_voided` (sessions) columns, rewritten on every import so an unflag clears them; import_refs_csv carries and updates the flag both ways for refs.csv-sourced rows and counts them (`refs_csv_voided`). soundings.py: a voided capture stays a row with flag `void:<reason>`, use 0, count logged; `[soundings] include_voided` / `--include-voided` uses it; voided refs are not plumb references. export_labels.py leaves voided captures out by default (count via `stats`, printed by the CLI), `--include-voided` exports them with the void columns. config.example.toml: `include_voided`.
+- `17ede67` logger/README.md: Flagged (void) captures section, columns and events labelled "from 0.9.0", points.csv not append-only (events.csv is the record), refs.csv only void state read back, no session-resume rule; docs/howto/ice-cube.md soundings flag line.
+
+Tests (project pass, every hook ran on each commit):
+- `cd logger && ./gradlew testDebugUnitTest --max-workers=4`: 176 tests, 0 failures (new VoidRuleTest; new cases in PointRowTest, PhotoRuleTest, PoleCheckTest, CoverageTest, CoverageWorkerTest).
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 96, OK (skipped=5) (new test_import `test_voided_captures_kept_and_flag_updates`: kept with reason, refs.csv void, unflag clears, export_labels default/include; new test_soundings `test_voided_capture_flagged_not_used_unless_included`).
+- icecube/ not touched; its suite not run. C: 115 GB free before, 114 GB after.
+
+Not done here: the issue comments for #20/#21/#23 (plan step 7/4) were not posted; the requirement under the veto is "keep void=1 rows, exclude by default, report the count, option to include; missing column means not voided; drop tilt_obs.csv leans of a voided n; ignore refs.csv void=1 as a visit". QGIS styling of voided captures (build_project.py) unchanged.
