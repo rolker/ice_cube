@@ -59,3 +59,13 @@ The project has no principles file or ADRs; checked against CLAUDE.md rules and 
 - [ ] Define how voiding interacts with a capture of class `ref` or `tilt` (a ref occupation or tilt set spanning several epochs), or scope this to single captures first.
 - [ ] Add tests for the photo re-attach and for reading an older session with no `void` column, beyond the ones the issue lists.
 - [ ] Note the voided-skip requirement on #20 and #21 so the reader work picks it up.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:26 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (actions are plan inputs within the issue's scope; orchestrator table allows proceed)
+**After**: issue-actions
+**Decision**: proceed
+
+Actions go to plan-task: events.csv is the append-only source of truth and points.csv's void column is derived (points.csv is rewritten today); photo re-attachment rule (owner's comment on the issue) stays in scope, the plan may split it into a second PR; decide voiding for ref and tilt captures; voided captures keep their numbers; old sessions without the column read as not voided; follow #23's ref history; note the reader skip for #20/#21; docs and version.
