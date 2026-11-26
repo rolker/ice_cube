@@ -41,6 +41,14 @@ the origin changes, x_m/y_m/z_m of every existing row are recomputed (user colum
 untouched). The display CRS (orthographic at the origin) is stored in
 gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta.
 
+Flagged captures (logger 0.9.0, `void` = 1 in points.csv or refs.csv) are kept, never
+deleted, like flagged soundings in multibeam processing: captures and refs carry `void`
+(0/1) and `void_reason`, rewritten on every import, so a capture flagged after an earlier
+import gets void=1 and one unflagged since gets void=0 again. Readers that build surfaces
+or checks (soundings.py, export_labels.py) leave void=1 rows out by default and say how
+many; the report and the sessions table (`n_voided`, `remarks`) count them. A file
+without the `void` column has none.
+
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it); rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
@@ -76,19 +84,20 @@ R, I, T = "REAL", "INTEGER", "TEXT"
 MEAS = [("utc", T), ("lat", R), ("lon", R), ("h_ant", R), ("pole_m", R), ("h_ground", R),
         ("fix", I), ("n_epochs", I), ("sd_e_m", R), ("sd_n_m", R), ("sd_u_m", R), ("age_s", R)]
 ENU = [("x_m", R), ("y_m", R), ("z_m", R)]
+VOID = [("void", I), ("void_reason", T)]   # logger 0.9.0: flagged as bad, kept (see below)
 LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
 POINT_TABLES = ("captures", "photos", "refs", "track_points")
 NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
-                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)],
+                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + VOID,
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
                ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
-            [("source", T), ("note", T)],
+            [("source", T), ("note", T)] + VOID,
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -98,7 +107,7 @@ SCHEMA = {
                  ("caster_mount", T), ("frame", T), ("base_station", T), ("base_type", T),
                  ("base_ecef", T), ("layer_base_check", T), ("pole_heights", T),
                  ("n_captures", I), ("n_surface", I), ("n_object", I), ("n_ref", I),
-                 ("n_photo", I), ("n_control", I), ("n_photos", I), ("n_track_points", I),
+                 ("n_photo", I), ("n_control", I), ("n_voided", I), ("n_photos", I), ("n_track_points", I),
                  ("pct_fixed", R), ("gga", I), ("gga_lost", I), ("gga_parsed", I), ("rawx", I),
                  ("rawx_lost", I), ("gps_lost", I), ("caster_lost", I), ("rtcm_crc_errors", I),
                  ("remarks", T), ("source", T), ("source_sig", T), ("imported_utc", T),
@@ -245,6 +254,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "sd_u_m": c.get("sd_u_m"), "age_s": c.get("age_s"),
             "photo": rel(files[0]) if files else None, "photo_count": len(files),
             "source": c.get("source"), "elapsed_ns": c.get("elapsed_ns"), "note": c.get("note"),
+            "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason"),
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
@@ -265,6 +275,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             continue
         r = {k: c.get(k) for k, _ in MEAS}
         r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
+                  "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason"),
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
         for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok"):
             r[k] = s.refs.get(c["n"], {}).get(k)
@@ -316,7 +327,9 @@ def track_lines(session, track):
 
 
 def import_refs_csv(gp, texts):
-    """refs.csv rows of sessions not otherwise imported (rows already there are kept)."""
+    """refs.csv rows of sessions not otherwise imported (rows already there are kept, except
+    that the void flag of a row taken from a refs.csv follows the latest refs.csv read, both
+    ways). Returns (refs.csv rows, of which flagged void=1)."""
     rows = {}
     for text in texts:
         for r in read_refs_csv(text):
@@ -325,11 +338,14 @@ def import_refs_csv(gp, texts):
     for (sess, n), r in sorted(rows.items()):
         d = {k: r.get(k) for k, _ in MEAS}
         d.update({"session": sess, "n": n, "source": "refs.csv",
+                  "void": int(bool(r.get("void"))), "void_reason": r.get("void_reason"),
                   "geom": _geom(r.get("lat"), r.get("lon"), r.get("h_ground"))})
         out.append(d)
     if out:
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
-    return len(out)
+        gp.con.executemany("UPDATE refs SET void=?, void_reason=? WHERE session=? AND n=? AND source='refs.csv'",
+                           [(d["void"], d["void_reason"], d["session"], d["n"]) for d in out])
+    return len(out), sum(d["void"] for d in out)
 
 
 def local_xyz(frame, lat, lon, h):
@@ -485,8 +501,8 @@ def run(argv=None, log=print, progress=None):
     """The import as a function: `argv` as on the command line, `log(str)` for the report
     lines, `progress(done, total, name)` called before each session and at the end.
     Returns a summary dict: gpkg, season, found, added (one dict per session read:
-    session, captures, photos, photos_extracted, track_points, replaced), unchanged
-    (names skipped), photos_extracted, refs_csv_rows, totals (rows per table), origin,
+    session, captures, voided, photos, photos_extracted, track_points, replaced), unchanged
+    (names skipped), photos_extracted, refs_csv_rows, refs_csv_voided, totals (rows per table), origin,
     recomputed. Bad arguments raise SystemExit (argparse)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="*", help="session zips, session folders or folders of them")
@@ -550,14 +566,16 @@ def run(argv=None, log=print, progress=None):
             gp.commit()
             parsed.append(s)
             i = s.info
-            added.append({"session": s.name, "captures": i["n_captures"], "photos": i["n_photos"],
+            added.append({"session": s.name, "captures": i["n_captures"], "voided": i["n_voided"],
+                          "photos": i["n_photos"],
                           "photos_extracted": k, "track_points": i["n_track_points"],
                           "replaced": s.name in done})
-            log(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures, "
+            log(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures"
+                  + (f" ({i['n_voided']} flagged void)" if i["n_voided"] else "") + ", "
                   f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
                   + (f"; {i['remarks']}" if i.get("remarks") else ""))
             src.close()
-        n_refs = import_refs_csv(gp, refs_texts)
+        n_refs, n_refs_voided = import_refs_csv(gp, refs_texts)
 
         meta = get_meta(gp)
         base = resolve_base(args, cfg, cfg_dir, layer_files, parsed)
@@ -600,7 +618,8 @@ def run(argv=None, log=print, progress=None):
         gp.con.close()      # no handle stays open (Windows locks the file)
         raise
     gp.close()
-    log(f"refs.csv rows seen: {n_refs}; photos extracted this run: {n_photos}")
+    log(f"refs.csv rows seen: {n_refs}" + (f" ({n_refs_voided} flagged void)" if n_refs_voided else "")
+        + f"; photos extracted this run: {n_photos}")
     if frame is None:
         log("local frame: none (no origin or base given; x_m/y_m/z_m left empty)")
     else:
@@ -613,6 +632,7 @@ def run(argv=None, log=print, progress=None):
         progress(len(sources), len(sources), "done")
     return {"gpkg": str(gpkg_path), "season": name, "found": len(sources), "added": added,
             "unchanged": unchanged, "photos_extracted": n_photos, "refs_csv_rows": n_refs,
+            "refs_csv_voided": n_refs_voided,
             "totals": summary, "origin": frame.name if frame is not None else None,
             "recomputed": bool(recompute)}
 

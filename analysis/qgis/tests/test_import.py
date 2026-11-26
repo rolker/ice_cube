@@ -125,6 +125,45 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT label FROM captures WHERE n=2"), [("spigot",)])
         self.assertEqual(self.q("SELECT count(*) FROM tracks")[0][0], first["tracks"])
 
+    # -- flagged (void) captures: kept, never deleted; the flag follows re-import both ways (#27)
+    def test_voided_captures_kept_and_flag_updates(self):
+        name = "IceCubeLogger_2026-12-01_10-00-00.zip"
+        files = synth.with_void(synth.session_v05(), {1: "accidental", 3: "bad pole placement"})
+        z = synth.write_zip(self.d / name, files, refs=synth.refs_csv_void(True))
+        out = run(z, "--gpkg", self.gpkg)
+        self.assertIn("4 captures (2 flagged void)", out)
+        self.assertIn("refs.csv rows seen: 2 (1 flagged void)", out)
+        self.assertEqual(self.counts()["captures"], 4)            # nothing dropped
+        self.assertEqual(self.q("SELECT n, void, void_reason FROM captures ORDER BY n"),
+                         [(1, 1, "accidental"), (2, 0, None), (3, 1, "bad pole placement"), (4, 0, None)])
+        self.assertEqual(self.q("SELECT session, n, void, void_reason FROM refs ORDER BY session"),
+                         [("2026-11-30_09-00-00", 5, 1, "moved"),
+                          ("2026-12-01_10-00-00", 3, 1, "bad pole placement")])
+        self.assertEqual(self.q("SELECT n_voided FROM sessions"), [(2,)])
+        self.assertIn("2 flagged capture(s), kept with void=1: n=1, 3", self.q("SELECT remarks FROM sessions")[0][0])
+
+        # unflagged on the phone since: a re-import clears the flags, rows and fids unchanged
+        fids = self.q("SELECT n, fid FROM captures ORDER BY n")
+        z.unlink()
+        z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False))
+        summary = imp.run([str(z), "--gpkg", str(self.gpkg)], log=lambda *a: None)
+        self.assertEqual((summary["added"][0]["voided"], summary["refs_csv_voided"]), (0, 0))
+        self.assertEqual(self.q("SELECT n, void, void_reason FROM captures ORDER BY n"),
+                         [(1, 0, None), (2, 0, None), (3, 0, None), (4, 0, None)])
+        self.assertEqual(self.q("SELECT void FROM refs ORDER BY session"), [(0,), (0,)])
+        self.assertEqual(self.q("SELECT n, fid FROM captures ORDER BY n"), fids)
+
+        # export_labels leaves voided captures out by default and counts them
+        z.unlink()
+        z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {2: "moved"}))
+        run(z, "--gpkg", self.gpkg)
+        stats = {}
+        self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", stats=stats), 2)
+        self.assertEqual(stats["voided"], 1)
+        self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True, stats=stats), 3)
+        rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
+        self.assertEqual((rows["2"]["void"], rows["2"]["void_reason"]), ("1", "moved"))
+
     def test_snapshot_does_not_replace_full_import(self):
         full = synth.write_zip(self.d / "full.zip", synth.session_v05())
         run(full, "--gpkg", self.gpkg)

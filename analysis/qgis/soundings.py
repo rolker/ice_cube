@@ -41,7 +41,9 @@ each row carries its `pass_id` and the source's `prior_m` (the expected pass wan
 
 Flags (comma-separated; `use` = 1 for rows icecube should take): float, other_station,
 suspect_jump (the fix began with a jump over suspect_jump_m: false fixes), settle,
-listed:<reason> (config list of known-bad points), no_fix_info, imu_unstable, not_plumb,
+listed:<reason> (config list of known-bad points), void:<reason> (a capture flagged as bad
+in the logger, 0.9.0; kept as a row with use = 0 unless `[soundings] include_voided = true`
+or --include-voided, and counted in the log), no_fix_info, imu_unstable, not_plumb,
 no_imu, no_plumb_ref, plumb_unverified (a stop without a passed IMU plumb check, left
 out while [soundings.stops] require_plumb = true: on the Nov 4 walk such stops read a median
 4 cm low against nearby points, a leaning pole), dup_capture (a stop that is a capture),
@@ -85,6 +87,7 @@ DEFAULTS = {
     "anchor_radius_m": 0.30,   # refs/controls within this share an anchor (as refs.site)
     "anchor_snap_m": 0.10,     # another sounding this close to an anchor (and within anchor_dz_m) joins it
     "anchor_dz_m": 0.10,
+    "include_voided": False,   # true: captures flagged void in the logger are used like any other
     "sigma": {"floor": 0.01, "floor_h": 0.01, "age_free_s": 2.0, "age_rate": 0.001,
               "settle_extra": 0.08, "tip_sink": 0.01, "ground": 0.015,
               "tilt_bubble_deg": 1.0, "tilt_imu_deg": 2.0, "tilt_unknown_deg": 5.0},
@@ -510,7 +513,7 @@ COLUMNS = [("sid", "TEXT"), ("source", "TEXT"), ("session", "TEXT"), ("kind", "T
            ("tilt_deg", "REAL"), ("imu_stable_deg", "REAL"), ("label", "TEXT")]
 KEYS = [c for c, _ in COLUMNS]
 EXCLUDING = {"float", "other_station", "suspect_jump", "settle", "imu_unstable", "not_plumb",
-             "dup_capture", "local_outlier", "no_position", "plumb_unverified"}
+             "dup_capture", "local_outlier", "no_position", "plumb_unverified", "void"}
 
 
 def new_row(**kw):
@@ -534,7 +537,7 @@ def flags_of(r):
 def finish_use(r):
     """use = 1 for ground and anchor rows without an excluding flag."""
     fl = flags_of(r)
-    bad = any(f in EXCLUDING or f.startswith("listed") for f in fl)
+    bad = any(f.split(":")[0] in EXCLUDING or f.startswith("listed") for f in fl)
     r["use"] = 1 if r["class"] in ("ground", "anchor") and not bad else 0
 
 
@@ -579,13 +582,21 @@ def logger_source(cfg, src, con, frame, history, log):
     prior, cprior = float(src.get("prior_m", 0.015)), float(src.get("common_prior_m", 0.0))
     by_n, by_t = listed(src)
     sessions = src.get("sessions")
+    include_voided = bool(cfg.get("include_voided"))
+    have = {r[1] for r in con.execute("PRAGMA table_info(captures)")}
+    void_cols = "void, void_reason" if "void" in have else "0, NULL"   # a gpkg imported before 0.9.0
     q = ("SELECT session, n, class, utc, lat, lon, h_ground, pole_m, fix, n_epochs, sd_e_m, sd_n_m, "
-         "sd_u_m, age_s, elapsed_ns, label FROM captures")
+         f"sd_u_m, age_s, elapsed_ns, label, {void_cols} FROM captures")
     caps = [dict(zip(["session", "n", "class", "utc", "lat", "lon", "h_ground", "pole_m", "fix",
-                      "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label"], r))
+                      "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label",
+                      "void", "void_reason"], r))
             for r in con.execute(q)]
     if sessions:
         caps = [c for c in caps if c["session"] in sessions]
+    n_void = sum(1 for c in caps if c["void"])
+    if n_void:
+        log(f"  voided captures (flagged in the logger): {n_void}, "
+            + ("included (include_voided)" if include_voided else "left out of use (flag void)"))
     sites = {}
     try:
         sites = {(s, n): site for s, n, site in con.execute("SELECT session, n, site FROM refs")}
@@ -634,6 +645,8 @@ def logger_source(cfg, src, con, frame, history, log):
                         n=c["n"], **{"class": cls}, utc=c["utc"], t_unix=t, fix=c["fix"],
                         n_epochs=c["n_epochs"], sd_u_m=c["sd_u_m"], age_s=c["age_s"], pole_m=c["pole_m"],
                         label=c["label"], prior_m=prior, common_prior_m=cprior)
+            if c["void"] and not include_voided:
+                add_flag(r, "void:" + (c["void_reason"] or "flagged").replace(",", ";"))
             if c["lat"] is None or c["h_ground"] is None:
                 add_flag(r, "no_position"); finish_use(r); rows.append(r); continue
             r["x_m"], r["y_m"], r["z_m"] = to_local(frame, c["lat"], c["lon"], c["h_ground"],
@@ -686,7 +699,8 @@ def logger_source(cfg, src, con, frame, history, log):
         if grav:
             dirs = []
             for c in clist:
-                if c["class"] in ("ref", "control") and c["elapsed_ns"] and c["fix"] == 4:
+                if (c["class"] in ("ref", "control") and c["elapsed_ns"] and c["fix"] == 4
+                        and (include_voided or not c["void"])):
                     span = 20e9 if c["class"] == "ref" else 1e9
                     d, stab, m = gravity_window(*grav, c["elapsed_ns"] - span - 1e9, c["elapsed_ns"] - 1e9)
                     if d is not None:
@@ -915,7 +929,8 @@ def assign_anchors(rows, radius, snap, dz, *, ground_sigma):
         name = names[0] if names else f"site_{len(sites) + 1}"
         for r in g:
             r["anchor"] = name
-        good = [r for r in g if not any(f in EXCLUDING or f.startswith("listed") for f in flags_of(r))] or g
+        good = [r for r in g if not any(f.split(":")[0] in EXCLUDING or f.startswith("listed")
+                                        for f in flags_of(r))] or g
         sites.append((name, st.median(r["x_m"] for r in good), st.median(r["y_m"] for r in good),
                       st.median(r["z_m"] for r in good)))
     joined = 0
@@ -1209,9 +1224,13 @@ def main(argv=None):
     ap.add_argument("--gpkg", help="season GeoPackage (default [soundings].gpkg or [season].gpkg)")
     ap.add_argument("--csv", help="also write the rows to this CSV")
     ap.add_argument("--dry-run", action="store_true", help="do not write the gpkg")
+    ap.add_argument("--include-voided", action="store_true",
+                    help="use captures flagged void in the logger (default: kept with flag void, use 0)")
     a = ap.parse_args(argv)
     p = Path(a.config) if a.config else REPO / "config.toml"
     cfg = tomllib.loads(p.read_text())
+    if a.include_voided:
+        cfg.setdefault("soundings", {})["include_voided"] = True
     build(cfg, p.resolve().parent, gpkg=a.gpkg, csv_out=a.csv, write=not a.dry_run)
     return 0
 

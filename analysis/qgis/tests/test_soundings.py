@@ -243,6 +243,35 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(con.execute("SELECT count(*) FROM soundings").fetchone()[0], len(rows))
         con.close()
 
+    def test_voided_capture_flagged_not_used_unless_included(self):
+        """A capture flagged void in the logger (#27) stays a row, flag void, use 0, and is
+        counted; include_voided uses it like any other."""
+        ses = make_session(self.d / "sessions")
+        p = ses / "points.csv"
+        lines = p.read_text().splitlines()
+        lines = [lines[0] + ",void,void_reason"] + [
+            l + (",1,accidental" if l.startswith("2,") else ",0,") for l in lines[1:]]
+        p.write_text("\n".join(lines) + "\n")
+        gpkg = self.d / "season.gpkg"
+        with contextlib.redirect_stdout(io.StringIO()):
+            imp.main([str(ses), "--gpkg", str(gpkg), "--base", *map(str, synth.BASE),
+                      "--origin", *map(str, synth.BASE), "--no-photos"])
+        cfg = {"season": {"gpkg": str(gpkg)}, "soundings": {
+            "settle_s": 5.0, "sources": [{"id": "logger", "type": "logger", "prior_m": 0.015}]}}
+        logged = []
+        rows = snd.build(cfg, self.d, log=logged.append, write=False)
+        cap = {r["n"]: r for r in rows if r["kind"] == "capture"}
+        self.assertEqual(len(cap), 2)                           # kept, not dropped
+        self.assertIn("void:accidental", snd.flags_of(cap[2]))
+        self.assertEqual(cap[2]["use"], 0)
+        self.assertEqual(cap[1]["use"], 1)
+        self.assertTrue(any("voided captures (flagged in the logger): 1, left out of use" in l for l in logged))
+        cfg["soundings"]["include_voided"] = True
+        rows = snd.build(cfg, self.d, log=lambda *a: None, write=False)
+        cap = {r["n"]: r for r in rows if r["kind"] == "capture"}
+        self.assertNotIn("void", ",".join(snd.flags_of(cap[2])))
+        self.assertEqual(cap[2]["use"], 1)
+
     def test_anchor_sites_and_verification(self):
         r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
         rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.00, pass_id="p1", anchor="site1"),

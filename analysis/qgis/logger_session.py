@@ -1,7 +1,9 @@
 """Read Ice Cube Logger sessions (see logger/README.md) from share zips or folders.
 
 Standard library only. Formats handled:
-- 0.5 and later: `points.csv` holds the captures (surface, object, ref, photo).
+- 0.5 and later: `points.csv` holds the captures (surface, object, ref, photo). From
+  0.9.0 a row can be flagged as bad (`void` = 1, `void_reason`); it is kept, with `void`
+  True in its dict, and counted (`n_voided`). No `void` column means not voided.
 - 0.3 / 0.4: no points.csv; `control n=<k> pole_height=<m> ...` events mark control
   points. Their positions are rebuilt from the GGA sentences in `gps.ubx` at the mark's
   phone time (gps_chunks.csv maps byte offsets to phone time) with the 0.5 Surface rule:
@@ -227,18 +229,21 @@ def read_points(text):
             "sd_n_m": _f(r.get("sd_n_m")), "sd_u_m": _f(r.get("sd_u_m")), "age_s": _f(r.get("age_s")),
             "photo_files": [p for p in (r.get("photo") or "").split(";") if p],
             "note": r.get("note") or None,
+            "void": (r.get("void") or "").strip() == "1", "void_reason": r.get("void_reason") or None,
         })
     return rows
 
 
 def read_refs_csv(text):
     """refs.csv rows: the session folder name, then the points.csv columns. Accepts a
-    header line (first column `session` or anything not a number) or none."""
+    header line (first column `session` or anything not a number) or none. A row flagged
+    void=1 (0.9.0) is returned with `void` True; a file without the column has none."""
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
         return []
     cols = ["n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
             "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note"]
+    cols_all = cols + ["void", "void_reason"]   # read by name: a file without a header has no void column
     first = next(csv.reader([lines[0]]))
     if len(first) > 1 and "n" in first:
         hdr, body = first, lines[1:]
@@ -250,8 +255,8 @@ def read_refs_csv(text):
         d = dict(zip(hdr, r))
         if not d.get("session") or not (d.get("n") or "").isdigit():
             continue
-        p = read_points(",".join(cols) + "\n" + ",".join(
-            '"' + (d.get(c) or "").replace('"', '""') + '"' for c in cols))
+        p = read_points(",".join(cols_all) + "\n" + ",".join(
+            '"' + (d.get(c) or "").replace('"', '""') + '"' for c in cols_all))
         if p:
             p[0]["session"] = d["session"]
             rows.append(p[0])
@@ -348,7 +353,7 @@ class Session:
     name: str
     fmt: str = ""
     info: dict = field(default_factory=dict)       # one sessions-table row
-    captures: list = field(default_factory=list)   # dicts, keyed by n
+    captures: list = field(default_factory=list)   # dicts, keyed by n (voided ones too, `void` True)
     photos: list = field(default_factory=list)     # dicts: n, name, utc, attached, bytes
     refs: dict = field(default_factory=dict)       # n -> pole-check / ref-event fields
     track: list = field(default_factory=list)      # 1 Hz epochs: utc, t, lat, lon, h, fix, ...
@@ -527,6 +532,10 @@ def load_session(src: SessionSource) -> Session:
         counts[c["class"]] = counts.get(c["class"], 0) + 1
     info["format"] = s.fmt
     info["n_captures"] = len(s.captures)
+    info["n_voided"] = sum(1 for c in s.captures if c.get("void"))
+    if info["n_voided"]:
+        s.remarks.append(f"{info['n_voided']} flagged capture(s), kept with void=1: n="
+                         + ", ".join(str(c["n"]) for c in s.captures if c.get("void")))
     for k in ("surface", "object", "ref", "photo", "control"):
         info[f"n_{k}"] = counts.get(k, 0)
     info["n_photos"] = len(s.photos)
