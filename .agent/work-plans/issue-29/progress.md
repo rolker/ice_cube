@@ -118,3 +118,13 @@ The neighbourhood gradient does avoid the #24 circularity, and the gates and spl
 - [ ] Pass the raw DEM slope to the gate; define the behaviour with no `slope_from_dem`.
 - [ ] Add `planar` and the gradient to `Surface` and the `.npz` writers in `cli.py` and `topo.py`.
 - [ ] Clarify the aggregate-moment scope in PR A and Eeg in pass 2.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:30 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Address must-fix 1-2 and should-fix 3-5, and state minors 6-7: pass-2 acceptance only when the node leaves red (or n_out strictly drops) AND the new z agrees with the neighbour plane at the node within k_sigma*sqrt(var_a+sigma'^2), with a pinned wrong-cluster case; flat-edge Monte Carlo run through grid_surface on a >=5x5 synthetic block (planar false everywhere, absorbed = baseline, baseline recorded on first run; bank case neighbours built from soundings); config keys for every threshold (DEM-gate floor, min non-red neighbours, planarity bound, usable n_in), tuned on the replays (counts only); raw DEM slope passed through, behaviour without slope_from_dem stated; planar/gradient in Surface and the npz outputs; say whether plane_vectors cover the fold aggregate; pass 2 runs the full rebuild incl. Eeg.
