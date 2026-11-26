@@ -614,6 +614,183 @@ class TestRobustNodes(unittest.TestCase):
         self.assertEqual(nodes.eeg_cull(e, list(range(len(z))), q_cube * 1.001), [])
 
 
+def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None):
+    """Soundings at random on a block of n x n nodes (cell 0.5 m, node (0, 0) at the origin),
+    `per_disc` per 0.75 m capture disc on average, z = g*x plus N(0, sz)
+    noise; `extra` (x, y, z) arrays appended; `ymin` drops soundings below it (a survey edge)."""
+    rng = np.random.default_rng(seed)
+    lo, hi = -0.75, (n - 1) * 0.5 + 0.75
+    m = int(round(per_disc / (np.pi * 0.75 ** 2) * (hi - lo) ** 2))
+    x = rng.uniform(lo, hi, m)
+    y = rng.uniform(lo, hi, m)
+    z = g * x + rng.normal(0, sz, m)
+    if extra is not None:
+        x, y, z = np.r_[x, extra[0]], np.r_[y, extra[1]], np.r_[z, extra[2]]
+    if ymin is not None:
+        k = y >= ymin
+        x, y, z = x[k], y[k], z[k]
+    p = local_points("b", x, y, z, t=np.arange(len(z), dtype=float), sz=np.full(len(z), sz), sh=np.full(len(z), sh))
+    p.pass_id = np.zeros(len(z), int)
+    return p, nodes.Grid(0.0, 0.0, 0.5, n, n)
+
+
+def bank_run(p, grid, **kw):
+    kw.setdefault("slope", 0.05)
+    return nodes.grid_surface([p], [np.zeros(len(p))], grid, capture_radius=0.75, k_sigma=3.0, **kw)
+
+
+def red_of(s):
+    return (s.n_out > 0) & (s.n - s.n_out < nodes.OUTVOTE * s.n_out)
+
+
+def red_neighbours(s, a, b):
+    r = red_of(s)
+    return sum(int(r[a + da, b + db]) for da in (-1, 0, 1) for db in (-1, 0, 1)
+               if (da or db) and 0 <= a + da < r.shape[0] and 0 <= b + db < r.shape[1])
+
+
+SAME = ("z", "sigma", "n", "n_out", "n_alt", "strength", "n_eeg", "maxnr")
+
+
+class TestPlanePass(unittest.TestCase):
+    """Issue #29: a gradient from the neighbours' pass-1 mains, pass 2 on red nodes only.
+    Every block is built from soundings (shared between neighbouring nodes as in production);
+    the seeds were picked so each case is what it is named for, and the asserts say so."""
+
+    C = (3, 3)   # the centre node of the 7 x 7 block
+
+    def assert_pass1(self, s, s0, at):
+        for k in SAME:
+            self.assertTrue(np.array_equal(getattr(s, k)[at], getattr(s0, k)[at]), k)
+        self.assertFalse(s.planar[at])
+
+    def test_entries_carry_geometry_and_pass2_variance(self):
+        e = nodes.entry(0.5, 0.01, 3, dx=0.2, dy=-0.1, sz2=0.0004, sh=0.02)
+        self.assertEqual(e[7:], (0.2, -0.1, 0.0004, 0.02))
+        self.assertEqual(nodes.entry(0.5, 0.01, 3)[7:], (0.0, 0.0, 0.01, 0.0))
+        cov = np.array([[1e-4, 2e-5], [2e-5, 4e-4]])
+        (r,) = nodes.reduce_to_plane([e], 0.3, -0.4, cov)
+        self.assertAlmostEqual(r[0], 0.5 - (0.3 * 0.2 + 0.4 * 0.1), places=12)
+        vg = 0.04 * 1e-4 - 2 * 0.02 * 2e-5 + 0.01 * 4e-4
+        self.assertAlmostEqual(r[1], 0.0004 + (0.5 * 0.02) ** 2 + vg, places=15)   # sz2 + (|g| sh)^2 + d'C d
+        self.assertEqual(r[7:], e[7:])
+
+    def test_bank_clears(self):
+        for g, seed, clears in ((0.2, 0, (2,)), (0.3, 0, (1, 2, 3))):
+            p, grid = bank_block(g, seed)
+            s0 = bank_run(p, grid, plane=False)
+            self.assertTrue(red_of(s0)[self.C], g)
+            for mc in clears:
+                s = bank_run(p, grid, plane_min_clear=mc)
+                self.assertFalse(red_of(s)[self.C], (g, mc))
+                self.assertTrue(s.planar[self.C])
+                self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+                self.assertAlmostEqual(s.gradient[self.C], g, delta=0.05)
+                self.assertAlmostEqual(s.z[self.C], g * 1.5, delta=0.03)   # the bank's height at the node
+            # only nodes red after pass 1 are touched; none turns red
+            self.assertFalse(np.any(red_of(s) & ~red_of(s0)))
+            for k in SAME:
+                np.testing.assert_array_equal(getattr(s, k)[~red_of(s0)], getattr(s0, k)[~red_of(s0)])
+        self.assertEqual(red_neighbours(s0, *self.C), 3)   # the 0.3 case has red neighbours
+
+    def test_bank_clears_with_one_red_neighbour(self):
+        p, grid = bank_block(0.2, 33)
+        s0 = bank_run(p, grid, plane=False)
+        self.assertTrue(red_of(s0)[self.C])
+        self.assertEqual(red_neighbours(s0, *self.C), 1)
+        self.assertTrue(bank_run(p, grid).planar[self.C])
+
+    def test_bank_clears_at_a_survey_edge(self):
+        E = (0, 3)   # bottom row: 5 neighbours, no soundings below y = -0.25
+        for g, seed in ((0.2, 14), (0.3, 2)):
+            p, grid = bank_block(g, seed, ymin=-0.25)
+            s0 = bank_run(p, grid, plane=False)
+            self.assertTrue(red_of(s0)[E], g)
+            s = bank_run(p, grid)
+            self.assertTrue(s.planar[E], g)
+            self.assertFalse(red_of(s)[E], g)
+
+    def test_wrong_cluster_keeps_pass1(self):
+        # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes
+        # the cluster the main with fewer outliers (rule i holds), but its height disagrees
+        # with the neighbour plane at the node (rule ii), so pass 1 stands
+        rng = np.random.default_rng(1011)
+        cx, cy = rng.uniform(1.25, 1.75, 10), rng.uniform(1.25, 1.75, 10)
+        p, grid = bank_block(0.3, 11, extra=(cx, cy, 0.3 * cx + 0.15 + rng.normal(0, 0.005, 10)))
+        s0 = bank_run(p, grid, plane=False)
+        s = bank_run(p, grid)
+        self.assertTrue(red_of(s0)[self.C])
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_OFF_PLANE)
+        self.assert_pass1(s, s0, self.C)
+
+    def test_flat_edge_outlier_is_not_absorbed(self):
+        # 400 trials: a flat 5 x 5 block, one +15 cm capture on the edge of the centre
+        # node's disc (feeding its neighbours too). The plane pass changes nothing.
+        rng = np.random.default_rng(29)
+        absorbed = [0, 0]
+        for k in range(400):
+            th = rng.uniform(0, 2 * np.pi)
+            p, grid = bank_block(0.0, 10000 + k, n=5,
+                                 extra=([1.0 + 0.7 * np.cos(th)], [1.0 + 0.7 * np.sin(th)], [0.15]))
+            for j, pl in enumerate((False, True)):
+                s = bank_run(p, grid, plane=pl)
+                absorbed[j] += int(s.n_out[2, 2] == 0)
+                if pl:
+                    self.assertFalse(s.planar.any(), k)
+        self.assertEqual(absorbed[1], absorbed[0])
+        self.assertEqual(absorbed[0], 5)   # recorded on the first run (grid level), so drift shows
+
+    def test_gate_too_few_neighbours(self):
+        p, grid = bank_block(0.3, 0)
+        s0, s = bank_run(p, grid, plane=False), bank_run(p, grid)
+        self.assertTrue(red_of(s0)[0, 0])   # a corner: 3 neighbours
+        self.assertEqual(s.plane_code[0, 0], nodes.PLANE_FEW)
+        self.assert_pass1(s, s0, (0, 0))
+
+    def test_gate_all_red_neighbours(self):
+        # flat ground, every sounding doubled 20 cm up: every node red, no clear neighbour
+        p, grid = bank_block(0.0, 0)
+        n = len(p)
+        q = local_points("b", np.r_[p.x, p.x + 0.01], np.r_[p.y, p.y], np.r_[p.z, p.z + 0.2],
+                         t=np.arange(2 * n, dtype=float), sz=np.r_[p.sz, p.sz], sh=np.r_[p.sh, p.sh])
+        q.pass_id = np.zeros(2 * n, int)
+        s0, s = bank_run(q, grid, plane=False), bank_run(q, grid)
+        self.assertTrue(red_of(s0).all())
+        self.assertTrue((s.plane_code == nodes.PLANE_FEW_CLEAR)[1:-1, 1:-1].all())
+        self.assert_pass1(s, s0, self.C)
+
+    def test_gate_ridge_is_not_planar(self):
+        # z = 0.4 |x - 1.5|: the centre column is the ridge line
+        rng = np.random.default_rng(503)
+        p, grid = bank_block(0.0, 3)
+        p.z = 0.4 * np.abs(p.x - 1.5) + rng.normal(0, 0.02, len(p))
+        s0, s = bank_run(p, grid, plane=False), bank_run(p, grid)
+        self.assertTrue(red_of(s0)[self.C])
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_NOT_PLANAR)
+        self.assert_pass1(s, s0, self.C)
+
+    def test_dem_gate(self):
+        p, grid = bank_block(0.3, 0)
+        shape = (grid.ny, grid.nx)
+        # slope as an array, no raw DEM slope (no slope_from_dem): the DEM gate is skipped
+        s = bank_run(p, grid, slope=np.full(shape, 0.05))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        # a DEM that says flat: |g| over dem_cap * 0 + dem_floor
+        s0 = bank_run(p, grid, plane=False)
+        s = bank_run(p, grid, raw_slope=np.zeros(shape))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_DEM)
+        self.assert_pass1(s, s0, self.C)
+        # a DEM that agrees: accepted
+        s = bank_run(p, grid, raw_slope=np.full(shape, 0.3))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+
+    def test_running_mode_ignores_plane(self):
+        p, grid = bank_block(0.3, 0)
+        s = bank_run(p, grid, robust=False)
+        self.assertFalse(s.planar.any())
+        self.assertFalse(s.plane_code.any())
+
+
 class TestNodeStore(unittest.TestCase):
     """The logger's capped store (Coverage.java's twin)."""
 
