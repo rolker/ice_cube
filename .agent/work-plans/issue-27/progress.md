@@ -124,3 +124,13 @@ A sound soft-void design that answers every review-issue action and fits the hos
 - [ ] Specify `RefsStore.setVoid` over every storage root's refs.csv, bump `refsGeneration` on ref void/unvoid, and skip voided rows in the earlier-refs layer.
 - [ ] State whether the importer drops or flags voided rows, and update `soundings.py` if flagged.
 - [ ] Record the PR A / UI split decision and the reason in progress.md.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:30 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Address must-fix 1-4: UNDO tied to the capture's own notice (undoN/undoUntilMs), taps ignored for ~0.75 s after it appears, voidCapture checks the 8 s window against capture time and refuses already-voided rows, UNDO label hidden at 8 s (notice stays 10 s), a newer notice ends the UNDO (the 11-26 photo case goes through Recent captures); PointRow.voided made thread-safe (volatile or replace the row object); RefsStore.setVoid rewrites the matching row in every refs.csv under Storage.refsFiles atomically and bumps refsGeneration. Host decision on must-fix 4: the importer DROPS voided rows (they never reach the gpkg) and reports the count per session; fix the 'one reader' wording. The UI split into PR B is likely (PR A ~16 files); the implementer decides and records why.
