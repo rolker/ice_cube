@@ -95,7 +95,8 @@ public final class VoidRule {
      * Sets the void columns of the refs.csv rows of (session, n) in lines (a whole refs.csv,
      * header first or not). The header, when it is an older one, becomes REFS_HEADER; a
      * matching row is rewritten from its parsed fields (so an older row gains the newer
-     * columns); every other line is kept as it is. Returns the number of rows changed.
+     * columns; its photo column stays as appended, since points.csv is the record of photo
+     * names); every other line is kept as it is. Returns the number of rows matched.
      */
     public static int setRefsVoid(List<String> lines, String session, int n, boolean voided, String reason) {
         int changed = 0;

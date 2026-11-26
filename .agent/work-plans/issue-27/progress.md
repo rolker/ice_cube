@@ -244,8 +244,8 @@ Cross-model: codex complete (3 must-fix, all kept: anchors, verify_suspect, pole
 - [ ] (suggestion) read_refs_csv: a headerless file, or one whose header was not upgraded, drops columns past the header, so void is lost — `analysis/qgis/logger_session.py:246-256`
 - [x] (suggestion) With include_voided, soundings adds no flag, so the output loses the trace that a row was flagged; add a non-excluding marker (e.g. `voided_included`) — `analysis/qgis/soundings.py:648`
 - [x] (suggestion) RefsStore.setVoid failing on every root leaves only a "(0 rows)" event; the ref still counts as a visit in later sessions. Warn when nothing was rewritten — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:79-88`
-- [ ] (suggestion) README says readers drop tilt_obs.csv leans of a voided n, but no tilt_obs.csv reader exists; say a future reader must — `logger/README.md`
-- [ ] (suggestion) When a voided ref's photos move, refs.csv keeps the old photo names (points.csv is updated); fix or note it — `logger/app/src/main/java/rink/icecube/logger/core/VoidRule.java:105`
+- [x] (suggestion) README says readers drop tilt_obs.csv leans of a voided n, but no tilt_obs.csv reader exists; say a future reader must — `logger/README.md`
+- [x] (suggestion) When a voided ref's photos move, refs.csv keeps the old photo names (points.csv is updated); fix or note it — `logger/app/src/main/java/rink/icecube/logger/core/VoidRule.java:105`
 - [ ] (suggestion, PR B) MapView draws voided captures like live ones — `logger/app/src/main/java/rink/icecube/logger/MapView.java:481-515`
 - [ ] (suggestion, PR B) Check that `elapsedNs` is the capture's completion time before the UNDO bar relies on the 8 s window for 30 s refs and tilt sets — `logger/app/src/main/java/rink/icecube/logger/Survey.java:553`
 - [ ] (suggestion) Minor: void_reason is not stripped in the soundings flag; export_labels prints no count with --include-voided and writes "" not 0 for a pre-0.9.0 gpkg — `analysis/qgis/soundings.py:649`, `analysis/qgis/export_labels.py:88`

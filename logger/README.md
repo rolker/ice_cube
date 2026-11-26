@@ -184,7 +184,8 @@ with `void` = 1 and a `void_reason`, and readers leave it out (see below). The b
 it (UNDO right after a capture, and flagging from a list of recent captures) come with the
 0.9.0 build.
 - Who can be flagged: surface, object and ref rows, including tilt captures (one row
-  each; their leans stay in `tilt_obs.csv`, and readers drop the leans of a voided `n`).
+  each; their leans stay in `tilt_obs.csv`. No reader of `tilt_obs.csv` exists yet; one
+  written later must drop the leans of a voided `n`).
   Not a photo row, not one already flagged, and not while a ref occupation or a tilt set
   runs (cancel those instead). UNDO only works within 8 s of the capture.
 - Reasons: `accidental`, `bad pole placement`, `moved`, `other` (commas and line breaks
@@ -198,13 +199,17 @@ it (UNDO right after a capture, and flagging from a list of recent captures) com
 - A flagged ref: its `refs.csv` row is rewritten in place with the same columns (the one
   write to refs.csv that is not an append), in every storage root's refs.csv that holds
   it. A flagged ref is never a "last visit" for the pole check and is not drawn among the
-  earlier refs; its pole-check notice and warning are cleared.
+  earlier refs; its pole-check notice and warning are cleared. The rewrite keeps the row's
+  `photo` column as it was appended: refs.csv photo names are never updated after the
+  append (not for a photo attached later, not for a move), and `points.csv` is the record
+  of which photos belong to which capture.
 - Coverage: a flagged capture leaves the overlay (it is rebuilt without it); unflagged, it
   comes back.
 - `events.csv` is the audit trail: `flag n=<n> reason=<reason, spaces as _> via=undo|list`,
   `unflag n=<n>`, `photo moved n=<from> to=<to> photos=<files>` (with `own row` when a new
   photo row took them, followed by its `capture` line), and `ref n=<n> voided|unvoided in
-  refs.csv (<k> rows)`.
+  refs.csv (<k> rows)`, or `error: ref n=<n> not voided|unvoided in refs.csv (…)` when no
+  refs.csv could be rewritten (later sessions then still read the old flag).
 
 The phone never reopens a session, so `points.csv` is written from the app's state, and
 `refs.csv` is the only void state the app reads back (the pole check, the earlier refs).
