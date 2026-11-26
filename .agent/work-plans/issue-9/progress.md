@@ -190,3 +190,18 @@ The revision fixes all three findings from the first review, and the plan is rea
 **Decision**: proceed
 
 The review's three implementation notes go into the implement handoff: keep the snapshot guard on the schema-upgrade re-read (skip only the unchanged-signature check), with a test; compare app versions numerically (missing/unreadable = older); the helper treats a missing sd as 0 like today so the existing missing_sd vector is unchanged.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:37 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Branch**: feature/issue-9 at `4f95ee2`
+
+- `116f7f3` import: `logger_session.read_points` returns the 0.6 columns (method, fix_suspect, fix_age_s, fix_jump_m, tilt_n/rms/cover, tilt_sd_e/n/u; None for older files). `import_sessions.py`: captures gain them (`LOGGER_06`), `SCHEMA_VERSION` 3; a gpkg with an older stored schema has every session re-read once without `--force`, skipping only the unchanged-signature check, so the snapshot guard still holds. Tests: v0.6 columns / v0.5 NULLs, schema-2 re-read without `--force` (user label kept, once only), schema-2 upgrade still refuses a snapshot over a full import. `synth.py` gains `POINTS_HDR_06`, `captures_v06`, `session_v06`.
+- `70d0f76` soundings: `capture_sigma_inputs(sg, method, sd_u, sd_e, sd_n, tilt_sd_u, tilt_sd_e, tilt_sd_n)` -> (sd_u, sd_h, tilt); tilt rule only with method tilt and all three tilt sds, else the single rule; sd_h treats a missing sd as 0 (existing `missing_sd` vector unchanged). `sigma_terms` unchanged, so GST still floors. `logger_source` selects the tilt columns via `PRAGMA table_info` (NULL when absent) and logs one warning naming `--force` when they are absent or all NULL for non-photo captures of sessions whose app version is >= 0.6 (numeric compare; missing/unreadable app = older). `logger_vectors.logger_sigma` calls the helper; new `tilt_missing_sd` in `SIGMA_CASES` (sd_u above the floor so it distinguishes the rules); vectors regenerated. `SoundingSigma.java`: tilt rule only when tiltSdU/E/N are all non-NaN; class comment rewritten. Tests: helper and version unit tests, end-to-end tilt capture (no GST: sigma_pole = tip_sink, sigma_rtk = tilt_sd_u, tilt_deg 0; tilt without sds and single take the bubble rule), GST floor case (rtk = max(tilt_sd_u, GST)), old gpkg without columns builds and warns once, NULL columns of a 0.6 session warn and of a 0.5 session do not; `test_logger_vectors` missing-sd case.
+- `4f95ee2` docs: `logger/README.md` (importer note, sigma caveat), `analysis/README.md` soundings row, `docs/log.md` 11-26 line.
+
+Suites (all hooks ran on every commit, none skipped):
+- `python3 -m unittest discover icecube/tests`: Ran 67 tests, OK
+- `python3 -m unittest discover -s analysis/qgis/tests` (test_import, test_soundings and the rest): Ran 103 tests, OK (skipped=5)
+- `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL, all suites 0 failures (SoundingSigmaTest 3/3). C: free 115 GB before and after.
