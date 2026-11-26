@@ -17,10 +17,15 @@ public final class PointRow {
     public static final String SURFACE = "surface", OBJECT = "object", REF = "ref", PHOTO = "photo";
     public static final String HEADER = "n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,"
             + "n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,"
-            + "fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m";
+            + "fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,"
+            + "void,void_reason";
     public static final String REFS_HEADER = "session," + HEADER;
-    /** Columns of HEADER; rows written before 0.6 have only the first BASE_COLUMNS (up to note). */
-    public static final int COLUMNS = 27, BASE_COLUMNS = 17;
+    /**
+     * Columns of HEADER. Rows written before 0.6 have only the first BASE_COLUMNS (up to
+     * note), rows from 0.6 to 0.8 the first V06_COLUMNS (up to tilt_sd_u_m); void and
+     * void_reason come from 0.9.0.
+     */
+    public static final int COLUMNS = 29, V06_COLUMNS = 27, BASE_COLUMNS = 17;
     /** method: one averaged capture, a tilt capture, or a ref occupation. */
     public static final String SINGLE = "single", TILT = "tilt", OCCUPATION = "ref";
 
@@ -40,6 +45,13 @@ public final class PointRow {
     public int tiltN;
     public double tiltRms = Double.NaN, tiltCover = Double.NaN, tiltSdE = Double.NaN, tiltSdN = Double.NaN,
             tiltSdU = Double.NaN;
+    /**
+     * 0.9.0: flagged as bad (void) and why. The row keeps its number and stays in the files;
+     * readers skip it. Volatile: Survey sets them while the coverage and map threads read
+     * the same row objects.
+     */
+    public volatile boolean voided;
+    public volatile String voidReason = "";
     /** refs.csv only: the session folder name. */
     public String session = "";
 
@@ -75,20 +87,25 @@ public final class PointRow {
     /** Surface, object and ref rows; not photo rows. */
     public boolean isCapture() { return !PHOTO.equals(cls); }
 
+    /** A capture row that is not voided: what feeds the coverage, takes photos and counts. */
+    public boolean isLive() { return isCapture() && !voided; }
+
     public String toCsv() {
         return n + "," + cls + "," + elapsedNs + "," + utc + "," + num(lat, 9) + "," + num(lon, 9) + "," + num(hAnt, 4)
                 + "," + num(pole, 3) + "," + num(hGround, 4) + "," + fix + "," + nEpochs + "," + num(sdE, 4) + ","
                 + num(sdN, 4) + "," + num(sdU, 4) + "," + num(age, 1) + "," + text(photo) + "," + text(note)
                 + "," + num(fixAge, 1) + "," + num(fixJump, 3) + "," + (fixSuspect ? 1 : 0) + "," + text(method) + ","
                 + (tiltN > 0 ? String.valueOf(tiltN) : "") + "," + num(tiltRms, 4) + "," + num(tiltCover, 0) + ","
-                + num(tiltSdE, 4) + "," + num(tiltSdN, 4) + "," + num(tiltSdU, 4);
+                + num(tiltSdE, 4) + "," + num(tiltSdN, 4) + "," + num(tiltSdU, 4) + "," + (voided ? 1 : 0) + ","
+                + text(voidReason);
     }
 
     public String toRefsCsv() { return text(session) + "," + toCsv(); }
 
     /**
      * Parses the columns of HEADER starting at offset (1 for refs.csv). Rows from before 0.6
-     * (BASE_COLUMNS, ending at note) are accepted; the 0.6 columns then stay empty.
+     * (BASE_COLUMNS, ending at note) are accepted; the 0.6 columns then stay empty. Rows
+     * without the 0.9.0 void columns read as not voided.
      * Throws IllegalArgumentException.
      */
     public static PointRow parse(List<String> f, int offset) {
@@ -116,7 +133,7 @@ public final class PointRow {
             r.age = dbl(f.get(i++));
             r.photo = f.get(i++);
             r.note = f.get(i++);
-            if (f.size() >= offset + COLUMNS) {
+            if (f.size() >= offset + V06_COLUMNS) {
                 r.fixAge = dbl(f.get(i++));
                 r.fixJump = dbl(f.get(i++));
                 r.fixSuspect = "1".equals(f.get(i++).trim());
@@ -127,7 +144,11 @@ public final class PointRow {
                 r.tiltCover = dbl(f.get(i++));
                 r.tiltSdE = dbl(f.get(i++));
                 r.tiltSdN = dbl(f.get(i++));
-                r.tiltSdU = dbl(f.get(i));
+                r.tiltSdU = dbl(f.get(i++));
+            }
+            if (f.size() >= offset + COLUMNS) {
+                r.voided = "1".equals(f.get(i++).trim());
+                r.voidReason = f.get(i);
             }
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("bad number: " + e.getMessage());

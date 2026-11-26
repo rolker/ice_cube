@@ -15,6 +15,19 @@ public class PhotoRuleTest {
         assertEquals(-1, PhotoRule.attachTo(4, 100 * S, 99 * S));        // clock went backwards
     }
 
+    @Test public void voidedLastCaptureTakesNoPhoto() {
+        PointRow last = new PointRow();
+        last.n = 4; last.cls = PointRow.OBJECT; last.elapsedNs = 100 * S;
+        assertEquals(4, PhotoRule.attachTo(last, 103 * S));
+        last.voided = true;
+        assertEquals(-1, PhotoRule.attachTo(last, 103 * S));
+        assertEquals(-1, PhotoRule.attachTo((PointRow) null, 103 * S));
+        PointRow earlier = new PointRow();   // the live capture before an undone one
+        earlier.n = 3; earlier.cls = PointRow.SURFACE; earlier.elapsedNs = 50 * S;
+        assertEquals(3, PhotoRule.attachTo(earlier, 103 * S));
+        assertEquals(-1, PhotoRule.attachTo(earlier, 111 * S));   // stale: a row of its own, as before
+    }
+
     @Test public void namesAndColumn() {
         assertEquals("photo_12_20261111T140322Z.jpg", PhotoRule.fileName(12, "20261111T140322Z"));
         assertEquals("a.jpg", PhotoRule.add("", "a.jpg"));
