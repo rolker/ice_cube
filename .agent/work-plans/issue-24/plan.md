@@ -117,11 +117,13 @@ void hook stays with #27.
 
 ### C. Relief
 
-Moved to the follow-up issue (review finding 1). The global slope stays 0.05.
+Moved to the follow-up issue #29 (review finding 1). The global slope stays 0.05.
 
 ### D. Batch extras (Python)
 
-10. **Eeg's leave-one-out test** at finalisation (after CUBE `cube_node_truncate`), on the
+10. *(Changed in implementation, see the note after this list: the minimum is 11 members
+    and the guard is a floor of (1 mm)^2 on the whole denominator, not 1 on `s2_k`.)*
+    **Eeg's leave-one-out test** at finalisation (after CUBE `cube_node_truncate`), on the
     main when it has >= 4 members; `eeg_quotient_limit` (default 30, 0 = off). Weighted
     form, which reduces exactly to CUBE's quotient for equal weights: for member k,
     `m_k` = the weighted mean of the others, `d_k = z_k - m_k`,
@@ -133,6 +135,13 @@ Moved to the follow-up issue (review finding 1). The global slope stays 0.05.
     `n_eeg`, and `z`, `sigma`, `max_nr` are recomputed from the rest. Noise only (no
     pass-bias terms). Not in the logger. Expect few hits: CUBE's own note says q = 30
     rarely culls, and the k-sigma split goes first.
+    *Implementation note.* A floor of 1 on `s2_k` caps `q_k` at the member's squared
+    normalised residual, which the 3-sigma split already keeps under ~9-16, so Eeg could
+    never cull; and with N = 4 the quotient's F(1, 2) tail makes q >= 30 about a 3 %
+    event on clean data (13 culls on a clean synthetic survey). So: `q_k = d_k^2 /
+    max(s2_k * (v_k + 1/(W - w_k)), (1 mm)^2)` (the 1 mm quantisation as the guard), on
+    mains of at least 11 members (CUBE's median queue length); about one cull in 2500
+    soundings remains on clean synthetic data.
 11. **Config switch** `robust = true` in `[grid]`, and per grid in topo's `[[grids]]`
     (with `eeg_quotient_limit`), both in `icecube.example.toml` (the commented topo block
     too). `robust = false` reproduces the 0.7-era running mean and flag counter; then
