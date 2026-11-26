@@ -39,9 +39,9 @@ import rink.icecube.logger.core.TrackPoint;
  * the live position, and a countdown ring at the top centre while a ref occupation runs.
  *
  * Under the trail and captures, when MENU > Coverage is on: the live coverage overlay
- * (core.Coverage), one bitmap pixel per grid node over the surveyed area, red for no
- * data or disagreement, amber for sigma above the target, clear otherwise, translucent so
- * layers show through. The pixels come from the coverage worker (MainActivity,
+ * (core.Coverage), one bitmap pixel per grid node over the surveyed area, red for an
+ * enclosed gap or a disagreement, amber for sigma above the target, a faint grey for the
+ * area's edge with no data yet, clear otherwise, translucent so layers show through. The pixels come from the coverage worker (MainActivity,
  * core.CoverageWorker) as CoverageRaster frames: a full frame replaces the bitmap (reused
  * when its size is unchanged), a patch sets the touched pixels. This view never touches the
  * Coverage itself.
@@ -70,7 +70,7 @@ final class MapView extends View {
     private Survey.TiltView tilt;
     private boolean labels = true;
     static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
-    static final int COVER_RED = CoverageRaster.RED, COVER_AMBER = CoverageRaster.AMBER;
+    static final int COVER_RED = CoverageRaster.RED, COVER_AMBER = CoverageRaster.AMBER, COVER_EDGE = CoverageRaster.FRINGE;
 
     private boolean covOn, covAreaLimit, covFailed;
     /** False from a rebuild until its full frame: the bitmap is kept for reuse but not drawn. */
@@ -653,8 +653,8 @@ final class MapView extends View {
         for (String n : LEGEND_NAMES) width = Math.max(width, text.measureText(n));
         for (SurveyMode m : SurveyMode.values()) width = Math.max(width, text.measureText(m.key));
         String[] cov = !covOn ? new String[0] : covFailed ? new String[] {"coverage stopped: error"} : covAreaLimit
-                ? new String[] {"no data / disagree", "σ > target", "coverage: area limit"}
-                : new String[] {"no data / disagree", "σ > target"};
+                ? new String[] {"gap / disagree", "σ > target", "edge, no data", "coverage: area limit"}
+                : new String[] {"gap / disagree", "σ > target", "edge, no data"};
         for (String n : cov) width = Math.max(width, text.measureText(n));
         int rows = LEGEND_Q.length + SurveyMode.values().length + cov.length;
         c.drawRoundRect(x, y, x + width + 26 * dp, y + row * rows + pad, 4 * dp, 4 * dp, box);
@@ -675,8 +675,8 @@ final class MapView extends View {
         for (int k = 0; k < cov.length; k++) {
             float cy0 = y + pad + row * (LEGEND_Q.length + SurveyMode.values().length + k) + row / 2 - 2 * dp;
             float cx0 = x + 10 * dp;
-            if (k < 2 && !covFailed) {
-                dot.setColor(k == 0 ? COVER_RED : COVER_AMBER);
+            if (k < 3 && !covFailed) {
+                dot.setColor(k == 0 ? COVER_RED : k == 1 ? COVER_AMBER : COVER_EDGE);
                 c.drawRect(cx0 - 5 * dp, cy0 - 5 * dp, cx0 + 5 * dp, cy0 + 5 * dp, dot);
             }
             c.drawText(cov[k], x + 20 * dp, cy0 + text.getTextSize() / 3, text);

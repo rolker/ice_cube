@@ -93,4 +93,15 @@ public class CoverageRasterTest {
         assertArrayEquals(new int[] {7, 16}, r.axis(true, -1, 8, 0, 20, 11, 13));     // outside: centred on it
         assertArrayEquals(new int[] {14, 23}, r.axis(true, -1, 8, 0, 20, 18, 20));    // ahead of the area too
     }
+
+    /** A gap and a disagreement are red, the edge with no data a faint neutral, OK clear. */
+    @Test public void colours() {
+        assertEquals(CoverageRaster.RED, CoverageRaster.color(Coverage.Status.NO_DATA));
+        assertEquals(CoverageRaster.RED, CoverageRaster.color(Coverage.Status.DISAGREE));
+        assertEquals(CoverageRaster.AMBER, CoverageRaster.color(Coverage.Status.THIN));
+        assertEquals(CoverageRaster.FRINGE, CoverageRaster.color(Coverage.Status.FRINGE));
+        assertEquals(0, CoverageRaster.color(Coverage.Status.OK));
+        assertEquals(0, CoverageRaster.color(Coverage.Status.NONE));
+        assertTrue((CoverageRaster.FRINGE >>> 24) < (CoverageRaster.RED >>> 24));   // fainter than red
+    }
 }
