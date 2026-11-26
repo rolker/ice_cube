@@ -128,3 +128,11 @@ The neighbourhood gradient does avoid the #24 circularity, and the gates and spl
 **Decision**: revise
 
 Address must-fix 1-2 and should-fix 3-5, and state minors 6-7: pass-2 acceptance only when the node leaves red (or n_out strictly drops) AND the new z agrees with the neighbour plane at the node within k_sigma*sqrt(var_a+sigma'^2), with a pinned wrong-cluster case; flat-edge Monte Carlo run through grid_surface on a >=5x5 synthetic block (planar false everywhere, absorbed = baseline, baseline recorded on first run; bank case neighbours built from soundings); config keys for every threshold (DEM-gate floor, min non-red neighbours, planarity bound, usable n_in), tuned on the replays (counts only); raw DEM slope passed through, behaviour without slope_from_dem stated; planar/gradient in Surface and the npz outputs; say whether plane_vectors cover the fold aggregate; pass 2 runs the full rebuild incl. Eeg.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 18:32 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `9a19cee`
+
+Revision after plan review: pass 2 accepted only if the node leaves red (or n_out strictly drops) and z agrees with the neighbour-plane intercept within k_sigma*sqrt(var_a+sigma'^2); wrong-cluster case pinned. Tests run through grid_surface on a >=5x5 block built from soundings, baseline recorded on first run. Config keys for every threshold (min_clear starts at 2), raw DEM slope passed (DEM gate skipped without slope_from_dem), planar/gradient in Surface and both npz writers. plane_vectors cover unfolded entries only (aggregate is PR B); pass 2 runs full _robust incl. Eeg.
