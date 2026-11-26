@@ -186,3 +186,13 @@ The revision addresses all four earlier must-fixes and the A/B split is sound: A
 - [ ] Make `import_refs_csv` skip and count `void=1` rows; add that case to `test_import.py`.
 - [ ] Delete now-voided (session, n) rows on re-import, or document that an earlier-imported row stays.
 - [ ] Label the new columns and events in `logger/README.md` as from 0.9.0.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:33 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready, no must-fix; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implement PR A. Review notes into the handoff: drop the 'session resume' paragraph and the restart-from-file test (the phone never reopens a session; refs.csv is the only void state read back); import_refs_csv also skips and counts void=1 refs, with a test; host decision on minor 3: re-import DELETES (session, n) rows that are now voided, with a test; README labels the new columns and flag/unflag/photo moved events 'from 0.9.0'.
