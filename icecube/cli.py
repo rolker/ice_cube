@@ -71,6 +71,9 @@ def run(cfg, out_dir=None, log=print):
     k_sigma = float(g.get("k_sigma", 3.0))
     robust = bool(g.get("robust", True))
     eeg = float(g.get("eeg_quotient_limit", 30.0))
+    plane = bool(g.get("plane", True))
+    plane_kw = {k: g[k] for k in ("plane_min_neighbours", "plane_min_nin", "plane_min_clear", "plane_red_weight",
+                                  "plane_planarity") if k in g}
     out = Path(out_dir or cfg.get("output", {}).get("dir", "output/ice-cube"))
     if not out.is_absolute() and base is not None:
         out = base / out
@@ -98,7 +101,7 @@ def run(cfg, out_dir=None, log=print):
         mask = growth.point_in_polygon(X.ravel(), Y.ravel(), outline).reshape(X.shape)
 
     summary = [f"# Ice-Cube run", "", f"Grid: {grid.nx} x {grid.ny} nodes, cell {grid.cell} m, capture radius "
-               f"{capture} m, k_sigma {k_sigma}, slope {slope} m/m, robust {robust}, Eeg limit {eeg:g}. Sigma defaults {sigma_z*100:.1f} cm (z), "
+               f"{capture} m, k_sigma {k_sigma}, slope {slope} m/m, robust {robust}, Eeg limit {eeg:g}, plane {plane and robust}. Sigma defaults {sigma_z*100:.1f} cm (z), "
                f"{sigma_h*100:.1f} cm (h). Wander prior {prior*100:.1f} cm, crossover radius {xr} m.", ""]
     surfaces = {}
     results = {}
@@ -118,13 +121,14 @@ def run(cfg, out_dir=None, log=print):
             corrected.append(c); sbs.append(sb)
         date = max(p.date for p in pts_list)
         surf = nodes.grid_surface(corrected, sbs, grid, capture_radius=capture, slope=slope, k_sigma=k_sigma,
-                                  robust=robust, eeg_quotient_limit=eeg,
+                                  robust=robust, eeg_quotient_limit=eeg, plane=plane, **plane_kw,
                                   name=sname, date=date, frame=pts_list[0].frame)
         surfaces[sname] = surf
         results[sname] = res
         np.savez(out / f"surface_{sname}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, n_out=surf.n_out,
                  n_alt=surf.n_alt, z_alt=surf.z_alt, strength=surf.strength, n_eeg=surf.n_eeg, maxnr=surf.maxnr,
-                 last_t=surf.last_t, npass=surf.npass, **grid.as_dict())
+                 last_t=surf.last_t, npass=surf.npass, planar=surf.planar, gradient=surf.gradient,
+                 **grid.as_dict())
         (out / f"passes_{sname}.md").write_text(report.table_passes(infos) + "\n")
         (out / f"crossover_{sname}.md").write_text(report.table_crossover(res) + "\n")
         (out / f"outliers_{sname}.md").write_text(report.table_outliers(surf) + "\n")

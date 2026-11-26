@@ -967,6 +967,7 @@ surface = "a"
             self.assertIn("| a | 5 |", (out / "passes_a.md").read_text())
             # node heights are within sigma of the planted surface (biases removed by the crossover)
             sa = np.load(out / "surface_a.npz")
+            self.assertEqual(sa["planar"].shape, sa["z"].shape)
             X, Y = np.meshgrid(sa["x0"] + np.arange(sa["nx"]) * sa["cell"], sa["y0"] + np.arange(sa["ny"]) * sa["cell"])
             m = sa["n"] > 0
             err = np.abs(sa["z"] - surface_fn(X, Y))[m]

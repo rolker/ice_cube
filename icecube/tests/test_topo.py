@@ -304,8 +304,9 @@ class TestTopoRun(unittest.TestCase):
             self.assertGreater(np.mean(np.abs(err) < 3 * s["sigma"][ok]), 0.95)
             lot = np.load(out / "surface_ground_lot.npz")
             self.assertTrue(lot["mask"].any())
-            for k in ("n_out", "n_alt", "z_alt", "strength", "n_eeg"):
+            for k in ("n_out", "n_alt", "z_alt", "strength", "n_eeg", "planar", "gradient"):
                 self.assertEqual(lot[k].shape, lot["z"].shape, k)
+            self.assertEqual(lot["planar"].dtype, bool)
             # the flags raster keeps its name and holds the outlier count (-1 masked)
             fl = (out / "flags_ground_lot.asc").read_text()
             self.assertIn("-1", fl)
