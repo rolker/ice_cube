@@ -136,3 +136,47 @@ Address the review's must-fix 1-3 (Java SoundingSigma falls back to the single r
 **Plan**: `.agent/work-plans/issue-9/plan.md` at `4eff77d`
 
 Revision after plan review: Java SoundingSigma falls back to the single rule when any tilt sd is missing (in this PR, comment fixed, vectors regenerated, logger unit tests run); tilt_missing_sd goes in SIGMA_CASES; SCHEMA_VERSION bump makes the importer re-read old sessions without --force (with a test) and logger_source warns once when tilt columns are absent or empty for 0.6+ sessions; GST stays a floor for tilt captures and the end-to-end test is shaped to match.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 18:33 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: ready
+
+**Issue**: #9 — soundings.py: sigma rule for tilt captures
+**Plan**: `.agent/work-plans/issue-9/plan.md` at `4eff77d`
+**Branch**: `feature/issue-9`
+
+Second review, after the revision that answered the first review's needs-work.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Still one PR. The Java change is small: a guard in `SoundingSigma.of` and a rewritten comment. |
+| Issue alignment | Good | Covers the issue and all review-issue actions. All three earlier findings are addressed: Java falls back (step 5), `tilt_missing_sd` is in `SIGMA_CASES` (step 6), and `SCHEMA_VERSION` 3 with a re-read test plus a `logger_source` warning (steps 2, 4, 7). The host's GST-floor decision is stated, and the end-to-end test is shaped to match. |
+| File targeting | Good | `SoundingSigma.java` and `coverage_vectors.json` are now listed. `SoundingSigmaTest` needs no edit because it reads `SIGMA_CASES`. |
+| Consequences | Good | The table now matches the approach: Java changed, `sigma_terms` unchanged, old gpkgs refilled by the version bump. Two edge cases are in Findings. |
+| Principle alignment | Good | Post-processing and the live view agree through one helper and the same vectors. Missing data falls back to the single rule with a warning. Public repo: only synthetic values. Serves: "Ice growth reported from logger surveys (`docs/roadmap.md` Direction); project has no design document." Checked and correct. |
+| ADR compliance | Good | The project has no ADRs, and no workspace ADR is triggered. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Consequences, fix during implementation]** The schema-upgrade re-read must not bypass the snapshot guard. Step 2 says to treat an older stored `schema_version` "as `--force` for sessions (skip test at line ~536)". The `if old and not args.force` block holds two guards: the signature check, and "snapshot of a session already imported in full, skipped" (lines 542-546).
+
+   If both guards are skipped, a plain re-run of an upgrade can replace a full import with a snapshot. This happens when the input folder now holds only a snapshot of a session that was earlier imported in full. With an explicit `--force`, the user chose that. On an implicit upgrade, they did not.
+
+   Bypass only the signature check when upgrading, and keep the snapshot guard. Cover it in the step 7 schema-2 test, or in a second small case.
+2. **[Approach, minor]** In step 4, the "`sessions.app` is 0.6 or later" check needs a numeric version comparison, not a string compare. Parse `app` as a tuple of ints. A NULL or unparseable value means "not 0.6+", because 0.2 to 0.5 files exist and have no app string in the tests' sense. Example: "0.10" sorts before "0.6" as a string.
+3. **[Approach, note]** Keep the helper's sd_h None-as-0 behaviour. The existing `missing_sd` vector (single rule, all sds None) depends on `_sd_h` treating None as 0. The current `logger_source` handles the single rule the same way, so this is a regression check, not a change.
+
+### Summary
+
+The revision fixes all three findings from the first review, and the plan is ready for implementation. One new edge case needs care: the implicit schema-upgrade re-read must keep the snapshot guard. Two small implementation notes are also listed. None of them needs another plan revision.
+
+### Recommended Actions
+
+- [ ] On a schema-version upgrade, skip only the unchanged-signature check, keep the "snapshot of a session already imported in full" guard, and test it.
+- [ ] Compare `sessions.app` versions numerically for the 0.6+ warning. NULL or unparseable means older.
+- [ ] Keep None-as-0 in the helper's sd_h so the `missing_sd` vector is unchanged.
