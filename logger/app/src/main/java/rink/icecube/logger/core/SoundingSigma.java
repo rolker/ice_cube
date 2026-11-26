@@ -23,8 +23,9 @@ package rink.icecube.logger.core;
  * The rule picking the inputs mirrors {@code capture_sigma_inputs} in soundings.py. Single
  * captures take the bubble tilt (TILT_BUBBLE_DEG). Tilt captures take the tilt solution's own
  * sigmas (tilt_sd_u_m for sd_u, hypot(tilt_sd_e_m, tilt_sd_n_m) / sqrt 2 for sd_h) and tilt
- * 0, keeping tip sink and ground; a tilt capture missing any of the three tilt sds (NaN)
- * falls back to the single rule. In soundings.py GST still floors a tilt capture's sigmas.
+ * 0, keeping tip sink and ground; a tilt capture missing any of the three tilt sds (NaN) or
+ * with a non-finite one falls back to the single rule. In soundings.py GST still floors a
+ * tilt capture's sigmas.
  *
  * When soundings.py changes, regenerate the test vectors
  * ({@code python3 -m icecube.logger_vectors}); SoundingSigmaTest checks these constants
@@ -65,8 +66,8 @@ public final class SoundingSigma {
 
     /** The budget of a capture row: the single or the tilt rule (see the class comment). */
     public static Terms of(PointRow r, double ground) {
-        if (PointRow.TILT.equals(r.method) && !Double.isNaN(r.tiltSdU) && !Double.isNaN(r.tiltSdE)
-                && !Double.isNaN(r.tiltSdN)) {
+        if (PointRow.TILT.equals(r.method) && Double.isFinite(r.tiltSdU) && Double.isFinite(r.tiltSdE)
+                && Double.isFinite(r.tiltSdN)) {
             return terms(r.tiltSdU, hypotH(r.tiltSdE, r.tiltSdN), r.age, r.fixAge, r.pole, 0.0, ground);
         }
         return terms(r.sdU, hypotH(r.sdE, r.sdN), r.age, r.fixAge, r.pole, TILT_BUBBLE_DEG, ground);

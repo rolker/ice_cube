@@ -125,6 +125,8 @@ class TestFrameAndSigma(unittest.TestCase):
                          (0.012, h, 0.0))
         single = (0.03, math.hypot(0.02, 0.02) / math.sqrt(2), sg["tilt_bubble_deg"])
         self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, None, 0.008), single)
+        for bad in (float("nan"), float("inf")):   # non-finite as missing, like SoundingSigma.java
+            self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, bad, 0.008), single)
         self.assertEqual(snd.capture_sigma_inputs(sg, "single", 0.03, 0.02, 0.02, 0.012, 0.006, 0.008), single)
         self.assertEqual(snd.capture_sigma_inputs(sg, None, 0.03, 0.02, 0.02), single)
         self.assertEqual(snd.capture_sigma_inputs(sg, "single", None, None, None), (None, 0.0, sg["tilt_bubble_deg"]))
@@ -334,6 +336,22 @@ class TestBuild(unittest.TestCase):
         con.commit()
         con.close()
         self.assertNotIn("warning", self._build_logger(gpkg)[1])
+
+    def test_mixed_sessions_warn_naming_the_stranded_one(self):
+        """One 0.6 session with its tilt columns and one without: warn, naming only that one."""
+        src = self.d / "in"
+        synth.write_zip(src / "a.zip", synth.session_v06())
+        synth.write_zip(src / "b.zip", synth.session_v06("2026-12-02_10-00-00"))
+        gpkg = self._import(src)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET method=NULL, tilt_sd_e_m=NULL, tilt_sd_n_m=NULL, tilt_sd_u_m=NULL "
+                    "WHERE session='2026-12-02_10-00-00'")
+        con.commit()
+        con.close()
+        logged = self._build_logger(gpkg)[1]
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("2026-12-02_10-00-00", logged)
+        self.assertNotIn("2026-12-01_10-00-00", logged.split("warning")[1])
 
     def test_anchor_sites_and_verification(self):
         r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731

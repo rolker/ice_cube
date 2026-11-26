@@ -511,10 +511,11 @@ def capture_sigma_inputs(sg, method, sd_u, sd_e, sd_n, tilt_sd_u=None, tilt_sd_e
     A tilt capture (method "tilt") with all three tilt sds takes the tilt solution's own
     sigmas (tilt_sd_u_m as sd_u, hypot(tilt_sd_e_m, tilt_sd_n_m) / sqrt 2 as sd_h) and tilt
     0: the solution already places the tip, so only tip sink and ground stay in the pole
-    budget. Anything else (single, ref, no method, a tilt capture missing an sd) takes the
-    single-capture rule: its 1 s scatter and the bubble tilt. GST still floors the result
-    in `sigma_terms`. The logger mirrors this in core/SoundingSigma.java."""
-    if method == "tilt" and None not in (tilt_sd_u, tilt_sd_e, tilt_sd_n):
+    budget. Anything else (single, ref, no method, a tilt capture missing an sd or with a
+    non-finite one) takes the single-capture rule: its 1 s scatter and the bubble tilt.
+    GST still floors the result in `sigma_terms`. The logger mirrors this in core/SoundingSigma.java."""
+    if method == "tilt" and all(v is not None and math.isfinite(v)
+                                for v in (tilt_sd_u, tilt_sd_e, tilt_sd_n)):
         return tilt_sd_u, _sd_h(tilt_sd_e, tilt_sd_n), 0.0
     return sd_u, _sd_h(sd_e, sd_n), sg["tilt_bubble_deg"]
 
@@ -630,9 +631,15 @@ def logger_source(cfg, src, con, frame, history, log):
     if missing and new_app:
         log(f"  warning: the captures table has no {', '.join(missing)} column(s): tilt captures get "
             "the single-capture sigma; re-import the sessions (import_sessions.py --force)")
-    elif new_app and all(c["method"] is None for c in new_app):
-        log("  warning: the captures of logger 0.6+ sessions have no method/tilt values: tilt captures "
-            "get the single-capture sigma; re-import the sessions (import_sessions.py --force)")
+    elif new_app:
+        by_ses = {}
+        for c in new_app:
+            by_ses.setdefault(c["session"], []).append(c["method"])
+        stranded = sorted(k for k, m in by_ses.items() if all(v is None for v in m))
+        if stranded:
+            log(f"  warning: the captures of logger 0.6+ session(s) {', '.join(stranded)} have no "
+                "method/tilt values: their tilt captures get the single-capture sigma; re-import them "
+                "(import_sessions.py --force)")
     sites = {}
     try:
         sites = {(s, n): site for s, n, site in con.execute("SELECT session, n, site FROM refs")}
