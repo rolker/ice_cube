@@ -384,6 +384,14 @@ def _plane_cases():
     out.append(("fringe_ill_conditioned", _plane_block(0.3, 22, ymin=0.0)))
     # a ridge z = 0.4 |x - 1|: node (2, 2) sits on the ridge line, its neighbours fit no plane (code 4)
     out.append(("ridge_not_planar", _plane_block(0.0, 1, surface=lambda x, y: 0.4 * abs(x - 1.0))))
+    # flat ground plus 4 captures 15 cm up near node (2, 2): red, but its neighbours' plane is
+    # flat, within the slope allowance (code 5)
+    rnd = random.Random(1)
+    fc = _plane_block(0.0, 1, per_disc=6)
+    for _ in range(4):
+        x, y = round(rnd.uniform(0.85, 1.15), 4), round(rnd.uniform(0.85, 1.15), 4)
+        fc.append([x, y, round(0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
+    out.append(("flat_cluster_not_steep", fc))
     return out
 
 
