@@ -322,7 +322,8 @@ class TestBuild(unittest.TestCase):
         caps, logged = self._build_logger(gpkg)
         self.assertEqual(caps[5]["tilt_deg"], snd.DEFAULTS["sigma"]["tilt_bubble_deg"])   # single rule
         self.assertEqual(logged.count("warning"), 1)
-        self.assertIn("--force", logged)
+        self.assertIn("re-import the full session sources", logged)
+        self.assertNotIn("--force", logged)
 
     def test_empty_tilt_columns_of_new_app_warn(self):
         gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))

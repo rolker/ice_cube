@@ -630,7 +630,8 @@ def logger_source(cfg, src, con, frame, history, log):
     new_app = [c for c in caps if c["class"] != "photo" and _version(apps.get(c["session"])) >= (0, 6)]
     if missing and new_app:
         log(f"  warning: the captures table has no {', '.join(missing)} column(s): tilt captures get "
-            "the single-capture sigma; re-import the sessions (import_sessions.py --force)")
+            "the single-capture sigma; re-import the full session sources (import_sessions.py "
+            "re-reads sessions imported under an older schema)")
     elif new_app:
         by_ses = {}
         for c in new_app:
@@ -638,8 +639,9 @@ def logger_source(cfg, src, con, frame, history, log):
         stranded = sorted(k for k, m in by_ses.items() if all(v is None for v in m))
         if stranded:
             log(f"  warning: the captures of logger 0.6+ session(s) {', '.join(stranded)} have no "
-                "method/tilt values: their tilt captures get the single-capture sigma; re-import them "
-                "(import_sessions.py --force)")
+                "method/tilt values: their tilt captures get the single-capture sigma; re-import the "
+                "full session sources (import_sessions.py re-reads sessions imported under an "
+                "older schema)")
     sites = {}
     try:
         sites = {(s, n): site for s, n, site in con.execute("SELECT session, n, site FROM refs")}
