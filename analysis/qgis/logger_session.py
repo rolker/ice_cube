@@ -212,8 +212,17 @@ def read_events(src):
     return out
 
 
+POINTS_06_REAL = ("fix_age_s", "fix_jump_m", "tilt_rms_m", "tilt_cover_deg", "tilt_sd_e_m",
+                  "tilt_sd_n_m", "tilt_sd_u_m")
+POINTS_06_INT = ("fix_suspect", "tilt_n")
+
+
 def read_points(text):
-    """points.csv rows as dicts with typed values (see the logger README)."""
+    """points.csv rows as dicts with typed values (see the logger README).
+
+    The 0.6 columns keep their points.csv names: fix_age_s, fix_jump_m, fix_suspect,
+    method, tilt_n, tilt_rms_m, tilt_cover_deg, tilt_sd_e_m, tilt_sd_n_m, tilt_sd_u_m.
+    They are None in older files and for empty cells."""
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         if not r.get("n"):
@@ -227,6 +236,9 @@ def read_points(text):
             "sd_n_m": _f(r.get("sd_n_m")), "sd_u_m": _f(r.get("sd_u_m")), "age_s": _f(r.get("age_s")),
             "photo_files": [p for p in (r.get("photo") or "").split(";") if p],
             "note": r.get("note") or None,
+            "method": r.get("method") or None,
+            **{k: _f(r.get(k)) for k in POINTS_06_REAL},
+            **{k: _i(r.get(k)) for k in POINTS_06_INT},
         })
     return rows
 

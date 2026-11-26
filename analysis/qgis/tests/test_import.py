@@ -214,6 +214,58 @@ class ImportTest(unittest.TestCase):
         self.assertIn("recomputed", run(z, "--gpkg", self.gpkg, "--base", *self.base))
         self.assertNotIn("e_m", [r[1] for r in self.q("PRAGMA table_info(captures)")])
 
+    def test_v06_columns(self):
+        """0.6 points.csv columns reach the captures table; a 0.5 session leaves them NULL."""
+        z = synth.write_zip(self.d / "s.zip", synth.session_v06())
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        rows = self.q("SELECT n, method, fix_suspect, fix_age_s, tilt_n, tilt_sd_e_m, tilt_sd_n_m, tilt_sd_u_m "
+                      "FROM captures ORDER BY n")
+        self.assertEqual(rows[0], (1, "single", 0, 200.0, None, None, None, None))
+        self.assertEqual(rows[3][1:3], (None, None))                       # photo row
+        self.assertEqual(rows[4], (5, "tilt", 1, 180.0, 6, 0.006, 0.008, 0.012))
+        self.assertEqual(rows[5][1:], ("tilt", 1, 180.0, 6, None, None, None))
+        z5 = synth.write_zip(self.d / "s5.zip", synth.session_v05("2026-12-02_10-00-00"))
+        run(z5, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertEqual(self.q("SELECT count(*) FROM captures WHERE session='2026-12-02_10-00-00' AND "
+                                "(method IS NOT NULL OR fix_suspect IS NOT NULL OR tilt_sd_u_m IS NOT NULL)"),
+                         [(0,)])
+
+    def _as_schema2(self):
+        """Make the gpkg look like one written before schema 3: no 0.6 columns."""
+        con = gw.connect(self.gpkg)
+        for k, _ in imp.LOGGER_06:
+            con.execute(f"ALTER TABLE captures DROP COLUMN {k}")
+        con.execute("UPDATE icecube_meta SET value='2' WHERE key='schema_version'")
+        con.commit()
+        con.close()
+
+    def test_schema2_reread_without_force(self):
+        z = synth.write_zip(self.d / "s.zip", synth.session_v06())
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        con = gw.connect(self.gpkg)
+        con.execute("UPDATE captures SET label='kept' WHERE n=5")
+        con.commit()
+        con.close()
+        self._as_schema2()
+        out = run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertNotIn("unchanged, skipped", out)
+        self.assertEqual(self.q("SELECT method, tilt_sd_u_m, label FROM captures WHERE n=5"),
+                         [("tilt", 0.012, "kept")])
+        self.assertEqual(dict(self.q("SELECT key, value FROM icecube_meta"))["schema_version"],
+                         str(imp.SCHEMA_VERSION))
+        self.assertIn("unchanged, skipped", run(z, "--gpkg", self.gpkg, "--base", *self.base))   # once only
+
+    def test_schema2_upgrade_keeps_snapshot_guard(self):
+        z = synth.write_zip(self.d / "full.zip", synth.session_v06())
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        self._as_schema2()
+        snap = synth.session_v06()
+        snap["2026-12-01_10-00-00/SNAPSHOT.txt"] = b"snapshot"
+        z.unlink()
+        sz = synth.write_zip(self.d / "snap.zip", snap)
+        self.assertIn("snapshot of a session already imported", run(sz, "--gpkg", self.gpkg, "--base", *self.base))
+        self.assertEqual(self.q("SELECT snapshot FROM sessions"), [(0,)])
+
     # -- layers, config and export
     def test_reimport_keeps_topo_tables(self):
         """An import replaces the map layers but must not drop layer_topo_* (topo_to_gpkg)."""

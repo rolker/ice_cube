@@ -18,7 +18,9 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
 
   captures      PointZ  one row per capture, key (session, n). Z = ground height.
                         `note` and `label` are yours: edited in QGIS, never overwritten.
-  photos        PointZ  one row per photo file, key (session, name); `note` is yours.
+                        Logger 0.6 columns (method, fix_suspect, tilt_*, ...) are NULL
+                        for older sessions.
+  photos       PointZ  one row per photo file, key (session, name); `note` is yours.
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
   tracks        LineStringZ  1 Hz GGA track per session, split at gaps and fix changes,
@@ -42,7 +44,9 @@ untouched). The display CRS (orthographic at the origin) is stored in
 gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta.
 
 Idempotent and incremental: a session already imported from an unchanged source is
-skipped (--force re-reads it); rows are matched by their keys and updated in place, so
+skipped (--force re-reads it). A gpkg written by an older schema version has every
+session re-read once to fill the new columns, except that a snapshot never replaces a
+session imported in full. Rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
 importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
 `run()` is the same import as a function (the plugin calls it in a background task).
@@ -66,7 +70,7 @@ from logger_session import find_sessions, load_session, read_refs_csv  # noqa: E
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
 USER_COLUMNS = {"captures": ("note", "label"), "photos": ("note",), "refs": ("note",),
                 "sessions": ("note",)}
 TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line
@@ -76,13 +80,16 @@ R, I, T = "REAL", "INTEGER", "TEXT"
 MEAS = [("utc", T), ("lat", R), ("lon", R), ("h_ant", R), ("pole_m", R), ("h_ground", R),
         ("fix", I), ("n_epochs", I), ("sd_e_m", R), ("sd_n_m", R), ("sd_u_m", R), ("age_s", R)]
 ENU = [("x_m", R), ("y_m", R), ("z_m", R)]
+LOGGER_06 = [("fix_age_s", R), ("fix_jump_m", R), ("fix_suspect", I), ("method", T), ("tilt_n", I),
+             ("tilt_rms_m", R), ("tilt_cover_deg", R), ("tilt_sd_e_m", R), ("tilt_sd_n_m", R),
+             ("tilt_sd_u_m", R)]   # points.csv 0.6 columns, NULL for older sessions
 LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
 POINT_TABLES = ("captures", "photos", "refs", "track_points")
 NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
-                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)],
+                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06,
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
                ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
@@ -223,6 +230,14 @@ def get_meta(gp):
     return dict(gp.con.execute("SELECT key, value FROM icecube_meta"))
 
 
+def _schema_of(meta):
+    """The stored schema_version as an int; 0 when missing or unreadable."""
+    try:
+        return int(meta.get("schema_version") or 0)
+    except ValueError:
+        return 0
+
+
 # ----------------------------------------------------------------------------- import
 
 def _geom(lat, lon, h):
@@ -246,6 +261,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "photo": rel(files[0]) if files else None, "photo_count": len(files),
             "source": c.get("source"), "elapsed_ns": c.get("elapsed_ns"), "note": c.get("note"),
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
+            **{k: c.get(k) for k, _ in LOGGER_06},
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
 
@@ -522,6 +538,9 @@ def run(argv=None, log=print, progress=None):
     try:
         ensure_schema(gp)
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
+        upgrade = bool(done) and _schema_of(get_meta(gp)) < SCHEMA_VERSION
+        if upgrade:
+            log(f"gpkg schema older than {SCHEMA_VERSION}: re-reading every session to fill new columns")
 
         sources = find_sessions(inputs)
         log(f"{len(sources)} session(s) found")
@@ -534,7 +553,7 @@ def run(argv=None, log=print, progress=None):
                 refs_texts.append(t)
             old = done.get(src.name)
             if old and not args.force:
-                if old[0] == src.signature():
+                if old[0] == src.signature() and not upgrade:
                     log(f"  {src.name}: unchanged, skipped")
                     unchanged.append(src.name)
                     src.close()
