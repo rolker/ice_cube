@@ -302,3 +302,20 @@ Both round-1 must-fixes verified fixed (per-session `sessions.schema_version`; p
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 107 tests, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
 - `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL, no failures (SoundingSigmaTest 3/3). C: free 114 GB before.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 19:00 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-9 at `9985923`
+**Base**: main
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+**Round**: 3 | **Ship**: recommended — no must-fix findings; round-2 must-fix verified fixed
+
+Scope: the round-2 findings and the fix diff `28f4f8f..9985923`. Cross-model: skipped (round-3 convergence check, per handoff). Round-2 must-fix verified: both soundings warnings now say to re-import the full session sources, no `--force`; test asserts the new text and the absence of `--force`. Round-2 suggestions verified as applied (pre-0.6 sessions marked current via shared `logger_session.app_version` and `SCHEMA_MIN_APP`, with test; negative tilt sd takes the single rule in Python and Java plus `tilt_negative_sd` vector; `_i` non-finite gives None, with test; docs/log.md line) or deferred by the owner's round-2 plan (method column in soundings output; above-floor end-to-end case). No new issues in the fix diff. Tests run in review: analysis/qgis 107 OK (5 skipped), icecube 68 OK; regenerated vectors equal the committed coverage_vectors.json; gradle not re-run (implementation reports BUILD SUCCESSFUL). Public-repo check: no coordinates or private data in the fix diff.
+
+### Findings
+- [ ] No issues found. LGTM.
