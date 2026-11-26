@@ -256,3 +256,26 @@ Cross-model: gemini complete, codex complete. Claude adversarial complete. Tests
 - Commits made with every pre-commit hook; nothing pushed.
 
 Next: `/review-code --branch`
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 18:52 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-9 at `43dc72e`
+**Base**: main
+**Depth**: Deep (reason: 15 files, +784/-50 lines, Python and Java layers; fix round classified on the whole diff)
+**Must-fix**: 1 | **Suggestions**: 6
+**Round**: 2 | **Ship**: recommended — round 2: 1 mechanical must-fix (prev 2), not rising; fix and ship rather than another full round
+
+Both round-1 must-fixes verified fixed (per-session `sessions.schema_version`; per-session stranded warning). Cross-model: gemini complete, codex complete. Claude adversarial complete (no must-fix). Static analysis: no Python linter installed (ruff/flake8/pyflakes absent); py_compile clean. Tests: analysis/qgis 105 OK (5 skipped), icecube 68 OK; regenerated vectors match the committed JSON; gradle not re-run in review (implementation reports 164 pass). Public-repo check: no coordinates or private data in the diff.
+
+### Findings
+- [ ] (must-fix) Both soundings warnings tell the user to re-import with `import_sessions.py --force`, but `--force` skips the importer's snapshot guard, so following the advice with a snapshot among the inputs can replace a fully imported session with incomplete data; and a plain re-import now re-reads older-schema sessions anyway. Say "re-import the full session source (import_sessions.py re-reads sessions from an older schema)" and update the assertion in test_soundings.py:325 (codex; also gemini, claude-adversarial) — `analysis/qgis/soundings.py:633,642`
+- [ ] (suggestion) Pre-0.6 sessions imported under schema 2 stay "stale" and are logged on every later import unless their sources are passed again, although schema 3 adds nothing for them; consider marking a session current when its app is below 0.6, or wording the log so it does not look like a fault (gemini) — `analysis/qgis/import_sessions.py:536,577`
+- [ ] (suggestion) For a tilt capture the soundings row keeps `sd_u_m` = the 1 s antenna scatter while `sigma_rtk` comes from `tilt_sd_u_m`; with no `method` column in the output, readers cannot tell which rule made the sigma. Add `method` (or write the sd actually used) (claude-adversarial) — `analysis/qgis/soundings.py:689`
+- [ ] (suggestion) A negative `tilt_sd_*` passes the finite check in both Python and Java and takes the tilt rule (floored to an optimistic sigma); require `>= 0` in both and add a vector (gemini) — `analysis/qgis/soundings.py:517`, `SoundingSigma.java:69`
+- [ ] (suggestion) `_i("nan")` / `_i("inf")` raise ValueError/OverflowError and abort the whole points.csv parse; return None for non-finite like `_f` (claude-adversarial) — `analysis/qgis/logger_session.py:197`
+- [ ] (suggestion) End-to-end tests: no case with tilt sd_h above floor_h, nor tilt_sd_u above a present GST term (gemini) — `analysis/qgis/tests/test_soundings.py:295`
+- [ ] (suggestion) docs/log.md entry does not mention the per-session schema_version re-read that changes importer behaviour on existing gpkgs — `docs/log.md:115`
