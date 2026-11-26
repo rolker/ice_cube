@@ -1,7 +1,7 @@
 # Ice-Cube: a CUBE-derived surface and ice-growth estimator for the rink
 
 `icecube/` turns RTK survey points of the rink into a height per grid node with an
-uncertainty, a per-node "the samples disagree" flag, ice growth between dates with its
+uncertainty, a per-node count of soundings that disagree with it (outliers), ice growth between dates with its
 uncertainty, and a fill-to-level map. It is pure numpy, with matplotlib for the figures.
 
 First, the honest part. Last winter's "Ice-Cube" (February-March 2026) was an
@@ -27,8 +27,12 @@ What a backyard rink survey needs, and what it does not:
 |---|---|---|
 | Per-node sequential fusion, propagated sounding uncertainty, outputs z / sigma / n | **kept** | it is the right estimator for scattered RTK points with their own sigmas |
 | Uncertainty inflation with distance to the node | **kept, simplified** | CUBE's form is built from IHO survey orders; a 1 cm pole needs a plain slope allowance |
-| Inconsistency test between a sounding and the node | **kept as a flag and counter** | the tool must say where samples disagree |
-| Multiple hypotheses and disambiguation | **dropped** | there is one ice surface per cell. Snow on ice, slush and pole sink were invented by agents last year to explain scatter that was RTK wander. If two surfaces ever appear, the flag counts them |
+| Median pre-filter queue (`median_length` 11): soundings kept sorted, the median fed first, "for robustness ... in the face of outliers early in the input sequence" | **kept as a reordering, without the lag** | each node is rebuilt from all its soundings, weighted median first and then nearest first, so an early bad sounding cannot anchor it and none waits in a queue (issue #24) |
+| Inconsistency test between a sounding and the node | **kept**: a failing sounding goes to an outlier bin instead of being fused | the tool must say where samples disagree, and an outlier must not pull the height |
+| Multiple hypotheses and disambiguation | **kept as outlier bins, not surfaces** | there is one ice surface per cell. Snow on ice, slush and pole sink were invented by agents last year to explain scatter that was RTK wander. Side hypotheses hold the soundings the main one rejects; their mean is reported only to say where the outliers sit. Disambiguation: a bin that outgrows the main takes over (by summed weight here, by count in the logger). Deviation: a failing sounding is tested against the main first, then the closest bin; CUBE tests all hypotheses alike |
+| Hypothesis strength ratio (best count / second-best count, limit 5) | **kept in a CUBE-style form** | `max(0, 5 - n_in / n_out)` with **all** outliers in the denominator, 0 with none; the logger draws red above 3 (outliers not outvoted 2:1) |
+| Eeg's leave-one-out outlier test (`quotient_limit` 30, at queue flush) | **kept in batch**, weighted, on mains of 11 or more | a scale-free check for sigmas that are too pessimistic; few hits expected |
+| West and Harrison Bayes-factor monitoring | **not taken** | the k-sigma test is calibrated: good soundings on smooth ground do not trip it |
 | Crossover adjustment in front of the gridder | **added** | the dominant error is a slowly varying, pass-wide vertical bias of the RTK solution: a few cm over minutes with a CORS 25 km away, about a third of that with the home base. One constant bias per pass, solved from overlaps, with a zero-mean prior |
 | Time axis: one grid for every date, growth with combined sigma, volume, fill-to-level | **added** | tracking ice growth is the point |
 
@@ -97,22 +101,46 @@ ten independent measurements of the datum. `sb_p` is the crossover posterior sig
 prior where nothing was solved). The surface as a whole gets a datum sigma
 `sqrt(sum_p (n_p/n)^2 sb_p^2)` by the same rule.
 
-Inconsistency: before a sounding is fused, if the node has an estimate and
+Robust rebuild (`robust = true`, the default; issue #24). Each node's soundings are fed
+once, after they are all in, in a fixed order: the weighted median first (sorted by
+height, ties by time order; the first sounding whose running weight reaches half the
+total), then the others nearest to it first. Each is tested against the main estimate:
 
-    |z_i - z| > k_sigma * sqrt(var_noise + v_i + var_bias + (1 - 2 W_p/W) * sb_p^2)
+    |z_i - z| > k_sigma * sqrt(var_noise + v_i + (1 - W_p/W)^2 sb_p^2 + sum_{q != p} (W_q/W)^2 sb_q^2)
 
-(k = 3; `W_p` the weight the node already holds from the sounding's own pass, so a
+(k = 3; `W_p` the weight the estimate already holds from the sounding's own pass, so a
 sounding from a new pass adds its full bias variance and one from the pass that makes
-up the whole node adds none, the shared bias cancelling), the node's flag counter goes
-up. The sounding is still fused: one surface is the assumption, and the counter says
-where it looked wrong. The report lists the flagged nodes with their worst
-disagreement in sigmas. The test has a floor: with a pass bias sigma of 3 cm it cannot
-see a second surface closer than about `k * sqrt(2) * sb` = 13 cm, with 1 cm about
-4 cm; "nothing flagged" is a statement at that level.
+up the whole estimate adds none, the shared bias cancelling). A sounding that passes is
+fused; one that fails joins the closest outlier bin that it passes, or opens a new bin.
+At the end, a bin whose summed weight exceeds the main's takes over (so a few RTK shots
+are not outvoted by many low-weight DEM samples, while a dense 4 Hz pass wins a crossing
+by its weight). The node's z and sigma come from the main estimate only; the outputs add
+`n_out` (soundings in bins, and Eeg culls), `n_alt` / `z_alt` (the largest bin: an outlier
+bin, never a second surface), `strength` = max(0, 5 - n_in / n_out) (0 with no outliers),
+and `maxnr`, the worst normalised difference of any sounding from the final estimate.
+The result does not depend on the order of the soundings.
 
-The Ice Cube Logger (0.7) runs a one-pass copy of this update live on the phone for its
-coverage overlay (`logger/README.md`, Coverage): no pass bias, a fixed pass-wander term
-instead. When this update changes, regenerate its test vectors
+Eeg's test (`eeg_quotient_limit`, 30; 0 = off), after CUBE's `cube_node_truncate`, on a
+main of at least 11 soundings: for each member, the quotient of its squared difference
+from the others' weighted mean over the others' scatter (in units of their stated
+variances), floored at (1 mm)^2; for equal weights it is CUBE's quotient. Members at or
+over the limit are culled and the node recomputed. It compares a sounding with the
+others' actual scatter, so it bites where the stated sigmas are too pessimistic; after
+the 3-sigma split it rarely fires (about one sounding in 2500 on clean synthetic data).
+
+The report lists the nodes with outliers, their largest bin (cm from the node), strength
+and worst difference in sigmas. The test has a floor: with a pass bias sigma of 3 cm it
+cannot see a second surface closer than about `k * sqrt(2) * sb` = 13 cm, with 1 cm about
+4 cm; "no outliers" is a statement at that level.
+
+`robust = false` keeps the 0.7-era rule for comparing old runs: every sounding fused in
+time order, and a k-sigma test before each fusion that only counts (the count is then in
+`n_out`, and `maxnr` is the running maximum). The worked example below ran with it.
+
+The Ice Cube Logger (0.8) runs a one-pass copy of this rebuild live on the phone for its
+coverage overlay (`logger/README.md`, Coverage): no pass bias (a fixed pass-wander term
+instead), promotion by count, and at most 32 stored soundings a node (past that the
+oldest agreeing ones are merged into one running sum). When this update changes, regenerate its test vectors
 (`python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json`)
 and port the change to `core/Coverage.java`.
 
@@ -170,9 +198,10 @@ growth. Readers:
   `utc, quality, E_m, N_m, U_m, gst_sig_lat, gst_sig_lon, gst_sig_alt`; a private
   rover-test script writes one). The logger app's format will be added when it exists.
 
-Outputs per run: `summary.md`, `run.json`, `surface_<name>.npz` (z, sigma, n, flags,
-last update, passes per node, grid), `growth_<a>_<b>.npz`, pass / crossover / flagged
-node tables, and PNG maps in local metres from the origin (height, sigma, count, flags,
+Outputs per run: `summary.md`, `run.json`, `surface_<name>.npz` (z, sigma, n, n_out,
+n_alt, z_alt, strength, n_eeg, maxnr, last update, passes per node, grid),
+`growth_<a>_<b>.npz`, pass / crossover / outlier node tables (`outliers_<name>.md`), and
+PNG maps in local metres from the origin (height, sigma, count, outliers,
 points by pass, biases with error bars, crossover residuals, growth). The code never
 prints an absolute coordinate; the UTM projection (Krueger series, pure numpy) is only
 there to turn the files' lat/lon into local metres.
@@ -263,6 +292,9 @@ percentile + 5 cm), mean depth 16 cm, max 29 cm.
 
 ### What the inconsistency flag did
 
+(With the 0.7 rule, `robust = false`; the robust rebuild of issue #24 reports outliers
+instead.)
+
 Nothing on the three rink surfaces (0 nodes at k = 3), one node on the October lawn
 (two soundings 3.6 sigma apart). Read that with the floor in mind: last season's pass
 bias sigmas are 2-3 cm, so the test could only have seen disagreements of a
@@ -337,7 +369,8 @@ any distance and without the slope term; they are not gridded (a mark top is not
   correlated), with a 5 cm tile prior and a 10 cm common prior, so the DEM's offset is solved
   where RTK overlaps and does not average down where it does not.
 - `[[grids]]`, `[[masks]]`, slope allowance from the DEM (`slope_from_dem`), per-survey
-  capture radius, `[[fill]]` per grid and outline; outputs `z/sigma/count/flags_<surface>_<grid>.asc`
+  capture radius, `[[fill]]` per grid and outline; outputs `z/sigma/count/flags_<surface>_<grid>.asc` (the flags raster keeps its name and
+  holds the outlier count `n_out`, -1 masked)
   with `.prj`, `contours_*.geojson`, `points_<surface>.csv` (every point with its pass,
   bias and corrected height), maps.
 - `python -m icecube validate`: leave one session out (each session's soundings predicted
@@ -363,13 +396,15 @@ outline.
 - One bias per pass. Wander inside a pass is noise to this tool; keep passes short
   (`max_s`) when there is time, and overlap them.
 - The slope allowance is one number for the whole surface. It is right for ice and
-  rough for a lawn with steps; the flag table shows where.
+  rough for a lawn with steps; the outlier table shows where. On a steep bank the
+  up- and down-slope soundings can land in outlier bins (a per-node gradient is a
+  follow-up to issue #24).
 - The frame check is by label. Two surveys labelled the same frame but on different
   base coordinates will be differenced; store the frame with every survey.
-- The flag counter (not the surface) depends slightly on the order soundings arrive
-  in, because it is a running test. On streamed 4 Hz input every epoch is an
-  independent sounding to the gridder, so the counter also catches ordinary epoch noise
-  beyond 3 sigma; on such a survey (the Nov 4 count above) it is not a two-surface
-  count. Average to about 1 s before gridding, or read the "worst" column of the flag
-  table.
+- On streamed 4 Hz input every epoch is an independent sounding to the gridder, so a
+  pass contributes many soundings: ordinary epoch noise beyond 3 sigma lands in outlier
+  bins, and at a crossing of two passes beyond the detection floor the pass with more
+  weight at the node wins (neighbouring nodes can pick different passes). Average to
+  about 1 s before gridding, and read `n_out` as a count of epochs, not captures. (With
+  `robust = false` the old flag counter also depends slightly on arrival order.)
 - No basemap, no absolute coordinates, by design.
