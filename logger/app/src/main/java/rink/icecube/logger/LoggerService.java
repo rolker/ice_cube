@@ -60,8 +60,8 @@ import rink.icecube.logger.core.UbxConfig;
  * rover setting (#30), then stops. With Connect caster when the GPS connects, the caster
  * starts when a GPS started by Connect (or autostart) first connects.
  *
- * The ongoing notification says what is running ({@link ServiceState}) and has a Stop
- * action. The service ends when nothing runs, and when the app's task is removed with no
+ * The ongoing notification says what is running ({@link ServiceState}) and, with no
+ * session open, has a Stop action (a session ends only with REC in the app). The service ends when nothing runs, and when the app's task is removed with no
  * session open.
  *
  * It also keeps what the map and the warnings need: a 2-minute trail of GGA fixes, the
@@ -181,26 +181,26 @@ public final class LoggerService extends Service {
         else startForeground(NOTIFICATION_ID, n);
     }
 
-    /** The notification for state `st`: what runs, a tap opens the map, and a Stop action. */
+    /** The notification for state `st`: what runs, a tap opens the map, and a Stop action only with no session open. */
     private Notification buildNotification(ServiceState st) {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, LoggerService.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE);
         shownText = st.text(waitTimeoutMs());
         shownStop = st.stopLabel();
-        return new Notification.Builder(this, CHANNEL)
+        Notification.Builder b = new Notification.Builder(this, CHANNEL)
                 .setContentTitle("Ice Cube Logger").setContentText(shownText)
                 .setSmallIcon(android.R.drawable.ic_menu_mylocation).setOngoing(true).setOnlyAlertOnce(true)
-                .setContentIntent(open)
-                .addAction(new Notification.Action.Builder(null, shownStop, stop).build())
-                .build();
+                .setContentIntent(open);
+        if (shownStop != null) b.addAction(new Notification.Action.Builder(null, shownStop, stop).build());
+        return b.build();
     }
 
     /** Re-posts the notification when its text or Stop label changed. */
     private void updateNotification() {
         if (stopped) return;
         ServiceState st = state();
-        if (st.text(waitTimeoutMs()).equals(shownText) && st.stopLabel().equals(shownStop)) return;
+        if (st.text(waitTimeoutMs()).equals(shownText) && java.util.Objects.equals(st.stopLabel(), shownStop)) return;
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         nm.notify(NOTIFICATION_ID, buildNotification(st));
     }

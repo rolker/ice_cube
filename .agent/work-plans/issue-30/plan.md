@@ -22,7 +22,8 @@ worker or caster exists, the wait has no end, and the notification text is fixed
    with no session) and `stopOnTaskRemoved()` (no session). Unit-tested.
 2. **Honest notification.** `LoggerService` builds it from the snapshot ("Waiting for the
    rover…", "Caster connected, no GPS · session …", "Logging session …") with a Stop
-   action (`ACTION_STOP`; labelled "Stop session" when one is open). A 2 s main-thread
+   action (`ACTION_STOP`) only while no session is open (owner's decision on PR #31: a
+   session ends only with REC and its confirmation). A 2 s main-thread
    tick updates the text when it changes and ends an expired wait. Every
    `onStartCommand` still calls `startForeground` with the connectedDevice type first.
 3. **Bounded wait.** A GPS started with `wait` keeps its start time and the timeout from
@@ -35,7 +36,7 @@ worker or caster exists, the wait has no end, and the notification text is fixed
    caster when the GPS connects": the service starts the caster when a GPS worker first
    connects, if none runs and a host is set. `Control.autostart` no longer connects the
    caster, so map-only use starts nothing unless Log on GPS connect waits for the rover.
-6. **App version in the UI.** "Ice Cube Logger 0.8.1 (build 11)" at the top of Settings
+6. **App version in the UI.** "Ice Cube Logger 0.8.1 (build 12)" at the top of Settings
    and at the bottom of the MENU panel.
 7. **Version and docs.** 0.8.1, versionCode 11; README (Settings, Use, notification).
 
@@ -57,5 +58,4 @@ the wait), Stop action, swipe the app away with and without a session.
 
 ## Risks
 
-- A Stop tap in the notification shade ends a session without the in-app confirmation.
 - The wait also ends while the app is in front; the user reconnects with the GPS dot.

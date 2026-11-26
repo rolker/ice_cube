@@ -24,7 +24,7 @@ folder in Android Studio and press Run.
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
 The first line of the screen (and the last line of the MENU panel) shows the app version,
-e.g. "Ice Cube Logger 0.8.1 (build 11)".
+e.g. "Ice Cube Logger 0.8.1 (build 12)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
@@ -103,8 +103,9 @@ e.g. "Ice Cube Logger 0.8.1 (build 11)".
 While the logger runs in the background (a session, the GPS or the caster), Android shows
 an ongoing notification that says what is running, for example "Waiting for the rover…
 (up to 2 min)", "Caster connected, no GPS · session …" or "Logging session …: GPS and
-caster". Its Stop action (Stop session while one is open) stops the session and both
-links at once, without the question REC asks. Tapping it opens the map. Opening the app
+caster". With no session open it has a Stop action that stops the GPS and the caster;
+while a session is open it has none, so a stray tap cannot end the session: end it with
+REC (which asks first) or MENU > Stop session. Tapping it opens the map. Opening the app
 only to look at the map starts nothing, so there is no notification. Swiping the app away
 from the recent apps stops the logger when no session is open; a session keeps logging.
 

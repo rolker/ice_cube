@@ -43,8 +43,11 @@ public final class ServiceState {
     /** Removing the app's task (swiping it away) stops the service unless a session is open. */
     public boolean stopOnTaskRemoved() { return session == null; }
 
-    /** The notification's Stop action label. */
-    public String stopLabel() { return session == null ? "Stop" : "Stop session"; }
+    /**
+     * The notification's Stop action label, or null for no Stop action: never while a
+     * session is open, so a stray tap cannot end it; the app's REC (with its question) does.
+     */
+    public String stopLabel() { return session == null ? "Stop" : null; }
 
     /** The notification text. `waitTimeoutMs` is shown while waiting for the rover. */
     public String text(long waitTimeoutMs) {

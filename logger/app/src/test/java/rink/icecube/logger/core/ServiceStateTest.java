@@ -2,6 +2,7 @@ package rink.icecube.logger.core;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -40,7 +41,19 @@ public class ServiceStateTest {
                 st(S, true, false, false, true, true).text(TWO_MIN));
         assertEquals("Caster connected, no GPS \u00b7 session " + S, st(S, false, false, false, true, true).text(TWO_MIN));
         assertEquals("Session " + S + " open, no GPS or caster", st(S, false, false, false, false, false).text(TWO_MIN));
-        assertEquals("Stop session", st(S, false, false, false, false, false).stopLabel());
+    }
+
+    @Test public void noStopActionWhileASessionIsOpen() {
+        assertNull(st(S, false, false, false, false, false).stopLabel());
+        assertNull(st(S, true, true, false, true, true).stopLabel());
+        assertNull(st(S, false, false, false, true, true).stopLabel());
+        assertNull(st(S, true, false, true, false, false).stopLabel());
+    }
+
+    @Test public void stopActionWithoutASession() {
+        assertEquals("Stop", st(null, true, false, true, false, false).stopLabel());   // waiting for the rover
+        assertEquals("Stop", st(null, false, false, false, true, true).stopLabel());   // caster only
+        assertEquals("Stop", st(null, true, true, false, false, false).stopLabel());   // GPS connected, no session
     }
 
     @Test public void aWaitingGpsWithASessionIsNotWaitingForTheRover() {
