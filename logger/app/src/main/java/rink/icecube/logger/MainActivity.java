@@ -89,7 +89,9 @@ import rink.icecube.logger.core.TrackPoint;
  * refresh), rebuilt from the session's rows when the map frame, the session or a Settings >
  * Coverage value changes. Earlier sessions are not loaded. The feeds and rebuilds run in
  * order on one "coverage" thread ({@link CoverageWorker}), which owns the Coverage; a new
- * rebuild cancels the one in flight, and MapView draws the frames it sends back.
+ * rebuild cancels the one in flight, and MapView draws the frames it sends back. When a
+ * rebuild starts with settings or an origin not yet logged for the session, events.csv gets
+ * a `coverage ...` line with the settings and the origin (Coverage.Params.eventText).
  *
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
@@ -128,6 +130,9 @@ public final class MainActivity extends Activity {
     });
     private boolean coverageOn = true;
     private Coverage.Params coverageParams = Coverage.Params.defaults();
+    /** The last coverage settings line written to events.csv, and for which session. */
+    private Object coverageEventSession;
+    private String coverageEventLine;
 
     private int refsLoadedGen = -1;
     private String refsLoadedFor = "";
@@ -764,7 +769,17 @@ public final class MainActivity extends Activity {
             return;
         }
         map.setCoverageOn(true);
-        if (coverageWorker.update(sv, f, coverageParams, rows)) map.clearCoverage();
+        if (coverageWorker.update(sv, f, coverageParams, rows)) {
+            map.clearCoverage();
+            // the settings and origin of each rebuild go to events.csv, so the session can be replayed
+            String line = coverageParams.eventText(f, map.originNote());
+            LoggerService s = LoggerService.current;
+            if (s != null && (sv != coverageEventSession || !line.equals(coverageEventLine))) {
+                s.event(line);
+                coverageEventSession = sv;
+                coverageEventLine = line;
+            }
+        }
     }
 
     /** On the coverage thread: hands a frame to the UI thread, drawn only if no newer rebuild started. */
