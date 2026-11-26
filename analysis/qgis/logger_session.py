@@ -236,7 +236,7 @@ def read_points(text):
             "sd_n_m": _f(r.get("sd_n_m")), "sd_u_m": _f(r.get("sd_u_m")), "age_s": _f(r.get("age_s")),
             "photo_files": [p for p in (r.get("photo") or "").split(";") if p],
             "note": r.get("note") or None,
-            "method": r.get("method") or None,
+            "method": (r.get("method") or "").strip() or None,   # PointRow.java trims too
             **{k: _f(r.get(k)) for k in POINTS_06_REAL},
             **{k: _i(r.get(k)) for k in POINTS_06_INT},
         })
