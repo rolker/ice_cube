@@ -24,6 +24,8 @@ public final class Limit {
     public static final Limit COV_REACH_M = new Limit("Coverage: reach", "m", 0.1, 20, 2.0, 2);
     public static final Limit COV_GROUND_CM = new Limit("Coverage: ground sigma", "cm", 0, 10, 1.5, 1);
     public static final Limit COV_WANDER_CM = new Limit("Coverage: pass wander", "cm", 0, 10, 1.5, 1);
+    /** 0.8.1 (#30): how long Log on GPS connect waits for the rover before it gives up, with no session. */
+    public static final Limit GPS_WAIT_MIN = new Limit("Wait for the rover", "min", 0.5, 60, 2, 1);
 
     /**
      * Capture radius and reach: at most this many grid spacings, so one capture visits at
