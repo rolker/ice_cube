@@ -45,7 +45,8 @@ import rink.icecube.logger.core.SurveyLimits;
  * screen is left (layer checkboxes and Screen orientation save at once). Survey also holds
  * the capture settings: ref duration, pole check tolerance, volume keys, sound, vibration,
  * earlier refs and capture labels on the map. Coverage holds the live coverage overlay's
- * sigma target, grid and estimator settings (the overlay rebuilds when they change). Caster and link changes take effect at the next
+ * sigma target, grid and estimator settings (the overlay rebuilds when they change). The
+ * app version is the first line. Caster and link changes take effect at the next
  * Connect; pole height and Frame changes apply at once and are logged in a running session.
  * The password is only shown as dots.
  */
@@ -78,6 +79,11 @@ public final class SettingsActivity extends Activity {
         c.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (16 * getResources().getDisplayMetrics().density);
         c.setPadding(pad, pad, pad, pad);
+
+        TextView version = new TextView(this);
+        version.setText(Settings.versionLine());
+        version.setPadding(0, 0, 0, pad / 2);
+        c.addView(version);
 
         header(c, "Display", 0);
         label(c, "Screen orientation (lock it to how the phone sits on the pole; Auto follows the system)");

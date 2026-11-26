@@ -737,6 +737,10 @@ public final class MainActivity extends Activity {
         item("Details", () -> startActivity(new Intent(this, DetailsActivity.class)));
         item("Settings", () -> startActivity(new Intent(this, SettingsActivity.class)));
         item("Close menu", () -> { });
+        TextView version = new TextView(this);
+        version.setText(Settings.versionLine());
+        version.setPadding(0, Screen.dp(this, 12), 0, 0);
+        drawerItems.addView(version, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void item(String text, Runnable r) {
