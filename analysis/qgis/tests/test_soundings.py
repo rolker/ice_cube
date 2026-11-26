@@ -269,8 +269,32 @@ class TestBuild(unittest.TestCase):
         cfg["soundings"]["include_voided"] = True
         rows = snd.build(cfg, self.d, log=lambda *a: None, write=False)
         cap = {r["n"]: r for r in rows if r["kind"] == "capture"}
-        self.assertNotIn("void", ",".join(snd.flags_of(cap[2])))
+        self.assertNotIn("void:accidental", snd.flags_of(cap[2]))
+        self.assertIn("voided_included", snd.flags_of(cap[2]))   # the trace stays
         self.assertEqual(cap[2]["use"], 1)
+
+    def test_voided_rows_make_no_site_and_skip_suspect_check(self):
+        """A voided ref neither makes a site nor lets ground rows join one (#27), and a voided
+        row in a suspect pass is not compared, so it cannot clear suspect_jump."""
+        r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
+        rows = [r(sid="v1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.0, pass_id="p1", flags="void:moved"),
+                r(sid="g1", **{"class": "ground"}, x_m=0.02, y_m=0.0, z_m=1.0, pass_id="p2", kind="point")]
+        for x in rows:
+            snd.finish_use(x)
+        sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        self.assertEqual((sites, joined), ([], 0))
+        self.assertEqual(rows[1]["class"], "ground")
+        # a suspect pass whose only comparable row is voided stays suspect
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.00, pass_id="p1", anchor="site1"),
+                r(sid="v2", **{"class": "anchor"}, x_m=0.05, y_m=0.0, z_m=1.00, pass_id="p4",
+                  flags="suspect_jump,void:moved"),
+                r(sid="a3", **{"class": "anchor"}, x_m=5.0, y_m=5.0, z_m=3.0, pass_id="p4", flags="suspect_jump")]
+        for x in rows:
+            snd.finish_use(x)
+        snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        ok, bad = snd.verify_suspect(rows)
+        self.assertEqual((ok, bad), (0, 1))
+        self.assertIn("suspect_jump", snd.flags_of(rows[2]))
 
     def test_anchor_sites_and_verification(self):
         r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731

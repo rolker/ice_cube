@@ -43,7 +43,9 @@ Flags (comma-separated; `use` = 1 for rows icecube should take): float, other_st
 suspect_jump (the fix began with a jump over suspect_jump_m: false fixes), settle,
 listed:<reason> (config list of known-bad points), void:<reason> (a capture flagged as bad
 in the logger, 0.9.0; kept as a row with use = 0 unless `[soundings] include_voided = true`
-or --include-voided, and counted in the log), no_fix_info, imu_unstable, not_plumb,
+or --include-voided, and counted in the log; such a row never makes or joins an anchor site
+and is not compared in the suspect check), voided_included (a flagged capture used anyway
+under include_voided: a trace, not excluding), no_fix_info, imu_unstable, not_plumb,
 no_imu, no_plumb_ref, plumb_unverified (a stop without a passed IMU plumb check, left
 out while [soundings.stops] require_plumb = true: on the Nov 4 walk such stops read a median
 4 cm low against nearby points, a leaning pole), dup_capture (a stop that is a capture),
@@ -534,6 +536,11 @@ def flags_of(r):
     return [x for x in (r["flags"] or "").split(",") if x]
 
 
+def is_voided(r):
+    """True for a row flagged void in the logger and left out of use (flag `void:<reason>`)."""
+    return any(f.startswith("void:") for f in flags_of(r))
+
+
 def finish_use(r):
     """use = 1 for ground and anchor rows without an excluding flag."""
     fl = flags_of(r)
@@ -645,8 +652,12 @@ def logger_source(cfg, src, con, frame, history, log):
                         n=c["n"], **{"class": cls}, utc=c["utc"], t_unix=t, fix=c["fix"],
                         n_epochs=c["n_epochs"], sd_u_m=c["sd_u_m"], age_s=c["age_s"], pole_m=c["pole_m"],
                         label=c["label"], prior_m=prior, common_prior_m=cprior)
-            if c["void"] and not include_voided:
-                add_flag(r, "void:" + (c["void_reason"] or "flagged").replace(",", ";"))
+            if c["void"]:
+                if include_voided:
+                    add_flag(r, "voided_included")   # a trace only, does not exclude
+                else:
+                    reason = (c["void_reason"] or "").strip().replace(",", ";") or "flagged"
+                    add_flag(r, "void:" + reason)
             if c["lat"] is None or c["h_ground"] is None:
                 add_flag(r, "no_position"); finish_use(r); rows.append(r); continue
             r["x_m"], r["y_m"], r["z_m"] = to_local(frame, c["lat"], c["lon"], c["h_ground"],
@@ -908,7 +919,8 @@ def assign_anchors(rows, radius, snap, dz, *, ground_sigma):
     and `dz` m of a site's median join it as anchors (a repeat spot shot as a plain point).
     A joined ground row loses its ground term: `ground_sigma` is the configured
     [soundings.sigma].ground that sigma_terms added to it."""
-    an = [r for r in rows if r["class"] == "anchor" and r["x_m"] is not None]
+    # a voided ref (flag void:, i.e. not include_voided) neither makes a site nor joins one
+    an = [r for r in rows if r["class"] == "anchor" and r["x_m"] is not None and not is_voided(r)]
     parent = list(range(len(an)))
 
     def find(a):
@@ -969,7 +981,8 @@ def verify_suspect(rows, radius=1.5, max_med=0.10, max_any=0.25, min_n=2):
     by_pass = {}
     for r in rows:
         fl = flags_of(r)
-        if "suspect_jump" in fl and not any(f.startswith("listed") or f in ("float", "other_station") for f in fl):
+        if "suspect_jump" in fl and not any(f.startswith(("listed", "void:")) or f in ("float", "other_station")
+                                            for f in fl):
             by_pass.setdefault(r["pass_id"], []).append(r)
     ok_n = bad_n = 0
     for pid, members in by_pass.items():
