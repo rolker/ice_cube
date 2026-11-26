@@ -75,6 +75,7 @@ SIGMA_CASES = [
     ("tilt_capture_settling", "tilt", 0.03, 0.02, 0.02, 3.0, 30.0, 2.0, 0.004, 0.003, 0.005, 0.0),
     ("missing_sd", "single", None, None, None, None, 200.0, 1.8, None, None, None, 0.015),
     ("tilt_missing_sd", "tilt", 0.023, 0.012, 0.018, 1.0, 200.0, 1.8, None, None, None, 0.015),
+    ("tilt_one_sd_missing", "tilt", 0.023, 0.012, 0.018, 1.0, 200.0, 1.8, 0.006, None, 0.012, 0.015),
     ("missing_pole", "single", 0.008, 0.005, 0.005, 1.0, 200.0, None, None, None, None, 0.015),
 ]
 SIGMA_KEYS = ("method", "sd_u", "sd_e", "sd_n", "age_s", "fix_age_s", "pole_m",

@@ -362,6 +362,31 @@
    }
   },
   {
+   "name": "tilt_one_sd_missing",
+   "input": {
+    "method": "tilt",
+    "sd_u": 0.023,
+    "sd_e": 0.012,
+    "sd_n": 0.018,
+    "age_s": 1.0,
+    "fix_age_s": 200.0,
+    "pole_m": 1.8,
+    "tilt_sd_e": 0.006,
+    "tilt_sd_n": null,
+    "tilt_sd_u": 0.012,
+    "ground": 0.015
+   },
+   "expected": {
+    "sigma_rtk": 0.023,
+    "sigma_age": 0.0,
+    "sigma_settle": 0.0,
+    "sigma_pole": 0.010274148718495715,
+    "sigma_ground": 0.015,
+    "sigma_z": 0.029318221840516984,
+    "sigma_xy": 0.03494081036645998
+   }
+  },
+  {
    "name": "missing_pole",
    "input": {
     "method": "single",
