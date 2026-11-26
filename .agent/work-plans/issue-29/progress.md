@@ -200,3 +200,26 @@ The revision addresses both must-fixes and all should-fixes from the first revie
 **Decision**: proceed
 
 Implement PR A (batch). Review notes into the handoff: regenerate and commit coverage_vectors.json in PR A (test_committed_file_is_current); pass the raw slope at all three grid_surface call sites in topo.py; entries carry sh too, with the pass-2 sh variance term written out and every tuple unpack checked; the plane pass runs only in robust mode.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:45 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Branch**: feature/issue-29 at `e966006`
+
+PR A (batch) only; PR B (logger ring re-reduction) not started.
+
+- `961f3f5` nodes.py: entries carry `dx, dy, sz2, sh` (positional tuple grew to 11; `Hyp.join`/`nr` read `e[:7]`; `NodeStore` aggregate gets dx = dy = 0, sz2 = v); `plane_fit`, `reduce_to_plane`, `plane_pass`, `PLANE_*` codes, `PLANE_DEFAULTS`; `grid_surface(plane=True, raw_slope=None, plane_*)`, robust mode only (ignored with `robust=False`); `Surface.planar/gradient/plane_code`. Pass-2 variance written out: `v' = sz2 + (|g|*sh)^2 + d' C_g d`. 11 pinned tests in `TestPlanePass`.
+- `b2e495e` topo.py: `slope_array` returns (allowance, raw DEM slope or None), all three `grid_surface` call sites pass the raw slope; `[[grids]]`/`[grid]` read `plane` and `plane_*`; both npz writers save `planar`, `gradient`; outlier table counts planar nodes, gradient column.
+- `209e53a` logger_vectors: `plane_params` + `plane_vectors` (4 cases, logger rule: count promotion, no Eeg, unfolded entries; gate-threshold guard via a `trace` on `plane_pass`); `coverage_vectors.json` regenerated (additive, 0 lines removed).
+- `e966006` howto and `icecube.example.toml`.
+
+Plan deviations (both found on the synthetic banks / private replays):
+1. Neighbour heights are placed at grid offset plus their main's weighted centroid (`cx, cy` from `_robust`), not the bare grid offset. On a bank a disc's members are not centred, so the bare offsets made 341 of 935 synthetic 0.3 m/m red nodes fail planarity; with centroids 0 failed. This is the batch form of PR B's `WDX/W` moments.
+2. Significance is `|g| - allowance > k_sigma * sigma_g` (along g), not `|g| > allowance`. Without it 11-21 accepted 2 nodes whose red came from fix-settling captures (fits with chi 2.92 and sigma_a 9.4 cm) and moved them 7-10 cm away from the survey model; with it both are rejected, and no synthetic bank case is lost.
+
+Tuning (private replays, batch `grid_surface`, Coverage defaults, slope 0.05, in-area nodes; counts only; driver in private/analysis/plane-29/): defaults kept at `plane_min_clear` 2, `plane_red_weight` 0.25, `plane_planarity` = k_sigma, `plane_dem_cap` 2.0, `plane_dem_floor` 0.05. min_clear 3 left 77 of 356 interior synthetic 0.3 m/m red nodes red (vs 28 at 2) and changed nothing on the replays once the significance gate was in; red weight 0.1 and planarity 2.0-2.5 changed nothing.
+- 11-26: red 6 -> 1 (the 5 bank nodes planar, heights now within 1.1 cm of the yard model, were 5-16 cm off; the bad capture at a re-fix stays red). New red 0, ok -> amber 0.
+- 11-21: red 19 -> 17 (batch baseline 19, #24's logger count 18: weight vs count promotion). 12 single-line nodes fail the span gate, 2 not planar, 3 not significant; 2 accepted, both edge nodes (5 neighbours) holding earlier settling captures, moved 3-4 cm toward the model but still 9-11 cm above it. With the 90 s feed rule: 6 red -> 6 (all single-line relief, span gate). With slope_from_dem from the survey model: 14 -> 14 (those 2 caught by the DEM gate). New red 0, ok -> amber 0 in every variant.
+
+Tests: `python3 -m unittest discover icecube/tests` 79 OK; `cd logger && ./gradlew testDebugUnitTest --max-workers 4` BUILD OK, 164 tests, 0 failures (parity test reads the regenerated vectors). Every commit with all hooks. C: free 114 GB before, 114 GB after.
