@@ -279,3 +279,26 @@ Both round-1 must-fixes verified fixed (per-session `sessions.schema_version`; p
 - [x] (suggestion) `_i("nan")` / `_i("inf")` raise ValueError/OverflowError and abort the whole points.csv parse; return None for non-finite like `_f` (claude-adversarial) — `analysis/qgis/logger_session.py:197`
 - [x] (suggestion) End-to-end tests: no case with tilt sd_h above floor_h, nor tilt_sd_u above a present GST term (gemini) — `analysis/qgis/tests/test_soundings.py:295` (deferred: deferred by the owner's round-2 plan: an above-floor end-to-end case is a follow-up)
 - [x] (suggestion) docs/log.md entry does not mention the per-session schema_version re-read that changes importer behaviour on existing gpkgs — `docs/log.md:115`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:58 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-9 at `e45d7d8`
+**Addressed**: Local Review (Pre-Push) at `43dc72e` (2026-11-26 18:52 -05:00)
+**Commits**: 73ea93e, 9797413, dd1be57, c77bddb, e45d7d8
+
+### Actions
+- [x] (must-fix) Soundings warnings no longer advise `--force`; they say to re-import the full session sources (import_sessions.py re-reads older-schema sessions); test asserts the new text and no `--force` — `analysis/qgis/soundings.py:633,642`, `analysis/qgis/tests/test_soundings.py:325`
+- [x] (suggestion) Sessions from an app below 0.6 with an older schema_version are marked current (SCHEMA_MIN_APP = (0, 6)) instead of logged stale every run; `app_version` moved to logger_session and shared; new test `test_schema2_pre06_session_is_current_without_reread` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) `method` column in the soundings output — `analysis/qgis/soundings.py:689` (deferred: owner's round-2 plan, follow-up)
+- [x] (suggestion) Tilt rule requires every tilt sd finite and >= 0 in Python and Java; new `tilt_negative_sd` vector, vectors regenerated — `analysis/qgis/soundings.py:517`, `SoundingSigma.java:69`
+- [x] (suggestion) `_i` returns None for nan/inf; new `test_int_cells` — `analysis/qgis/logger_session.py:197`
+- [x] (suggestion) Above-floor end-to-end tilt case — `analysis/qgis/tests/test_soundings.py:295` (deferred: owner's round-2 plan, follow-up)
+- [x] (suggestion) docs/log.md entry mentions the per-session schema re-read — `docs/log.md:115`
+
+### Tests
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 107 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
+- `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL, no failures (SoundingSigmaTest 3/3). C: free 114 GB before.
