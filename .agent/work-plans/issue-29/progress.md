@@ -136,3 +136,57 @@ Address must-fix 1-2 and should-fix 3-5, and state minors 6-7: pass-2 acceptance
 **Plan**: `.agent/work-plans/issue-29/plan.md` at `9a19cee`
 
 Revision after plan review: pass 2 accepted only if the node leaves red (or n_out strictly drops) and z agrees with the neighbour-plane intercept within k_sigma*sqrt(var_a+sigma'^2); wrong-cluster case pinned. Tests run through grid_surface on a >=5x5 block built from soundings, baseline recorded on first run. Config keys for every threshold (min_clear starts at 2), raw DEM slope passed (DEM gate skipped without slope_from_dem), planar/gradient in Surface and both npz writers. plane_vectors cover unfolded entries only (aggregate is PR B); pass 2 runs full _robust incl. Eeg.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 18:31 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: ready
+
+**Issue**: #29 — Steep-bank relief for the node rebuild: a gradient from the neighbourhood, not the node's own split
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `9a19cee`
+**Branch**: `feature/issue-29`
+
+Second review, after the revision. Host decisions taken as given (thresholds tuned on the replays, counts only; DEM gate first; batch-first split).
+
+### Prior findings
+
+| # | Finding | Addressed? |
+|---|---|---|
+| 1 (must) | Pass-2 acceptance by count only | Yes: leave red or `n_out' < n_out` strictly, AND `|z'_main - a| <= k_sigma*sqrt(var_a + sigma'^2)`; wrong-cluster case pinned |
+| 2 (must) | Flat-edge Monte Carlo at grid level | Yes: through `grid_surface` on >=5x5, neighbours from soundings, `planar` false everywhere, absorbed equal to baseline recorded on first run |
+| 3 (should) | Config key for every threshold | Yes: `plane_min_nin`, `plane_min_clear` (starts at 2), `plane_planarity`, `plane_dem_floor` added |
+| 4 (should) | Raw DEM slope for the gate | Yes: raw `slope_field` sample passed; DEM gate skipped with global `slope` |
+| 5 (should) | `planar`/gradient in `.npz` | Yes: `Surface` plus both `np.savez` writers |
+| 6 (minor) | Aggregate scope | Yes: PR A unfolded entries only; moments are PR B |
+| 7 (minor) | Eeg in pass 2 | Yes: full `_robust` |
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | PR A about 8 files in `icecube/` plus docs; logger port in PR B. |
+| Issue alignment | Good | Issue-review actions and both prior must-fixes covered. Serves: "Roadmap line "`icecube` runs on logger sessions in the project's local frame" and the estimator tracking the rink through the season; the project keeps no goals or design document, so none." Checked: matches the issue review. |
+| File targeting | Needs work (minor) | Committed `coverage_vectors.json` must be regenerated in PR A (finding 1); `topo.py` has three `grid_surface` call sites (finding 2). |
+| Consequences | Good | Vectors, docs, example toml, `.npz` outputs, logger README in PR B. |
+| Principle alignment | Good | Every threshold a config key; synthetic tests in local metres; replays counts only. Design picture: none, stated. Prior art: stated. |
+| ADR compliance | Good | Project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[File targeting, should-fix] PR A must commit the regenerated `logger/app/src/test/resources/coverage_vectors.json`.** `test_logger_vectors.test_committed_file_is_current` compares the committed file to `logger_vectors.render()`, so adding `plane_vectors` (and any new `grid_surface` defaults that `_nodes_defaults` reads from the signature) fails that test until the file is regenerated. The Files table lists `coverage_vectors.json` only under PR B. `Vectors.java` reads by key, so the extra section is additive for the Java side as planned.
+2. **[File targeting, minor] All three `topo.py` `grid_surface` calls need the raw slope.** Lines ~363, ~465 and ~576 each call `grid_surface(..., slope_array(...))`; the plan names only ~366. Have `slope_array` (or a sibling) return both arrays so the three paths stay alike.
+3. **[Approach, minor] Entries need `sh`, and the `sh` term needs defining.** Today `v = sz^2 + (slope*(d + sh))^2`; with the slope term dropped, the plan's "the `sh` term" reads as `(|g|*sh)^2` (horizontal error times the fitted gradient), which needs `sh` per entry. Entry gains `dx, dy, sz2` only. Add `sh` (or `sh2`) and state the formula. Entry is a positional tuple (`nodes.entry`), so check `NodeStore` and `logger_vectors` unpacking when it grows.
+4. **[Approach, minor] Say the plane pass is robust-mode only.** `grid_surface(robust=False)` uses `_running`; state that `plane` is ignored (or refused) there.
+
+### Summary
+
+The revision addresses both must-fixes and all should-fixes from the first review; the approach and tests are sound. The remaining points are small and can be handled in implementation: regenerate and commit the vectors file in PR A, wire the raw slope through all three `topo.py` paths, carry `sh` on entries, and state robust-only. Ready for implementation.
+
+### Recommended Actions
+
+- [ ] Regenerate and commit `coverage_vectors.json` in PR A (move it into PR A's file list).
+- [ ] Pass the raw DEM slope at all three `topo.py` `grid_surface` call sites.
+- [ ] Carry `sh` on entries and write the pass-2 variance formula explicitly.
+- [ ] State that the plane pass applies only with `robust=True`.
