@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import rink.icecube.logger.core.PointRow;
+import rink.icecube.logger.core.VoidRule;
 
 /**
  * refs.csv: every ref capture of every session, appended in the order taken, with the
@@ -22,11 +23,17 @@ import rink.icecube.logger.core.PointRow;
  * (Documents/IceCubeLogger/refs.csv, or the app media folder when Documents cannot be
  * written; see {@link Storage}) and is what the pole check compares a new ref with.
  * It holds positions: it stays on the phone and in Drive, never in the public repo.
+ *
+ * From 0.9.0 a ref flagged as bad keeps its row with void=1 ({@link #setVoid} rewrites the
+ * row in place, the one write that is not an append); readers here skip it.
  */
 final class RefsStore {
     private RefsStore() { }
 
-    /** All readable refs, oldest first within each file (primary root first). Bad lines are skipped. */
+    /**
+     * All readable refs that are not voided, oldest first within each file (primary root
+     * first). Bad lines are skipped.
+     */
     static List<PointRow> readAll(Context ctx) {
         List<PointRow> out = new ArrayList<>();
         for (File f : Storage.refsFiles(ctx)) {
@@ -34,8 +41,10 @@ final class RefsStore {
                 String line;
                 while ((line = r.readLine()) != null) {
                     if (line.isEmpty() || line.startsWith("session,")) continue;
-                    try { out.add(PointRow.parse(PointRow.split(line), 1)); }
-                    catch (IllegalArgumentException ignored) { }
+                    try {
+                        PointRow p = PointRow.parse(PointRow.split(line), 1);
+                        if (!p.voided) out.add(p);
+                    } catch (IllegalArgumentException ignored) { }
                 }
             } catch (IOException | SecurityException ignored) {
                 // e.g. a file left by an earlier install, which Android no longer lets this app read
@@ -64,29 +73,57 @@ final class RefsStore {
     }
 
     /**
-     * A refs.csv started before 0.6 has the shorter header; rows from 0.6 on carry more
-     * columns at the end. Rewrites the first line to the current header (rows unchanged), so
-     * readers see one header that covers every row. Leaves the file alone if it cannot.
+     * Sets the void columns of the (session, n) row in every refs.csv (one per storage root)
+     * that holds it, each rewritten whole through a temporary file and a rename. Returns the
+     * number of rows changed; files that cannot be read or written are left alone.
      */
-    static void upgradeHeader(File f) {
+    static int setVoid(Context ctx, String session, int n, boolean voided, String reason) {
+        int changed = 0;
+        for (File f : Storage.refsFiles(ctx)) {
+            List<String> lines = readLines(f);
+            if (lines == null) continue;
+            int k = VoidRule.setRefsVoid(lines, session, n, voided, reason);
+            if (k > 0 && writeLines(f, lines)) changed += k;
+        }
+        return changed;
+    }
+
+    private static List<String> readLines(File f) {
         List<String> lines = new ArrayList<>();
         try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
             String line;
             while ((line = r.readLine()) != null) lines.add(line);
         } catch (IOException | SecurityException e) {
-            return;
+            return null;
         }
-        if (lines.isEmpty() || !lines.get(0).startsWith("session,") || lines.get(0).equals(PointRow.REFS_HEADER)) return;
-        lines.set(0, PointRow.REFS_HEADER);
+        return lines;
+    }
+
+    /** Replaces f with lines, through f.tmp and a rename. False if it could not. */
+    private static boolean writeLines(File f, List<String> lines) {
         File tmp = new File(f.getPath() + ".tmp");
         try (Writer w = new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8)) {
             for (String l : lines) w.write(l + "\n");
         } catch (IOException | SecurityException e) {
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
-            return;
+            return false;
         }
+        if (tmp.renameTo(f)) return true;
         //noinspection ResultOfMethodCallIgnored
-        if (!tmp.renameTo(f)) tmp.delete();
+        tmp.delete();
+        return false;
+    }
+
+    /**
+     * A refs.csv started before 0.6 (or 0.9.0) has a shorter header; newer rows carry more
+     * columns at the end. Rewrites the first line to the current header (rows unchanged), so
+     * readers see one header that covers every row. Leaves the file alone if it cannot.
+     */
+    static void upgradeHeader(File f) {
+        List<String> lines = readLines(f);
+        if (lines == null || lines.isEmpty() || !lines.get(0).startsWith("session,") || lines.get(0).equals(PointRow.REFS_HEADER)) return;
+        lines.set(0, PointRow.REFS_HEADER);
+        writeLines(f, lines);
     }
 }
