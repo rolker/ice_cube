@@ -18,8 +18,11 @@ import java.util.Collection;
  * Owned by one thread (the coverage worker); a Frame, once returned, is never changed.
  */
 public final class CoverageRaster {
-    /** Translucent red (no data or disagreement) and amber (sigma above the target), ARGB. */
-    public static final int RED = 0x66D32F2F, AMBER = 0x55FFA000;
+    /**
+     * Translucent red (an enclosed gap or a disagreement), amber (sigma above the target) and
+     * a faint neutral grey for the area's edge with no data yet (FRINGE), ARGB.
+     */
+    public static final int RED = 0x66D32F2F, AMBER = 0x55FFA000, FRINGE = 0x2E78909C;
     /** Largest window side, in nodes (1 km at 0.5 m), and the slack added around the area. */
     public static final int MAX_SIDE = 2048, MARGIN = 32;
 
@@ -59,6 +62,7 @@ public final class CoverageRaster {
         switch (s) {
             case NO_DATA: case DISAGREE: return RED;
             case THIN: return AMBER;
+            case FRINGE: return FRINGE;
             default: return 0;
         }
     }

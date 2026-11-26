@@ -35,7 +35,9 @@ reject_sigma = 4.0        # pairs with a larger normalised residual are dropped 
 [grid]
 cell = 0.5                # m
 capture_radius = 0.75     # m, a sounding feeds every node within this distance
-k_sigma = 3.0             # inconsistency test threshold
+k_sigma = 3.0             # test threshold: a sounding beyond it goes to an outlier bin
+robust = true             # median-first rebuild with outlier bins (false: the 0.7 running mean and flag count)
+eeg_quotient_limit = 30.0 # Eeg's leave-one-out test on each node's main members; 0 = off
 margin = 1.0              # m around the outline (or the points) when extent is not given
 # extent = [xmin, xmax, ymin, ymax]   # local metres
 
@@ -112,6 +114,9 @@ percentile = 99.0
 # name = "lot"
 # cell = 1.0
 # capture_radius = 1.5
+# k_sigma = 3.0
+# robust = true
+# eeg_quotient_limit = 30.0
 # extent_polygon = { path = "data/regions.geojson", name = "lot" }   # or extent = [xmin, xmax, ymin, ymax]
 # margin = 10.0
 # lot = true                    # draw this polygon on every map

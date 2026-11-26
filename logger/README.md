@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.7.0
+# Ice Cube Logger 0.8.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -463,18 +463,31 @@ overlay and set in Settings > Coverage.
   are not loaded. Each capture is fed once as it arrives; the overlay is rebuilt from the
   session's captures when the map origin changes, a new session starts, or a Coverage
   setting changes.
-- Node update (nodes.py with one pass and no pass bias): a capture at height z with
-  sigmas sz, sh feeds every node within the capture radius, at distance d, with variance
-  v = sz² + (0.05 (d + sh))² (slope allowance 0.05 m/m). The node keeps the weighted
-  mean, sigma sqrt(1/Σ(1/v)). Before a capture is fused, it counts as a disagreement if it
-  differs from the node by more than 3 sigma of the difference.
+- Node update (nodes.py's median-first rebuild, one pass, no pass bias): a capture at
+  height z with sigmas sz, sh feeds every node within the capture radius, at distance d,
+  with variance v = sz² + (0.05 (d + sh))² (slope allowance 0.05 m/m). On every feed the
+  node is rebuilt from all its captures: the weighted median starts the estimate, the
+  others join nearest first, and one that differs from the estimate by more than 3 sigma
+  of the difference goes to an outlier bin instead of pulling it. A bin with more captures
+  than the main estimate takes over. The node's height and sigma (sqrt(1/Σ(1/v))) are the
+  main estimate's. Arrival order does not matter (up to 32 captures a node; past that the
+  oldest agreeing ones are merged into one running sum, and a node with a long run of
+  outliers keeps its height and turns red instead).
 - Area: nodes within reach (default 2 m) of any capture. Only those are drawn.
-- Colours: **red** where an in-area node has no capture within the capture radius (a gap
-  between passes wider than about 1.5 m at the defaults shows as a red strip) or where
-  captures disagree; **amber** where the node sigma, with the pass wander added
-  (sqrt(sigma² + wander²)), is above the target; **clear** at or below it. Red and amber
-  are translucent so the layers show through. The outer edge of the walked area has a red
-  fringe (reach minus capture radius, 1.25 m at the defaults): the survey ends there.
+- Colours: **red** where the outliers are not outvoted 2:1 (outliers > 0 and agreeing
+  captures < 2 × outliers), or where an in-area node has no capture within the capture
+  radius but captures on all four sides (a gap between passes wider than about 1.5 m at
+  the defaults shows as a red strip); **amber** where the node sigma, with the pass wander
+  added (sqrt(sigma² + wander²)), is above the target; **clear** at or below it; a faint
+  **grey** for the edge of the walked area with no capture yet (reach minus capture radius,
+  1.25 m at the defaults: the survey ends there). All are translucent so the layers show
+  through.
+- With few captures: one capture is amber or clear by its sigma; two that disagree are red
+  (1:1, and the lower one is the height); three with one outlier are not red (2:1), and
+  agreeing captures clear a red node. Two bad captures that agree outvote one good one:
+  the node is clear at the wrong height (young fixes are issue #15's job). Because the
+  node follows the set of captures, a new capture can change which ones agree, so a node
+  can turn red, clear and red again as captures arrive.
 - Per-capture sigmas: the budget of `analysis/qgis/soundings.py` (`sigma_terms`, the same
   constants), core/SoundingSigma:
   sz² = rtk² + age² + settle² + pole² + ground², with rtk = max(1 cm, `sd_u_m`), age =
@@ -510,11 +523,17 @@ overlay and set in Settings > Coverage.
   is logged (logcat, and the session's events as `coverage stopped: ...`); logging and the
   rest of the app carry on. It stays stopped until the map screen is created again (for
   example after the app is swiped away from the recent apps and opened again).
+- Replay: each rebuild with settings or an origin not yet logged for the session writes
+  `coverage cell=… radius=… reach=… target=… wander=… ground=… slope=… k_sigma=… cap=…
+  outvote=… origin_lat=… origin_lon=… origin_h=… origin_source="…"` to `events.csv`, so the
+  overlay can be replayed exactly from the session files.
 
 The Java ports are checked against icecube: `python3 -m icecube.logger_vectors --out
 logger/app/src/test/resources/coverage_vectors.json` writes test vectors from
-`nodes.grid_surface` and `soundings.sigma_terms`, and the JVM tests (`CoverageTest`,
-`SoundingSigmaTest`) compare against them; regenerate when either changes. The drawing
+`nodes.NodeStore` (through a Python twin of Coverage with its area and status rules) and
+`soundings.sigma_terms`, and the JVM tests (`CoverageTest`, `SoundingSigmaTest`) compare
+against them, node by node and status by status after each capture; regenerate when
+either changes. The drawing
 window and the background thread's order and cancellation have their own JVM tests
 (`CoverageRasterTest`, `CoverageWorkerTest`).
 

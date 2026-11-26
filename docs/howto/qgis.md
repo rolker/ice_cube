@@ -350,7 +350,7 @@ picks up `layer_topo_contours` under Map layers (labelled with their level; whol
 darker) and the `soundings` and `topo_points` tables can be added from the gpkg (Layer >
 Add Layer > Add Vector Layer). Add the grids with Layer > Add Raster Layer: `z_*.asc`
 (height, m), `sigma_*.asc` (node uncertainty), `count_*.asc`, `flags_*.asc` (-1 masked, else
-the inconsistency count) from the run folder; each has a `.prj` with the project's local CRS.
+the outlier count per node) from the run folder; each has a `.prj` with the project's local CRS.
 How it works, the error budget and the validation: `docs/howto/ice-cube.md`, section 5.
 
 ## Without the plugin

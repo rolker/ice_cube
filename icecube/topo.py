@@ -9,16 +9,16 @@ estimator) with these additions:
   marks) that enter the crossover only (crossover.py).
 - `[[masks]]`: polygons (GeoJSON, lon/lat; `names` and/or `kinds` to pick features) where
   there is no ground to model (house, deck, sheds, a rock). Ground soundings inside are dropped
-  before the crossover; nodes inside get no value and flag -1.
+  before the crossover; nodes inside get no value and -1 in the flags raster.
 - A DEM survey (`reader = "dem"`, see dem.py) fills the rest at low weight; with
   `check_rtk = true` its samples that disagree with nearby RTK get `sigma_bad`. A survey's
   `capture_radius` is a floor on every grid's (a 2 m DEM must reach 1.5 m on a 0.5 m grid).
-- `[[grids]]`: name, cell, capture_radius, k_sigma, the extent (`extent = [xmin, xmax, ymin,
+- `[[grids]]`: name, cell, capture_radius, k_sigma, robust and eeg_quotient_limit (nodes.py), the extent (`extent = [xmin, xmax, ymin,
   ymax]`, or `extent_polygon = {path, name}` plus `margin`), the slope allowance (`slope`, or
   `slope_from_dem = {survey, factor, floor, cap}`: per node max(floor, factor * DEM slope)),
   and `contour_interval`. Every surface is gridded on every grid.
 - Outputs per surface and grid (`<surface>_<grid>`): surface npz, ESRI ASCII z / sigma /
-  count / flags with a .prj (`[output] prj_from_gpkg` or `prj`), contours GeoJSON, figures.
+  count / flags (the outlier count n_out per node, -1 masked; the name is kept for QGIS) with a .prj (`[output] prj_from_gpkg` or `prj`), contours GeoJSON, figures.
   Per surface: passes, crossover (with the common biases), and points_<surface>.csv (every
   sounding with its pass, bias and corrected height).
 - `[[fill]]` with `grid` and `outline = {path, name}`: water to `margin` over the
@@ -176,7 +176,8 @@ def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slope):
     # a survey's own capture_radius (e.g. a 2 m DEM) is a floor for every grid
     capture = [max(default, float(ctx.surveys[p.survey][2].get("capture_radius", 0.0))) for p in pts]
     surf = nodes.grid_surface(pts, sbl, grid, capture_radius=capture, slope=slope,
-                              k_sigma=float(gcfg.get("k_sigma", 3.0)), name=sname,
+                              k_sigma=float(gcfg.get("k_sigma", 3.0)), robust=bool(gcfg.get("robust", True)),
+                              eeg_quotient_limit=float(gcfg.get("eeg_quotient_limit", 30.0)), name=sname,
                               date=max(p.date for p in pts), frame=pts[0].frame)
     X, Y = np.meshgrid(grid.xs, grid.ys)
     nmask = mask_points(ctx.masks, X, Y) if ctx.masks else np.zeros(X.shape, bool)
@@ -266,7 +267,7 @@ def fig_map(surf, nmask, path, what, title, masks=(), outline=None, levels=None,
     elif what == "n":
         data, label, cmap = np.where(surf.n > 0, surf.n, np.nan).astype(float), "soundings per node", "Blues"
     else:
-        data, label, cmap = np.where(surf.n > 0, surf.flags, np.nan).astype(float), "inconsistency count", "Oranges"
+        data, label, cmap = np.where(surf.n > 0, surf.n_out, np.nan).astype(float), "outliers (n_out)", "Oranges"
     fig, ax = plt.subplots(figsize=(7.2, 6.2))
     im = ax.imshow(data, origin="lower", extent=report._extent(g), cmap=cmap, interpolation="nearest",
                    vmax=vmax)
@@ -361,8 +362,9 @@ def run(cfg, out_dir=None, log=print):
             slope = slope_array(ctx, gcfg, grid)
             surf, nmask = grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slope)
             tag = f"{sname}_{gname}"
-            flags = np.where(nmask, -1, surf.flags)
-            np.savez(out / f"surface_{tag}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, flags=surf.flags, mask=nmask,
+            flags = np.where(nmask, -1, surf.n_out)   # the raster keeps its name flags_*.asc: outliers per node
+            np.savez(out / f"surface_{tag}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, n_out=surf.n_out, n_alt=surf.n_alt,
+                     z_alt=surf.z_alt, strength=surf.strength, n_eeg=surf.n_eeg, mask=nmask,
                      maxnr=surf.maxnr, npass=surf.npass, slope=np.broadcast_to(slope, surf.z.shape), **grid.as_dict())
             for what, arr, fmt in (("z", surf.z, "%.4f"), ("sigma", surf.sigma, "%.4f"),
                                    ("count", np.where(surf.n > 0, surf.n, np.nan), "%d"),
@@ -378,7 +380,7 @@ def run(cfg, out_dir=None, log=print):
             if gcfg.get("outline"):
                 oc = gcfg["outline"]
                 outline = io.read_polygon_outline(_path(base, oc["path"]), ctx.site, oc["name"])
-            for what in ("z", "sigma", "n", "flags"):
+            for what in ("z", "sigma", "n", "outliers"):
                 fig_map(surf, nmask, out / f"{what}_{tag}.png", what,
                         f"{sname}, grid {gname} ({grid.cell} m): {what}" + (f", contours {ci*100:g} cm" if what == "z" else "")
                         + (", red = 5 cm" if what == "sigma" else ""),
@@ -390,13 +392,13 @@ def run(cfg, out_dir=None, log=print):
             q = np.percentile(sg, [5, 50, 95]) if len(sg) else [np.nan] * 3
             gres = dict(nodes=int(ok.sum()), masked=int(nmask.sum()), sigma_p5=q[0], sigma_median=q[1], sigma_p95=q[2],
                         frac_sigma_gt_5cm=float(np.mean(sg > 5)) if len(sg) else float("nan"),
-                        flagged=int((surf.flags[ok] > 0).sum()), contour_lines=nlines, datum_sigma_cm=surf.datum_sigma * 100)
+                        with_outliers=int((surf.n_out[ok] > 0).sum()), contour_lines=nlines, datum_sigma_cm=surf.datum_sigma * 100)
             results["grids"][tag] = gres
             summary += [f"### Grid {gname}: {grid.nx} x {grid.ny} nodes at {grid.cell} m, capture "
                         f"{float(gcfg.get('capture_radius', 1.5 * grid.cell))} m", "",
                         f"Nodes with a value {gres['nodes']} (masked {gres['masked']}); node sigma p5/median/p95 "
                         f"{q[0]:.1f}/{q[1]:.1f}/{q[2]:.1f} cm; sigma > 5 cm at {gres['frac_sigma_gt_5cm']*100:.0f} % of "
-                        f"nodes; flagged nodes {gres['flagged']}; datum sigma {surf.datum_sigma*100:.1f} cm; "
+                        f"nodes; nodes with outliers {gres['with_outliers']}; datum sigma {surf.datum_sigma*100:.1f} cm; "
                         f"{nlines} contour lines at {ci*100:g} cm.", ""]
             for fc in cfg.get("fill", []):
                 if fc.get("surface", sname) != sname or fc.get("grid") != gname:

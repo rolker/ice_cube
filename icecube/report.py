@@ -37,7 +37,7 @@ def _extent(g):
 
 
 def fig_surface(surface: Surface, path, what="z", outline=None, title=None, ref=None, mask=None):
-    """Map of z (relative to `ref`, default the masked median), sigma, n or flags."""
+    """Map of z (relative to `ref`, default the masked median), sigma, n or outliers."""
     plt = _plt()
     g = surface.grid
     if what == "z":
@@ -51,8 +51,8 @@ def fig_surface(surface: Surface, path, what="z", outline=None, title=None, ref=
         data = surface.sigma * 100; label = "node sigma (cm)"; cmap = SEQ
     elif what == "n":
         data = np.where(surface.n > 0, surface.n, np.nan).astype(float); label = "soundings per node"; cmap = SEQ
-    elif what == "flags":
-        data = np.where(surface.n > 0, surface.flags, np.nan).astype(float); label = "inconsistency count"; cmap = "Oranges"
+    elif what == "outliers":
+        data = np.where(surface.n > 0, surface.n_out, np.nan).astype(float); label = "outliers (n_out)"; cmap = "Oranges"
     else:
         raise ValueError(what)
     if mask is not None:
@@ -160,21 +160,28 @@ def table_surface(surface: Surface, mask=None):
     q = np.percentile(s, [5, 50, 95])
     return (f"nodes {int(m.sum())}, soundings per node median {int(np.median(surface.n[m]))}, "
             f"node sigma p5/median/p95 {q[0]:.1f}/{q[1]:.1f}/{q[2]:.1f} cm, "
-            f"flagged nodes {int((surface.flags[m] > 0).sum())} (flag events {int(surface.flags[m].sum())})")
+            f"nodes with outliers {int((surface.n_out[m] > 0).sum())} (outliers {int(surface.n_out[m].sum())})")
 
 
-def table_flags(surface: Surface, mask=None, limit=30):
-    """Flagged nodes in local metres with their count, soundings and worst disagreement."""
-    m = surface.flags > 0
+def table_outliers(surface: Surface, mask=None, limit=30):
+    """Nodes with outliers in local metres: soundings, outliers (side bins and Eeg culls),
+    the largest side bin (an outlier bin, not a surface), the strength
+    max(0, 5 - n_in/n_out) and the worst normalised difference of any sounding from the
+    node's final estimate (robust = false: n_out is the running flag count and "worst"
+    the running maximum)."""
+    m = surface.n_out > 0
     if mask is not None:
         m &= mask
     jj, ii = np.where(m)
     if len(jj) == 0:
-        return "no flagged nodes"
-    order = np.argsort(-surface.maxnr[jj, ii])[:limit]
-    rows = ["| east (m) | north (m) | n | passes | flags | worst (sigma) | node sigma (cm) |", "|---|---|---|---|---|---|---|"]
+        return "no nodes with outliers"
+    order = np.argsort(-surface.maxnr[jj, ii], kind="stable")[:limit]
+    rows = ["| east (m) | north (m) | n | passes | outliers | largest bin | bin minus node (cm) | strength | "
+            "worst (sigma) | node sigma (cm) |", "|---|---|---|---|---|---|---|---|---|---|"]
     for k in order:
         a, b = jj[k], ii[k]
+        dz = surface.z_alt[a, b] - surface.z[a, b]
         rows.append(f"| {surface.grid.xs[b]:.1f} | {surface.grid.ys[a]:.1f} | {surface.n[a, b]} | {surface.npass[a, b]} | "
-                    f"{surface.flags[a, b]} | {surface.maxnr[a, b]:.1f} | {surface.sigma[a, b]*100:.1f} |")
+                    f"{surface.n_out[a, b]} | {surface.n_alt[a, b]} | {'' if not np.isfinite(dz) else f'{dz*100:+.1f}'} | "
+                    f"{surface.strength[a, b]:.1f} | {surface.maxnr[a, b]:.1f} | {surface.sigma[a, b]*100:.1f} |")
     return "\n".join(rows)

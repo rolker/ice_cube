@@ -1,4 +1,5 @@
-"""The node estimator, after CUBE (Calder & Mayer 2003) with one hypothesis.
+"""The node estimator, after CUBE (Calder & Mayer 2003): a median-first rebuild per node
+with outlier bins (issue #24).
 
 Grid. Nodes at x = x0 + i*cell, y = y0 + j*cell. A sounding contributes to every
 node within `capture_radius` of it.
@@ -6,7 +7,7 @@ node within `capture_radius` of it.
 Propagation. A sounding with vertical sigma sz, horizontal sigma sh, at horizontal
 distance d from the node, is given at the node the variance
 
-    v = sz^2 + (slope * (d + sh))^2
+    v = sz^2 + (slope * (d + sh))^2,      weight w = 1.0 / v
 
 i.e. the surface may differ from the sounding by `slope` metres per metre of
 horizontal separation (one sigma), and the sounding's own horizontal uncertainty adds
@@ -14,51 +15,85 @@ to the separation. This replaces CUBE's IHO-order-based inflation, which has no 
 for a 1 cm RTK pole. In addition each sounding carries the bias uncertainty sb of its
 pass (the crossover posterior sigma, or the prior where no adjustment was possible).
 
-Update. Soundings are applied in time order (file order when there is no time). The
-node keeps the weighted mean of its soundings with weights 1/v, so its estimate is
+Rebuild (`rebuild`, the definition the logger's Coverage.java ports). Each contribution
+is an entry (z, v, w, id); `id` is unique within a node (the time-order index here, the
+capture number in the logger).
+1. Weighted median: sort by (z, id); W = sum of w in that order (a plain loop); walk the
+   same order with cum += w; zm is the z of the first entry with 2*cum >= W. Two equal
+   weights give the lower one.
+2. Feed the entries in order of (abs(z - zm), id). The first starts the main hypothesis.
+   Each next one is tested against the main first,
 
-    z = sum(z_i / v_i) / sum(1 / v_i),     var_noise = 1 / sum(1 / v_i)
+       nr = |z_i - WZ/W| / sqrt(1/W + v_i + var_bias_diff)
 
-plus the bias part, which is shared by all soundings of one pass and so does not
-average down inside a pass:
+   and joins it when nr <= k_sigma; otherwise it joins the side hypothesis with the
+   smallest nr <= k_sigma (ties: the earlier-created side) or opens a new one. A
+   hypothesis keeps W += w, WZ += w*z, its member count and its own per-pass weights.
+   var_bias_diff is the bias part of the difference,
+   (1 - W_p/W)^2 sb_p^2 + sum_{q != p} (W_q/W)^2 sb_q^2 with W_p the hypothesis's weight
+   from the sounding's own pass: a sounding from a pass the node has not seen adds its
+   full sb_p^2, one from the pass that makes up the whole hypothesis adds nothing.
+3. Promotion, once, after all entries: the side with the largest key (ties: the earlier
+   created) becomes the main when its key is strictly greater than the main's. Key: the
+   summed weight W here (batch, `promote="weight"`), so a few RTK shots are not outvoted
+   by many low-weight DEM samples; the member count in the logger (`promote="count"`).
 
+Side hypotheses are outlier bins, not surfaces: there is one ice surface per cell, and
+a side bin's mean (z_alt) is reported only to say where the outliers sit.
+
+Outputs. From the main hypothesis:
+
+    z = WZ / W,     var_noise = 1 / W
     var_bias = sum_p (W_p / W)^2 * sb_p^2       (W_p = sum of weights from pass p)
-
     sigma = sqrt(var_noise + var_bias)
+
+n counts every contribution, n_in the main's members, n_out = n - n_in (side members
+and Eeg culls), n_alt / z_alt the largest side bin by count (0 / NaN when none),
+max_nr the largest nr of any entry against the final main, and
+strength = max(0, 5 - n_in / n_out), 0 when n_out = 0. The strength is CUBE-style, not
+CUBE's ratio: CUBE divides the best hypothesis's count by the second-best's
+(MAX_HYPOTHESIS_RATIO 5); here every side member is in the denominator. The logger
+draws a node red while n_out > 0 and n_in < 2 * n_out (strength > 3).
+
+Eeg's test (batch, `eeg_quotient_limit`, CUBE's cube_node_truncate in a weighted form):
+on a main with N >= EEG_MIN_N (11, CUBE's median queue length; with fewer members the
+quotient's F(1, N - 2) tail is too heavy for a fixed limit: at N = 4 about 3 % of clean
+nodes would lose a member) members, for member k let m_k be the weighted mean of the others,
+d_k = z_k - m_k, s2_k = sum_{i != k} w_i (z_i - m_k)^2 / (N - 2) (the others' scatter in
+units of their stated variances), and
+
+    q_k = d_k^2 / max(s2_k * (v_k + 1 / (W - w_k)), EEG_FLOOR^2)
+
+For equal weights this is CUBE's quotient. The test is scale-free: it compares a member
+with the others' actual scatter, so it bites where the stated sigmas are pessimistic
+(after the k-sigma split it cannot fire where they are right). The floor (1 mm, the
+heights' quantisation) is the denominator guard: identical heights plus one 1 mm off,
+or all identical, give a finite q and are kept. All members with q_k >= limit are culled
+at once, counted in n_out and n_eeg, and z, sigma and max_nr are recomputed. Noise
+only, no pass-bias terms.
 
 Datum. The surface as a whole has a level uncertainty from the pass biases,
 datum_sigma = sqrt(sum_p (n_p / n)^2 * sb_p^2), the same formula at survey level;
 growth.difference adds it to the uncertainty of the mean growth.
 
-Inconsistency test. Before a sounding is fused, if the node already has an estimate
-and
+Detection floor: with sb = 3 cm the test cannot see a second surface closer than about
+k * sqrt(2) * sb = 13 cm; the report states sb. On streamed input (4 Hz epochs) every
+epoch is an independent sounding here, so a pass contributes many entries and wins a
+crossing by its weight; average to about 1 s before reading n_out as a capture count.
 
-    |z_i - z| > k_sigma * sqrt(var_noise + v_i + var_bias + (1 - 2 W_p / W) * sb_p^2)
+The surface does not depend on the order of the soundings. `robust=False` keeps the
+0.7-era running mean (every sounding fused in time order, a k-sigma test that only
+counts; n_out then holds that count) for comparing old runs.
 
-the node's `flags` counter is incremented. The last term is the bias part of the
-difference: a sounding from a pass the node has not seen adds its full sb_p^2, one
-from the pass that already makes up the whole node adds nothing (the shared bias
-cancels), and in between the formula follows from var(b_p - sum_q (W_q/W) b_q). The
-sounding is still fused (there is one surface by assumption; the counter says where
-that assumption looked wrong). CUBE would instead open a second hypothesis; that is
-the part this tool drops. Detection floor: with sb = 3 cm the test cannot see a
-second surface closer than about k * sqrt(2) * sb = 13 cm; the report states sb.
-
-The surface (z, sigma, n) does not depend on the order of the soundings; the flag
-counter does, slightly, because it is a running test (soundings are applied in time
-order, untimed ones in file order). On streamed input (4 Hz epochs) every epoch is
-an independent sounding here, so a node fed by many epochs of one pass has a small
-noise variance and the counter also catches ordinary epoch noise beyond k sigma: on
-such a survey the flag count is not a two-surface count. Average to about 1 s, or
-read the flag table's "worst" column, before reading it as one.
-
-The Ice Cube Logger mirrors the update and inconsistency test (one pass, sb = 0) in
-logger/.../core/Coverage.java for its live coverage overlay; when they change, regenerate
-its test vectors with `python3 -m icecube.logger_vectors --out
-logger/app/src/test/resources/coverage_vectors.json` and port the change.
+The Ice Cube Logger mirrors the rebuild (one pass, sb = 0, count promotion, at most CAP
+stored entries per node, see `NodeStore`) in logger/.../core/Coverage.java for its live
+coverage overlay; when it changes, regenerate its test vectors with `python3 -m
+icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json` and
+port the change.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -96,22 +131,258 @@ class Grid:
         return dict(x0=self.x0, y0=self.y0, cell=self.cell, nx=self.nx, ny=self.ny)
 
 
+#: Stored entries per node in the logger's store (and `NodeStore`); past it entries fold.
+CAP = 32
+#: Red while n_in < OUTVOTE * n_out (the logger's colour rule).
+OUTVOTE = 2
+#: Eeg's test: the denominator's floor, metres (the heights' 1 mm quantisation).
+EEG_FLOOR = 0.001
+#: Eeg's test runs on mains with at least this many members (CUBE's median_length).
+EEG_MIN_N = 11
+
+
+class Hyp:
+    """One hypothesis of a rebuild: W, WZ, member count, per-pass weights (pass -> [W_p, sb_p^2])."""
+    __slots__ = ("w", "wz", "cnt", "pw", "members")
+
+    def __init__(self):
+        self.w = 0.0
+        self.wz = 0.0
+        self.cnt = 0
+        self.pw = {}
+        self.members = []
+
+    def join(self, k, e):
+        z, v, w, _id, cnt, pk, sb2 = e
+        self.w += w
+        self.wz += w * z
+        self.cnt += cnt
+        self.members.append(k)
+        old = self.pw.get(pk)
+        self.pw[pk] = [w + (old[0] if old else 0.0), sb2]
+
+    def z(self):
+        return self.wz / self.w
+
+    def nr(self, e):
+        """Normalised difference of entry e from this hypothesis (the k-sigma test statistic)."""
+        z, v, w, _id, cnt, pk, sb2 = e
+        wp_same = self.pw[pk][0] if pk in self.pw else 0.0
+        # bias part of the difference, written so it cannot go negative (0.0 without pass biases)
+        vbd = (1.0 - wp_same / self.w) ** 2 * sb2 + sum(
+            (wq / self.w) ** 2 * s2 for q, (wq, s2) in self.pw.items() if q != pk)
+        return abs(z - self.wz / self.w) / math.sqrt(1.0 / self.w + v + vbd)
+
+    def var(self):
+        """1/W plus the bias part sum_p (W_p/W)^2 sb_p^2."""
+        return 1.0 / self.w + sum((wp / self.w) ** 2 * s2 for wp, s2 in self.pw.values())
+
+
+def entry(z, v, id, pk=0, sb2=0.0, w=None, cnt=1):
+    """An entry tuple (z, v, w, id, cnt, pass key, sb^2); w defaults to 1.0 / v."""
+    return (z, v, 1.0 / v if w is None else w, id, cnt, pk, sb2)
+
+
+class Rebuilt:
+    """The result of `rebuild`: hypotheses (creation order), the main's index, each
+    entry's hypothesis, and the outputs."""
+    __slots__ = ("hyps", "main", "hyp_of", "zm")
+
+    def __init__(self, hyps, main, hyp_of, zm):
+        self.hyps, self.main, self.hyp_of, self.zm = hyps, main, hyp_of, zm
+
+    @property
+    def z(self):
+        return self.hyps[self.main].z()
+
+    @property
+    def n_in(self):
+        return self.hyps[self.main].cnt
+
+    def alt(self):
+        """(n_alt, z_alt) of the largest side bin by count (ties: earlier created), or (0, nan)."""
+        best = None
+        for h, hy in enumerate(self.hyps):
+            if h != self.main and (best is None or hy.cnt > self.hyps[best].cnt):
+                best = h
+        return (0, float("nan")) if best is None else (self.hyps[best].cnt, self.hyps[best].z())
+
+    def max_nr(self, entries):
+        m = self.hyps[self.main]
+        out = 0.0
+        for e in entries:
+            r = m.nr(e)
+            if r > out:
+                out = r
+        return out
+
+
+def rebuild(entries, k_sigma=3.0, promote="count", trace=None):
+    """The median-first rebuild of one node (module docstring, Rebuild). `entries` are
+    tuples from `entry`. `trace`, when a list, receives ("nr", value) for every test and
+    ("half", 2*cum - W, W) at the median, for the vector generator's threshold guard."""
+    n = len(entries)
+    srt = sorted(range(n), key=lambda i: (entries[i][0], entries[i][3]))
+    W = 0.0
+    for i in srt:
+        W += entries[i][2]
+    cum = 0.0
+    zm = entries[srt[-1]][0]
+    for i in srt:
+        cum += entries[i][2]
+        if 2.0 * cum >= W:
+            zm = entries[i][0]
+            if trace is not None:
+                trace.append(("half", 2.0 * cum - W, W))
+            break
+    order = sorted(range(n), key=lambda i: (abs(entries[i][0] - zm), entries[i][3]))
+    hyps = []
+    hyp_of = [0] * n
+    for i in order:
+        e = entries[i]
+        if not hyps:
+            hyps.append(Hyp()); hyps[0].join(i, e); hyp_of[i] = 0
+            continue
+        r = hyps[0].nr(e)
+        if trace is not None:
+            trace.append(("nr", r))
+        if r <= k_sigma:
+            hyps[0].join(i, e); hyp_of[i] = 0
+            continue
+        best, best_r = -1, 0.0
+        for h in range(1, len(hyps)):
+            r = hyps[h].nr(e)
+            if trace is not None:
+                trace.append(("nr", r))
+            if r <= k_sigma and (best < 0 or r < best_r):
+                best, best_r = h, r
+        if best < 0:
+            hyps.append(Hyp()); best = len(hyps) - 1
+        hyps[best].join(i, e); hyp_of[i] = best
+    main = 0
+    if len(hyps) > 1:
+        key = (lambda h: h.cnt) if promote == "count" else (lambda h: h.w)
+        side = 1
+        for h in range(2, len(hyps)):
+            if key(hyps[h]) > key(hyps[side]):
+                side = h
+        if key(hyps[side]) > key(hyps[0]):
+            main = side
+    return Rebuilt(hyps, main, hyp_of, zm)
+
+
+def strength(n_in, n_out):
+    """max(0, 5 - n_in / n_out), 0 when there are no outliers."""
+    return 0.0 if n_out == 0 else max(0.0, 5.0 - n_in / n_out)
+
+
+class NodeStore:
+    """One node as the logger keeps it (Coverage.java): at most `cap` stored entries in
+    arrival order plus one aggregate, rebuilt (count promotion, one pass, no bias) on
+    every add. When an add makes cap + 1 entries: rebuild; if the main has stored members,
+    the oldest of them is folded into the aggregate (W += w, WZ += w*z, count += 1), after
+    first dropping the aggregate (its count to n_dropped) when it is not in the main;
+    otherwise the oldest stored entry is dropped and counted in n_dropped. Then rebuild
+    again. The aggregate enters the rebuild as one entry z = WZ/W, w = W, v = 1.0/W,
+    id -1, counting `count` members. n_dropped is part of n_out."""
+
+    def __init__(self, k_sigma=3.0, cap=CAP):
+        self.k_sigma, self.cap = k_sigma, cap
+        self.entries = []
+        self.agg_w = 0.0
+        self.agg_wz = 0.0
+        self.agg_n = 0
+        self.n_dropped = 0
+        self.state = None
+
+    def _all(self):
+        es = list(self.entries)
+        if self.agg_n:
+            es.append(entry(self.agg_wz / self.agg_w, 1.0 / self.agg_w, -1, w=self.agg_w, cnt=self.agg_n))
+        return es
+
+    def rebuild(self, trace=None):
+        return rebuild(self._all(), self.k_sigma, "count", trace)
+
+    def add(self, z, v, id, trace=None):
+        self.entries.append(entry(z, v, id))
+        if len(self.entries) > self.cap:
+            r = self.rebuild(trace)
+            m = len(self.entries)
+            members = [i for i in range(m) if r.hyp_of[i] == r.main]
+            if members:
+                if self.agg_n and r.hyp_of[m] != r.main:
+                    self.n_dropped += self.agg_n
+                    self.agg_w, self.agg_wz, self.agg_n = 0.0, 0.0, 0
+                e = self.entries.pop(members[0])
+                self.agg_w += e[2]
+                self.agg_wz += e[2] * e[0]
+                self.agg_n += 1
+            else:
+                self.entries.pop(0)
+                self.n_dropped += 1
+        self.state = self.rebuild(trace)
+        return self.state
+
+    @property
+    def n(self):
+        return len(self.entries) + self.agg_n + self.n_dropped
+
+    def outputs(self):
+        """dict(z, sigma, n, n_in, n_out, n_alt, z_alt, strength, max_nr, w) of the last add."""
+        r = self.state
+        h = r.hyps[r.main]
+        n_alt, z_alt = r.alt()
+        n_in = h.cnt
+        n_out = self.n - n_in
+        return dict(z=h.z(), sigma=math.sqrt(1.0 / h.w), w=h.w, n=self.n, n_in=n_in, n_out=n_out,
+                    n_alt=n_alt, z_alt=z_alt, strength=strength(n_in, n_out), max_nr=r.max_nr(self._all()))
+
+
+def eeg_cull(entries, members, limit):
+    """Eeg's leave-one-out test (module docstring) on `members` (indices into entries).
+    Returns the culled indices."""
+    N = len(members)
+    if limit <= 0 or N < EEG_MIN_N:
+        return []
+    z = np.array([entries[i][0] for i in members])
+    v = np.array([entries[i][1] for i in members])
+    w = np.array([entries[i][2] for i in members])
+    c = float(np.sum(w * z) / np.sum(w))
+    zc = z - c                       # centred, to keep the sums of squares well conditioned
+    Wt, S1, S2 = np.sum(w), np.sum(w * zc), np.sum(w * zc * zc)
+    Wk = Wt - w
+    mk = (S1 - w * zc) / Wk
+    d = zc - mk
+    ssd = np.maximum((S2 - w * zc * zc) - Wk * mk * mk, 0.0)    # sum_{i != k} w_i (z_i - m_k)^2
+    q = d * d / np.maximum(ssd / (N - 2) * (v + 1.0 / Wk), EEG_FLOOR ** 2)
+    return [members[j] for j in np.where(q >= limit)[0]]
+
+
 @dataclass
 class Surface:
     grid: Grid
     z: np.ndarray        # (ny, nx), NaN where no sounding
     sigma: np.ndarray
     n: np.ndarray        # soundings per node
-    flags: np.ndarray    # inconsistency count per node
+    n_out: np.ndarray    # outliers per node: side-bin members and Eeg culls (robust=False: the running flag count)
     last_t: np.ndarray   # time of the last sounding (NaN when untimed)
-    npass: np.ndarray    # passes contributing per node
-    maxnr: np.ndarray = None   # largest normalised disagreement seen at the node
+    npass: np.ndarray    # passes contributing per node (all soundings)
+    maxnr: np.ndarray = None   # largest normalised difference of a sounding from the node's final estimate
+    n_alt: np.ndarray = None   # members of the largest side bin (an outlier bin, not a surface)
+    z_alt: np.ndarray = None   # mean of that bin (NaN when none)
+    strength: np.ndarray = None  # max(0, 5 - n_in / n_out), 0 with no outliers
+    n_eeg: np.ndarray = None   # soundings culled by Eeg's test
     datum_sigma: float = 0.0   # survey-level bias sigma, sqrt(sum_p (n_p/n)^2 sb_p^2)
     n_outside: int = 0         # soundings that fed no node (outside the grid)
     nodes_per_sounding: float = 1.0   # mean nodes fed per sounding (neighbouring nodes share soundings)
     name: str = ""
     date: str = ""
     frame: str = ""
+
+    @property
+    def n_in(self):
+        return self.n - self.n_out
 
     def inside_mask(self, outline):
         """True for nodes inside the (x, y) ring `outline`."""
@@ -121,13 +392,15 @@ class Surface:
 
 
 def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
-                 capture_radius=0.75, slope=0.05, k_sigma=3.0, name="", date="", frame="") -> Surface:
+                 capture_radius=0.75, slope=0.05, k_sigma=3.0, name="", date="", frame="",
+                 robust=True, eeg_quotient_limit=30.0) -> Surface:
     """Fuse the (bias-corrected) points of one or more surveys into node estimates.
     `sb_list[k]` is the per-point bias sigma of `surveys[k]` (from crossover.apply).
     `slope` is one allowance (m/m) or an array of the grid's shape (ny, nx), one per node
     (e.g. from a DEM's local slope, so steep ground gets a larger allowance).
     `capture_radius` is one value or one per survey (a sparse DEM can reach further than
-    the RTK soundings)."""
+    the RTK soundings). `robust` selects the median-first rebuild (default) or the 0.7-era
+    running mean; `eeg_quotient_limit` (0 = off) applies Eeg's test in the robust mode."""
     frames = {s.frame for s in surveys}
     if len(frames) > 1:
         raise ValueError(f"gridding across frames refused: {sorted(frames)}")
@@ -161,14 +434,12 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
     i0 = np.round((x - grid.x0) / grid.cell).astype(int)
     j0 = np.round((y - grid.y0) / grid.cell).astype(int)
     ny, nx = grid.ny, grid.nx
-    W = np.zeros((ny, nx)); WZ = np.zeros((ny, nx)); N = np.zeros((ny, nx), int)
-    F = np.zeros((ny, nx), int); LT = np.full((ny, nx), np.nan); MR = np.zeros((ny, nx))
-    # per-node per-pass weight sums for the bias variance
-    PW = [dict() for _ in range(ny * nx)]
     di, dj = np.meshgrid(np.arange(-rc, rc + 1), np.arange(-rc, rc + 1))
     di, dj = di.ravel(), dj.ravel()
     n_outside = 0
     n_contrib = 0
+    store = {}     # node index -> list of entries, in time order
+    rank = 0
     for k in order:
         ii = i0[k] + di
         jj = j0[k] + dj
@@ -187,47 +458,79 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
         sz, sh = szsh[k]
         sl = slope_grid[jj, ii] if slope_grid is not None else slope
         v = sz**2 + (sl * (d + sh))**2
-        sb2 = sb[k] ** 2
+        sb2 = float(sb[k]) ** 2
+        zk, pkk, tk = float(z[k]), int(pk[k]), float(t[k])
         for a, b, vk in zip(jj, ii, v):
-            if N[a, b] > 0:
-                w = W[a, b]
-                pw = PW[a * nx + b]
-                var_node = 1.0 / w + sum((wp / w) ** 2 * s2 for wp, s2 in pw.values())
-                # bias part of the difference, written so it cannot go negative:
-                # (1 - W_p/W)^2 sb_p^2 + sum_{q != p} (W_q/W)^2 sb_q^2
-                wp_same = pw.get(pk[k], (0.0, 0.0))[0]
-                var_bias_diff = (1.0 - wp_same / w) ** 2 * sb2 + sum(
-                    (wq / w) ** 2 * s2 for q, (wq, s2) in pw.items() if q != pk[k])
-                nr = abs(z[k] - WZ[a, b] / w) / np.sqrt(1.0 / w + vk + var_bias_diff)
-                if nr > k_sigma:
-                    F[a, b] += 1
-                if nr > MR[a, b]:
-                    MR[a, b] = nr
-            wk = 1.0 / vk
-            W[a, b] += wk; WZ[a, b] += wk * z[k]; N[a, b] += 1
-            pw = PW[a * nx + b]
-            old = pw.get(pk[k])
-            pw[pk[k]] = (wk + (old[0] if old else 0.0), sb2)
-            if np.isfinite(t[k]):
-                LT[a, b] = t[k]
-    has = N > 0
+            store.setdefault(int(a) * nx + int(b), []).append((entry(zk, float(vk), rank, pkk, sb2), tk))
+        rank += 1
+    run = _robust if robust else _running
     Z = np.full((ny, nx), np.nan)
     S = np.full((ny, nx), np.nan)
+    N = np.zeros((ny, nx), int)
+    OUT = np.zeros((ny, nx), int)
+    ALT = np.zeros((ny, nx), int)
+    ZALT = np.full((ny, nx), np.nan)
+    ST = np.zeros((ny, nx))
+    EEG = np.zeros((ny, nx), int)
+    MR = np.zeros((ny, nx))
+    LT = np.full((ny, nx), np.nan)
     NP = np.zeros((ny, nx), int)
-    Z[has] = WZ[has] / W[has]
-    for idx in zip(*np.where(has)):
-        a, b = idx
-        pw = PW[a * nx + b]
-        w = W[a, b]
-        S[a, b] = np.sqrt(1.0 / w + sum((wp / w) ** 2 * s2 for wp, s2 in pw.values()))
-        NP[a, b] = len(pw)
+    for idx, lst in store.items():
+        a, b = divmod(idx, nx)
+        es = [e for e, _ in lst]
+        o = run(es, k_sigma, eeg_quotient_limit)
+        Z[a, b], S[a, b], MR[a, b] = o["z"], o["sigma"], o["max_nr"]
+        N[a, b], OUT[a, b], ALT[a, b], ZALT[a, b], EEG[a, b] = len(es), o["n_out"], o["n_alt"], o["z_alt"], o["n_eeg"]
+        ST[a, b] = strength(len(es) - o["n_out"], o["n_out"])
+        NP[a, b] = len({e[5] for e in es})
+        ts = [tt for _, tt in lst if np.isfinite(tt)]
+        if ts:
+            LT[a, b] = ts[-1]
     # survey-level datum sigma: the pass biases weighted by their share of the points
     ds = 0.0
     if npts:
         for pkey in np.unique(pk):
             m = pk == pkey
             ds += (m.sum() / npts) ** 2 * float(sb[m][0]) ** 2
-    return Surface(grid=grid, z=Z, sigma=S, n=N, flags=F, last_t=LT, npass=NP, maxnr=MR,
-                   datum_sigma=float(np.sqrt(ds)), n_outside=n_outside,
+    return Surface(grid=grid, z=Z, sigma=S, n=N, n_out=OUT, last_t=LT, npass=NP, maxnr=MR, n_alt=ALT, z_alt=ZALT,
+                   strength=ST, n_eeg=EEG, datum_sigma=float(np.sqrt(ds)), n_outside=n_outside,
                    nodes_per_sounding=float(n_contrib / max(npts - n_outside, 1)),
                    name=name, date=date, frame=frame)
+
+
+def _robust(es, k_sigma, eeg_limit):
+    """One node, batch: rebuild once (weight promotion), then Eeg on the main."""
+    r = rebuild(es, k_sigma, "weight")
+    main = r.hyps[r.main]
+    culled = eeg_cull(es, main.members, eeg_limit)
+    if culled:
+        gone = set(culled)
+        main = Hyp()
+        for i in r.hyps[r.main].members:
+            if i not in gone:
+                main.join(i, es[i])
+        r.hyps[r.main] = main
+    n_alt, z_alt = r.alt()
+    mr = 0.0
+    for e in es:
+        q = main.nr(e)
+        if q > mr:
+            mr = q
+    return dict(z=main.z(), sigma=math.sqrt(main.var()), max_nr=mr, n_out=len(es) - main.cnt,
+                n_alt=n_alt, z_alt=z_alt, n_eeg=len(culled))
+
+
+def _running(es, k_sigma, eeg_limit):
+    """One node, the 0.7-era rule: every entry fused in time order; a k-sigma test before
+    each fusion counts a flag (returned as n_out) and tracks the running maximum nr."""
+    h = Hyp()
+    flags, mr = 0, 0.0
+    for i, e in enumerate(es):
+        if h.cnt:
+            q = h.nr(e)
+            if q > k_sigma:
+                flags += 1
+            if q > mr:
+                mr = q
+        h.join(i, e)
+    return dict(z=h.z(), sigma=math.sqrt(h.var()), max_nr=mr, n_out=flags, n_alt=0, z_alt=float("nan"), n_eeg=0)
