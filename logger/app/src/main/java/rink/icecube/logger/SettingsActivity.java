@@ -45,7 +45,8 @@ import rink.icecube.logger.core.SurveyLimits;
  * screen is left (layer checkboxes and Screen orientation save at once). Survey also holds
  * the capture settings: ref duration, pole check tolerance, volume keys, sound, vibration,
  * earlier refs and capture labels on the map. Coverage holds the live coverage overlay's
- * sigma target, grid and estimator settings (the overlay rebuilds when they change). Caster and link changes take effect at the next
+ * sigma target, grid and estimator settings (the overlay rebuilds when they change). The
+ * app version is the first line. Caster and link changes take effect at the next
  * Connect; pole height and Frame changes apply at once and are logged in a running session.
  * The password is only shown as dots.
  */
@@ -62,8 +63,8 @@ public final class SettingsActivity extends Activity {
     private TextView frameError, poleError, layersHeader;
     private LinearLayout layerList;
     private Spinner orientationSpinner;
-    private EditText refSeconds, poleTolerance;
-    private TextView refError, toleranceError;
+    private EditText refSeconds, poleTolerance, gpsWait;
+    private TextView refError, toleranceError, gpsWaitError;
     private final EditText[] limitFields = new EditText[Settings.LIMITS.length];
     private final TextView[] limitErrors = new TextView[Settings.LIMITS.length];
     private CheckBox volumeKeys, sound, vibration, earlierRefs, labelCaptures;
@@ -78,6 +79,11 @@ public final class SettingsActivity extends Activity {
         c.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (16 * getResources().getDisplayMetrics().density);
         c.setPadding(pad, pad, pad, pad);
+
+        TextView version = new TextView(this);
+        version.setText(Settings.versionLine());
+        version.setPadding(0, 0, 0, pad / 2);
+        c.addView(version);
 
         header(c, "Display", 0);
         label(c, "Screen orientation (lock it to how the phone sits on the pole; Auto follows the system)");
@@ -98,7 +104,7 @@ public final class SettingsActivity extends Activity {
         user = field(c, "User", p.getString(Settings.USER, ""), InputType.TYPE_CLASS_TEXT);
         pass = field(c, "Password", p.getString(Settings.PASS, ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         logCorrections = check(c, "Log corrections", Settings.logCorrections(p));
-        casterAtLaunch = check(c, "Connect caster at app launch", p.getBoolean(Settings.CASTER_AT_LAUNCH, false));
+        casterAtLaunch = check(c, "Connect caster when the GPS connects", Settings.casterWithGps(p));
         label(c, "Frame of the base coordinates (used when the sourcetable names none)");
         frameSpinner = spinner(c, ReferenceFrame.SETTING_NAMES);
         int fi = java.util.Arrays.asList(ReferenceFrame.SETTING_NAMES).indexOf(p.getString(Settings.FRAME, ReferenceFrame.SETTING_NAMES[0]));
@@ -130,11 +136,19 @@ public final class SettingsActivity extends Activity {
         (bt ? bluetooth : usb).setChecked(true);
         configure = check(c, "Configure receiver (RAM only)", bt ? configureBt : configureUsb);
         logOnGpsConnect = check(c, "Start logging when the GPS connects", p.getBoolean(Settings.LOG_ON_GPS_CONNECT, false));
+        Limit w = Limit.GPS_WAIT_MIN;
+        gpsWait = field(c, w.name + ", " + w.unit + " (" + w.range() + ", default " + w.format(w.def)
+                        + "): with no session, stop waiting for the GPS after this", p.getString(Settings.GPS_WAIT_MIN, w.format(w.def)),
+                InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        gpsWaitError = error(c);
+        gpsWait.addTextChangedListener(watcher(() -> gpsWaitError.setText(gpsWaitProblem())));
         TextView help = new TextView(this);
         help.setText("Configure sends a RAM-only UBX-CFG-VALSET (UBX+NMEA out, RTCM3 in, GGA/RMC/GST/RAWX/SFRBX) "
                 + "to the receiver's USB port, or to UART1 over Bluetooth. Leave it off for the RTK Express over "
                 + "Bluetooth. Start logging when the GPS connects: for USB, when Android opens the app on attach; "
-                + "for Bluetooth, when the chosen device connects after the app is opened. Changes apply at the next Connect.");
+                + "for Bluetooth, when the chosen device connects after the app is opened; with no session the wait ends "
+                + "after Wait for the rover. Connect caster when the GPS connects: when a GPS started by Connect or "
+                + "on its own first connects. Changes apply at the next Connect.");
         help.setPadding(0, pad / 2, 0, 0);
         c.addView(help);
 
@@ -272,6 +286,12 @@ public final class SettingsActivity extends Activity {
 
     private String epochProblem() {
         try { ReferenceFrame.parseEpoch(frameEpoch.getText().toString()); return ""; }
+        catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
+    }
+
+    /** The Wait for the rover problem, or "". */
+    private String gpsWaitProblem() {
+        try { Limit.GPS_WAIT_MIN.parse(gpsWait.getText().toString()); return ""; }
         catch (IllegalArgumentException e) { return e.getMessage() + " (not saved)"; }
     }
 
@@ -483,6 +503,11 @@ public final class SettingsActivity extends Activity {
                 .putBoolean(Settings.VIBRATION, vibration.isChecked())
                 .putBoolean(Settings.SHOW_EARLIER_REFS, earlierRefs.isChecked())
                 .putBoolean(Settings.LABEL_CAPTURES, labelCaptures.isChecked());
+        if (gpsWaitProblem().isEmpty()) {
+            e.putString(Settings.GPS_WAIT_MIN, Limit.GPS_WAIT_MIN.format(Limit.GPS_WAIT_MIN.parse(text(gpsWait))));
+        } else {
+            Toast.makeText(this, Limit.GPS_WAIT_MIN.name + " not saved: " + gpsWaitProblem(), Toast.LENGTH_LONG).show();
+        }
         if (problem(true).isEmpty()) e.putString(Settings.REF_SECONDS, text(refSeconds));
         else Toast.makeText(this, "Ref duration not saved: " + problem(true), Toast.LENGTH_LONG).show();
         if (problem(false).isEmpty()) e.putString(Settings.POLE_TOLERANCE_CM, text(poleTolerance).replace(',', '.'));

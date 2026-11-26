@@ -16,7 +16,9 @@ import android.content.pm.ServiceInfo;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.Process;
 import android.os.SystemClock;
@@ -33,8 +35,10 @@ import rink.icecube.logger.core.BaseCheck;
 import rink.icecube.logger.core.BaseWatch;
 import rink.icecube.logger.core.Epoch;
 import rink.icecube.logger.core.Gga;
+import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
+import rink.icecube.logger.core.ServiceState;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.Rtcm3Parser;
 import rink.icecube.logger.core.RtcmStats;
@@ -52,7 +56,13 @@ import rink.icecube.logger.core.UbxConfig;
  *
  * A session starts when the GPS or the caster is started (or Start session is pressed)
  * and ends with Stop. A GPS started with EXTRA_WAIT (autostart) opens the session only
- * once the link is up.
+ * once the link is up; with no session it waits for the rover only up to the Wait for the
+ * rover setting (#30), then stops. With Connect caster when the GPS connects, the caster
+ * starts when a GPS started by Connect (or autostart) first connects.
+ *
+ * The ongoing notification says what is running ({@link ServiceState}) and, with no
+ * session open, has a Stop action (a session ends only with REC in the app). The service ends when nothing runs, and when the app's task is removed with no
+ * session open.
  *
  * It also keeps what the map and the warnings need: a 2-minute trail of GGA fixes, the
  * session's captures ({@link Survey}: MARK, refs, photos), the pole height in effect, the reference frame in use (from
@@ -72,6 +82,8 @@ public final class LoggerService extends Service {
     private static final long BT_FIRST_RETRY_MS = 3000, BT_MAX_RETRY_MS = 30000;
     private static final long GGA_MAX_AGE_NS = 30_000_000_000L;
     private static final long TRAIL_MS = 120_000, FIX_FRESH_NS = 5_000_000_000L;
+    private static final long TICK_MS = 2000;
+    private static final int NOTIFICATION_ID = 1;
 
     /** Latest service instance, for the screen. */
     static volatile LoggerService current;
@@ -109,6 +121,10 @@ public final class LoggerService extends Service {
     private volatile String layerCheckFile;
     private int layerCheckGeneration = -1;
     private final ExecutorService background = Executors.newSingleThreadExecutor();
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable tick = this::onTick;
+    private String shownText, shownStop;        // the notification as last posted
+    private boolean stopped;                    // stopIfIdle stopped the service; no more notification updates
     private SharedPreferences prefs;
     private final SharedPreferences.OnSharedPreferenceChangeListener prefListener = (p, key) -> {
         if (Settings.POLE_HEIGHT.equals(key)) {
@@ -135,6 +151,7 @@ public final class LoggerService extends Service {
     @Override public IBinder onBind(Intent i) { return null; }
 
     @Override public int onStartCommand(Intent i, int flags, int id) {
+        stopped = false;
         goForeground();
         current = this;
         String a = i == null ? null : i.getAction();
@@ -144,27 +161,93 @@ public final class LoggerService extends Service {
         else if (ACTION_CASTER_DISCONNECT.equals(a)) stopCaster("caster disconnected by user");
         else if (ACTION_START_SESSION.equals(a)) ensureSession();
         else if (ACTION_STOP.equals(a)) stopAll();
-        stopIfIdle();
+        if (!stopIfIdle()) {
+            updateNotification();
+            main.removeCallbacks(tick);
+            main.postDelayed(tick, TICK_MS);
+        }
         return START_NOT_STICKY;
     }
 
-    /** Called on every start command, so each startForegroundService() is answered. */
+    /**
+     * Called first on every start command, so each startForegroundService() is answered
+     * (Android 14: with the connectedDevice type declared in the manifest).
+     */
     private void goForeground() {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Logging", NotificationManager.IMPORTANCE_LOW));
-        PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
-        Notification n = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("Ice Cube Logger").setContentText("Logging GPS, corrections and sensors")
-                .setSmallIcon(android.R.drawable.ic_menu_mylocation).setOngoing(true).setContentIntent(open).build();
-        if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-        else startForeground(1, n);
+        Notification n = buildNotification(state());
+        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        else startForeground(NOTIFICATION_ID, n);
     }
 
-    private void stopIfIdle() {
-        if (session == null && gps == null && caster == null) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
+    /** The notification for state `st`: what runs, a tap opens the map, and a Stop action only with no session open. */
+    private Notification buildNotification(ServiceState st) {
+        PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, LoggerService.class).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE);
+        shownText = st.text(waitTimeoutMs());
+        shownStop = st.stopLabel();
+        Notification.Builder b = new Notification.Builder(this, CHANNEL)
+                .setContentTitle("Ice Cube Logger").setContentText(shownText)
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation).setOngoing(true).setOnlyAlertOnce(true)
+                .setContentIntent(open);
+        if (shownStop != null) b.addAction(new Notification.Action.Builder(null, shownStop, stop).build());
+        return b.build();
+    }
+
+    /** Re-posts the notification when its text or Stop label changed. */
+    private void updateNotification() {
+        if (stopped) return;
+        ServiceState st = state();
+        if (st.text(waitTimeoutMs()).equals(shownText) && java.util.Objects.equals(st.stopLabel(), shownStop)) return;
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        nm.notify(NOTIFICATION_ID, buildNotification(st));
+    }
+
+    /** Every TICK_MS on the main thread while running: ends an expired wait for the rover, updates the notification. */
+    private void onTick() {
+        if (stopped) return;
+        GpsWorker w = gps;
+        if (w != null && state().waitExpired(w.startedMs, SystemClock.elapsedRealtime(), w.waitTimeoutMs)) {
+            stopGps("gps wait for the rover ended after " + (w.waitTimeoutMs / 1000) + " s");
         }
+        if (stopIfIdle()) return;
+        updateNotification();
+        main.postDelayed(tick, TICK_MS);
+    }
+
+    /** The service's state now, for the notification and the stop rules. */
+    ServiceState state() {
+        Session s = session;
+        GpsWorker w = gps;
+        NtripClient c = caster;
+        return new ServiceState(s == null ? null : s.dir.getName(), w != null, w != null && w.connected,
+                w != null && w.waitForLink && !w.everConnected, c != null, c != null && c.connected);
+    }
+
+    private long waitTimeoutMs() {
+        GpsWorker w = gps;
+        return w != null ? w.waitTimeoutMs : Math.round(Settings.limit(prefs, Settings.GPS_WAIT_MIN, Limit.GPS_WAIT_MIN) * 60000);
+    }
+
+    /** Stops the service when nothing runs. Returns true when it did. */
+    private boolean stopIfIdle() {
+        if (!state().idle()) return false;
+        stopped = true;
+        main.removeCallbacks(tick);
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
+        return true;
+    }
+
+    /** The app's task was removed (swiped away): with no session, stop the links and the service. */
+    @Override public void onTaskRemoved(Intent root) {
+        if (state().stopOnTaskRemoved()) {
+            stopAll();
+            stopIfIdle();
+        }
+        super.onTaskRemoved(root);
     }
 
     // ---- session ----
@@ -397,6 +480,14 @@ public final class LoggerService extends Service {
         c.start();
     }
 
+    /** Connect caster when the GPS connects: starts the caster if none runs and one is set. */
+    private void startCasterIfNone() {
+        if (caster != null || Settings.prefs(this).getString(Settings.HOST, "").trim().isEmpty()) return;
+        event("caster start: gps connected");
+        startCaster();
+        updateNotification();
+    }
+
     private void stopCaster(String why) {
         NtripClient c = caster;
         caster = null;
@@ -447,10 +538,11 @@ public final class LoggerService extends Service {
         String address = p.getString(Settings.BT_ADDRESS, null);
         boolean configure = Settings.configure(p, bt);
         if (old != null) stopGps("gps restarted");
-        GpsWorker w = new GpsWorker(bt, address, configure, wait);
+        GpsWorker w = new GpsWorker(bt, address, configure, wait, Settings.casterWithGps(p),
+                Math.round(Settings.limit(p, Settings.GPS_WAIT_MIN, Limit.GPS_WAIT_MIN) * 60000));
         gps = w;
         event("gps start link=" + (bt ? "bluetooth " + address : "usb") + " configure=" + configure
-                + (wait ? " session_on_connect" : ""));
+                + (wait ? " session_on_connect" : "") + (w.casterOnConnect ? " caster_on_connect" : ""));
         w.start();
     }
 
@@ -473,16 +565,19 @@ public final class LoggerService extends Service {
 
     /** One GPS connection attempt loop on a dedicated high-priority thread. Bytes are never altered. */
     private final class GpsWorker implements Runnable {
-        final boolean bluetooth, configure, waitForLink;
+        final boolean bluetooth, configure, waitForLink, casterOnConnect;
         final String address;
+        final long startedMs = SystemClock.elapsedRealtime(), waitTimeoutMs;
         volatile boolean active = true, connected, everConnected, usbNeedsPermission;
         volatile String status = "starting";
         volatile long lastDataNanos;
         private volatile GpsLink link;
         private Thread thread;
 
-        GpsWorker(boolean bluetooth, String address, boolean configure, boolean waitForLink) {
+        GpsWorker(boolean bluetooth, String address, boolean configure, boolean waitForLink, boolean casterOnConnect,
+                long waitTimeoutMs) {
             this.bluetooth = bluetooth; this.address = address; this.configure = configure; this.waitForLink = waitForLink;
+            this.casterOnConnect = casterOnConnect; this.waitTimeoutMs = waitTimeoutMs;
         }
 
         void start() {
@@ -525,7 +620,9 @@ public final class LoggerService extends Service {
                 link = l;
                 gpsLink = l;
                 connected = true;
+                boolean first = !everConnected;
                 everConnected = true;
+                if (first && casterOnConnect) main.post(() -> { if (gps == this) startCasterIfNone(); });
                 status = "connected";
                 Session s = session;
                 event("gps connected " + l.describe() + " gps_offset=" + (s == null ? 0 : s.gps.offset()));
@@ -635,6 +732,7 @@ public final class LoggerService extends Service {
     String layerCheckFile() { return layerCheckFile; }
 
     @Override public void onDestroy() {
+        main.removeCallbacks(tick);
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
         stopAll();
         background.shutdownNow();

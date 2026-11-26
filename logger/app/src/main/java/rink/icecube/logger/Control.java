@@ -59,15 +59,16 @@ final class Control {
         }
     }
 
-    /** The two launch options from Settings. A USB re-attach while open only restarts the GPS. */
-    static void autostart(Activity a, Intent launch, boolean appLaunch) {
+    /**
+     * Log on GPS connect at launch or USB attach: starts the GPS waiting for the rover (the
+     * service gives up after the Wait for the rover setting when no session opens). Nothing
+     * else starts the service at launch, so opening the app to look at the map starts no
+     * foreground service; the caster setting follows the GPS in the service (#30).
+     */
+    static void autostart(Activity a, Intent launch) {
         SharedPreferences p = Settings.prefs(a);
         LoggerService s = LoggerService.current;
         boolean usbLaunch = launch != null && UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(launch.getAction());
-        if (appLaunch && p.getBoolean(Settings.CASTER_AT_LAUNCH, false)
-                && !p.getString(Settings.HOST, "").trim().isEmpty() && (s == null || s.caster() == null)) {
-            send(a, LoggerService.ACTION_CASTER_CONNECT, false);
-        }
         if (!p.getBoolean(Settings.LOG_ON_GPS_CONNECT, false) || (s != null && s.gpsActive())) return;
         boolean bt = Settings.bluetooth(p);
         if (bt && !usbLaunch) {

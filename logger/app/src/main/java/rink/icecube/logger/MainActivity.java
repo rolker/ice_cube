@@ -223,7 +223,7 @@ public final class MainActivity extends Activity {
         arrange();
         updateModeButtons();
         Control.requestRuntimePermissions(this);
-        if (b == null) Control.autostart(this, getIntent(), true);
+        if (b == null) Control.autostart(this, getIntent());
     }
 
     @Override protected void onSaveInstanceState(Bundle b) {
@@ -237,7 +237,7 @@ public final class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         setIntent(i);
-        Control.autostart(this, i, false);
+        Control.autostart(this, i);
     }
 
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
@@ -737,6 +737,10 @@ public final class MainActivity extends Activity {
         item("Details", () -> startActivity(new Intent(this, DetailsActivity.class)));
         item("Settings", () -> startActivity(new Intent(this, SettingsActivity.class)));
         item("Close menu", () -> { });
+        TextView version = new TextView(this);
+        version.setText(Settings.versionLine());
+        version.setPadding(0, Screen.dp(this, 12), 0, 0);
+        drawerItems.addView(version, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void item(String text, Runnable r) {
