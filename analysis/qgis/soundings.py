@@ -33,6 +33,10 @@ Per-sounding vertical sigma (m), all terms independent:
              after its RTK fix started (logger captures only; SW Maps points and pole stops
              inside settle_s are dropped instead)
     pole   = pole_m * (1 - cos(tilt)) + tip_sink     (tilt: bubble, IMU-checked or unknown)
+    A logger tilt capture (method tilt, logger 0.6) takes its tilt solution's sigmas
+    instead: tilt_sd_u_m as the scatter and hypot(tilt_sd_e_m, tilt_sd_n_m)/sqrt 2 as the
+    horizontal scatter (GST still floors both), and tilt 0 (tip sink and ground stay); one
+    missing an sd takes the single-capture rule (capture_sigma_inputs).
     ground = representativeness of one shot of lawn (0 for a ref on a mark)
     sigma_xy^2 = max(floor_h, scatter_h, GST_h)^2 + (pole_m * sin(tilt))^2
 
@@ -496,6 +500,32 @@ def sigma_terms(sg, *, sd_u=None, gst_u=None, sd_h=None, gst_h=None, age=None, f
             "sigma_xy": math.hypot(h, (pole_m or 0.0) * math.sin(tilt))}
 
 
+def _sd_h(e, n):
+    """hypot(e, n) / sqrt 2, a missing value as 0 (the floor then holds)."""
+    return math.hypot(e or 0.0, n or 0.0) / math.sqrt(2)
+
+
+def capture_sigma_inputs(sg, method, sd_u, sd_e, sd_n, tilt_sd_u=None, tilt_sd_e=None, tilt_sd_n=None):
+    """(sd_u, sd_h, tilt_deg) for `sigma_terms` of one logger capture.
+
+    A tilt capture (method "tilt") with all three tilt sds takes the tilt solution's own
+    sigmas (tilt_sd_u_m as sd_u, hypot(tilt_sd_e_m, tilt_sd_n_m) / sqrt 2 as sd_h) and tilt
+    0: the solution already places the tip, so only tip sink and ground stay in the pole
+    budget. Anything else (single, ref, no method, a tilt capture missing an sd) takes the
+    single-capture rule: its 1 s scatter and the bubble tilt. GST still floors the result
+    in `sigma_terms`. The logger mirrors this in core/SoundingSigma.java."""
+    if method == "tilt" and None not in (tilt_sd_u, tilt_sd_e, tilt_sd_n):
+        return tilt_sd_u, _sd_h(tilt_sd_e, tilt_sd_n), 0.0
+    return sd_u, _sd_h(sd_e, sd_n), sg["tilt_bubble_deg"]
+
+
+def _version(v):
+    """An app version string ("0.6.1", "0.10-debug") as a tuple of ints from its leading
+    numbers; () when missing or unreadable, which compares below every version."""
+    m = re.match(r"\s*(\d+(?:\.\d+)*)", v) if isinstance(v, str) else None
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
 # ----------------------------------------------------------------------------- rows
 
 COLUMNS = [("sid", "TEXT"), ("source", "TEXT"), ("session", "TEXT"), ("kind", "TEXT"),
@@ -572,6 +602,9 @@ def _listed_reason(by_n, by_t, session, n, t):
     return None
 
 
+TILT_COLUMNS = ("method", "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m")
+
+
 def logger_source(cfg, src, con, frame, history, log):
     """Captures from the gpkg plus pole stops from the raw sessions."""
     sg, sp = cfg["sigma"], cfg["stops"]
@@ -579,13 +612,27 @@ def logger_source(cfg, src, con, frame, history, log):
     prior, cprior = float(src.get("prior_m", 0.015)), float(src.get("common_prior_m", 0.0))
     by_n, by_t = listed(src)
     sessions = src.get("sessions")
-    q = ("SELECT session, n, class, utc, lat, lon, h_ground, pole_m, fix, n_epochs, sd_e_m, sd_n_m, "
-         "sd_u_m, age_s, elapsed_ns, label FROM captures")
-    caps = [dict(zip(["session", "n", "class", "utc", "lat", "lon", "h_ground", "pole_m", "fix",
-                      "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label"], r))
-            for r in con.execute(q)]
+    cols = ["session", "n", "class", "utc", "lat", "lon", "h_ground", "pole_m", "fix", "n_epochs",
+            "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label"]
+    have = {r[1] for r in con.execute("PRAGMA table_info(captures)")}
+    missing = [k for k in TILT_COLUMNS if k not in have]   # a gpkg from before import schema 3
+    sel = cols + [k if k in have else f"NULL AS {k}" for k in TILT_COLUMNS]
+    caps = [dict(zip(cols + list(TILT_COLUMNS), r))
+            for r in con.execute(f"SELECT {', '.join(sel)} FROM captures")]
     if sessions:
         caps = [c for c in caps if c["session"] in sessions]
+    apps = {}
+    try:
+        apps = dict(con.execute("SELECT session, app FROM sessions"))
+    except sqlite3.Error:
+        pass
+    new_app = [c for c in caps if c["class"] != "photo" and _version(apps.get(c["session"])) >= (0, 6)]
+    if missing and new_app:
+        log(f"  warning: the captures table has no {', '.join(missing)} column(s): tilt captures get "
+            "the single-capture sigma; re-import the sessions (import_sessions.py --force)")
+    elif new_app and all(c["method"] is None for c in new_app):
+        log("  warning: the captures of logger 0.6+ sessions have no method/tilt values: tilt captures "
+            "get the single-capture sigma; re-import the sessions (import_sessions.py --force)")
     sites = {}
     try:
         sites = {(s, n): site for s, n, site in con.execute("SELECT session, n, site FROM refs")}
@@ -662,11 +709,12 @@ def logger_source(cfg, src, con, frame, history, log):
             if reason:
                 add_flag(r, "listed:" + reason)
             on_mark = cls == "anchor"
-            sd_h = math.hypot(c["sd_e_m"] or 0, c["sd_n_m"] or 0) / math.sqrt(2)
-            r.update(sigma_terms(sg, sd_u=c["sd_u_m"], gst_u=gst_u, sd_h=sd_h, gst_h=gst_h, age=c["age_s"],
+            sd_u, sd_h, tilt = capture_sigma_inputs(sg, c["method"], c["sd_u_m"], c["sd_e_m"], c["sd_n_m"],
+                                                    c["tilt_sd_u_m"], c["tilt_sd_e_m"], c["tilt_sd_n_m"])
+            r.update(sigma_terms(sg, sd_u=sd_u, gst_u=gst_u, sd_h=sd_h, gst_h=gst_h, age=c["age_s"],
                                  fix_age=r["fix_age_s"], settle_s=settle_s, pole_m=c["pole_m"],
-                                 tilt_deg=sg["tilt_bubble_deg"], on_mark=on_mark))
-            r["tilt_deg"] = sg["tilt_bubble_deg"]
+                                 tilt_deg=tilt, on_mark=on_mark))
+            r["tilt_deg"] = tilt
             if r["fix_age_s"] is not None and r["fix_age_s"] < settle_s:
                 add_flag(r, "settle_inflated")
             if cls == "anchor":
