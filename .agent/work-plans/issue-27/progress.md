@@ -249,3 +249,33 @@ Cross-model: codex complete (3 must-fix, all kept: anchors, verify_suspect, pole
 - [x] (suggestion, PR B) MapView draws voided captures like live ones — `logger/app/src/main/java/rink/icecube/logger/MapView.java:481-515` (deferred: PR B (the logger UI build: MapView drawing / UNDO bar); out of scope for this PR)
 - [x] (suggestion, PR B) Check that `elapsedNs` is the capture's completion time before the UNDO bar relies on the 8 s window for 30 s refs and tilt sets — `logger/app/src/main/java/rink/icecube/logger/Survey.java:553` (deferred: PR B (the logger UI build: MapView drawing / UNDO bar); out of scope for this PR)
 - [x] (suggestion) Minor: void_reason is not stripped in the soundings flag; export_labels prints no count with --include-voided and writes "" not 0 for a pre-0.9.0 gpkg — `analysis/qgis/soundings.py:649`, `analysis/qgis/export_labels.py:88`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:54 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-27 at `b334922`
+**Addressed**: Local Review (Pre-Push) at `102e6e3` (2026-11-26 18:48 -05:00)
+**Commits**: ad72db0, 30437b7, 5a4083e, 4cfc6ed, 8c5ffa2, bd5bd92, 98157a2, ab97749, b334922
+
+### Actions
+- [x] (must-fix) assign_anchors: void-flagged refs neither make nor join a site — `analysis/qgis/soundings.py` (ad72db0, test added)
+- [x] (must-fix) verify_suspect: void-flagged rows left out of the suspect comparison — `analysis/qgis/soundings.py` (ad72db0, test added)
+- [x] (must-fix) build_project.py: void=1 captures a grey x category "Flagged (void)", refs a grey dashed ring, void_reason in map tips; pre-0.9.0 gpkg unchanged — `analysis/qgis/build_project.py` (30437b7; QGIS not installed here, compile-checked only)
+- [x] (must-fix) Survey.poleCheck: void recheck and notice/warning/alarm set under the Survey lock; poleWarningN volatile — `logger/.../Survey.java` (5a4083e)
+- [x] (suggestion) update_local: void refs out of site grouping, their site cleared — `analysis/qgis/import_sessions.py` (bd5bd92, test added)
+- [x] (suggestion) import_refs_csv: copies ordered by zip entry / file mtime; flag from the newest copy with a void column — `analysis/qgis/import_sessions.py`, `logger_session.py` (bd5bd92, test added)
+- [x] (suggestion) read_refs_csv: rows longer than a headerless/old header read by the logger's column order, void kept; `void_known` marks rows with no void value (not voided) — `analysis/qgis/logger_session.py` (bd5bd92, test added)
+- [x] (suggestion) include_voided rows carry the non-excluding flag `voided_included` — `analysis/qgis/soundings.py` (ad72db0)
+- [x] (suggestion) RefsStore.setVoid reaching no file logs an `error:` event — `logger/.../Survey.java` refsVoid (4cfc6ed)
+- [x] (suggestion) README: no tilt_obs.csv reader exists yet; a future one must drop voided leans — `logger/README.md` (8c5ffa2)
+- [x] (suggestion) refs.csv photo names: documented as kept as appended, points.csv is the record — `logger/README.md`, `core/VoidRule.java` (8c5ffa2)
+- [x] (suggestion, PR B) MapView drawing of voided captures — (deferred: PR B)
+- [x] (suggestion, PR B) elapsedNs as completion time for the UNDO window — (deferred: PR B)
+- [x] (suggestion) void_reason stripped in soundings (ad72db0); export_labels counts flagged with --include-voided and writes void 0 for a pre-0.9.0 gpkg (98157a2)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 99 tests, OK (skipped=5)
+- `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD OK (exit 0); C: 113.9 GB free before the run
+- Docs: `docs/howto/ice-cube.md` updated (b334922). Untracked review-*-prompt/findings.md removed.
