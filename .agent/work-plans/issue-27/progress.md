@@ -77,3 +77,50 @@ Actions go to plan-task: events.csv is the append-only source of truth and point
 **Plan**: `.agent/work-plans/issue-27/plan.md` at `4844630`
 
 Soft-void with events.csv as the append-only source of truth and derived void/void_reason columns in points.csv and refs.csv; Coverage.feeds and PoleCheck skip voided rows; voided photos move to the nearest earlier live capture. Two PRs: A (data model, undo/flag UI, readers, docs, 0.9.0), B (PHOTO target indicator).
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 18:30 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: needs-work
+
+**Issue**: #27 — Logger: undo or flag an accidental capture
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `4844630`
+**Branch**: `feature/issue-27`
+
+Reviewed with the host's decisions as given: in-place atomic refs.csv rewrite logged in events.csv; new `photo` row when there is no earlier capture; no 60 s limit on void-time re-attach; qgis importer updated here; 0.9.0 / build 13; UI split into a second PR only if PR A exceeds about a dozen files of real change (implementer decides and records why).
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Needs work | PR A lists about 16 source/doc files plus tests (PointRow, VoidRule, PhotoRule, PoleCheck, Coverage, CoverageWorker, Survey, RefsStore, Storage, MainActivity, MapView, logger_session.py, import_sessions.py, README, howto, build.gradle). That is past the host's "about a dozen" line, so the UI split (step 7) is likely; the implementer decides and records why in progress.md. Not a blocker. |
+| Issue alignment | Good | Covers undo, flag/unflag with reasons, columns, overlay, pole-check history, reader skipping, the owner's photo case, and every review-issue action (source of truth, photo rule, ref/tilt, old-file tests, #20/#21 notes). Serves: project goal "surveyed with the logger" (`docs/roadmap.md` Direction); no design document. |
+| File targeting | Needs work | The undo binding in `Survey.Notice` and the earlier-refs map layer (`MainActivity` refs loader keyed on `refsGeneration`) need explicit mention; see findings 1 and 3. `analysis/qgis/soundings.py` reads logger captures from the gpkg the importer writes (finding 4). |
+| Consequences | Needs work | Missing: voiding a ref must bump `refsGeneration` so the map's earlier-refs layer drops it; refs.csv may exist in more than one storage root (`Storage.refsFiles`). |
+| Principle alignment | Good | Public-repo fixtures synthetic; nothing deleted, events.csv is the trail, numbers kept; docs and version in the same PR; window and reasons as constants. Tests planned for each rule. |
+| ADR compliance | Good | The project keeps no ADRs; none triggered. |
+| ROS conventions | N/A | Android app and Python scripts. |
+
+**Coverage vs #29 (host check)**: fine. The plan touches `Coverage.java` only in `feeds()` (one more condition, `!r.voided`), and puts the forced rebuild in `CoverageWorker.update`, which already rebuilds via `rebuild()` when the row count shrinks. #29's plan keeps its PR A in Python and moves its `Coverage.java` port (entry offsets, ring re-reduction) to its PR B; it does not list `CoverageWorker.java`. The forced rebuild also covers the case where a void appends a new `photo` row (row count grows, which would otherwise be only a feed).
+
+**UNDO vs the stray tap (host check)**: placement is good. The notice bar sits above the map in portrait (buttons along the bottom) and in the left column in landscape (buttons in a right column), so a repeated stray tap on MARK lands on MARK, not UNDO, and a volume-key capture cannot hit UNDO. The gaps are in binding and timing (finding 1).
+
+### Findings
+
+1. **[File targeting / UI]** The UNDO must be bound to the capture explicitly, not inferred from `Notice.at`. Today `photoTaken` sets `notice = new Notice("Photo on S12", ..., target)` with `at` set to the capture, so "notice has an `at` capture" would offer UNDO of the capture the photo just went on. Add an explicit undo target (`undoN`, `undoUntilMs`) on `Notice`, set only by the capture's own notice (surface/object single capture, tilt end, ref end). Also specify: (a) an arm delay of about 0.5-1 s after the notice appears during which a tap on the bar is ignored, so the second tap of a double tap, or a press already in progress when the bar becomes visible, cannot undo; (b) `Survey.voidCapture(n, "accidental", "undo")` checks the window itself against the capture's `elapsedNs` and `VoidRule.UNDO_WINDOW_MS` and refuses an already-voided row; (c) the UNDO label goes away at 8 s although the notice stays for `NOTICE_MS` = 10 s; (d) a newer notice (next capture, photo, ref status) ends the UNDO; the owner's 11-26 case (photo 3 s later) is then handled through Recent captures, which the README should say.
+2. **[Principle: correctness]** `voided` is mutated on the Survey side while the coverage worker thread and `MapView` read the same `PointRow` objects (`Survey.rows()` copies the array, not the rows). Make the field `volatile` (or replace the row object) so the forced rebuild is guaranteed to see the new value.
+3. **[Consequences]** `RefsStore.setVoid` must say which file it rewrites: `Storage.refsFiles` can return one refs.csv per storage root and `RefsStore.readAll` reads them all, so rewrite the matching (session, n) row in every root that has it (each atomically). Voiding or un-voiding a ref must bump `refsGeneration` so `MainActivity`'s earlier-refs layer reloads, and that layer (and `MapView`'s drawing of it) must skip voided rows.
+4. **[File targeting]** `analysis/qgis/soundings.py` reads logger captures from the gpkg `captures` table that `import_sessions.py` writes. If the importer drops voided rows, nothing more is needed; if it keeps them with a void flag (useful to see them in QGIS), `soundings.py` must filter them. State which, and fix the plan's "the one reader on main" wording.
+
+### Summary
+
+A sound soft-void design that answers every review-issue action and fits the host's decisions; the coverage change is kept clear of #29. Before implementation, pin down how UNDO is bound and guarded, the visibility of the `voided` field across threads, and the refs.csv and earlier-refs consequences.
+
+### Recommended Actions
+
+- [ ] Bind UNDO to an explicit `undoN`/`undoUntilMs` on the capture's own notice, with an arm delay of about 0.5-1 s, a window check in `Survey`, and the label hidden at 8 s; document that a newer notice ends it.
+- [ ] Make `PointRow.voided` (and `voidReason`) safe to read from the coverage and drawing threads.
+- [ ] Specify `RefsStore.setVoid` over every storage root's refs.csv, bump `refsGeneration` on ref void/unvoid, and skip voided rows in the earlier-refs layer.
+- [ ] State whether the importer drops or flags voided rows, and update `soundings.py` if flagged.
+- [ ] Record the PR A / UI split decision and the reason in progress.md.
