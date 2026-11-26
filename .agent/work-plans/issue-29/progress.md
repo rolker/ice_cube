@@ -250,4 +250,4 @@ Flagged deviations:
 - [x] (suggestion) Cast `PLANE_KEYS` values from TOML (int/float) like the neighbouring keys — `icecube/topo.py:192`
 - [x] (suggestion) plane_vectors cover no PLANE_NOT_PLANAR case and the flat case never reaches plane_fit; add a ridge case so PR B's port pins every non-DEM code (gemini) — `icecube/logger_vectors.py:363`
 - [x] (suggestion) Docs say gradient is set where a plane passed the fit gates; it is also set on NOT_STEEP and DEM (gemini) — `docs/howto/ice-cube.md:155`
-- [ ] (suggestion) Note for PR B: the centroid is over the main's members (weighted by w), not over all entries as the plan's WDX/W aggregate moments read; the Java port must match — `.agent/work-plans/issue-29/plan.md`
+- [x] (suggestion) Note for PR B: the centroid is over the main's members (weighted by w), not over all entries as the plan's WDX/W aggregate moments read; the Java port must match — `.agent/work-plans/issue-29/plan.md`

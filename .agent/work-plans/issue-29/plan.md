@@ -74,6 +74,13 @@ Two stages, the same definition in Python and Java, held by parity vectors.
   moments, ring re-reduction (a capture touches 9 nodes; pass 2 of a node needs its 8 neighbours' pass 1,
   so the 5x5 ring of 25 is re-reduced), consuming PR A's vectors. Why split: the logger change sits on the
   per-capture hot path and the repaint, needs its own timing check, and should port a settled definition.
+  Port notes from PR A's review: a neighbour's centroid is the w-weighted mean (dx, dy) over its
+  **main's members** only (`nodes._centroid`), not over all its entries as the `WDX/W` aggregate
+  moments above read; with an aggregate in the main, the aggregate counts at `(WDX/W, WDY/W)` with its
+  W, and an aggregate outside the main does not count. The fit gate is conditioning, not grid span:
+  `sigma_g` = sqrt of the larger eigenvalue of the scaled `C_g`, closed form
+  (`nodes._sigma_g_max`), against `plane_max_sigma_g`; every continuous gate fails closed on a
+  non-finite value (port the `!(x <= limit)` form), and the DEM gate does not apply on the phone.
 
 ## Files to Change
 
