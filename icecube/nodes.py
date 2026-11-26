@@ -397,7 +397,7 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity):
     main's weight, (ox, oy) its grid offset (the span test). Red ones are weighted by `red_weight`. Returns (code, fit) with code a PLANE_*
     gate code (0 when the fit passes the count, span and planarity gates) and fit a dict
     a, var_a, gx, gy, cov_g (2x2), chi (the weighted RMS residual per degree of freedom,
-    in neighbour sigmas). The covariance is scaled by max(1, chi^2)."""
+    in neighbour sigmas; on PLANE_NOT_PLANAR the dict holds chi alone). The covariance is scaled by max(1, chi^2)."""
     use = [(X, Y, z, W * (red_weight if red else 1.0), red, ox, oy) for X, Y, z, W, red, ox, oy in nbrs]
     use = [u for u in use if u[3] > 0]
     if (len(use) < max(min_neighbours, 4) or len({round(u[5], 9) for u in use}) < 2
@@ -417,7 +417,7 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity):
     r = z - A @ beta
     chi = math.sqrt(float(np.sum(w * r * r)) / (len(use) - 3))
     if chi > planarity:
-        return PLANE_NOT_PLANAR, None
+        return PLANE_NOT_PLANAR, dict(chi=chi)
     cov = Ninv * max(1.0, chi * chi)
     return 0, dict(a=float(beta[0]), gx=float(beta[1]), gy=float(beta[2]), var_a=float(cov[0, 0]),
                    cov_g=cov[1:, 1:], chi=chi)
@@ -437,7 +437,7 @@ def reduce_to_plane(es, gx, gy, cov_g):
     return out
 
 
-def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, **prm):
+def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, trace=None, **prm):
     """The neighbourhood-gradient pass (issue #29) over pass-1 results.
 
     `stores`: node index (a*nx + b) -> entries; `out1`: node index -> pass-1 output dict
@@ -446,7 +446,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
     None (no DEM gate). `prm`: PLANE_DEFAULTS keys. Only nodes red after pass 1 are tried;
     each fit uses the pass-1 mains of the 8 neighbours (one sweep, nothing cleared here
     feeds a later fit). Returns node index -> (code, pass-2 output or None, |g| or NaN)
-    for every tried node."""
+    for every tried node. `trace`, when a list, receives (name, value, threshold) for each
+    continuous gate comparison (the vector generator's threshold guard)."""
     p = dict(PLANE_DEFAULTS, **{k: v for k, v in prm.items() if v is not None})
     planarity = k_sigma if p["planarity"] is None else float(p["planarity"])
     red = {i: is_red(len(stores[i]) - o["n_out"], o["n_out"]) for i, o in out1.items()}
@@ -468,6 +469,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
                 nbrs.append((db * cell + o_j.get("cx", 0.0), da * cell + o_j.get("cy", 0.0), o_j["z"], o_j["w"],
                              red[j], db * cell, da * cell))
         code, fit = plane_fit(nbrs, p["min_neighbours"], p["min_clear"], p["red_weight"], planarity)
+        if trace is not None and fit is not None:
+            trace.append(("planarity", fit["chi"], planarity))
         if code:
             res[idx] = (code, None, float("nan"))
             continue
@@ -475,12 +478,16 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         ux, uy = (fit["gx"] / g, fit["gy"] / g) if g > 0 else (1.0, 0.0)
         cg = fit["cov_g"]
         sg = math.sqrt(max(ux * ux * cg[0, 0] + 2.0 * ux * uy * cg[0, 1] + uy * uy * cg[1, 1], 0.0))
+        if trace is not None:
+            trace.append(("significance", g - allowance(a, b), k_sigma * sg))
         if g - allowance(a, b) <= k_sigma * sg:
             res[idx] = (PLANE_NOT_STEEP, None, g)
             continue
         if raw_slope is not None:
             s = raw_slope(a, b)
             s = 0.0 if not np.isfinite(s) else float(s)
+            if trace is not None:
+                trace.append(("dem", g, p["dem_cap"] * s + p["dem_floor"]))
             if g > p["dem_cap"] * s + p["dem_floor"]:
                 res[idx] = (PLANE_DEM, None, g)
                 continue
@@ -489,6 +496,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         if is_red(len(es2) - o2["n_out"], o2["n_out"]) and not o2["n_out"] < o["n_out"]:
             res[idx] = (PLANE_NO_GAIN, None, g)
             continue
+        if trace is not None:
+            trace.append(("agreement", abs(o2["z"] - fit["a"]), k_sigma * math.sqrt(fit["var_a"] + o2["sigma"] ** 2)))
         if abs(o2["z"] - fit["a"]) > k_sigma * math.sqrt(fit["var_a"] + o2["sigma"] ** 2):
             res[idx] = (PLANE_OFF_PLANE, None, g)
             continue

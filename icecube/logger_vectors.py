@@ -29,11 +29,18 @@ included), as "i j status" with status one of no_data (an enclosed gap), fringe,
 disagree, thin, ok. Applied in turn they give every in-area node's status after every
 capture; an in-area node never goes back to none. This pins clearing and flicker.
 
+Part `plane_vectors` (issue #29, PR A; the logger port is PR B): synthetic blocks of
+soundings on PLANE_PARAMS, every node fed unfolded entries (no node reaches CAP, so no
+aggregate), rebuilt with the logger's rule (count promotion, no Eeg, no pass bias), then
+`nodes.plane_pass` with the same rule and `nodes.PLANE_DEFAULTS` (`plane_params` pins
+both). Expected per node: pass-1 z and n_out, the plane code, planar, gradient and the
+final z, sigma, n_in, n_out. The fold aggregate's moments are PR B's.
+
 Guard: the generator refuses a vector where Java and Python could round to different
 decisions: a sounding within 1e-6 m of a node's capture circle or reach, a test statistic
 within 1e-6 of k_sigma, a weighted-median sum within 1e-9 (relative) of W/2 but not on it
 (an exact half comes from equal weights and is the pinned lower-median rule), a status
-sigma within 1e-9 of the target.
+sigma within 1e-9 of the target, a plane gate value within 1e-6 (relative) of its threshold.
 
 Regenerate whenever `soundings.sigma_terms` or its defaults change;
 `icecube/tests/test_logger_vectors.py` fails until the committed file matches.
@@ -331,6 +338,105 @@ def sequences_part():
     return [_sequence(*c) for c in _sequence_cases()]
 
 
+PLANE_PARAMS = {"cell": 0.5, "capture_radius": 0.75, "slope": 0.05, "k_sigma": 3.0}
+
+
+def _plane_params():
+    from . import nodes
+    return PLANE_PARAMS | {"plane_" + k: v for k, v in nodes.PLANE_DEFAULTS.items()}
+
+
+def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01):
+    """Soundings at random (stdlib random, seeded) over an n x n block of nodes from (0, 0),
+    `per_disc` per capture disc on average, z = g*x plus N(0, sz), rounded to 0.1 mm."""
+    import random
+    rnd = random.Random(seed)
+    lo, hi = -0.75, (n - 1) * 0.5 + 0.75
+    m = int(round(per_disc / (math.pi * 0.75 ** 2) * (hi - lo) ** 2))
+    out = []
+    for _ in range(m):
+        x, y = round(rnd.uniform(lo, hi), 4), round(rnd.uniform(lo, hi), 4)
+        out.append([x, y, round(g * x + rnd.gauss(0.0, sz), 4), sz, sh])
+    return out
+
+
+def _plane_cases():
+    """(name, soundings) on PLANE_PARAMS; seeds picked so each case is what it is named for
+    (test_logger_vectors checks)."""
+    import random
+    out = [("bank_0.3_clears", _plane_block(0.3, 3)), ("bank_0.2_clears", _plane_block(0.2, 3))]
+    # flat ground, one +15 cm capture 0.7 m from node (2, 2): no node planar
+    flat = _plane_block(0.0, 7)
+    flat.append([round(1.0 + 0.7 * math.cos(0.9), 4), round(1.0 + 0.7 * math.sin(0.9), 4), 0.15, 0.02, 0.01])
+    out.append(("flat_edge_outlier", flat))
+    # a 0.3 m/m bank plus 8 captures 15 cm above it around node (2, 2): pass 2 would make
+    # them the main, but they disagree with the neighbour plane (code 8), so pass 1 stands
+    rnd = random.Random(5027)
+    wc = _plane_block(0.3, 27)
+    for _ in range(8):
+        x, y = round(rnd.uniform(0.75, 1.25), 4), round(rnd.uniform(0.75, 1.25), 4)
+        wc.append([x, y, round(0.3 * x + 0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
+    out.append(("wrong_cluster_keeps_pass1", wc))
+    return out
+
+
+def _plane_case(name, soundings):
+    """Every sounding feeds the nodes (i*cell, j*cell) within the capture radius as an
+    unfolded entry (z, v = sz^2 + (slope*(d + sh))^2, id, dx, dy, sz^2, sh); each node is
+    rebuilt with the logger's rule (count promotion, no Eeg, no pass bias); then
+    nodes.plane_pass with the same rule. Expected per node with soundings: pass-1 z and
+    n_out, the plane code, planar, gradient (null when none) and the final z, sigma, n_in,
+    n_out."""
+    from . import nodes
+    p = _plane_params()
+    cell, rad, slope, k = p["cell"], p["capture_radius"], p["slope"], p["k_sigma"]
+    rows = _rows(soundings)
+    feed = {}
+    for r in rows:
+        x, y = r["x"], r["y"]
+        for j in range(math.ceil((y - rad) / cell), math.floor((y + rad) / cell) + 1):
+            for i in range(math.ceil((x - rad) / cell), math.floor((x + rad) / cell) + 1):
+                d = math.hypot(i * cell - x, j * cell - y)
+                assert abs(d - rad) > 1e-6, ("on a circle", name, x, y, i, j)
+                if d <= rad:
+                    s = slope * (d + r["sh"])
+                    feed.setdefault((i, j), []).append(nodes.entry(
+                        r["z"], r["sz"] ** 2 + s * s, r["id"], dx=x - i * cell, dy=y - j * cell,
+                        sz2=r["sz"] ** 2, sh=r["sh"]))
+    assert all(len(es) <= nodes.CAP for es in feed.values()), (name, "over the cap: no fold here")
+    i0 = min(i for i, _ in feed); j0 = min(j for _, j in feed)
+    nx = max(i for i, _ in feed) - i0 + 1; ny = max(j for _, j in feed) - j0 + 1
+    stores = {(j - j0) * nx + (i - i0): es for (i, j), es in feed.items()}
+    trace = []
+
+    def run(es):
+        nodes.rebuild(es, k, "count", trace)
+        return nodes._robust(es, k, 0.0, "count")
+
+    out1 = {idx: run(es) for idx, es in stores.items()}
+    gtrace = []
+    tried = nodes.plane_pass(stores, out1, nx, ny, cell, k, run, lambda a, b: slope, None, gtrace,
+                             **{kk[6:]: v for kk, v in p.items() if kk.startswith("plane_")})
+    _check_trace(name, trace, k)
+    for g in gtrace:
+        assert abs(g[1] - g[2]) > 1e-6 * max(1.0, abs(g[2])), (name, "plane gate on its threshold", g)
+    out = []
+    for idx in sorted(stores, key=lambda q: (q // nx, q % nx)):
+        a, b = divmod(idx, nx)
+        es, o1 = stores[idx], out1[idx]
+        code, o2, gr = tried.get(idx, (nodes.PLANE_NOT_TRIED, None, float("nan")))
+        o = o2 if o2 is not None else o1
+        out.append({"i": b + i0, "j": a + j0, "z1": o1["z"], "n_out1": o1["n_out"], "code": code,
+                    "planar": code == nodes.PLANE_ACCEPTED, "gradient": None if math.isnan(gr) else gr,
+                    "z": o["z"], "sigma": o["sigma"], "n": len(es), "n_in": len(es) - o["n_out"],
+                    "n_out": o["n_out"]})
+    return {"name": name, "soundings": rows, "nodes": out}
+
+
+def plane_part():
+    return [_plane_case(*c) for c in _plane_cases()]
+
+
 def build():
     """The whole vectors document (a dict)."""
     sm = _soundings()
@@ -343,6 +449,8 @@ def build():
         "nodes_defaults": _nodes_defaults(),
         "nodes": nodes_part(sm),
         "sequences": sequences_part(),
+        "plane_params": _plane_params(),
+        "plane_vectors": plane_part(),
     }
 
 
