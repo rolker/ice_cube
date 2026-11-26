@@ -61,3 +61,11 @@ issue: 9
 **Decision**: proceed
 
 Actions go to plan-task: tilt rule applied in the capture loop (sd_u = tilt_sd_u_m, sd_h = hypot(tilt_sd_e_m, tilt_sd_n_m)/sqrt(2), tilt 0) without changing sigma_terms' signature; tolerate missing/NULL tilt columns (fall back to the single rule); check the existing tilt parity vector against the soundings path; fix the docs that say the rule is absent. Issue 26 stays out of scope.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 18:27 -05:00
+**By**: Claude Code Agent (claude-sonnet-5-5)
+**Plan**: `.agent/work-plans/issue-9/plan.md` at `197feb7`
+
+Single PR: make `read_points` and the captures gpkg table carry method, fix_suspect and tilt_* columns (NULL for older logs), add a shared rule helper in soundings.py (tilt sds as sd_u/sd_h with tilt 0, else single rule; sigma_terms unchanged) used by the capture loop and logger_vectors, add a missing-sd vector and tests, and fix the docs saying the rule is absent.
