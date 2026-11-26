@@ -190,3 +190,13 @@ The revision addresses both must-fixes and all should-fixes from the first revie
 - [ ] Pass the raw DEM slope at all three `topo.py` `grid_surface` call sites.
 - [ ] Carry `sh` on entries and write the pass-2 variance formula explicitly.
 - [ ] State that the plane pass applies only with `robust=True`.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:32 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready, no must-fix; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implement PR A (batch). Review notes into the handoff: regenerate and commit coverage_vectors.json in PR A (test_committed_file_is_current); pass the raw slope at all three grid_surface call sites in topo.py; entries carry sh too, with the pass-2 sh variance term written out and every tuple unpack checked; the plane pass runs only in robust mode.
