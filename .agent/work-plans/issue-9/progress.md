@@ -180,3 +180,13 @@ The revision fixes all three findings from the first review, and the plan is rea
 - [ ] On a schema-version upgrade, skip only the unchanged-signature check, keep the "snapshot of a session already imported in full" guard, and test it.
 - [ ] Compare `sessions.app` versions numerically for the 0.6+ warning. NULL or unparseable means older.
 - [ ] Keep None-as-0 in the helper's sd_h so the `missing_sd` vector is unchanged.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:31 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready, no must-fix; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+The review's three implementation notes go into the implement handoff: keep the snapshot guard on the schema-upgrade re-read (skip only the unchanged-signature check), with a test; compare app versions numerically (missing/unreadable = older); the helper treats a missing sd as 0 like today so the existing missing_sd vector is unchanged.
