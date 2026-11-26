@@ -15,7 +15,7 @@ estimator) with these additions:
   `capture_radius` is a floor on every grid's (a 2 m DEM must reach 1.5 m on a 0.5 m grid).
 - `[[grids]]`: name, cell, capture_radius, k_sigma, robust, eeg_quotient_limit and the plane pass
   (`plane`, `plane_min_neighbours`, `plane_min_nin`, `plane_min_clear`, `plane_red_weight`,
-  `plane_planarity`, `plane_dem_cap`, `plane_dem_floor`; nodes.py), the extent (`extent = [xmin, xmax, ymin,
+  `plane_planarity`, `plane_max_sigma_g`, `plane_dem_cap`, `plane_dem_floor`; nodes.py), the extent (`extent = [xmin, xmax, ymin,
   ymax]`, or `extent_polygon = {path, name}` plus `margin`), the slope allowance (`slope`, or
   `slope_from_dem = {survey, factor, floor, cap}`: per node max(floor, factor * DEM slope);
   the raw DEM slope also feeds the plane pass's DEM gate), and `contour_interval`. Every surface is gridded on every grid.
@@ -171,9 +171,15 @@ def slope_array(ctx, gcfg, grid):
     return np.minimum(out, float(sd.get("cap", 0.5))), s
 
 
-#: [[grids]] keys passed to nodes.grid_surface as they are (the plane pass's thresholds).
-PLANE_KEYS = ("plane_min_neighbours", "plane_min_nin", "plane_min_clear", "plane_red_weight",
-              "plane_planarity", "plane_dem_cap", "plane_dem_floor")
+#: [[grids]] keys passed to nodes.grid_surface (the plane pass's thresholds), with their types.
+PLANE_KEYS = {"plane_min_neighbours": int, "plane_min_nin": int, "plane_min_clear": int,
+              "plane_red_weight": float, "plane_planarity": float, "plane_max_sigma_g": float,
+              "plane_dem_cap": float, "plane_dem_floor": float}
+
+
+def plane_kwargs(gcfg):
+    """The PLANE_KEYS present in a [grid] / [[grids]] table, cast to their types."""
+    return {k: cast(gcfg[k]) for k, cast in PLANE_KEYS.items() if k in gcfg}
 
 
 def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slopes):
@@ -191,13 +197,16 @@ def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slopes):
                               k_sigma=float(gcfg.get("k_sigma", 3.0)), robust=bool(gcfg.get("robust", True)),
                               eeg_quotient_limit=float(gcfg.get("eeg_quotient_limit", 30.0)),
                               plane=bool(gcfg.get("plane", True)), raw_slope=raw,
-                              **{k: gcfg[k] for k in PLANE_KEYS if k in gcfg}, name=sname,
+                              **plane_kwargs(gcfg), name=sname,
                               date=max(p.date for p in pts), frame=pts[0].frame)
     X, Y = np.meshgrid(grid.xs, grid.ys)
     nmask = mask_points(ctx.masks, X, Y) if ctx.masks else np.zeros(X.shape, bool)
     surf.z = np.where(nmask, np.nan, surf.z)
     surf.sigma = np.where(nmask, np.nan, surf.sigma)
     surf.n = np.where(nmask, 0, surf.n)
+    surf.planar = np.where(nmask, False, surf.planar)
+    surf.gradient = np.where(nmask, np.nan, surf.gradient)
+    surf.plane_code = np.where(nmask, nodes.PLANE_NOT_TRIED, surf.plane_code)
     return surf, nmask
 
 
@@ -380,7 +389,7 @@ def run(cfg, out_dir=None, log=print):
             np.savez(out / f"surface_{tag}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, n_out=surf.n_out, n_alt=surf.n_alt,
                      z_alt=surf.z_alt, strength=surf.strength, n_eeg=surf.n_eeg, mask=nmask,
                      maxnr=surf.maxnr, npass=surf.npass, slope=np.broadcast_to(slope, surf.z.shape),
-                     planar=surf.planar, gradient=surf.gradient, **grid.as_dict())
+                     planar=surf.planar, gradient=surf.gradient, plane_code=surf.plane_code, **grid.as_dict())
             for what, arr, fmt in (("z", surf.z, "%.4f"), ("sigma", surf.sigma, "%.4f"),
                                    ("count", np.where(surf.n > 0, surf.n, np.nan), "%d"),
                                    ("flags", np.where(nmask | (surf.n > 0), flags, np.nan), "%d")):

@@ -72,8 +72,8 @@ def run(cfg, out_dir=None, log=print):
     robust = bool(g.get("robust", True))
     eeg = float(g.get("eeg_quotient_limit", 30.0))
     plane = bool(g.get("plane", True))
-    plane_kw = {k: g[k] for k in ("plane_min_neighbours", "plane_min_nin", "plane_min_clear", "plane_red_weight",
-                                  "plane_planarity") if k in g}
+    from .topo import plane_kwargs
+    plane_kw = plane_kwargs(g)
     out = Path(out_dir or cfg.get("output", {}).get("dir", "output/ice-cube"))
     if not out.is_absolute() and base is not None:
         out = base / out
@@ -128,7 +128,7 @@ def run(cfg, out_dir=None, log=print):
         np.savez(out / f"surface_{sname}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, n_out=surf.n_out,
                  n_alt=surf.n_alt, z_alt=surf.z_alt, strength=surf.strength, n_eeg=surf.n_eeg, maxnr=surf.maxnr,
                  last_t=surf.last_t, npass=surf.npass, planar=surf.planar, gradient=surf.gradient,
-                 **grid.as_dict())
+                 plane_code=surf.plane_code, **grid.as_dict())
         (out / f"passes_{sname}.md").write_text(report.table_passes(infos) + "\n")
         (out / f"crossover_{sname}.md").write_text(report.table_crossover(res) + "\n")
         (out / f"outliers_{sname}.md").write_text(report.table_outliers(surf) + "\n")

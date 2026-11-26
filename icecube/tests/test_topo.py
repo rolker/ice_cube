@@ -21,6 +21,16 @@ def with_passes(p, ids):
     return p.replace(pass_id=np.asarray(ids, int))
 
 
+class TestPlaneKeys(unittest.TestCase):
+    def test_plane_keys_are_cast(self):
+        from icecube import topo
+        kw = topo.plane_kwargs({"plane_min_neighbours": 6.0, "plane_max_sigma_g": 1, "plane_dem_cap": "2.5",
+                                "cell": 0.5})
+        self.assertEqual(kw, {"plane_min_neighbours": 6, "plane_max_sigma_g": 1.0, "plane_dem_cap": 2.5})
+        self.assertIsInstance(kw["plane_min_neighbours"], int)
+        self.assertIsInstance(kw["plane_max_sigma_g"], float)
+
+
 class TestPriorsAndAnchors(unittest.TestCase):
     def test_common_bias_recovered(self):
         ref = make_crossing_survey("ref", [0.0] * 6, seed=1)
