@@ -162,7 +162,7 @@ this PR (section 1 table and the node update/test description).
 | If we change... | Also update... | Included in plan? |
 |---|---|---|
 | node estimate (inliers only) | batch outputs, report tables, topo npz | Yes |
-| `flags` semantics | `report.py`, `topo.py`, `cli.py`, QGIS plugin if it reads `flags` | Yes (check plugin) |
+| `flags` semantics | `report.py`, `topo.py`, `cli.py`; `analysis/qgis/topo_to_gpkg.py` loads `flags_*.asc` (keep the raster name, now outlier count, or rename both) | Yes |
 | Coverage status | logger README, legend | Yes |
 | capture void flag | #27 UI and `points.csv` columns | No, #27 |
 | fix-age feed rule | #15 (11-26: ~120 s to settle) | No, #15 |
