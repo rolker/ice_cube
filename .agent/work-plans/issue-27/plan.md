@@ -31,22 +31,26 @@ changed none of this on main). Logger is 0.8.1 (build 12).
 
 ## Approach
 
-PR A (this plan's main scope), in this order:
+PR A (data model and readers), in this order:
 
-1. **PointRow** — add `voided` and `voidReason` fields; HEADER gains `void,void_reason`
+1. **PointRow** — add `voided` and `voidReason` fields, both `volatile` (Survey mutates them
+   while the coverage worker and `MapView` read the same row objects; `Survey.rows()`
+   copies the array, not the rows); HEADER gains `void,void_reason`
    at the end (COLUMNS 27 to 29); `parse` reads them when present, so files with 27 or 17
    columns read as not voided; `toCsv` writes `1`/`0` and the reason (`text()` escaping).
    `isCapture()` unchanged (a voided capture is still a capture row and keeps its `n`,
    numbers are never reused or renumbered). Add `isLive()` = `isCapture() && !voided`.
    Tests in `PointRowTest`: round trip, 17- and 27-column rows read void=false.
 2. **Reasons and window as constants** — a small `VoidRule` in `core/` (pure, testable):
-   `UNDO_WINDOW_MS = 8000`, reason list (`accidental`, `bad pole placement`, `moved`,
+   `UNDO_WINDOW_MS = 8000`, `UNDO_ARM_MS = 750`, reason list (`accidental`, `bad pole placement`, `moved`,
    `other`), reason text sanitising (no commas/newlines), and the photo-target rules
    below.
 3. **Survey.void / unvoid** (synchronized, then `savePoints()` and `svc.event`):
    `voidCapture(n, reason, via)` and `unvoidCapture(n)`; refuse a photo-class row (a
    photo row is deleted by voiding its capture, not flagged; its photo moves, see 5).
-   Recompute `lastCapture` as the latest non-voided capture and `captures` count; bump a
+   `voidCapture(n, reason, via)` with `via=undo` checks the window itself: refuse when
+   now minus the row's capture time (`elapsedNs`) exceeds `UNDO_WINDOW_MS`; every `via`
+   refuses an already-voided row. Recompute `lastCapture` as the latest non-voided capture and `captures` count; bump a
    `voidGeneration` counter. Voiding is refused while a ref occupation or tilt set is
    running (it has no row yet; the existing cancel is the undo for those).
 4. **Ref and tilt captures** — a ref or tilt capture is one `points.csv` row (a tilt's
@@ -56,7 +60,10 @@ PR A (this plan's main scope), in this order:
    - ref: it is also a row in `refs.csv`. Add `void,void_reason` to `refs.csv` rows
      (same migration as 0.6: an older header is rewritten once) and have
      `RefsStore.setVoid(ctx, session, n, voided, reason)` rewrite the matching row
-     atomically (tmp + rename). `PoleCheck.matches` skips voided rows, so a voided ref is
+     atomically (tmp + rename), in every refs.csv under `Storage.refsFiles` (one per
+     storage root; `RefsStore.readAll` reads them all) that holds the (session, n) row,
+     and bumps `refsGeneration` so the earlier-refs map layer reloads. The map-layer read
+     in `RefsStore` skips voided rows, so `MainActivity`/`MapView` need no change for it. `PoleCheck.matches` skips voided rows, so a voided ref is
      never a "last visit", including after restart and in later sessions, exactly with the
      file-order semantics on main. Follow-up for #23: whatever it changes in
      reference selection must keep skipping `voided` (a note on #23, no code here).
@@ -80,37 +87,52 @@ PR A (this plan's main scope), in this order:
    unvoid also rebuilds. Tests in `CoverageTest` (voided row does not feed, a node it
    alone turned red recovers) and `CoverageWorkerTest` (void generation triggers rebuild,
    restart rebuild from file skips it).
-7. **UI** (`MainActivity`, `Survey.Notice`): a capture notice gets an "Undo" action for 8 s
-   (the notice bar becomes tappable, label `UNDO`, tap calls `voidCapture(n,
-   "accidental", "undo")`, a toast confirms, a short cue). Flag later: MENU gets "Recent
-   captures" (last 10 non-photo rows, number, class, age, voided mark) and tapping one
-   offers Flag as bad (reason picker) or Un-flag; the same dialog opens from a tap on a
-   capture marker if `MapView`'s hit test is simple (a tap on the map is not otherwise
-   used; if not simple this is dropped, the list is enough). `MapView` draws voided
-   captures as a grey cross and leaves them out of the overlay; `info`/counts show live
-   captures only ("n captures, 1 flagged").
-8. **Readers** — the one reader on main that reads `points.csv`,
-   `analysis/qgis/logger_session.py` (and `import_sessions.py`), skips `void=1` rows by
-   default, counts them in its report, and reads a file with no `void` column as not
-   voided; test in `analysis/qgis/tests/test_import.py` with a synthetic session
-   (`synth.py`). For #20 (icecube) and #21 (analysis) write the requirement as a comment
-   on each issue: skip `void=1` by default, report the skipped count, missing column
-   means not voided, drop `tilt_obs.csv` rows of voided `n`, ignore `refs.csv` rows with
-   `void=1`.
-9. **Docs and version** — `logger/README.md`: points.csv column table and example header,
-   events list (`flag`, `unflag`, `photo moved`), Main screen (Undo, Recent captures,
-   flagged captures), Photos (re-attach rule, no valid target), refs.csv columns and
-   migration, the rewrite/source-of-truth wording; `docs/howto/ice-cube.md` one line that
-   the readers skip voided rows. `logger/app/build.gradle`: versionName 0.9.0, versionCode
-   13 (new data columns and UI).
-10. **Not wired to a build here** — no CI step is added; tests are the existing JVM unit
-    tests (`./gradlew test`, run with `--max-workers=4` if parallelism is wanted).
+7. **Readers** — every reader of `points.csv` on main: `analysis/qgis/logger_session.py`
+   and `import_sessions.py` (the only ones in the repo; `soundings.py` reads the gpkg
+   `captures` table the importer writes). The importer DROPS rows with `void=1`: they
+   never reach the gpkg, so `soundings.py` needs no change; the per-session report counts
+   the dropped rows. A file with no `void` column reads as not voided. Test in
+   `analysis/qgis/tests/test_import.py` with a synthetic session (`synth.py`). For #20
+   (icecube) and #21 (analysis) write the requirement as a comment on each issue: skip
+   `void=1` by default, report the skipped count, missing column means not voided, drop
+   `tilt_obs.csv` rows of voided `n`, ignore `refs.csv` rows with `void=1`.
+8. **Docs** — `logger/README.md`: points.csv column table and example header, events list
+   (`flag`, `unflag`, `photo moved`), Photos (re-attach rule, no valid target), refs.csv
+   columns and migration, the rewrite/source-of-truth wording; `docs/howto/ice-cube.md`
+   one line that the readers skip voided rows. The Main-screen text (Undo, Recent
+   captures) goes in PR B with the UI.
+9. **Not wired to a build here** — no CI step is added; tests are the existing JVM unit
+   tests (`./gradlew test`, `--max-workers=4` if parallelism is wanted).
 
-PR B (separate, small, after A): the **PHOTO button shows its target**. In the screen's
-tick, `PHOTO` gets a second line from `PhotoRule.attachTo` on the live `lastCapture`:
-`-> S12 (14 s)` or `-> own row` when none or stale. UI only; no data change. Reason for
-the split: it needs no data-model decision and can be reviewed on a phone separately; the
-void-time photo re-attach (step 5) stays in A because it is part of void correctness.
+PR B (after A), the UI, `MainActivity`, `MapView`, `Survey.Notice`, README Main screen,
+and `logger/app/build.gradle` 0.9.0 / build 13 (the first build a user can see the
+change in):
+
+10. **Undo** — `Survey.Notice` gets an explicit `undoN` and `undoUntilMs`, set only by a
+    capture's own notice (single surface/object capture, tilt end, ref end). `photoTaken`
+    and other notices leave them unset, so a photo notice never offers UNDO of the
+    capture it landed on. The bar shows `UNDO` while `undoUntilMs` has not passed (8 s;
+    the notice itself stays `NOTICE_MS` = 10 s, label gone for the last 2 s). Taps on the
+    bar are ignored for `UNDO_ARM_MS` (~0.75 s) after it appears, so the second tap of a
+    double tap or a press in progress cannot undo. A newer notice (next capture, photo,
+    ref status) replaces the notice and so ends the UNDO. A tap calls
+    `voidCapture(n, "accidental", "undo")`, with toast and cue; `Survey` re-checks the
+    window. The owner's 11-26 case (photo 3 s after the object capture) is not undoable
+    from the bar by design; it goes through Recent captures (README says so).
+11. **Flag later** — MENU "Recent captures" (last 10 non-photo rows: number, class, age,
+    voided mark); tapping one offers Flag as bad (reason picker) or Un-flag. Map-tap
+    flagging only if `MapView`'s hit test is simple, else dropped. `MapView` draws voided
+    captures as a grey cross, leaves them out of the overlay; `info`/counts show live
+    captures ("n captures, 1 flagged").
+12. **PHOTO target indicator** — `PHOTO` gets a second line from `PhotoRule.attachTo` on
+    the live `lastCapture`: `-> S12 (14 s)` or `-> own row`. UI only, no data change.
+
+PR split, decided here: PR A (steps 1 to 9) is about 12 files of data model, coverage,
+refs, importer and docs, with its logic covered by JVM unit tests and no UI to judge. PR B
+(steps 10 to 12) is about 5 files of phone UI, to be reviewed by trying it on the phone.
+The full change was about 16 files, past the dozen the host set, and the two halves need
+different review. A has no user-visible trigger on its own; that is fine because the
+version bump and the UI ship together in B.
 
 ## Files to Change
 
@@ -122,11 +144,11 @@ void-time photo re-attach (step 5) stays in A because it is part of void correct
 | `.../core/Coverage.java` | `feeds()` excludes voided only |
 | `.../core/CoverageWorker.java` | void generation forces rebuild |
 | `.../Survey.java` | void/unvoid, photo move, lastCapture/captures recompute, events |
-| `.../RefsStore.java`, `Storage.java` | void columns, header migration, setVoid |
-| `.../MainActivity.java`, `MapView.java` | Undo notice, Recent captures dialog, flagged drawing |
+| `.../RefsStore.java`, `Storage.java` | void columns, header migration, setVoid over every refs.csv, refsGeneration bump, map read skips voided |
+| `.../MainActivity.java`, `MapView.java` (PR B) | Undo notice with undoN/undoUntilMs and arm delay, Recent captures dialog, flagged drawing, PHOTO target line |
 | `logger/app/src/test/.../core/` | PointRowTest, VoidRuleTest (new), PhotoRuleTest, PoleCheckTest, CoverageTest, CoverageWorkerTest |
-| `analysis/qgis/logger_session.py`, `import_sessions.py`, `tests/` | skip voided, count |
-| `logger/README.md`, `docs/howto/ice-cube.md`, `logger/app/build.gradle` | docs, 0.9.0 / 13 |
+| `analysis/qgis/logger_session.py`, `import_sessions.py`, `tests/` | drop voided rows, count per session |
+| `logger/README.md`, `docs/howto/ice-cube.md` | docs (A); `logger/app/build.gradle` 0.9.0 / 13 (B) |
 
 ## Prior Art
 
@@ -170,6 +192,8 @@ formats change, recorded in `logger/README.md`.
 | Coverage feed rule | #29 edits the same file | Only `feeds()` touched; merge order to be checked |
 | Pole-check "last visit" | #23 (open) | Skip rule noted on #23; no reference-selection changes here |
 | Photo attach rule | PhotoRule, README Photos | Yes |
+| Voiding a ref | `refsGeneration` bump, earlier-refs layer, every refs.csv root | Yes |
+| Importer drops voided rows | `soundings.py` reads the gpkg only, so unchanged | Yes |
 
 ## Open Questions
 
@@ -179,11 +203,10 @@ formats change, recorded in `logger/README.md`.
   (planned) versus staying on the voided row. Confirm.
 - Re-attach has no 60 s limit on void (planned). Confirm.
 - Map-tap flagging only if the hit test is simple; the MENU list is the committed path.
-- Update the existing qgis importer in this PR (planned) or leave it for #20/#21?
-- Version 0.9.0 vs 0.8.2.
+- Importer drops voided rows (host decision, 11-26).
+- Version 0.9.0 (host decision), bumped in PR B.
 
 ## Estimated Scope
 
-Two PRs: A (data model, undo/flag, overlay, refs, photo move, importer, docs, 0.9.0) and
-B (PHOTO target indicator). A is large for the logger (about a dozen files); if review
-finds it too big, split the UI (step 7) from the data model (steps 1 to 6, 8, 9).
+Two PRs: A (data model, coverage, refs, photo move, importer, docs; about 12 files) and B
+(undo and flag UI, PHOTO target line, version 0.9.0; about 5 files).
