@@ -223,3 +223,31 @@ Tuning (private replays, batch `grid_surface`, Coverage defaults, slope 0.05, in
 - 11-21: red 19 -> 17 (batch baseline 19, #24's logger count 18: weight vs count promotion). 12 single-line nodes fail the span gate, 2 not planar, 3 not significant; 2 accepted, both edge nodes (5 neighbours) holding earlier settling captures, moved 3-4 cm toward the model but still 9-11 cm above it. With the 90 s feed rule: 6 red -> 6 (all single-line relief, span gate). With slope_from_dem from the survey model: 14 -> 14 (those 2 caught by the DEM gate). New red 0, ok -> amber 0 in every variant.
 
 Tests: `python3 -m unittest discover icecube/tests` 79 OK; `cd logger && ./gradlew testDebugUnitTest --max-workers 4` BUILD OK, 164 tests, 0 failures (parity test reads the regenerated vectors). Every commit with all hooks. C: free 114 GB before, 114 GB after.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 18:52 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-29 at `0c9e00d`
+**Base**: main
+**Depth**: Standard (reason: ~1000 non-generated lines across 12 files, numerical core of the estimator)
+**Must-fix**: 2 | **Suggestions**: 6
+**Round**: 1 | **Ship**: continue — round 1: 2 must-fix; first round always re-reviews after fixes
+
+Specialists: static analysis (no linter installed: py_compile only; 79 tests OK), governance (public repo: no coordinates, names or paths in the diff), plan drift (two flagged deviations, recorded in Implementation), Claude adversarial, cross-model gemini (complete) and codex (complete).
+
+Flagged deviations:
+1. Neighbour at grid offset + main's weighted centroid: sound. `z()` and `_centroid` use the same weights, so on a plane the main's z lies exactly on the plane at its centroid; selection of an up/down-slope cluster moves both together, leaving only k-sigma truncation (small, red at 0.25). No new circularity beyond the shared-sounding overlap the plan review accepted. But it exposes a conditioning gap (must-fix 1): the span test still uses grid offsets.
+2. Significance |g| - allowance > k_sigma*sigma_g: sound and conservative; sigma_g = sqrt(u'C_g u) is the right directional variance. Fails safe (node stays red). It stacks with max(1, chi^2) scaling, so near the planarity limit the bar is ~9 raw sigmas; watch on curved banks via plane_code counts.
+
+### Findings
+- [ ] (must-fix) Span/conditioning gate checks grid offsets, not the centroid positions the fit uses; on a survey fringe the centroids collapse toward a line, C_g blows up, pass-2 variances inflate (d'C_g d) and the agreement test passes on a huge var_a. Pinned evidence: `coverage_vectors.json` wrong_cluster_keeps_pass1 node (2,-2) accepted at z 0.360 vs true 0.300, sigma 5.3 cm. Gate on the actual (X, Y) conditioning (e.g. max eigenvalue of C_g or min spread of weighted centroids), make every continuous gate fail closed on non-finite values, add a fringe case to the tests/vectors (gemini, confirmed by lead) — `icecube/nodes.py:400-425`
+- [ ] (must-fix) Raw DEM slope NaN (outside DEM coverage) is coerced to 0, so with slope_from_dem no node outside the DEM can ever be planar (significance needs g > floor, DEM gate needs g <= floor). Skip the DEM gate when the slope is not finite, or document and test the chosen behaviour (codex, gemini, Claude adversarial, lead) — `icecube/nodes.py:487-489`
+- [ ] (suggestion) Agreement test and chi/sigma_g treat neighbours as independent although neighbour discs share the centre's soundings (a and z' positively correlated, so the test is looser than k_sigma); say so in the docstring instead of calling a an independent prediction (codex, Claude adversarial) — `icecube/nodes.py:75-99`
+- [ ] (suggestion) Save `plane_code` in both npz writers, and mask `planar`/`gradient` where topo masks z (codex, gemini, Claude adversarial) — `icecube/topo.py:197-200,380-383`, `icecube/cli.py:128`
+- [ ] (suggestion) Cast `PLANE_KEYS` values from TOML (int/float) like the neighbouring keys — `icecube/topo.py:192`
+- [ ] (suggestion) plane_vectors cover no PLANE_NOT_PLANAR case and the flat case never reaches plane_fit; add a ridge case so PR B's port pins every non-DEM code (gemini) — `icecube/logger_vectors.py:363`
+- [ ] (suggestion) Docs say gradient is set where a plane passed the fit gates; it is also set on NOT_STEEP and DEM (gemini) — `docs/howto/ice-cube.md:155`
+- [ ] (suggestion) Note for PR B: the centroid is over the main's members (weighted by w), not over all entries as the plan's WDX/W aggregate moments read; the Java port must match — `.agent/work-plans/issue-29/plan.md`
