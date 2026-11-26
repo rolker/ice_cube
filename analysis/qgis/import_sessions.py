@@ -20,7 +20,7 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
                         `note` and `label` are yours: edited in QGIS, never overwritten.
                         Logger 0.6 columns (method, fix_suspect, tilt_*, ...) are NULL
                         for older sessions.
-  photos       PointZ  one row per photo file, key (session, name); `note` is yours.
+  photos        PointZ  one row per photo file, key (session, name); `note` is yours.
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
   tracks        LineStringZ  1 Hz GGA track per session, split at gaps and fix changes,
@@ -44,9 +44,11 @@ untouched). The display CRS (orthographic at the origin) is stored in
 gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta.
 
 Idempotent and incremental: a session already imported from an unchanged source is
-skipped (--force re-reads it). A gpkg written by an older schema version has every
-session re-read once to fill the new columns, except that a snapshot never replaces a
-session imported in full. Rows are matched by their keys and updated in place, so
+skipped (--force re-reads it). Each sessions row records the schema_version it was
+imported with; a session imported by an older schema is re-read the next time its source
+is among the inputs, to fill the new columns, except that a snapshot never replaces a
+session imported in full. Sessions still at an older schema after a run (not among the
+inputs, or seen only as a snapshot) are named in the log and re-read on a later run. Rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
 importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
 `run()` is the same import as a function (the plugin calls it in a background task).
@@ -109,7 +111,7 @@ SCHEMA = {
                  ("pct_fixed", R), ("gga", I), ("gga_lost", I), ("gga_parsed", I), ("rawx", I),
                  ("rawx_lost", I), ("gps_lost", I), ("caster_lost", I), ("rtcm_crc_errors", I),
                  ("remarks", T), ("source", T), ("source_sig", T), ("imported_utc", T),
-                 ("note", T)],
+                 ("note", T), ("schema_version", I)],
 }
 
 
@@ -230,14 +232,6 @@ def get_meta(gp):
     return dict(gp.con.execute("SELECT key, value FROM icecube_meta"))
 
 
-def _schema_of(meta):
-    """The stored schema_version as an int; 0 when missing or unreadable."""
-    try:
-        return int(meta.get("schema_version") or 0)
-    except ValueError:
-        return 0
-
-
 # ----------------------------------------------------------------------------- import
 
 def _geom(lat, lon, h):
@@ -297,6 +291,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
 
     info = dict(s.info)
     info["imported_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    info["schema_version"] = SCHEMA_VERSION   # per session: an older value means re-read it
     gp.upsert("sessions", [info], key=("session",), preserve=USER_COLUMNS["sessions"])
 
     n_new = 0
@@ -502,7 +497,7 @@ def run(argv=None, log=print, progress=None):
     lines, `progress(done, total, name)` called before each session and at the end.
     Returns a summary dict: gpkg, season, found, added (one dict per session read:
     session, captures, photos, photos_extracted, track_points, replaced), unchanged
-    (names skipped), photos_extracted, refs_csv_rows, totals (rows per table), origin,
+    (names skipped), stale (sessions still imported by an older schema), photos_extracted, refs_csv_rows, totals (rows per table), origin,
     recomputed. Bad arguments raise SystemExit (argparse)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="*", help="session zips, session folders or folders of them")
@@ -538,9 +533,11 @@ def run(argv=None, log=print, progress=None):
     try:
         ensure_schema(gp)
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
-        upgrade = bool(done) and _schema_of(get_meta(gp)) < SCHEMA_VERSION
-        if upgrade:
-            log(f"gpkg schema older than {SCHEMA_VERSION}: re-reading every session to fill new columns")
+        stale = {r[0] for r in gp.con.execute("SELECT session, schema_version FROM sessions")
+                 if (r[1] or 0) < SCHEMA_VERSION}   # imported by an older schema (NULL: before 3)
+        if stale:
+            log(f"{len(stale)} session(s) imported by a schema older than {SCHEMA_VERSION}: "
+                "re-reading those in the inputs to fill new columns")
 
         sources = find_sessions(inputs)
         log(f"{len(sources)} session(s) found")
@@ -553,7 +550,7 @@ def run(argv=None, log=print, progress=None):
                 refs_texts.append(t)
             old = done.get(src.name)
             if old and not args.force:
-                if old[0] == src.signature() and not upgrade:
+                if old[0] == src.signature() and src.name not in stale:
                     log(f"  {src.name}: unchanged, skipped")
                     unchanged.append(src.name)
                     src.close()
@@ -576,6 +573,10 @@ def run(argv=None, log=print, progress=None):
                   f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
                   + (f"; {i['remarks']}" if i.get("remarks") else ""))
             src.close()
+            stale.discard(s.name)
+        if stale:
+            log(f"{len(stale)} session(s) still at an older schema (not in the inputs, or only a "
+                f"snapshot seen), re-read on a later import: {', '.join(sorted(stale))}")
         n_refs = import_refs_csv(gp, refs_texts)
 
         meta = get_meta(gp)
@@ -631,7 +632,7 @@ def run(argv=None, log=print, progress=None):
     if progress is not None:
         progress(len(sources), len(sources), "done")
     return {"gpkg": str(gpkg_path), "season": name, "found": len(sources), "added": added,
-            "unchanged": unchanged, "photos_extracted": n_photos, "refs_csv_rows": n_refs,
+            "unchanged": unchanged, "stale": sorted(stale), "photos_extracted": n_photos, "refs_csv_rows": n_refs,
             "totals": summary, "origin": frame.name if frame is not None else None,
             "recomputed": bool(recompute)}
 

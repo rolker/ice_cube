@@ -235,6 +235,7 @@ class ImportTest(unittest.TestCase):
         con = gw.connect(self.gpkg)
         for k, _ in imp.LOGGER_06:
             con.execute(f"ALTER TABLE captures DROP COLUMN {k}")
+        con.execute("ALTER TABLE sessions DROP COLUMN schema_version")
         con.execute("UPDATE icecube_meta SET value='2' WHERE key='schema_version'")
         con.commit()
         con.close()
@@ -255,6 +256,26 @@ class ImportTest(unittest.TestCase):
                          str(imp.SCHEMA_VERSION))
         self.assertIn("unchanged, skipped", run(z, "--gpkg", self.gpkg, "--base", *self.base))   # once only
 
+    def test_schema2_partial_run_strands_nothing(self):
+        """An upgrade run that sees only some sessions leaves the others to a later run."""
+        za = synth.write_zip(self.d / "a.zip", synth.session_v06())
+        zb = synth.write_zip(self.d / "b.zip", synth.session_v06("2026-12-02_10-00-00"))
+        run(za, zb, "--gpkg", self.gpkg, "--base", *self.base)
+        self._as_schema2()
+        out = run(za, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("still at an older schema", out)
+        self.assertIn("2026-12-02_10-00-00", out)
+        self.assertEqual(self.q("SELECT count(*) FROM captures WHERE session='2026-12-02_10-00-00' "
+                                "AND method IS NOT NULL"), [(0,)])
+        out = run(za, zb, "--gpkg", self.gpkg, "--base", *self.base)   # b re-read, a skipped
+        self.assertIn("2026-12-01_10-00-00: unchanged, skipped", out)
+        self.assertNotIn("2026-12-02_10-00-00: unchanged", out)
+        self.assertNotIn("still at an older schema", out)
+        self.assertNotEqual(self.q("SELECT count(*) FROM captures WHERE session='2026-12-02_10-00-00' "
+                                   "AND method IS NOT NULL"), [(0,)])
+        self.assertEqual(self.q("SELECT count(*) FROM sessions WHERE schema_version IS NULL "
+                                "OR schema_version < ?", imp.SCHEMA_VERSION), [(0,)])
+
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())
         run(z, "--gpkg", self.gpkg, "--base", *self.base)
@@ -263,7 +284,9 @@ class ImportTest(unittest.TestCase):
         snap["2026-12-01_10-00-00/SNAPSHOT.txt"] = b"snapshot"
         z.unlink()
         sz = synth.write_zip(self.d / "snap.zip", snap)
-        self.assertIn("snapshot of a session already imported", run(sz, "--gpkg", self.gpkg, "--base", *self.base))
+        out = run(sz, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("snapshot of a session already imported", out)
+        self.assertIn("still at an older schema", out)
         self.assertEqual(self.q("SELECT snapshot FROM sessions"), [(0,)])
 
     # -- layers, config and export
