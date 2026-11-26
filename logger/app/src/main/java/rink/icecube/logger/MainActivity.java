@@ -223,7 +223,7 @@ public final class MainActivity extends Activity {
         arrange();
         updateModeButtons();
         Control.requestRuntimePermissions(this);
-        if (b == null) Control.autostart(this, getIntent(), true);
+        if (b == null) Control.autostart(this, getIntent());
     }
 
     @Override protected void onSaveInstanceState(Bundle b) {
@@ -237,7 +237,7 @@ public final class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         setIntent(i);
-        Control.autostart(this, i, false);
+        Control.autostart(this, i);
     }
 
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {

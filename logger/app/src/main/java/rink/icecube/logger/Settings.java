@@ -22,6 +22,7 @@ final class Settings {
     static final String TRANSPORT = "transport", BT_ADDRESS = "bt_address", BT_NAME = "bt_name";
     static final String CONFIGURE_USB = "configure_usb", CONFIGURE_BT = "configure_bt";
     static final String LOG_ON_GPS_CONNECT = "log_on_gps_connect";
+    static final String GPS_WAIT_MIN = "gps_wait_min";   // 0.8.1, text checked by Limit.GPS_WAIT_MIN
     static final String USB = "usb", BLUETOOTH = "bluetooth";
     static final String POLE_HEIGHT = "pole_height";      // metres as text, PoleHeight.format
     static final String LAYERS_OFF = "layers_off";        // set of layer file names switched off
@@ -67,6 +68,9 @@ final class Settings {
     }
 
     static boolean logCorrections(SharedPreferences p) { return p.getBoolean(LOG_CORRECTIONS, true); }
+
+    /** Connect caster when the GPS connects (key caster_at_launch, the 0.8.0 "Connect caster at app launch"). */
+    static boolean casterWithGps(SharedPreferences p) { return p.getBoolean(CASTER_AT_LAUNCH, false); }
 
     static int port(SharedPreferences p) {
         try { return Integer.parseInt(p.getString(PORT, "2101").trim()); }
