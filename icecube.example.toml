@@ -38,6 +38,12 @@ capture_radius = 0.75     # m, a sounding feeds every node within this distance
 k_sigma = 3.0             # test threshold: a sounding beyond it goes to an outlier bin
 robust = true             # median-first rebuild with outlier bins (false: the 0.7 running mean and flag count)
 eeg_quotient_limit = 30.0 # Eeg's leave-one-out test on each node's main members; 0 = off
+plane = true              # red nodes on a bank: rebuild along the neighbours' gradient (robust only)
+plane_min_neighbours = 5  # usable neighbours (of 8) the plane needs
+plane_min_nin = 2         # a neighbour is usable with at least this many main members
+plane_min_clear = 2       # of which at least this many not red
+plane_red_weight = 0.25   # weight factor for red neighbours in the fit
+# plane_planarity = 3.0   # max weighted RMS residual (neighbour sigmas); default k_sigma
 margin = 1.0              # m around the outline (or the points) when extent is not given
 # extent = [xmin, xmax, ymin, ymax]   # local metres
 
@@ -117,6 +123,10 @@ percentile = 99.0
 # k_sigma = 3.0
 # robust = true
 # eeg_quotient_limit = 30.0
+# plane = true                  # and plane_min_neighbours, plane_min_nin, plane_min_clear,
+#                               # plane_red_weight, plane_planarity as in [grid], plus:
+# plane_dem_cap = 2.0           # with slope_from_dem: |g| <= cap * DEM slope + floor
+# plane_dem_floor = 0.05
 # extent_polygon = { path = "data/regions.geojson", name = "lot" }   # or extent = [xmin, xmax, ymin, ymax]
 # margin = 10.0
 # lot = true                    # draw this polygon on every map
