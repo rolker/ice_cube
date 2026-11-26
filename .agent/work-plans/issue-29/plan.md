@@ -19,44 +19,55 @@ The gradient has to come from outside the node's own split: its neighbours.
 Two stages, the same definition in Python and Java, held by parity vectors.
 
 1. **Entries carry geometry.** Entry gains `dx, dy` (sounding minus node centre, m) and `sz2`
-   (`sz^2`, so the slope-free variance is `sz2`). The folded aggregate keeps first moments
-   `WDX = sum w*dx`, `WDY = sum w*dy` next to `W`, `WZ`; it enters a plane re-reduction as a
-   pseudo-entry at offset `(WDX/W, WDY/W)` (exact for a linear reduction), with its weight `W`
-   unchanged (its slope term cannot be removed; conservative). Cache/session formats: the
-   logger's entries are in-memory only; check `logger_vectors` and any saved fold state.
+   (`sz^2`, so the slope-free variance is `sz2`). Batch `grid_surface` never folds, so PR A's
+   `plane_vectors` cover unfolded entries only. The folded aggregate exists only in `NodeStore`
+   (Coverage.java's mirror) and is PR B's: first moments `WDX = sum w*dx`, `WDY = sum w*dy` next to
+   `W`, `WZ`, entering a re-reduction as a pseudo-entry at offset `(WDX/W, WDY/W)` (exact for a linear
+   reduction; its slope term cannot be removed, so conservative). PR A does not define or test it.
 2. **Pass 1 (unchanged).** Every node is rebuilt as today; keep each node's main `z`, `W`, `n_in`,
    status (red when `n_out > 0` and `n_in < 2*n_out`).
-3. **Neighbourhood gradient** for each node that is red after pass 1 (only those; clear and amber nodes
-   are never touched, which keeps flat ground at baseline): weighted least-squares plane
-   `z = a + gx*X + gy*Y` through the main `z` of the 8 neighbours at their grid offsets,
-   weights `W_main` of each neighbour. The node itself is excluded (its main is the suspect).
-   `slope_from_dem` (batch): its per-node slope is a prior on the gradient. First cut: it only gates
-   (the plane path needs `|g| <= plane_dem_cap * DEM slope + floor`, so a noisy neighbourhood cannot
-   invent a bank); a ridge term pulling `(gx, gy)` toward 0 is added only if the replays need it.
-4. **Gates (edge cases, decided).** The plane path stays off, and the node keeps its pass-1 result,
-   unless all hold:
-   - at least `plane_min_neighbours = 5` usable neighbours (non-empty, main with `n_in >= 2`).
-     Survey-edge nodes with fewer than 8 neighbours work if they still reach 5 and the normal
-     matrix is well conditioned (usable neighbours span at least 2 distinct `dx` and 2 distinct
-     `dy`); otherwise off.
-   - **Red or empty neighbours.** Empty: not used. Red: used at `plane_red_weight = 0.25` of its
-     weight (on a bank the neighbours are red too; their main is still a median-first estimate but
-     biased toward the larger cluster). At least 3 of the usable must be non-red.
-   - **Planarity:** the weighted RMS residual of the fit, in neighbour sigmas, is at most `k_sigma`.
-     A ridge, step or one bad neighbour fails, so it is not a bank.
-   - **Significance:** `|g|` exceeds the node's slope allowance (the gradient the allowance stood in for).
-5. **Pass 2.** Reduce each entry to the node centre, `z' = z - (gx*dx + gy*dy)`, with `v'` = `sz2` plus the
-   `sh` term but the slope-allowance term dropped, plus the gradient uncertainty `(sigma_g * d)^2` from
-   the fit covariance. Rebuild median-first; keep the result only if `n_out'` <= `n_out`, else keep
-   pass 1. One plane pass only (a node cleared in the sweep is not used as a neighbour in the same
-   sweep). Outputs gain `planar` and the gradient magnitude for the report and inspector.
-6. **Config** (`icecube.example.toml`): `plane = true|false`, `plane_min_neighbours`,
-   `plane_red_weight`, `plane_dem_cap`. `plane = false` is the comparison switch.
+3. **Neighbourhood gradient** for each node red after pass 1 (only those; clear and amber nodes are never
+   touched, which keeps flat ground at baseline): weighted least-squares plane `z = a + gx*X + gy*Y`
+   through the main `z` of the 8 neighbours at their grid offsets, weights `W_main`. The node itself is
+   excluded. The fit gives `a`, its variance `var_a`, and the gradient covariance.
+4. **Gates.** The plane path stays off, and the node keeps its pass-1 result, unless all hold. Each
+   threshold is a config key (item 6):
+   - at least `plane_min_neighbours` (5) usable neighbours (non-empty, main `n_in >= plane_min_nin`, 2).
+     Survey-edge nodes with fewer than 8 neighbours work if they still reach the minimum and span at
+     least 2 distinct `dx` and 2 distinct `dy`; otherwise off.
+   - Red neighbours are used at `plane_red_weight` (0.25); empty ones not used. At least
+     `plane_min_clear` of the usable are non-red. Default is not fixed at 3: the review estimates that,
+     with 242 of 400 nodes red at 0.30 m/m, a min of 3 fails about a third of bank nodes
+     (P(at most 2 of 8 non-red) about 0.31). Start at 2, tune on the replays with the red weight, and
+     pin the 0.3 m/m case with a seed that holds across 1 to 3.
+   - **Planarity:** weighted RMS residual in neighbour sigmas at most `plane_planarity` (own key,
+     starts at `k_sigma`).
+   - **Significance:** `|g|` exceeds the node's slope allowance (as raised by `slope_from_dem` where
+     that is on).
+   - **DEM gate (batch, `slope_from_dem` only):** `|g| <= plane_dem_cap * s_dem + plane_dem_floor`,
+     with `s_dem` the raw DEM slope. `topo.slope_array` returns the clamped allowance
+     `min(cap, max(floor, factor*s))`, not the slope, so `topo.py` also passes the raw `slope_field`
+     sample to `nodes.grid_surface` as a new array. With a global `slope` (no `slope_from_dem`) no raw
+     slope exists and the DEM gate is skipped; the other gates still apply.
+5. **Pass 2.** Reduce each entry to the node centre, `z' = z - (gx*dx + gy*dy)`, with `v'` = `sz2` plus
+   the `sh` term, slope-allowance term dropped, plus `(sigma_g * d)^2` from the fit covariance. Run the
+   full rebuild path (`_robust`, so Eeg's cull is included and `n_out'` compares like with like).
+   **Accept pass 2 only if both hold:** (i) the node leaves red, or `n_out' < n_out` strictly; and
+   (ii) `|z'_main - a| <= k_sigma * sqrt(var_a + sigma'^2)`, with `a` the neighbour plane's intercept
+   at the node (an independent prediction) and `sigma'` the pass-2 main's sigma. Otherwise keep pass 1.
+   This stops a switched or worse height passing on a count tie. One plane pass only (a node cleared
+   in the sweep is not used as a neighbour in the same sweep).
+6. **Config** (`icecube.example.toml`, and `topo.py` reads them): `plane` (comparison switch),
+   `plane_min_neighbours`, `plane_min_nin`, `plane_min_clear`, `plane_red_weight`, `plane_planarity`,
+   `plane_dem_cap`, `plane_dem_floor`. Defaults tuned on the private replays, counts only.
+7. **Outputs.** `Surface` dataclass gains `planar` (bool per node) and `gradient` (magnitude);
+   `np.savez` calls in `icecube/cli.py:126` and `icecube/topo.py:366` write both, so the inspector
+   can read them; `report.py` shows the planar count and gradient.
 
 ### Two PRs (decided: batch first, logger after)
 
 - **PR A (first): Python batch.** `nodes.py` entries and `plane_pass`, `grid_surface` wiring, `topo.py`
-  config, report column, docs, the pinned tests below, and a new `plane_vectors` section generated by
+  config and raw DEM slope, `Surface` and `.npz` outputs, report column, docs, the pinned tests below, and a new `plane_vectors` section (unfolded entries, no aggregate) generated by
   `logger_vectors.py`, additive so the logger's existing parity test keeps passing. The replays run in
   batch, so the thresholds settle there before anything is ported.
 - **PR B (follow-up, issue stays open):** the Java port in `Coverage.java`: entry offsets, aggregate
@@ -68,8 +79,9 @@ Two stages, the same definition in Python and Java, held by parity vectors.
 
 | File | Change |
 |------|--------|
-| `icecube/nodes.py` | entry `dx, dy, sz2`; aggregate moments; `plane_pass`; surface outputs |
-| `icecube/topo.py` | gridding settings; `slope_from_dem` as gradient gate |
+| `icecube/nodes.py` | entry `dx, dy, sz2`; `plane_pass`; `Surface.planar`/`gradient` (aggregate moments are PR B) |
+| `icecube/topo.py` | gridding settings; raw DEM slope to `grid_surface`; `planar`/`gradient` in `.npz` (line ~366) |
+| `icecube/cli.py` | `planar`/`gradient` in `np.savez` (line ~126) |
 | `icecube/logger_vectors.py` | generate `plane_vectors` |
 | `icecube/report.py` | planar count and gradient column |
 | `icecube/tests/test_icecube.py`, `test_logger_vectors.py` | pinned cases below |
@@ -78,17 +90,24 @@ Two stages, the same definition in Python and Java, held by parity vectors.
 
 ## Tests and acceptance (pinned)
 
-- **Bank clears:** synthetic 3x3 block with true gradient 0.2 and 0.3 m/m, 8 soundings in the disc, sz 2 cm,
-  slope 0.05, k 3: pass 1 leaves the centre red; after the plane pass it is not red. Repeated at a survey
-  edge (5 neighbours) and with one red neighbour.
-- **Flat edge outlier, explicit bound:** seeded Monte Carlo, 400 trials, flat neighbours, one +15 cm capture
-  at the disc edge. "Absorbed" = the capture is a main member in the final rebuild (counted from `n_in`
-  and the entry's hypothesis). Assert `absorbed_plane <= absorbed_baseline`, the baseline being the
-  `plane = false` run in the same test (76 of 400 at the issue's parameters, also asserted as a recorded
-  value so drift in either shows), and that the plane path stayed off (`planar` false) in every trial.
-- **Gate cases:** fewer than 5 usable, all-red neighbours, a non-planar ridge: result equals pass 1.
+All through `grid_surface` on a synthetic block of at least 5x5 nodes, neighbours built from soundings
+(never hand-set mains), so shared soundings feed neighbours as in production.
+
+- **Bank clears:** true gradient 0.2 and 0.3 m/m, 8 soundings per disc, sz 2 cm, slope 0.05, k 3: the
+  centre is red after pass 1 and not red after the plane pass. Repeated at a survey edge (5 neighbours)
+  and with one red neighbour; 0.3 m/m seeded to hold across `plane_min_clear` 1 to 3.
+- **Wrong cluster keeps pass 1:** a bank node plus a tight off-plane cluster where pass 2 would promote
+  that cluster with no rise in `n_out`: acceptance rule (ii) fails and the result equals pass 1.
+- **Flat edge outlier:** seeded Monte Carlo, 400 trials, flat 5x5 block, one +15 cm capture at the
+  centre node's disc edge (also feeding its neighbours). Assert `planar` false at every node in every
+  trial, and `absorbed_plane == absorbed_baseline` (the `plane = false` run in the same test). The
+  baseline is recorded on first run at grid level (the single-node 76/400 may not reproduce) and then
+  asserted as a value so drift shows.
+- **Gate cases:** fewer than 5 usable, all-red neighbours, a non-planar ridge, no `slope_from_dem`
+  (DEM gate skipped, others on): result equals pass 1 or the stated behaviour.
 - **Replay acceptance (private, counts only), batch:** bank nodes cleared, flat-ground outliers absorbed
-  none, on 11-21 and 11-26; clear nodes turned amber versus the global slope 0.10 (321 on 11-26), expected 0.
+  none, on 11-21 and 11-26; clear nodes turned amber versus global slope 0.10 (321 on 11-26), expected 0.
+  Thresholds (`plane_min_clear`, red weight, planarity, DEM floor) tuned here.
 
 ## Prior Art
 
@@ -130,10 +149,9 @@ grows from 9 to 25 nodes per capture; noted in `logger/README.md` in PR B.
 
 ## Open Questions
 
-- Red-neighbour weight 0.25 and the planarity bound are first guesses, tuned on the replays. OK to tune
-  without asking, reporting counts only?
-- `slope_from_dem` starts as a gate; add the ridge prior only if replays need it. Acceptable?
-- Confirm the batch-first split (PR B after A merges, issue stays open between).
+- Decided by the host: thresholds tuned on the replays (counts only); `slope_from_dem` as gate first,
+  ridge prior only if needed; batch first, logger ring in PR B (issue stays open between).
+- None open.
 
 ## Estimated Scope
 
