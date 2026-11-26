@@ -205,3 +205,27 @@ Suites (all hooks ran on every commit, none skipped):
 - `python3 -m unittest discover icecube/tests`: Ran 67 tests, OK
 - `python3 -m unittest discover -s analysis/qgis/tests` (test_import, test_soundings and the rest): Ran 103 tests, OK (skipped=5)
 - `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL, all suites 0 failures (SoundingSigmaTest 3/3). C: free 115 GB before and after.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 18:40 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-9 at `a44f484`
+**Base**: main
+**Depth**: Deep (reason: 15 files, +652/-47 lines, Python and Java layers)
+**Must-fix**: 2 | **Suggestions**: 6
+**Round**: 1 | **Ship**: continue — round 1: 2 must-fix; first round always re-reviews after fixes
+
+Cross-model: gemini complete, codex complete. Claude adversarial complete. Tests: analysis/qgis test_import + test_soundings, icecube test_logger_vectors pass (unittest); regenerated vectors match the committed JSON; gradle not run in review. Public-repo check: no coordinates or private data in the diff.
+
+### Findings
+- [ ] (must-fix) Schema upgrade bumps `schema_version` to 3 for the whole gpkg even when only some existing sessions were in this run's inputs (or a session was skipped by the snapshot guard); the rest keep NULL 0.6 columns and are then skipped as unchanged forever without --force. Keep the upgrade pending until every session in `done` is re-read, or track it per session; docstring "every session re-read once" is wrong otherwise (gemini, codex, claude-adversarial) — `analysis/qgis/import_sessions.py:541,605`
+- [ ] (must-fix) The soundings safety-net warning fires only when all 0.6+ captures across all sessions lack `method`; a mix of upgraded and stranded 0.6+ sessions gives no warning. Check per session and name the sessions (gemini, codex, claude-adversarial) — `analysis/qgis/soundings.py:631-633`
+- [ ] (suggestion) `read_points` does not strip `method`; Java `PointRow` trims before `TILT.equals`, so " tilt" diverges — `analysis/qgis/logger_session.py:239`
+- [ ] (suggestion) Non-finite tilt sds: `_f("nan")` gives float NaN and `capture_sigma_inputs` checks only `None`; Java checks NaN. Map non-finite to None in `_f` or guard with `math.isfinite` — `analysis/qgis/soundings.py:517`
+- [ ] (suggestion) Add a partially missing tilt-sd vector (one of three null) so the Java `&&` chain is pinned by the shared vectors — `icecube/logger_vectors.py:77`
+- [ ] (suggestion) `make_session(tilt_sd=...)` writes 0.6 points.csv but events app stays "0.5"; pass app="0.6" for the tilt variant — `analysis/qgis/tests/test_soundings.py:190`
+- [ ] (suggestion) Docstring table row `photos       PointZ` lost a space and no longer aligns — `analysis/qgis/import_sessions.py:23`
+- [ ] (suggestion) Run `./gradlew testDebugUnitTest --max-workers 4` before push to confirm SoundingSigmaTest passes the new `tilt_missing_sd` vector (plan step 5) — `logger/app/src/test/java/rink/icecube/logger/core/SoundingSigmaTest.java`
