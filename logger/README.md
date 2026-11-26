@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.8.0
+# Ice Cube Logger 0.8.1
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -23,19 +23,25 @@ folder in Android Studio and press Run.
 
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
+The first line of the screen (and the last line of the MENU panel) shows the app version,
+e.g. "Ice Cube Logger 0.8.1 (build 11)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
   pole does not flip. It applies at once. See Screen orientation below.
 - Caster: host, port, mount point, user, password (shown as dots), Log corrections,
-  Connect caster at app launch, Frame (Unknown, ITRF2020, ITRF2014, ITRF2008,
+  Connect caster when the GPS connects (0.8.0's "Connect caster at app launch", same
+  setting: the caster now starts when a GPS started by Connect or by Start logging when
+  the GPS connects first connects, so opening the app without the rover connects
+  nothing), Frame (Unknown, ITRF2020, ITRF2014, ITRF2008,
   NAD83(2011), WGS84) and an optional Frame epoch (decimal year). See Frames below.
 - GPS link: USB or Bluetooth. For Bluetooth, pick the receiver from the paired devices;
   pair it in Android Bluetooth settings first. Configure receiver (RAM only) is on by
   default for USB and off for Bluetooth, because the RTK Express firmware already sets up
   the Bluetooth port. Start logging when the GPS connects starts a session on its own: for
   USB when Android opens the app on attach, for Bluetooth when the receiver connects after
-  the app is opened.
+  the app is opened. With no session open, that wait ends after Wait for the rover (min,
+  0.5 to 60, default 2), and the logger stops in the background.
 - Survey: Pole height, from ground mark to the antenna reference point: 1.8, 1.7, 1.6, 1.5,
   1.4 m or Other… for a typed value (0 to 5 m, up to 3 decimals). An invalid value is not
   saved and the screen says why. It applies at once (also settable from the map's strip).
@@ -92,6 +98,15 @@ MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest
 5. Tap REC (it asks first) or MENU > Stop session when finished. If a link drops, the app
    logs it, shows "link lost" in the red bar and reconnects (Bluetooth every 3 to 30 s,
    USB on re-attach, caster every 5 to 60 s).
+
+## Notification
+While the logger runs in the background (a session, the GPS or the caster), Android shows
+an ongoing notification that says what is running, for example "Waiting for the rover…
+(up to 2 min)", "Caster connected, no GPS · session …" or "Logging session …: GPS and
+caster". Its Stop action (Stop session while one is open) stops the session and both
+links at once, without the question REC asks. Tapping it opens the map. Opening the app
+only to look at the map starts nothing, so there is no notification. Swiping the app away
+from the recent apps stops the logger when no session is open; a session keeps logging.
 
 ## Main screen (map)
 The app opens on the map, full screen; USB attach opens it too. The screen stays on.
