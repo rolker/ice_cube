@@ -165,6 +165,7 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", stats=stats), 2)
         self.assertEqual(stats["voided"], 1)
         self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True, stats=stats), 3)
+        self.assertEqual((stats["voided"], stats["voided_included"]), (1, True))
         rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
         self.assertEqual((rows["2"]["void"], rows["2"]["void_reason"]), ("1", "moved"))
 

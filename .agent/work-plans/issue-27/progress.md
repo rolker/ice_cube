@@ -248,4 +248,4 @@ Cross-model: codex complete (3 must-fix, all kept: anchors, verify_suspect, pole
 - [x] (suggestion) When a voided ref's photos move, refs.csv keeps the old photo names (points.csv is updated); fix or note it — `logger/app/src/main/java/rink/icecube/logger/core/VoidRule.java:105`
 - [ ] (suggestion, PR B) MapView draws voided captures like live ones — `logger/app/src/main/java/rink/icecube/logger/MapView.java:481-515`
 - [ ] (suggestion, PR B) Check that `elapsedNs` is the capture's completion time before the UNDO bar relies on the 8 s window for 30 s refs and tilt sets — `logger/app/src/main/java/rink/icecube/logger/Survey.java:553`
-- [ ] (suggestion) Minor: void_reason is not stripped in the soundings flag; export_labels prints no count with --include-voided and writes "" not 0 for a pre-0.9.0 gpkg — `analysis/qgis/soundings.py:649`, `analysis/qgis/export_labels.py:88`
+- [x] (suggestion) Minor: void_reason is not stripped in the soundings flag; export_labels prints no count with --include-voided and writes "" not 0 for a pre-0.9.0 gpkg — `analysis/qgis/soundings.py:649`, `analysis/qgis/export_labels.py:88`

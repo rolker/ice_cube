@@ -53,7 +53,8 @@ def export(gpkg, out, classes=("surface", "object", "ref", "control"), labelled_
            sessions=None, accuracy_from_scatter=False, include_voided=False,
            stats=None):
     """Write the CSV; returns the number of rows. `stats` (a dict), when given, gets
-    "voided": the number of voided captures left out."""
+    "voided": the number of selected captures flagged void (left out unless
+    `include_voided`), and "voided_included": whether they were exported."""
     con = sqlite3.connect(f"file:{Path(gpkg).as_posix()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     has_void = "void" in {r[1] for r in con.execute("PRAGMA table_info(captures)")}
@@ -83,10 +84,19 @@ def export(gpkg, out, classes=("surface", "object", "ref", "control"), labelled_
             w.writerow([f"{r['lat']:.9f}", f"{r['lon']:.9f}",
                         "" if r["h_ground"] is None else f"{r['h_ground']:.4f}",
                         f"{utc} UTC" if utc else "", r["fix"], remark, ha, va]
-                       + ["" if k not in r.keys() or r[k] is None else r[k] for k in FIELDS])
+                       + [cell(r, k, has_void) for k in FIELDS])
     if stats is not None:
-        stats["voided"] = 0 if include_voided else len(voided)
+        stats["voided"] = len(voided)
+        stats["voided_included"] = bool(include_voided)
     return len(rows)
+
+
+def cell(r, k, has_void):
+    """The CSV value of column k: empty for None, 0 for `void` from a gpkg imported before
+    0.9.0 (no void column: nothing was flagged)."""
+    if k == "void" and not has_void:
+        return 0
+    return "" if k not in r.keys() or r[k] is None else r[k]
 
 
 def main(argv=None):
@@ -114,7 +124,8 @@ def main(argv=None):
     n = export(gpkg, out, tuple(c.strip() for c in args.classes.split(",") if c.strip()),
                args.labelled_only, args.session, args.accuracy_from_scatter, args.include_voided, stats)
     n_void = stats["voided"]
-    print(f"{out}: {n} captures" + (f" ({n_void} flagged void, left out)" if n_void else ""))
+    print(f"{out}: {n} captures" + (f" ({n_void} flagged void, "
+                                    + ("included" if args.include_voided else "left out") + ")" if n_void else ""))
     return 0
 
 
