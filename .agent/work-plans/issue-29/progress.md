@@ -251,3 +251,28 @@ Flagged deviations:
 - [x] (suggestion) plane_vectors cover no PLANE_NOT_PLANAR case and the flat case never reaches plane_fit; add a ridge case so PR B's port pins every non-DEM code (gemini) — `icecube/logger_vectors.py:363`
 - [x] (suggestion) Docs say gradient is set where a plane passed the fit gates; it is also set on NOT_STEEP and DEM (gemini) — `docs/howto/ice-cube.md:155`
 - [x] (suggestion) Note for PR B: the centroid is over the main's members (weighted by w), not over all entries as the plan's WDX/W aggregate moments read; the Java port must match — `.agent/work-plans/issue-29/plan.md`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:59 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-29 at `fa1519b`
+**Addressed**: Local Review (Pre-Push) at `0c9e00d` (2026-11-26 18:52 -05:00)
+**Commits**: 129d26b, 2b338d0, d82f669, fa1519b
+
+### Actions
+- [x] (must-fix) Conditioning gate on the centroids the fit uses: grid-offset span check replaced by sqrt(larger eigenvalue of scaled C_g) <= `plane_max_sigma_g` (default 0.08 m/m; accepted fits on test blocks and replays <= 0.06, bunched fringe fits 0.1-0.35), new code PLANE_ILL_CONDITIONED (9); every continuous gate fails closed on NaN/inf; fringe case in test_icecube and plane_vectors; wrong_cluster node (2,-2) now code 9 — `icecube/nodes.py` plane_fit/plane_pass
+- [x] (must-fix) Non-finite raw DEM slope skips the DEM gate (others still apply), test and docs line — `icecube/nodes.py` plane_pass, `docs/howto/ice-cube.md`
+- [x] (suggestion) Docstring notes the shared-sounding correlation of a and z' (test looser than k_sigma) and neighbour non-independence — `icecube/nodes.py` module docstring
+- [x] (suggestion) plane_code saved in both npz writers; planar/gradient/plane_code masked where topo masks z — `icecube/topo.py`, `icecube/cli.py`
+- [x] (suggestion) PLANE_KEYS typed, `topo.plane_kwargs` casts TOML values (shared with cli) — `icecube/topo.py`
+- [x] (suggestion) Ridge case (code 4) and flat-cluster case (code 5) in plane_vectors; vectors now pin codes 1-5, 7-9 — `icecube/logger_vectors.py`
+- [x] (suggestion) Docs say gradient is set from the significance gate on — `docs/howto/ice-cube.md`, `icecube/nodes.py`
+- [x] (suggestion) PR B note: centroid over the main's members; conditioning gate and fail-closed form to port — `.agent/work-plans/issue-29/plan.md`
+
+### Checks
+- `python3 -m unittest discover icecube/tests`: Ran 82 tests, OK
+- `./gradlew testDebugUnitTest --max-workers 4`: pass (C: 114 GB free)
+- coverage_vectors.json regenerated; only plane_params and plane_vectors changed
+- Private replays (counts only): 11-21 red 19 -> 17, 11-26 red 6 -> 1 (unchanged); with DEM 14 -> 14, 1 -> 1
