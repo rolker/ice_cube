@@ -189,7 +189,8 @@ def make_session(root, name="2026-12-01_10-00-00", tilt_sd=None):
                     f"0.0020,0.0020,0.0030,1.0,,"
                     + ("" if tilt_sd is None else ",200.0,0.01,0," + (
                         "ref,,,,,," if cls == "ref" else "tilt,5,0.005,200," + ",".join(f"{v:.4f}" for v in tilt_sd))))
-    ev = synth.events([(1, "gps connected bluetooth Test-Rover"), (2, "pole_height=1.800 changed")])
+    ev = synth.events([(1, "gps connected bluetooth Test-Rover"), (2, "pole_height=1.800 changed")],
+                      app="0.5" if tilt_sd is None else "0.6")   # the 0.6 points.csv comes from app 0.6
     d = root / name
     d.mkdir(parents=True)
     (d / "events.csv").write_text(ev)

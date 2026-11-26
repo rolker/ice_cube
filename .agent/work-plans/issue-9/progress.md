@@ -226,6 +226,6 @@ Cross-model: gemini complete, codex complete. Claude adversarial complete. Tests
 - [x] (suggestion) `read_points` does not strip `method`; Java `PointRow` trims before `TILT.equals`, so " tilt" diverges — `analysis/qgis/logger_session.py:239`
 - [x] (suggestion) Non-finite tilt sds: `_f("nan")` gives float NaN and `capture_sigma_inputs` checks only `None`; Java checks NaN. Map non-finite to None in `_f` or guard with `math.isfinite` — `analysis/qgis/soundings.py:517`
 - [x] (suggestion) Add a partially missing tilt-sd vector (one of three null) so the Java `&&` chain is pinned by the shared vectors — `icecube/logger_vectors.py:77`
-- [ ] (suggestion) `make_session(tilt_sd=...)` writes 0.6 points.csv but events app stays "0.5"; pass app="0.6" for the tilt variant — `analysis/qgis/tests/test_soundings.py:190`
+- [x] (suggestion) `make_session(tilt_sd=...)` writes 0.6 points.csv but events app stays "0.5"; pass app="0.6" for the tilt variant — `analysis/qgis/tests/test_soundings.py:190`
 - [x] (suggestion) Docstring table row `photos       PointZ` lost a space and no longer aligns — `analysis/qgis/import_sessions.py:23`
 - [x] (suggestion) Run `./gradlew testDebugUnitTest --max-workers 4` before push to confirm SoundingSigmaTest passes the new `tilt_missing_sd` vector (plan step 5) — `logger/app/src/test/java/rink/icecube/logger/core/SoundingSigmaTest.java`
