@@ -616,7 +616,12 @@ final class Survey {
         String session = dir.getName();
         run(() -> {
             int k = RefsStore.setVoid(svc, session, r.n, v, why);
-            svc.event("ref n=" + r.n + (v ? " voided" : " unvoided") + " in refs.csv (" + k + " row" + (k == 1 ? "" : "s") + ")");
+            if (k == 0) {   // no refs.csv rewritten: later sessions still read the old flag
+                svc.event("error: ref n=" + r.n + " not " + (v ? "voided" : "unvoided")
+                        + " in refs.csv (no row rewritten; points.csv and this event are the record)");
+            } else {
+                svc.event("ref n=" + r.n + (v ? " voided" : " unvoided") + " in refs.csv (" + k + " row" + (k == 1 ? "" : "s") + ")");
+            }
             refsGeneration++;
         });
     }
