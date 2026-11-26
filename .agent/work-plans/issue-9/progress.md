@@ -51,3 +51,13 @@ issue: 9
 - [ ] Keep `sigma_terms`'s signature unchanged: choose the tilt inputs in the capture loop (sd_u = `tilt_sd_u_m`, sd_h = hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2, tilt_deg 0) so it matches the Java mirror and the vectors with no regeneration needed.
 - [ ] Make the reader tolerate databases or CSVs without the tilt columns (NULL when absent) and fall back to the single-capture rule when `method` is not tilt or the tilt sds are missing.
 - [ ] Check the parity test against the existing tilt vector, including a case with missing `tilt_sd_*`, and update the docs that say the rule is absent.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:26 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (actions are plan inputs within the issue's scope; orchestrator table allows proceed)
+**After**: issue-actions
+**Decision**: proceed
+
+Actions go to plan-task: tilt rule applied in the capture loop (sd_u = tilt_sd_u_m, sd_h = hypot(tilt_sd_e_m, tilt_sd_n_m)/sqrt(2), tilt 0) without changing sigma_terms' signature; tolerate missing/NULL tilt columns (fall back to the single rule); check the existing tilt parity vector against the soundings path; fix the docs that say the rule is absent. Issue 26 stays out of scope.
