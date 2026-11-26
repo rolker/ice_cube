@@ -372,9 +372,12 @@ public final class Coverage {
         return Math.abs(sz[e] - hWz[h] / hW[h]) / Math.sqrt(1.0 / hW[h] + sv[e]);
     }
 
-    /** Surface captures, RTK fixed, not suspect, single or tilt, with a position and a ground height. */
+    /**
+     * Surface captures, RTK fixed, not suspect, not voided, single or tilt, with a position
+     * and a ground height.
+     */
     public static boolean feeds(PointRow r) {
-        return PointRow.SURFACE.equals(r.cls) && r.fix == 4 && !r.fixSuspect
+        return PointRow.SURFACE.equals(r.cls) && r.fix == 4 && !r.fixSuspect && !r.voided
                 && (PointRow.SINGLE.equals(r.method) || PointRow.TILT.equals(r.method))
                 && r.hasPosition() && !Double.isNaN(r.hGround);
     }

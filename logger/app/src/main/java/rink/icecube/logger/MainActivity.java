@@ -773,7 +773,7 @@ public final class MainActivity extends Activity {
             return;
         }
         map.setCoverageOn(true);
-        if (coverageWorker.update(sv, f, coverageParams, rows)) {
+        if (coverageWorker.update(sv, f, coverageParams, rows, sv.voidGeneration())) {
             map.clearCoverage();
             // the settings and origin of each rebuild go to events.csv, so the session can be replayed
             String line = coverageParams.eventText(f, map.originNote());

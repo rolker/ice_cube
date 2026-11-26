@@ -235,6 +235,31 @@ public class CoverageTest {
         assertEquals(Math.hypot(t.sigmaZ, slopeTerm), nd.sigma(), 1e-6);
     }
 
+    @Test public void voidedRowDoesNotFeed() {
+        LocalFrame f = new LocalFrame(0, 0, 0);   // made-up origin at the equator
+        PointRow r = surface(f, 1, 1, 0.2);
+        assertTrue(Coverage.feeds(r));
+        r.voided = true;
+        assertFalse(Coverage.feeds(r));
+        assertFalse(new Coverage(Coverage.Params.defaults()).add(r, f));
+    }
+
+    /** A node one bad capture turned red is OK again in a rebuild without it (#27). */
+    @Test public void rebuildWithoutVoidedCaptureClearsRed() {
+        LocalFrame f = new LocalFrame(0, 0, 0);
+        PointRow good = surface(f, 0, 0, 0.0), bad = surface(f, 0, 0, 0.2);
+        good.n = 1; bad.n = 2;
+        Coverage a = new Coverage(Coverage.Params.defaults());
+        a.add(good, f);
+        a.add(bad, f);
+        assertEquals(Coverage.Status.DISAGREE, a.status(a.node(0, 0)));
+        bad.voided = true;
+        Coverage b = new Coverage(Coverage.Params.defaults());
+        for (PointRow r : new PointRow[] {good, bad}) b.add(r, f);
+        assertEquals(1, b.node(0, 0).n);
+        assertFalse(b.status(b.node(0, 0)) == Coverage.Status.DISAGREE);
+    }
+
     @Test public void incrementalEqualsRebuild() {
         Coverage a = new Coverage(Coverage.Params.defaults()), b = new Coverage(Coverage.Params.defaults());
         double[][] s = {{0.1, 0.2, 0.3}, {0.9, 0.4, 0.31}, {1.7, -0.3, 0.29}, {0.6, 1.1, 0.5}};
