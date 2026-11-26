@@ -142,3 +142,47 @@ Address must-fix 1-4: UNDO tied to the capture's own notice (undoN/undoUntilMs),
 **Plan**: `.agent/work-plans/issue-27/plan.md` at `8bffd83`
 
 Revision after plan review: UNDO bound to the capture's own notice (undoN/undoUntilMs, 0.75 s arm delay, window checked in Survey, label hidden at 8 s, newer notice ends it); volatile voided/voidReason; RefsStore.setVoid over every refs.csv root with refsGeneration bump; importer drops voided rows and counts them. Split decided: PR A data model, coverage, refs, importer, docs (~12 files); PR B UI, PHOTO target line, version 0.9.0 (~5 files), because the whole was ~16 files and the halves review differently.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 18:32 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: ready
+
+**Issue**: #27 — Logger: undo or flag an accidental capture
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `8bffd83`
+**Branch**: `feature/issue-27`
+
+Second review, after the revision. Host decisions taken as given: refs.csv rewrite atomic and logged; new `photo` row when there is no earlier capture; no re-attach time limit; importer drops voided rows and counts them; 0.9.0 / build 13 in PR B.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Split recorded with its reason: PR A (steps 1-9, about 12 files, JVM-tested data model, coverage, refs, importer, docs) and PR B (steps 10-12, about 5 files of UI plus the version). PR A stands alone: nothing in it can void a row (no UI calls `voidCapture`), so `lastCapture`, PhotoRule, PoleCheck and the overlay behave as on main; the only visible effect is two extra columns in points.csv and refs.csv, which older readers tolerate (`PointRow.parse` reads extra columns past `COLUMNS`; the 0.6 header upgrade runs once). |
+| Issue alignment | Good | Every review-issue action and earlier must-fix covered. Serves: project goal "surveyed with the logger" (`docs/roadmap.md` Direction); the project has no design document. |
+| File targeting | Needs work | `import_sessions.py` has a second refs path, `import_refs_csv` (refs.csv rows of sessions not otherwise imported), not covered by "drops rows with `void=1`" as written (finding 2). |
+| Consequences | Good | refsGeneration bump, every refs.csv root, earlier-refs layer, `soundings.py` reading only the gpkg, #23/#29 and #20/#21 notes all present. |
+| Principle alignment | Good | Synthetic fixtures; nothing deleted; constants in `VoidRule`; tests for each rule. One planned test rests on a behaviour the app does not have (finding 1). |
+| ADR compliance | Good | The project keeps no ADRs; none triggered. |
+| ROS conventions | N/A | Android app and Python scripts. |
+
+**Earlier must-fixes**: 1 (UNDO bound to `undoN`/`undoUntilMs` on the capture's own notice, 0.75 s arm, window checked in `Survey`, label gone at 8 s, newer notice ends it, 11-26 case via Recent captures) addressed in steps 3 and 10. 2 (`volatile` voided/voidReason) addressed in step 1. 3 (`setVoid` over every `Storage.refsFiles` root, atomic, `refsGeneration` bump, map read skips voided) addressed in step 4. 4 (importer drops, `soundings.py` unchanged, "one reader" wording fixed) addressed in step 7.
+
+### Findings
+
+1. **[Principle: correctness of the plan's facts]** There is no session resume. `Survey`'s constructor writes a fresh points.csv (`writePoints(new ArrayList<String>())`) and `LoggerService` makes a new `Survey` per REC; nothing reads points.csv back on the phone. So the "On session resume the void state ... is read from the `void` column" paragraph and the `CoverageWorkerTest` case "restart rebuild from file skips it" describe something that does not exist. Drop both; the only state that outlives a session on the phone is refs.csv, which step 4 already covers (PoleCheck and the earlier-refs layer read the `void` column). The README should say so rather than promise a resume rule.
+2. **[File targeting]** `import_sessions.py` imports refs twice: from each session's points.csv (covered by the drop) and through `import_refs_csv`, which reads `read_refs_csv` rows of sessions not otherwise imported. That path must also skip `void=1` (and count them), or a voided ref reaches the gpkg `refs` table from another session's zip. Add it to step 7 and to the `test_import.py` case (a voided ref in refs.csv of a session not in the import).
+3. **[Consequences, minor]** `gp.upsert` never deletes, and `import_refs_csv` keeps existing rows unchanged. A row imported before it was voided (a zip shared mid-session, then flagged) stays in the gpkg after a later import. Either delete the (session, n) rows that are now voided when importing (counted with the dropped ones) or state the limitation in the importer docstring.
+4. **[PR A standalone, minor]** After PR A merges, a build of main still says 0.8.1 but writes the 29-column points.csv and the new refs.csv header. Label the format change in `logger/README.md` "from 0.9.0" so it matches the version B ships, and mark the `flag`/`unflag`/`photo moved` events as written from 0.9.0 (PR A has nothing that writes them).
+
+### Summary
+
+The revision addresses all four earlier must-fixes and the A/B split is sound: A changes no behaviour a user can trigger and its tests stand alone. The remaining items are small and can be fixed during implementation: drop the non-existent session-resume rule and its test, and make the importer's refs.csv path skip voided rows too.
+
+### Recommended Actions
+
+- [ ] Remove the session-resume paragraph and the "restart rebuild from file" `CoverageWorkerTest` case; say in the README that refs.csv is the only void state read back.
+- [ ] Make `import_refs_csv` skip and count `void=1` rows; add that case to `test_import.py`.
+- [ ] Delete now-voided (session, n) rows on re-import, or document that an earlier-imported row stays.
+- [ ] Label the new columns and events in `logger/README.md` as from 0.9.0.
