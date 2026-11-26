@@ -512,9 +512,9 @@ def capture_sigma_inputs(sg, method, sd_u, sd_e, sd_n, tilt_sd_u=None, tilt_sd_e
     sigmas (tilt_sd_u_m as sd_u, hypot(tilt_sd_e_m, tilt_sd_n_m) / sqrt 2 as sd_h) and tilt
     0: the solution already places the tip, so only tip sink and ground stay in the pole
     budget. Anything else (single, ref, no method, a tilt capture missing an sd or with a
-    non-finite one) takes the single-capture rule: its 1 s scatter and the bubble tilt.
+    non-finite or negative one) takes the single-capture rule: its 1 s scatter and the bubble tilt.
     GST still floors the result in `sigma_terms`. The logger mirrors this in core/SoundingSigma.java."""
-    if method == "tilt" and all(v is not None and math.isfinite(v)
+    if method == "tilt" and all(v is not None and math.isfinite(v) and v >= 0
                                 for v in (tilt_sd_u, tilt_sd_e, tilt_sd_n)):
         return tilt_sd_u, _sd_h(tilt_sd_e, tilt_sd_n), 0.0
     return sd_u, _sd_h(sd_e, sd_n), sg["tilt_bubble_deg"]

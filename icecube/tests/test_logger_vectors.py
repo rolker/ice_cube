@@ -23,7 +23,7 @@ class TestLoggerVectors(unittest.TestCase):
 
     def test_tilt_capture_without_sds_takes_the_single_rule(self):
         doc = json.loads(logger_vectors.render())
-        for name in ("tilt_missing_sd", "tilt_one_sd_missing"):
+        for name in ("tilt_missing_sd", "tilt_one_sd_missing", "tilt_negative_sd"):
             case = next(c for c in doc["sigma"] if c["name"] == name)
             single = logger_vectors.logger_sigma(dict(case["input"], method="single"))
             self.assertEqual(case["expected"], single)

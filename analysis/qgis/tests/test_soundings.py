@@ -125,7 +125,7 @@ class TestFrameAndSigma(unittest.TestCase):
                          (0.012, h, 0.0))
         single = (0.03, math.hypot(0.02, 0.02) / math.sqrt(2), sg["tilt_bubble_deg"])
         self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, None, 0.008), single)
-        for bad in (float("nan"), float("inf")):   # non-finite as missing, like SoundingSigma.java
+        for bad in (float("nan"), float("inf"), -0.006):   # non-finite or negative as missing, like SoundingSigma.java
             self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, bad, 0.008), single)
         self.assertEqual(snd.capture_sigma_inputs(sg, "single", 0.03, 0.02, 0.02, 0.012, 0.006, 0.008), single)
         self.assertEqual(snd.capture_sigma_inputs(sg, None, 0.03, 0.02, 0.02), single)

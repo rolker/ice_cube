@@ -24,7 +24,7 @@ package rink.icecube.logger.core;
  * captures take the bubble tilt (TILT_BUBBLE_DEG). Tilt captures take the tilt solution's own
  * sigmas (tilt_sd_u_m for sd_u, hypot(tilt_sd_e_m, tilt_sd_n_m) / sqrt 2 for sd_h) and tilt
  * 0, keeping tip sink and ground; a tilt capture missing any of the three tilt sds (NaN) or
- * with a non-finite one falls back to the single rule. In soundings.py GST still floors a
+ * with a non-finite or negative one falls back to the single rule. In soundings.py GST still floors a
  * tilt capture's sigmas.
  *
  * When soundings.py changes, regenerate the test vectors
@@ -66,8 +66,8 @@ public final class SoundingSigma {
 
     /** The budget of a capture row: the single or the tilt rule (see the class comment). */
     public static Terms of(PointRow r, double ground) {
-        if (PointRow.TILT.equals(r.method) && Double.isFinite(r.tiltSdU) && Double.isFinite(r.tiltSdE)
-                && Double.isFinite(r.tiltSdN)) {
+        if (PointRow.TILT.equals(r.method) && usableSd(r.tiltSdU) && usableSd(r.tiltSdE)
+                && usableSd(r.tiltSdN)) {
             return terms(r.tiltSdU, hypotH(r.tiltSdE, r.tiltSdN), r.age, r.fixAge, r.pole, 0.0, ground);
         }
         return terms(r.sdU, hypotH(r.sdE, r.sdN), r.age, r.fixAge, r.pole, TILT_BUBBLE_DEG, ground);
@@ -75,6 +75,9 @@ public final class SoundingSigma {
 
     /** hypot(e, n) / sqrt 2, missing values as 0 (soundings.py's sd_h). */
     static double hypotH(double e, double n) { return Math.hypot(orZero(e), orZero(n)) / Math.sqrt(2); }
+
+    /** A tilt sd the tilt rule can take: finite and not negative. */
+    private static boolean usableSd(double v) { return Double.isFinite(v) && v >= 0.0; }
 
     private static double orZero(double v) { return Double.isNaN(v) ? 0.0 : v; }
 }
