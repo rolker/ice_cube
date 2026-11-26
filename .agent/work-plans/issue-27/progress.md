@@ -134,3 +134,11 @@ A sound soft-void design that answers every review-issue action and fits the hos
 **Decision**: revise
 
 Address must-fix 1-4: UNDO tied to the capture's own notice (undoN/undoUntilMs), taps ignored for ~0.75 s after it appears, voidCapture checks the 8 s window against capture time and refuses already-voided rows, UNDO label hidden at 8 s (notice stays 10 s), a newer notice ends the UNDO (the 11-26 photo case goes through Recent captures); PointRow.voided made thread-safe (volatile or replace the row object); RefsStore.setVoid rewrites the matching row in every refs.csv under Storage.refsFiles atomically and bumps refsGeneration. Host decision on must-fix 4: the importer DROPS voided rows (they never reach the gpkg) and reports the count per session; fix the 'one reader' wording. The UI split into PR B is likely (PR A ~16 files); the implementer decides and records why.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 18:31 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `8bffd83`
+
+Revision after plan review: UNDO bound to the capture's own notice (undoN/undoUntilMs, 0.75 s arm delay, window checked in Survey, label hidden at 8 s, newer notice ends it); volatile voided/voidReason; RefsStore.setVoid over every refs.csv root with refsGeneration bump; importer drops voided rows and counts them. Split decided: PR A data model, coverage, refs, importer, docs (~12 files); PR B UI, PHOTO target line, version 0.9.0 (~5 files), because the whole was ~16 files and the halves review differently.
