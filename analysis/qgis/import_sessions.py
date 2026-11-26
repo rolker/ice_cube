@@ -47,7 +47,8 @@ Idempotent and incremental: a session already imported from an unchanged source 
 skipped (--force re-reads it). Each sessions row records the schema_version it was
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
-session imported in full. Sessions still at an older schema after a run (not among the
+session imported in full; a session from an app older than SCHEMA_MIN_APP has nothing to
+fill and is marked current without a re-read. Sessions still at an older schema after a run (not among the
 inputs, or seen only as a snapshot) are named in the log and re-read on a later run. Rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
 importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
@@ -68,11 +69,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gpkg_writer import GeoPackage, gpkg_geometry, point, point_xyz  # noqa: E402
 from local_frame import LocalFrame, ecef_to_geodetic  # noqa: E402
-from logger_session import find_sessions, load_session, read_refs_csv  # noqa: E402
+from logger_session import app_version, find_sessions, load_session, read_refs_csv  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
 SCHEMA_VERSION = 3     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+SCHEMA_MIN_APP = (0, 6)  # sessions from an older app gain nothing from the SCHEMA_VERSION
+                         # re-read (3 only adds 0.6 columns): they are marked current as they
+                         # are. Revisit when SCHEMA_VERSION changes.
 USER_COLUMNS = {"captures": ("note", "label"), "photos": ("note",), "refs": ("note",),
                 "sessions": ("note",)}
 TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line
@@ -533,8 +537,14 @@ def run(argv=None, log=print, progress=None):
     try:
         ensure_schema(gp)
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
-        stale = {r[0] for r in gp.con.execute("SELECT session, schema_version FROM sessions")
-                 if (r[1] or 0) < SCHEMA_VERSION}   # imported by an older schema (NULL: before 3)
+        olds = [(r[0], r[2]) for r in gp.con.execute("SELECT session, schema_version, app FROM sessions")
+                if (r[1] or 0) < SCHEMA_VERSION]    # imported by an older schema (NULL: before 3)
+        nothing_new = [ses for ses, app in olds if app_version(app) < SCHEMA_MIN_APP]
+        if nothing_new:
+            gp.con.executemany("UPDATE sessions SET schema_version=? WHERE session=?",
+                               [(SCHEMA_VERSION, ses) for ses in nothing_new])
+            gp.commit()
+        stale = {ses for ses, _ in olds} - set(nothing_new)
         if stale:
             log(f"{len(stale)} session(s) imported by a schema older than {SCHEMA_VERSION}: "
                 "re-reading those in the inputs to fill new columns")

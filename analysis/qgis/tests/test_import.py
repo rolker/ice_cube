@@ -276,6 +276,17 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT count(*) FROM sessions WHERE schema_version IS NULL "
                                 "OR schema_version < ?", imp.SCHEMA_VERSION), [(0,)])
 
+    def test_schema2_pre06_session_is_current_without_reread(self):
+        """Schema 3 adds only 0.6 columns, so a 0.5 session is not stale when its source is absent."""
+        z5 = synth.write_zip(self.d / "s5.zip", synth.session_v05("2026-12-02_10-00-00"))
+        z6 = synth.write_zip(self.d / "s6.zip", synth.session_v06())
+        run(z5, z6, "--gpkg", self.gpkg, "--base", *self.base)
+        self._as_schema2()
+        out = run(z6, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertNotIn("still at an older schema", out)
+        self.assertEqual(self.q("SELECT count(*) FROM sessions WHERE schema_version IS NULL "
+                                "OR schema_version < ?", imp.SCHEMA_VERSION), [(0,)])
+
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())
         run(z, "--gpkg", self.gpkg, "--base", *self.base)

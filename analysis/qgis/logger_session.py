@@ -199,6 +199,13 @@ def _i(x):
     return int(v) if v is not None else None
 
 
+def app_version(v):
+    """An app version string ("0.6.1", "0.10-debug") as a tuple of ints from its leading
+    numbers; () when missing or unreadable, which compares below every version."""
+    m = re.match(r"\s*(\d+(?:\.\d+)*)", v) if isinstance(v, str) else None
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
 def read_events(src):
     """[(elapsed_ns, wall_ms, text), ...] from events.csv."""
     raw = src.read("events.csv")

@@ -75,7 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gpkg_writer as gw  # noqa: E402
 from local_frame import LocalFrame, geodetic_to_ecef  # noqa: E402
-from logger_session import find_sessions, read_chunks, read_events, _nmea_deg  # noqa: E402
+from logger_session import app_version as _version, find_sessions, read_chunks, read_events, _nmea_deg  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -518,13 +518,6 @@ def capture_sigma_inputs(sg, method, sd_u, sd_e, sd_n, tilt_sd_u=None, tilt_sd_e
                                 for v in (tilt_sd_u, tilt_sd_e, tilt_sd_n)):
         return tilt_sd_u, _sd_h(tilt_sd_e, tilt_sd_n), 0.0
     return sd_u, _sd_h(sd_e, sd_n), sg["tilt_bubble_deg"]
-
-
-def _version(v):
-    """An app version string ("0.6.1", "0.10-debug") as a tuple of ints from its leading
-    numbers; () when missing or unreadable, which compares below every version."""
-    m = re.match(r"\s*(\d+(?:\.\d+)*)", v) if isinstance(v, str) else None
-    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
 
 
 # ----------------------------------------------------------------------------- rows
