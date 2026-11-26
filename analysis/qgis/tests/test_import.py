@@ -19,7 +19,7 @@ import export_labels  # noqa: E402
 import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
-from logger_session import find_sessions, load_session  # noqa: E402
+from logger_session import _i, find_sessions, load_session  # noqa: E402
 
 
 def run(*argv):
@@ -49,6 +49,11 @@ class ImportTest(unittest.TestCase):
     def counts(self):
         return {t: self.q(f"SELECT count(*) FROM {t}")[0][0]
                 for t in ("sessions", "captures", "photos", "refs", "tracks", "track_points")}
+
+    def test_int_cells(self):
+        """A non-finite int cell reads as missing instead of aborting the points.csv parse."""
+        self.assertEqual([_i(x) for x in ("3", "3.0", "", None, "x", "nan", "inf", "-inf")],
+                         [3, 3, None, None, None, None, None, None])
 
     # -- 0.5 zip
     def test_v05_zip(self):

@@ -20,6 +20,7 @@ from __future__ import annotations
 import bisect
 import csv
 import io
+import math
 import os
 import re
 import zipfile
@@ -195,8 +196,9 @@ def _f(x):
 
 
 def _i(x):
+    """An int from a CSV cell; None when empty, unreadable or non-finite ("nan", "inf")."""
     v = _f(x)
-    return int(v) if v is not None else None
+    return int(v) if v is not None and math.isfinite(v) else None
 
 
 def app_version(v):
