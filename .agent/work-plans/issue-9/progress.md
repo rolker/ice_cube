@@ -278,4 +278,4 @@ Both round-1 must-fixes verified fixed (per-session `sessions.schema_version`; p
 - [x] (suggestion) A negative `tilt_sd_*` passes the finite check in both Python and Java and takes the tilt rule (floored to an optimistic sigma); require `>= 0` in both and add a vector (gemini) — `analysis/qgis/soundings.py:517`, `SoundingSigma.java:69`
 - [x] (suggestion) `_i("nan")` / `_i("inf")` raise ValueError/OverflowError and abort the whole points.csv parse; return None for non-finite like `_f` (claude-adversarial) — `analysis/qgis/logger_session.py:197`
 - [x] (suggestion) End-to-end tests: no case with tilt sd_h above floor_h, nor tilt_sd_u above a present GST term (gemini) — `analysis/qgis/tests/test_soundings.py:295` (deferred: deferred by the owner's round-2 plan: an above-floor end-to-end case is a follow-up)
-- [ ] (suggestion) docs/log.md entry does not mention the per-session schema_version re-read that changes importer behaviour on existing gpkgs — `docs/log.md:115`
+- [x] (suggestion) docs/log.md entry does not mention the per-session schema_version re-read that changes importer behaviour on existing gpkgs — `docs/log.md:115`
