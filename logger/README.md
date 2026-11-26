@@ -177,6 +177,45 @@ in `events.csv` (the same row; events.csv turns commas into `;`). Captures are n
   is written with the number of epochs and their scatter, and the pole check runs.
   The pole height is the one in effect when the ref started.
 
+### Flagged (void) captures
+From 0.9.0 a capture can be flagged as bad (voided): an accidental MARK, a bad pole
+placement. Nothing is deleted and numbers are never reused: the row stays in `points.csv`
+with `void` = 1 and a `void_reason`, and readers leave it out (see below). The buttons for
+it (UNDO right after a capture, and flagging from a list of recent captures) come with the
+0.9.0 build.
+- Who can be flagged: surface, object and ref rows, including tilt captures (one row
+  each; their leans stay in `tilt_obs.csv`, and readers drop the leans of a voided `n`).
+  Not a photo row, not one already flagged, and not while a ref occupation or a tilt set
+  runs (cancel those instead). UNDO only works within 8 s of the capture.
+- Reasons: `accidental`, `bad pole placement`, `moved`, `other` (commas and line breaks
+  are removed from any text).
+- Unflagging clears `void` and `void_reason`. Photos that moved stay where they went.
+- Photos on a flagged row move (only the `photo` column changes; the files stay): to the
+  nearest earlier capture that is not flagged and not a photo row, however long ago,
+  because the user has said this capture was a mistake; with none, to a new `photo` row at
+  the flagged row's position. A photo taken after an undo goes to the latest capture that
+  is not flagged, within the usual 60 s.
+- A flagged ref: its `refs.csv` row is rewritten in place with the same columns (the one
+  write to refs.csv that is not an append), in every storage root's refs.csv that holds
+  it. A flagged ref is never a "last visit" for the pole check and is not drawn among the
+  earlier refs; its pole-check notice and warning are cleared.
+- Coverage: a flagged capture leaves the overlay (it is rebuilt without it); unflagged, it
+  comes back.
+- `events.csv` is the audit trail: `flag n=<n> reason=<reason, spaces as _> via=undo|list`,
+  `unflag n=<n>`, `photo moved n=<from> to=<to> photos=<files>` (with `own row` when a new
+  photo row took them, followed by its `capture` line), and `ref n=<n> voided|unvoided in
+  refs.csv (<k> rows)`.
+
+The phone never reopens a session, so `points.csv` is written from the app's state, and
+`refs.csv` is the only void state the app reads back (the pole check, the earlier refs).
+If `points.csv` and `events.csv` ever disagree, the events are the record.
+
+Readers: the QGIS importer keeps flagged captures and refs with `void` and `void_reason`
+columns (rewritten on each import, so an unflag clears them); `soundings.py` keeps them
+with flag `void:<reason>` and `use` 0 unless `include_voided` is set, and
+`export_labels.py` leaves them out unless `--include-voided`; each says how many. Flag and
+filter, as in multibeam processing: nothing is thrown away.
+
 ### False-fix guard
 In the field data (2026-11-11) several RTK "fixed" stretches were wrong: each began with a
 1.3 to 2.9 m position jump at the float-to-fixed transition and then read 0.2 to 2.2 m off
@@ -323,7 +362,8 @@ from `refs.csv` as grey rings when Settings > Survey > Show earlier refs is on.
 One header line, then one row per capture, in capture order. UTF-8, comma separated, `.`
 decimals; an empty field means not available. Text fields are quoted (RFC 4180) only when
 they contain a comma, quote or line break. The app rewrites the whole file on each change
-(e.g. when a photo is attached), so it is always complete.
+(e.g. when a photo is attached or a capture is flagged), so it is always complete; it is
+not append-only. `events.csv` is the append-only record.
 
 | column | meaning |
 |---|---|
@@ -349,26 +389,30 @@ they contain a comma, quote or line break. The app rewrites the whole file on ea
 | `tilt_rms_m` | 0.6, tilt only: RMS of the sphere residuals, m |
 | `tilt_cover_deg` | 0.6, tilt only: azimuth coverage of the used leans, degrees |
 | `tilt_sd_e_m`, `tilt_sd_n_m`, `tilt_sd_u_m` | 0.6, tilt only: standard deviation of the tip east, north, up, m |
+| `void` | from 0.9.0: 1 if the capture is flagged as bad (see Flagged captures), else 0 |
+| `void_reason` | from 0.9.0: why it was flagged, empty when not |
 
-The ten 0.6 columns come after `note`, so a reader that takes the first 17 columns by
-position keeps working; rows written before 0.6 simply lack them. The session importer
-(`analysis/qgis/logger_session.py` on the `feature/session-import` branch) reads only the
-first 17 for now and needs updating to pick up `fix_suspect`, `method` and the tilt
-columns (and `tilt_obs.csv`).
+The ten 0.6 columns come after `note`, and the two 0.9.0 columns after those, so a reader
+that takes the first 17 (or 27) columns by position keeps working; older rows simply lack
+the later columns, and a row without `void` is not flagged. The session importer
+(`analysis/qgis/logger_session.py`) reads the first 17 and `void`/`void_reason`; it does
+not yet pick up `fix_suspect`, `method`, the tilt columns or `tilt_obs.csv`.
 
 Example (made-up position):
 ```
-n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m
-1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,
-2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,
-3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060
+n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,void,void_reason
+1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,,0,
+2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,,0,
+3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060,0,
+4,surface,81393123456789,2026-11-11T14:06:15.10Z,10.000020500,20.000030500,31.0610,1.600,29.4610,4,5,0.0022,0.0019,0.0041,1.0,,,263.4,0.180,0,single,,,,,,,1,accidental
 ```
 
 Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix` (or
 `: fix settling N s`), `fix stretch start jump=…`, the tilt events (see Tilt capture),
 `ref start n=… duration_s=… pole_height=… quality=…`, `ref paused …`, `ref resumed …`,
 `ref end n=… epochs=… pauses=…`, `ref cancelled …`, `pole check n=…: …`, `photo file=…
-attached to n=…` or `own row n=…`, `photo cancelled: …`.
+attached to n=…` or `own row n=…`, `photo cancelled: …`; from 0.9.0 `flag n=…`, `unflag
+n=…` and `photo moved n=…` (see Flagged captures).
 
 ### Refs and the pole check
 Every ref is also appended to `refs.csv` in the storage root
@@ -384,7 +428,9 @@ shows the ground height difference to the most recent one and to the mean of all
 
 From 0.6 its rows carry the ten new points.csv columns; the first time 0.6 appends to an
 older `refs.csv` it rewrites the header line to the new one (rows unchanged), so the older
-rows simply have empty values there.
+rows simply have empty values there. From 0.9.0 the rows also carry `void` and
+`void_reason` (same header upgrade); flagging a ref rewrites its row in place (see
+Flagged captures), and a row with `void` = 1 is never a visit.
 
 `refs.csv` contains positions. It stays on the phone and in Drive; never commit it to
 the public repo. An earlier install's `refs.csv` in Documents may not be readable after a
@@ -475,7 +521,7 @@ overlay and set in Settings > Coverage.
 - Grid: nodes every grid spacing (default 0.5 m) in the map frame, anchored at the map
   origin.
 - What feeds it: this session's Surface captures with RTK fixed (fix 4) and not
-  `fix_suspect`, single or tilt; not float, object, ref or photo rows. Earlier sessions
+  `fix_suspect`, single or tilt, not flagged (void); not float, object, ref or photo rows. Earlier sessions
   are not loaded. Each capture is fed once as it arrives; the overlay is rebuilt from the
   session's captures when the map origin changes, a new session starts, or a Coverage
   setting changes.

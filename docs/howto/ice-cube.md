@@ -342,7 +342,9 @@ issue #9); a change here means regenerating `python3 -m icecube.logger_vectors`.
 The slowly varying RTK wander is not in this sigma: it is the pass bias the crossover
 solves. Rows are left out (flags) when float, on another reference station, in a fix that
 began with a float-to-fix jump over 1 m (a false fix) unless other data agree with that
-pass (`suspect_verified`), listed as known bad, or a stop that duplicates a capture.
+pass (`suspect_verified`), listed as known bad, flagged as bad in the logger (`void`, kept
+with flag `void:<reason>` unless `include_voided`; the importer keeps such captures with
+`void` = 1, it never deletes them), or a stop that duplicates a capture.
 
 **Pole stops**: runs of RTK fixed epochs where a 2 s window holds within 3 cm horizontally
 and 1.2 cm height SD. For logger sessions the phone's gravity sensor must also be steady
