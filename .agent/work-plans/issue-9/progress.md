@@ -229,3 +229,30 @@ Cross-model: gemini complete, codex complete. Claude adversarial complete. Tests
 - [x] (suggestion) `make_session(tilt_sd=...)` writes 0.6 points.csv but events app stays "0.5"; pass app="0.6" for the tilt variant — `analysis/qgis/tests/test_soundings.py:190`
 - [x] (suggestion) Docstring table row `photos       PointZ` lost a space and no longer aligns — `analysis/qgis/import_sessions.py:23`
 - [x] (suggestion) Run `./gradlew testDebugUnitTest --max-workers 4` before push to confirm SoundingSigmaTest passes the new `tilt_missing_sd` vector (plan step 5) — `logger/app/src/test/java/rink/icecube/logger/core/SoundingSigmaTest.java`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:45 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-9 at `219e868`
+**Addressed**: Local Review (Pre-Push) at `a44f484` (2026-11-26 18:40 -05:00)
+**Commits**: d269361, 9bdad4e, 9fb589b, 7f5150d, 219e868
+
+### Actions
+- [x] (must-fix) Schema upgrade tracked per session: `sessions.schema_version` column; a session below SCHEMA_VERSION is re-read whenever its source is in the inputs; sessions still behind after a run are logged by name and returned as `stale`; docstring rewritten; `_schema_of` removed; new test `test_schema2_partial_run_strands_nothing` — `analysis/qgis/import_sessions.py`
+- [x] (must-fix) Soundings warning checks each 0.6+ session and names the stranded ones; new test `test_mixed_sessions_warn_naming_the_stranded_one` — `analysis/qgis/soundings.py`
+- [x] (suggestion) `read_points` strips `method` like PointRow.java — `analysis/qgis/logger_session.py`
+- [x] (suggestion) Non-finite tilt sds take the single rule in both `capture_sigma_inputs` (math.isfinite) and SoundingSigma.java (Double.isFinite); NaN/inf test cases — `analysis/qgis/soundings.py`, `SoundingSigma.java`
+- [x] (suggestion) New shared vector `tilt_one_sd_missing`, coverage_vectors.json regenerated — `icecube/logger_vectors.py`
+- [x] (suggestion) `make_session(tilt_sd=...)` writes app "0.6" events — `analysis/qgis/tests/test_soundings.py`
+- [x] (suggestion) Docstring `photos` row realigned (in d269361) — `analysis/qgis/import_sessions.py:22`
+- [x] (suggestion) `./gradlew testDebugUnitTest --max-workers 4` run: pass, 164 tests, 0 failures (SoundingSigmaTest incl. the new vector)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 105, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 68, OK
+- `./gradlew testDebugUnitTest --max-workers 4` (ANDROID_HOME set; the worktree has no local.properties): BUILD SUCCESSFUL, 164 tests, 0 failures
+- Commits made with every pre-commit hook; nothing pushed.
+
+Next: `/review-code --branch`
