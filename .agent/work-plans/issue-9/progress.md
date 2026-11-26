@@ -118,3 +118,13 @@ The approach is sound: one shared selection helper, `sigma_terms` unchanged, and
 - [ ] Put `tilt_missing_sd` in `SIGMA_CASES`.
 - [ ] Make the importer refill the new columns on old gpkgs without `--force` (schema version bump forces a re-read), with a test. Have `logger_source` warn when the tilt columns are absent or NULL for 0.6+ sessions.
 - [ ] State whether GST still floors tilt captures and shape the end-to-end test to match.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:29 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Address the review's must-fix 1-3 (Java SoundingSigma falls back to the single rule when any tilt sd is missing, in this PR, with its comment fixed and the logger unit tests run on regenerated vectors; tilt_missing_sd in SIGMA_CASES; importer refills the new columns on old gpkgs without --force via a SCHEMA_VERSION bump + test, and logger_source warns once when tilt columns are absent/empty for >=0.6 sessions). Host decision on the minor: GST stays a floor for tilt captures (sigma = the larger of the GST term and the tilt sd), and the end-to-end test uses rows without GST or asserts the larger.
