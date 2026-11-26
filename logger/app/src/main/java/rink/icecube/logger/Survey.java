@@ -158,8 +158,8 @@ final class Survey {
     private volatile int refsGeneration;
     /** Counts flag and unflag changes, so the coverage overlay rebuilds without voided rows. */
     private volatile int voidGeneration;
-    /** The ref whose failed pole check raised poleWarning (0: none). */
-    private int poleWarningN;
+    /** The ref whose failed pole check raised poleWarning (0: none). Set under the lock. */
+    private volatile int poleWarningN;
     private final FixGuard guard;
     private double refJump = Double.NaN;
     private boolean refSuspect;
@@ -498,35 +498,39 @@ final class Survey {
             svc.event("ref n=" + r.n + " not appended to refs.csv: " + e.getMessage());
         }
         refsGeneration++;
-        if (r.voided) {   // flagged while the check was queued: no notice, no warning
-            svc.event("pole check n=" + r.n + ": skipped (voided)");
-            return;
-        }
-        String text;
-        String sus = r.fixSuspect ? "  fix may be false (jumped " + jumpText(r.fixJump) + ")" : "";
-        if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
-        if (c == null) {
-            text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
-                    : "Ref R" + r.n + " saved: first visit to this mark";
-            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
-            poleWarning = null;
-            poleWarningN = 0;
-            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
-            return;
-        }
-        text = c.describe();
-        svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
-                r.n, text, c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
-        if (c.ok) {
-            poleWarning = null;
-            poleWarningN = 0;
-            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
-            if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
+        if (c != null) {
+            svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
+                    r.n, c.describe(), c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
         } else {
-            poleWarning = text + " (R" + r.n + "; check the pole height)";
-            poleWarningN = r.n;
-            notice = new Notice(text + sus, false, false, r);
-            cue(Feedback.Cue.POLE_ALARM);
+            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
+        }
+        // Check and set under the lock: a voidCapture between the check and the update
+        // would otherwise leave a notice, warning or alarm on a flagged ref.
+        synchronized (this) {
+            if (r.voided) {   // flagged while the check ran: no notice, no warning
+                svc.event("pole check n=" + r.n + ": result not shown (voided)");
+                return;
+            }
+            String sus = r.fixSuspect ? "  fix may be false (jumped " + jumpText(r.fixJump) + ")" : "";
+            if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
+            if (c == null) {
+                String text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
+                        : "Ref R" + r.n + " saved: first visit to this mark";
+                notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
+                poleWarning = null;
+                poleWarningN = 0;
+            } else if (c.ok) {
+                poleWarning = null;
+                poleWarningN = 0;
+                notice = new Notice(c.describe() + sus, !r.fixSuspect, r.fixSuspect, r);
+                if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
+            } else {
+                String text = c.describe();
+                poleWarning = text + " (R" + r.n + "; check the pole height)";
+                poleWarningN = r.n;
+                notice = new Notice(text + sus, false, false, r);
+                cue(Feedback.Cue.POLE_ALARM);
+            }
         }
     }
 
