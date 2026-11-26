@@ -49,3 +49,13 @@ issue: 29
 - [ ] State the edge-outlier test as an explicit bound, for example the 262 of 400 absorbed with a plane fitted to all entries must fall to the 76 of 400 baseline or better, so "outlier stays in `n_out`" is checkable.
 - [ ] Decide the board edge cases in the plan: nodes with fewer than 8 neighbours at the survey edge, and neighbour blocks where a neighbour is itself red or empty (minimum weight or neighbour count before the plane path turns on).
 - [ ] Consider splitting into batch first, then logger ring re-reduction, if the combined change is too large for one PR.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:26 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (actions are plan inputs within the issue's scope; orchestrator table allows proceed)
+**After**: issue-actions
+**Decision**: proceed
+
+The three actions (explicit edge-outlier bound <= 76/400; plan the edge cases: fewer than 8 neighbours, red or empty neighbours; consider batch path first, logger ring after) go into the plan-task handoff.
