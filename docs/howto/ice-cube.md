@@ -139,21 +139,29 @@ disc, beyond the slope allowance, so its up- and down-slope soundings land in ou
 bins and it stays red. For each node red after the rebuild (clear and amber nodes are
 never touched), a weighted plane is fitted through the rebuilt heights of its 8
 neighbours (each placed where its height sits: grid offset plus the weighted centroid of
-its members; red neighbours at `plane_red_weight`, 0.25; usable ones need
+its main's members, weighted, not of all its soundings; red neighbours at
+`plane_red_weight`, 0.25; usable ones need
 `plane_min_nin`, 2, members). The node's own soundings are not used: they are what the
 first pass already split. The fit must pass, in order: at least `plane_min_neighbours`
-(5) usable spanning two rows and two columns, at least `plane_min_clear` (2) of them not
-red, a weighted RMS residual of at most `plane_planarity` neighbour sigmas (default
-`k_sigma`), and a gradient that exceeds the node's slope allowance by more than
-`k_sigma` of its own sigma. With `slope_from_dem` the gradient must also stay under
+(5) usable, at least `plane_min_clear` (2) of them not red, a weighted RMS residual of at
+most `plane_planarity` neighbour sigmas (default `k_sigma`), a gradient pinned by where
+the neighbours' heights actually sit (the gradient's largest one-sigma uncertainty at most
+`plane_max_sigma_g`, 0.08 m/m: at a survey fringe the neighbours' members all lie on the
+survey side, their centroids bunch and the plane is not determined across them), and a
+gradient that exceeds the node's slope allowance by more than `k_sigma` of its own sigma.
+With `slope_from_dem` the gradient must also stay under
 `plane_dem_cap * DEM slope + plane_dem_floor` (2.0, 0.05 m/m); with a single `slope` that
-gate is skipped. The node's soundings are then moved to the node along the gradient
+gate is skipped, and so it is at a node outside the DEM's cover (no DEM slope there).
+A gate whose value is not a finite number fails. The node's soundings are then moved to the node along the gradient
 (variance `sz^2 + (|g| sh)^2` plus the gradient's own uncertainty, no slope allowance) and
 rebuilt again, Eeg included. The result is kept only if the node leaves red (or loses
 outliers) and its height agrees with the neighbour plane at the node within `k_sigma`;
-otherwise the first result stands. One sweep: the fits read first-pass heights only. The
-surface npz gains `planar` (the node was rebuilt this way) and `gradient` (|g| where a
-plane passed the fit gates), and the outlier table counts planar nodes. On the 11-26
+otherwise the first result stands. The neighbours' discs overlap the node's and share its
+soundings, so that agreement test is looser than `k_sigma` suggests. One sweep: the fits
+read first-pass heights only. The surface npz gains `planar` (the node was rebuilt this
+way), `gradient` (|g| of every fit that reached the slope test, kept or not) and
+`plane_code` (which gate stopped it, `nodes.PLANE_*`; 0 not tried), and the outlier table
+counts planar nodes. On the 11-26
 logger session (batch replay, slope 0.05) this cleared the 5 bank nodes and left the one
 bad capture red; nodes off the banks are unchanged by construction.
 

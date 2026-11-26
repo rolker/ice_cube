@@ -346,9 +346,10 @@ def _plane_params():
     return PLANE_PARAMS | {"plane_" + k: v for k, v in nodes.PLANE_DEFAULTS.items()}
 
 
-def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01):
+def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01, surface=None, ymin=None):
     """Soundings at random (stdlib random, seeded) over an n x n block of nodes from (0, 0),
-    `per_disc` per capture disc on average, z = g*x plus N(0, sz), rounded to 0.1 mm."""
+    `per_disc` per capture disc on average, z = g*x (or `surface(x, y)`) plus N(0, sz),
+    rounded to 0.1 mm; `ymin` drops the soundings below it (a survey edge)."""
     import random
     rnd = random.Random(seed)
     lo, hi = -0.75, (n - 1) * 0.5 + 0.75
@@ -356,8 +357,9 @@ def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01):
     out = []
     for _ in range(m):
         x, y = round(rnd.uniform(lo, hi), 4), round(rnd.uniform(lo, hi), 4)
-        out.append([x, y, round(g * x + rnd.gauss(0.0, sz), 4), sz, sh])
-    return out
+        z0 = g * x if surface is None else surface(x, y)
+        out.append([x, y, round(z0 + rnd.gauss(0.0, sz), 4), sz, sh])
+    return [r for r in out if ymin is None or r[1] >= ymin]
 
 
 def _plane_cases():
@@ -377,6 +379,11 @@ def _plane_cases():
         x, y = round(rnd.uniform(0.75, 1.25), 4), round(rnd.uniform(0.75, 1.25), 4)
         wc.append([x, y, round(0.3 * x + 0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
     out.append(("wrong_cluster_keeps_pass1", wc))
+    # a 0.3 m/m bank cut at y = 0 (a survey edge): node (2, 0)'s neighbour centroids bunch
+    # in y, the gradient is not pinned (code 9; without the gate pass 2 would be accepted)
+    out.append(("fringe_ill_conditioned", _plane_block(0.3, 22, ymin=0.0)))
+    # a ridge z = 0.4 |x - 1|: node (2, 2) sits on the ridge line, its neighbours fit no plane (code 4)
+    out.append(("ridge_not_planar", _plane_block(0.0, 1, surface=lambda x, y: 0.4 * abs(x - 1.0))))
     return out
 
 

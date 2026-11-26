@@ -78,6 +78,13 @@ class TestLoggerVectors(unittest.TestCase):
         n = centre("wrong_cluster_keeps_pass1")
         self.assertEqual(n["code"], nodes.PLANE_OFF_PLANE)
         self.assertEqual((n["z"], n["n_out"]), (n["z1"], n["n_out1"]))
+        # its fringe node (2, -2) has bunched neighbour centroids: not accepted
+        self.assertEqual(self._node(self._case("plane_vectors", "wrong_cluster_keeps_pass1"), 2, -2)["code"],
+                         nodes.PLANE_ILL_CONDITIONED)
+        n = self._node(self._case("plane_vectors", "fringe_ill_conditioned"), 2, 0)
+        self.assertEqual(n["code"], nodes.PLANE_ILL_CONDITIONED)
+        self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+        self.assertEqual(centre("ridge_not_planar")["code"], nodes.PLANE_NOT_PLANAR)
 
 
 if __name__ == "__main__":

@@ -710,6 +710,33 @@ class TestPlanePass(unittest.TestCase):
             self.assertTrue(s.planar[E], g)
             self.assertFalse(red_of(s)[E], g)
 
+    def test_fringe_bunched_centroids_are_ill_conditioned(self):
+        # a survey cut at y = 0: the bottom-row node's neighbours hold members only inside the
+        # survey, so their centroids bunch in y and the gradient is not pinned. Without the
+        # conditioning gate pass 2 is accepted 6 cm off the bank with a 5 cm sigma.
+        E = (0, 3)
+        p, grid = bank_block(0.3, 29, ymin=0.0)
+        s0 = bank_run(p, grid, plane=False)
+        self.assertTrue(red_of(s0)[E])
+        loose = bank_run(p, grid, plane_max_sigma_g=1e9)
+        self.assertEqual(loose.plane_code[E], nodes.PLANE_ACCEPTED)
+        self.assertGreater(abs(loose.z[E] - 0.45), 0.05)
+        s = bank_run(p, grid)
+        self.assertEqual(s.plane_code[E], nodes.PLANE_ILL_CONDITIONED)
+        self.assert_pass1(s, s0, E)
+
+    def test_conditioning_fails_closed(self):
+        nbrs = [(0.5 * k, 0.0, 0.1 * k, 1e4, False) for k in range(6)]   # collinear: singular
+        self.assertEqual(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0], nodes.PLANE_ILL_CONDITIONED)
+        nbrs = [(x, y, 0.3 * x, 1e4, False) for x in (-0.5, 0.0, 0.5) for y in (-0.5, 0.5)]
+        self.assertEqual(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0], 0)
+        self.assertEqual(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, float("nan"))[0], nodes.PLANE_ILL_CONDITIONED)
+        bad = nbrs[:-1] + [(0.5, 0.5, float("nan"), 1e4, False)]
+        self.assertNotEqual(nodes.plane_fit(bad, 5, 2, 0.25, 3.0, 0.08)[0], 0)
+        self.assertTrue(np.isnan(nodes._sigma_g_max(float("nan"), 0.0, 1.0)))
+        self.assertAlmostEqual(nodes._sigma_g_max(4.0, 0.0, 1.0), 2.0)
+        self.assertAlmostEqual(nodes._sigma_g_max(2.0, 1.0, 2.0), np.sqrt(3.0))
+
     def test_wrong_cluster_keeps_pass1(self):
         # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes
         # the cluster the main with fewer outliers (rule i holds), but its height disagrees
@@ -782,6 +809,13 @@ class TestPlanePass(unittest.TestCase):
         self.assert_pass1(s, s0, self.C)
         # a DEM that agrees: accepted
         s = bank_run(p, grid, raw_slope=np.full(shape, 0.3))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        # no DEM slope at the node (outside the DEM, NaN): the DEM gate is skipped, the others apply
+        s = bank_run(p, grid, raw_slope=np.full(shape, np.nan))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        rs = np.zeros(shape)
+        rs[self.C] = np.nan      # elsewhere flat: only the node's own slope is read
+        s = bank_run(p, grid, raw_slope=rs)
         self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
 
     def test_running_mode_ignores_plane(self):
