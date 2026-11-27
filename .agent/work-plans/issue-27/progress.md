@@ -565,3 +565,20 @@ PR-mode round 3: narrow check of the round-2 Local Review (@ 9b5a108) findings a
 
 ### Findings
 - [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:52 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #33 at `cac6b56`
+**Sources**: 2 (Local Review @ `cac6b56` (round 3, approved, 0 findings), CI rollup: no checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass (no CI checks on this repository)
+
+No hosted reviews, no PR conversation comments, no inline comments. The round-3 Local Review at the PR head verified every item the earlier rounds and the Integrated Review @ 4a7db43 closed, and found nothing new. The two stale entries the sources helper lists (Local Review (Pre-Push) @ 3e9388d, Local Review @ eae8b68) were ruled on by the Integrated Reviews @ f3d76a0 and @ 4a7db43 and are not re-listed. Owner rule holds: voided captures and refs stay flagged rows end to end. Deferred to PR B by host decision: the camera-target fallback.
+
+### Findings
+
+### False positives
