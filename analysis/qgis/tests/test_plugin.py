@@ -189,6 +189,16 @@ class ResolveTest(unittest.TestCase):
         self.assertIn("1 new session(s), 1 re-read, 2 unchanged; 5 captures and 1 photos read", text)
         self.assertIn("Season: 4 sessions, 20 captures", text)
         self.assertIn("recomputed about G", text)
+        self.assertNotIn("flagged void", text)
+        text = core.summary_text({"added": [{"captures": 3, "voided": 2}], "refs_csv_voided": 1})
+        self.assertIn("3 captures and 0 photos read (2 captures flagged void, kept with void=1)", text)
+        self.assertIn("refs.csv: 1 flagged void", text)
+
+    def test_export_text_counts_flagged(self):
+        self.assertEqual(core.export_text(4, "l.csv", {"voided": 0}), "4 captures written to l.csv")
+        self.assertEqual(core.export_text(4, "l.csv", {"voided": 2, "voided_included": False}),
+                         "4 captures written to l.csv; 2 flagged void left out")
+        self.assertIn("2 flagged void included", core.export_text(6, "l.csv", {"voided": 2, "voided_included": True}))
 
 
 class LogFileTest(unittest.TestCase):

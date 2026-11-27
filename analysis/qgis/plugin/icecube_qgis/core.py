@@ -220,6 +220,11 @@ def summary_text(result):
     caps = sum(a.get("captures", 0) for a in added)
     phot = sum(a.get("photos", 0) for a in added)
     text = ", ".join(parts) + f"; {caps} captures and {phot} photos read"
+    voided = sum(a.get("voided") or 0 for a in added)
+    if voided:
+        text += f" ({voided} captures flagged void, kept with void=1)"
+    if result.get("refs_csv_voided"):
+        text += f"; refs.csv: {result['refs_csv_voided']} flagged void"
     tot = result.get("totals") or {}
     if tot:
         text += (f". Season: {tot.get('sessions', 0)} sessions, {tot.get('captures', 0)} captures, "
@@ -227,6 +232,16 @@ def summary_text(result):
     if result.get("recomputed"):
         text += f". x/y/z recomputed about {result.get('origin')}"
     return text + "."
+
+
+def export_text(n, out, stats):
+    """The message after Export labels: rows written and the captures flagged void in the
+    logger, which export_labels.export() leaves out (its `stats` dict)."""
+    text = f"{n} captures written to {out}"
+    if stats.get("voided"):
+        text += (f"; {stats['voided']} flagged void "
+                 + ("included" if stats.get("voided_included") else "left out"))
+    return text
 
 
 # ----------------------------------------------------------------------------- log file
