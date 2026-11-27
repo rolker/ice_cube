@@ -1108,3 +1108,13 @@ All five suggestions from the PR-mode round-2 Local Review were checked against 
 - [ ] (suggestion, Local Review @ `f73949d`) Duplicate (session, n) rows in one refs.csv copy: the importer's copies dict keeps the last row's flag, while VoidRule.liveRefs on the phone treats it as flagged if any row is. The logger never writes duplicates, so only a hand-edited file differs; OR the flags of a copy's duplicate rows to match the phone — `analysis/qgis/import_sessions.py`
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:34 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (5 small valid suggestions, each a few lines with a test; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Fix all five as the Integrated Review at 3c7b8e3 describes.
