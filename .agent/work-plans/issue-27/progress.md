@@ -635,3 +635,11 @@ Owner's answer to "Merge now and fix F1/F2 in part B, or fix them first?": "Merg
 **Decision**: revise
 
 PR A merged as #33 (6a9a9fe). Owner said "27b" (start part B). Refresh the plan's PR B part with what PR A deferred: F1 zip DOS times read in the importing PC's time zone (logger_session.py:176; e.g. the logger writes the zip extended UTC timestamp); F2 a real PHOTO in the same second as a voided capture's moved photo row loses its window (soundings.py:821; also match the "photos of voided" note); the camera-target fallback when the latest capture is flagged (Survey.java:643); a false error: event when a flag lands as a ref finishes; the photo file-name number after a move; MapView drawing; the undo window's time source; version 0.9.0.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 20:49 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `58382ef`
+
+Revision after PR A merged as #33: PR A marked delivered; PR B rewritten against main as steps 10 to 20 (Undo notice, Recent captures, PHOTO target line, MapView flagged drawing, camera-target fallback, photo file-name number, false error: event ordering, one undo clock, F1 zip extended timestamp with tie rule, F2 note match, docs and 0.9.0), each with its test.
