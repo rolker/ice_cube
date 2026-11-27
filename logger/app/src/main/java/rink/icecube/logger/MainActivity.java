@@ -1101,11 +1101,10 @@ public final class MainActivity extends Activity {
             chipColor = MapView.qualityColor(g.quality);
             chipText = Survey.fixName(g.quality) + " " + age(g);
             Survey.FixState fs = g.quality == 4 && sv != null ? sv.fixState() : null;
-            if (fs != null && fs.settleS > 0) { chipColor = AMBER; chipText = "FIX settling " + fs.settleS + "s"; }
-            else if (fs != null && fs.suspect) {
+            if (fs != null && fs.suspect) {
                 chipColor = AMBER;
-                chipText = String.format(Locale.US, "FIXED? jump %.1fm", fs.jump);
-            }
+                chipText = !fs.byJump ? "FIXED? after float" : String.format(Locale.US, "FIXED? jump %.1fm", fs.jump);
+            } else if (fs != null && fs.youngS >= 0) { chipColor = AMBER; chipText = "FIX young " + fs.youngS + "s"; }
         }
         fixChip.setText(chipText);
         if (!chipState.equals(String.valueOf(chipColor))) {
