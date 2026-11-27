@@ -146,7 +146,7 @@ public class TiltSetTest {
 
     @Test public void suspectStretchIsCarriedToTheRowAndWarned() {
         Random rnd = new Random(9);
-        FixGuard g = new FixGuard(0, 1.0);
+        FixGuard g = new FixGuard(0, 1.0, 20 * S);
         g.onEpoch(new Epoch(0, 0, 10, 20, 100, 1, 5));
         double[] p = F.toGeodetic(1.5, 0, 0);
         FixGuard.Stretch s = g.onEpoch(new Epoch(S / 4, 0, p[0], p[1], p[2], 1, 4));
@@ -159,6 +159,33 @@ public class TiltSetTest {
         PointRow row = t.toRow(1, 1, r, MIDNIGHT);
         assertTrue(row.fixSuspect);
         assertEquals(1.5, row.fixJump, 0.01);
+    }
+
+    /** 0.11.0 (#15): a young lean and a lean from a stretch suspect by float spell combine into the row. */
+    @Test public void youngAndFloatSpellLeansCombineIntoTheRow() {
+        Random rnd = new Random(11);
+        FixGuard g = new FixGuard(120 * S, 1.0, 20 * S);
+        long t = 0;
+        for (; t < 30 * S; t += S / 4) g.onEpoch(new Epoch(t, 0, 10, 20, 100, 1, 5));
+        FixGuard.Stretch spell = g.onEpoch(new Epoch(t, 0, 10, 20, 100, 1, 4));
+        assertEquals(FixGuard.REASON_FLOAT_SPELL, spell.reason);
+        TiltSet ts = new TiltSet(PointRow.SURFACE, L, new TiltSet.Gates(), 0);
+        double[] az = {0, 90, 180, 270};
+        for (int i = 0; i < az.length; i++) {
+            EpochAverage a = avg(20, az[i], 0.002, NO_SLIP, rnd, 4);
+            assertTrue(ts.add(a, TiltSolverTest.gravity(TiltSolverTest.pole(20, az[i]), 0), 100, spell, i == 1,
+                    20 * S, MIDNIGHT + 50_000_000L).ok);
+        }
+        TiltSet.Result r = ts.finish();
+        assertTrue(r.warnings.toString(), r.warnings.toString().contains("fix may be false (after a long float spell)"));
+        PointRow row = ts.toRow(1, 1, r, MIDNIGHT);
+        assertTrue(row.fixSuspect);
+        assertEquals("float_spell", row.suspectReason);
+        assertEquals(1, row.fixYoung);
+        assertEquals("float", row.fixStart);
+        assertEquals(30, row.floatSpell, 1e-9);
+        // leans keep their three fix columns in tilt_obs.csv, no new ones
+        assertEquals(TiltSet.OBS_HEADER.split(",").length, PointRow.split(ts.obsRows(1, 1).get(0)).size());
     }
 
     @Test public void cancelledSetObsRowsHaveNoPointAndAreUnused() {
