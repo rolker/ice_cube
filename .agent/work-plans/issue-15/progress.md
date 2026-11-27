@@ -339,3 +339,31 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 **Decision**: address
 
 Host reverses its round-1 decision on the start jump (owner may veto): the jump also carries over a dropout of 2 s or less (no position, single or DGPS), measured from the last float or fixed epoch before the dropout, in Java and Python alike, with parity tests (the 11-21 shape with a one-epoch single dropout and a float spell under 20 s must be flagged by the jump). Also fix the six suggestions of the Local Review at 551d5fb: one clock for the 2 s test (state which, same on both sides); docs/howto/ice-cube.md sigma table 120 s; a fixed epoch from another station breaks the stretch in Python's station filter; no-raw captures take the logger's fix_age_s/fix_young for the settle sigma; an unknown suspect_reason with fix_suspect=1 counts as suspect; ref young/suspect flags set only for epochs RefOccupation counts.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 18:33 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-15 at `b890739`
+**Addressed**: Local Review (Pre-Push) at `c73ab09` (2026-11-27 18:23 -05:00), and the Checkpoint 2026-11-27 18:24 -05:00 (start jump across a short dropout)
+**Commits**: e0848fe, 7e9a273, cc19f95, b61767b, b890739
+
+### Actions
+- [x] Checkpoint: the start jump carries over a dropout of 2 s or less (no position, single or DGPS), measured from the last float or fixed epoch, in FixGuard and fix_stretches; parity tests FixGuardTest.startJumpCarriesOverAShortDropout and test_soundings test_jump_carries_over_a_short_dropout (the 11-21 shape, 10 s float, one-epoch dropout, 1.5 m step: flagged by the jump; exactly 2 s carries, over 2 s unknown) — `FixGuard.java`, `analysis/qgis/soundings.py` fix_stretches
+- [x] One clock for the 2 s tests: the GGA time on both sides (FixGuard.dt, midnight rollover, phone time only when a GGA has no time; float spell length too), 1 ms slack (GAP_TOL_S) on both; test gapTestsUseTheGgaClock — `FixGuard.java`, `soundings.py`
+- [x] Sigma table reads 120 s (and the Nov 26 evidence) — `docs/howto/ice-cube.md:382`
+- [x] Station filter: another station's fixed epoch ends the stretch, the float spell and the jump origin; test test_other_station_fix_ends_the_stretch — `soundings.py` fix_stretches
+- [x] No-raw captures take the logger's fix_age_s/fix_jump_m (settle sigma and settle_inflated), fix_young past settle_s leaves a non-excluding fix_young trace; test — `soundings.py` capture_fix_info
+- [x] fix_suspect 1 with an unknown suspect_reason adds the excluding fix_suspect flag (in SUSPECT_FLAGS, cleared by verify_suspect/PPK); test — `soundings.py` capture_suspect_flags
+- [x] Ref young/suspect/jump latched only for epochs RefOccupation counted — `Survey.java` onEpoch
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 169 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 102 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 232 tests, 0 failures; APK logger/app/build/outputs/apk/debug/app-debug.apk (0.11.0 build 15), not installed. C: 109.6 GB free.
+- coverage_vectors.json regenerated: unchanged.
+
+### Notes
+- PointRowTest and TiltSetTest fed epochs with GGA time 0; they now pass t/1e9 (b61767b), since the float spell is measured on the GGA clock.
+- The Survey ref-latch change has no unit test (Survey is the Android service); covered by review only.
