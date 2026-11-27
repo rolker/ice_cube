@@ -1139,3 +1139,18 @@ Fix all five as the Integrated Review at 3c7b8e3 describes.
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 32 test classes, 0 failures (VoidRuleTest 14 tests); app-debug.apk 315934 bytes. C: had 112.4 GB free before the build.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:45 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #36 at `524e0d9`
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the newest Integrated Review's 5 findings (at `44f0c31`) and the fix diff 223d7e2..524e0d9. Cross-model: skipped (round-3 convergence check, per handoff). Each of the 5 fixes checked against the code: UNDO press reset via VoidRule.pressEndsWithoutClick (up when !isPressed, prepressed path falls back to click time at MainActivity:580); zone residual lower bound -(2 + 0.05) s with README updated; zone-corrected uncertainty 2 s / 3602 s; 1980-01-01 00:00 DOS stamp read as unknown (ShareZip's GregorianCalendar local epoch stays in DOS range, so no 0x5455 is written); duplicate refs.csv rows in one copy flagged if any is, in both orders. The changed unc and DOS-epoch handling change copy ids only for data from this unreleased PR. Verified: `python3 -m unittest discover -s analysis/qgis/tests` 159 tests OK (skipped=5); Gradle result taken from the Implementation entry.
+
+### Findings
+- [ ] No issues found. LGTM.
