@@ -81,3 +81,59 @@ Owner's answers (2026-11-27): young fix: "Amber warning, capture (Recommended)" 
 **Plan**: `.agent/work-plans/issue-15/plan.md` at `c5af79b`
 
 First PR only, as the owner scoped it: float-only start jump plus a float-spell suspect rule in FixGuard, the 120 s settle becomes a young-fix amber warning (capture allowed, `fix_young` recorded), four columns appended after `void_reason`, synthetic tests for the three field cases, python/importer/soundings port, README and version 0.11.0. Six open questions are listed in the plan.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 17:47 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: needs-work
+
+**Issue**: #15 — Logger: retune the false-fix guard (start-of-session false alarms, a missed false fix)
+**Plan**: `.agent/work-plans/issue-15/plan.md` at `c5af79b`
+**Branch**: `feature/issue-15`
+
+Reviewed against main and the newest Checkpoint (owner: amber warning and capture; settle 120 s; narrow first PR) together with the host's answers to the plan's six open questions. The host's answers are sound; three of them change the plan in ways it does not yet list (findings 1-3). Small fixes, no change of approach.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Narrow first PR as the owner chose; #39, #40, #41, #23 hold the rest. About 12 files plus tests; the plan names the python port as the part to split off if it runs long. |
+| Issue alignment | Good | Covers all three field cases (A float spell, B 120 s young, C single start) and every issue-review action. Serves: "Survey-readiness for cm-level ice accumulation between sessions (false fixes are the largest error term); project has no goals or design document: none." |
+| File targeting | Needs work | Missing `core/PoleCheck.java` (host answer 3), `Feedback.java` (answer 4), the one-time migration in `Settings.java` (answer 5), and `icecube/logger_vectors.py` (its `fix_age_past_settle` case is hardcoded at 90 s). |
+| Consequences | Needs work | The table is missing "young ref is not a pole-check reference" (PoleCheck, refs.csv) and the vector case name/value. |
+| Principle alignment | Good | Unknown is neither suspect nor clean; columns appended; synthetic tests only; relative numbers in the PR. |
+| ADR compliance | Good | The project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Host answers checked
+
+1. Float spell 20 s, a setting, retuned in #41: fine. Plan step 4 already adds `Limit.FLOAT_SPELL_S` (0 turns it off).
+2. Float only (quality 5): fine, and it matches the offline `fix_stretches`, which already measures the jump only from a float or fixed epoch (`ep.fix[prev] in (4, 5)`, soundings.py about line 371).
+3. Young ref captured and recorded, not a pole-check reference; young lean kept and marked: right for cm-level work, but the plan needs it written in (finding 1).
+4. Distinct young cue: fine, since young is not suspect. The plan currently says "reuse the warn cue" (finding 2).
+5. Stored 10 becomes 120: fine only as a one-time migration (finding 3).
+6. Processing moves to 120 s: fine and consistent; say in the PR that rerun sessions change slightly (finding 4 for the vector case).
+
+### Findings
+
+1. **[File targeting / Consequences]** Host answer 3: `PoleCheck.matches` (core/PoleCheck.java:33) skips only voided rows and rows with no position or ground height. It must also skip earlier refs with `fix_young` = 1, while a young new ref is still checked against older refs and the result is shown. Older refs.csv rows (no column, so young is unknown) stay usable, as they are today. Add PoleCheck and a `PoleCheckTest` case. Keep the #23 note at line 31 (selection must keep skipping voided rows) and add young beside it.
+2. **[Approach]** Host answer 4: replace "the existing warn cue (a new distinct cue only if the owner wants one)" with a new `Feedback.Cue` (for example `YOUNG`) in `Feedback.java`: a short tone and a vibration pattern that differ from SUSPECT and ERROR and are loud enough to hear with gloves on. Played on a young MARK, a young lean and a young ref end. Add a line to the README cue list.
+3. **[Approach]** Host answer 5: plan step 4 says "an existing stored 10 stays 10". Change it to a one-time migration in `Settings.java`: if `fix_settle_s` holds 10 and a marker preference (for example `fix_settle_migrated`) is not set, write 120; then always set the marker. If the check ran on every read, a surveyor who later chooses 10 on purpose would be reset to 120 at each start. Any other stored value is kept. Add a test if Settings has a JVM seam, otherwise say why there is none. Update the README note.
+4. **[Consequences]** Host answer 6: `icecube/logger_vectors.py:91` `fix_age_past_settle` uses fix age 90.0. Under 120 s it is no longer past settle, so the case would quietly test the settle term instead. Move it to an age past 120 (for example 150) before regenerating `coverage_vectors.json`, and keep a case inside the window.
+5. **[Approach]** Young ref marking: plan step 3 marks a ref young "from its last-epoch age", which is how `fix_age_s` is set today (Survey.java about line 229). Now that young epochs are no longer paused, a ref that starts at 100 s and ends at 160 s averages 20 s of young epochs but is recorded as not young, and so becomes a pole-check reference. Mark the ref young if any averaged epoch was young (the age at the ref's first counted epoch below the limit), the same worst-case rule the plan uses for tilt rows. Also, `refJump`/`refSuspect` are only gathered while not settling (Survey.java:199); gather them for every fixed epoch once the pause is gone.
+6. **[Approach, minor]** Python port: `fix_stretches` already measures the jump from float or fixed epochs only and `Epochs.fix` carries the quality, so only the float-spell rule and the `float_spell` flag need porting. "Check Epochs for a float marker and add one if missing" can go. The `TiltSet` per-lean header (TiltSet.java:23) carries `fix_age_s,fix_jump_m,fix_suspect`; say whether leans also get `fix_young`/`fix_start` or only the combined tilt row.
+
+### Summary
+
+The approach is right and matches the owner's choices; the host's six answers are all sound. Before implementing, the plan should take in the young-ref exclusion in PoleCheck, the distinct cue, the one-time settle migration, the vector case at 90 s and worst-case young marking for refs.
+
+### Recommended Actions
+
+- [ ] Add PoleCheck young-ref exclusion and test (finding 1).
+- [ ] Add a distinct `YOUNG` cue in Feedback.java and the README (finding 2).
+- [ ] Make the 10 to 120 change a one-time migration with a marker (finding 3).
+- [ ] Move the `fix_age_past_settle` vector case past 120 s before regenerating (finding 4).
+- [ ] Mark a ref young if any counted epoch was young; gather the ref jump/suspect from all fixed epochs (finding 5).
+- [ ] Trim the python port to float spell only; decide on the per-lean columns (finding 6).
+- [ ] Replace the plan's Open Questions with the host's answers.
