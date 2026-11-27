@@ -63,3 +63,13 @@ No project principles document exists, so the checks are the project's CLAUDE.md
 - [ ] Treat the false-fix risk as asymmetric for ice work: prefer flagging a good stretch (cost: a re-shoot) to missing a bad one (cost: a session offset of decimetres). The float-spell rule should err toward suspect.
 - [ ] Make the retune evidence-based: replay the 11-11, 11-15, 11-21 and 11-26 sessions offline through the new FixGuard, report only relative counts (flagged, missed, false alarms per session), and keep the data out of the repo.
 - [ ] Ship the guard changes before the first ice-surveying session this winter, and say in the plan which analysis weights (`fix_age_s`) the processing side applies.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:44 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: issue-actions
+**Decision**: proceed
+
+Owner's answers (2026-11-27): young fix: "Amber warning, capture (Recommended)" (capture, warning cue, record the fix age; processing flags it); settle time: "120 s (Recommended)" (a setting); scope: "Narrow first PR, open follow-ups (Recommended)". First PR: float-spell rule (a fix starting inside or after a float spell is suspect whatever the jump; start jump measured from float epochs only, unknown without one), young-fix amber warning + recorded age with settle 120 s, new columns appended after fix_age_s/fix_jump_m/fix_suspect, synthetic epoch-sequence tests for the three field cases, README. Follow-ups opened: #39 height test, #40 extra cues (sats, ratio/GST, correction age), #41 retune on past sessions; the "validated by a known point" mark goes to #23 (comment posted). Context: the owner is preparing to survey ice accumulation this winter (cm-level differences between sessions).
