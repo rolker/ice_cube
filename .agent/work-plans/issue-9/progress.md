@@ -329,3 +329,22 @@ Scope: the round-2 findings and the fix diff `28f4f8f..9985923`. Cross-model: sk
 **Decision**: publish
 
 Round 3 convergence check approved (0 must-fix, 0 suggestions). Two suggestions deferred at round 2 (method column in soundings output; above-floor end-to-end tilt case).
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:00 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #32 at `fc81b37`
+**Sources**: 2 (Local Review (Pre-Push) rounds 1-3, last @ `9985923` (covers `fc81b37` via bookkeeping), approved; CI rollup: no checks)
+**Cross-source confirmations**: 0
+**CI**: none (fetch_pr_reviews.sh found 0 check-runs on `fc81b37`; the repo has no CI)
+
+No hosted reviews or conversation comments on the PR; no Copilot review was requested. The local timeline has no open findings: round 1 (2 must-fix, 6 suggestions) and round 2 (1 must-fix, 6 suggestions) were all fixed or deferred, and round 3 approved with 0 must-fix and 0 suggestions. Two round-2 suggestions stay deferred by the owner's plan as follow-ups: a `method` column in the soundings output (`analysis/qgis/soundings.py`) and an above-floor end-to-end tilt test (`analysis/qgis/tests/test_soundings.py`).
+
+### Findings
+None open.
+
+### False positives
+None.
