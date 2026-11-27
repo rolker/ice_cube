@@ -605,3 +605,11 @@ Owner's answer to "Merge PR #34?": "Merge (Recommended)". Issue 29 stays open fo
 **Decision**: revise
 
 PR A merged as #34 (5da4114). Owner said "Yes" to starting part B. Refresh the plan's PR B (port the plane pass to the logger's live coverage overlay) against main as merged: the gate order (unscaled conditioning, planarity, scaled conditioning, significance, DEM), the noise-only agreement variance with its 2·d̄'cov(a,g) cross term, the limit rules (non-finite value or NaN limit fails; infinite planarity/max_sigma_g turns that gate off; NaN DEM slope skips, infinite fails), PLANE_NOT_PLANAR carrying sigma_g, and parity with the 9 plane_vectors in coverage_vectors.json (incl. the diagonal bank). Say where the logger gets a DEM (or that the DEM gate is skipped on the phone), what the overlay shows for a planar node, and the version bump.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 08:58 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `d1e1ec5`
+
+Revised for PR B. PR A is delivered (#34, 5da4114); the plan now records the merged gate order, limit rules and vector codes, and lists eight PR B steps each with its test: Python reference (NodeStore geometry and aggregate moments, counts by cnt), folded and sequence vectors, Java geometry store, `PlanePass` fit with gate unit tests, the 25-node ring pass in `Coverage`, JVM parity with all 9 `plane_vectors` plus the new vectors, timing, docs and version 0.10.0 (build 14). The phone has no DEM, so the DEM gate is skipped; a planar node draws by its final status.
