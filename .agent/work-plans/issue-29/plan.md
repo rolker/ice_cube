@@ -81,6 +81,14 @@ Two stages, the same definition in Python and Java, held by parity vectors.
   `sigma_g` = sqrt of the larger eigenvalue of the scaled `C_g`, closed form
   (`nodes._sigma_g_max`), against `plane_max_sigma_g`; every continuous gate fails closed on a
   non-finite value (port the `!(x <= limit)` form), and the DEM gate does not apply on the phone.
+  From the second review round: conditioning also needs a Cholesky factorisation of `N = A'WA` to
+  succeed and `var_a > 0`, `C_g` positive definite (`nodes._pos_def`), else code 9; a directional
+  variance `u'C_g u` that is not positive fails closed (code 9), never clamped to 0. After the pass-2
+  rebuild, the accepted node's `sigma'^2` gains `d_bar'C_g d_bar`, `d_bar` the pass-2 main's
+  weighted centroid (`cx, cy` from `_centroid`), and that sigma feeds the agreement test (the
+  gradient error is common to all reduced entries, so the per-entry `d'C_g d` alone averages
+  down). `plane_pass` counts a node's `n_in` as `len(entries) - n_out`, which counts a folded
+  aggregate as one; on the phone use the members' `cnt` sums, as `NodeStore.outputs` does.
 
 ## Files to Change
 
