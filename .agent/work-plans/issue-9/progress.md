@@ -393,3 +393,19 @@ Scope: the cold read's must-fix and its fix commit 4f656e1. The importer half of
 ### Findings
 - [x] (must-fix) `maybe_06` counts every unknown-version session as 0.6+, including ones already re-read at schema 3. A genuinely pre-0.6 session with no readable app version (track only, control events, or a points.csv without a session start line) then warns "logger 0.6+ session(s) X have no method/tilt values ... re-import" on every soundings build, and a re-import cannot clear it. Count an unknown-version session as stranded only while its `sessions.schema_version` is NULL or below SCHEMA_VERSION (not yet re-read); keep the missing-column warning as is. The new test asserts the wrong state (schema 3, app NULL, method NULL warns): make it cover both, stale warns and current does not (claude-adversarial, gemini) — `analysis/qgis/soundings.py:623-640`, `analysis/qgis/tests/test_soundings.py:342`
 - [x] (suggestion) The importer now treats every unknown-version session as stale, including "control events" and "track only" sessions, which have no points.csv and cannot hold 0.6 columns; when their source is not among the inputs they are named as "still at an older schema" on every run. Select `format` in `olds` and re-read an unknown-version session only when its format is points.csv (claude-adversarial) — `analysis/qgis/import_sessions.py:540-544`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:16 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #32 at `3827f8d`
+**Addressed**: Local Review at `1d85ba8` (2026-11-26 19:13 -05:00)
+**Commits**: bb1ecc3, 3827f8d
+
+### Actions
+- [x] (must-fix) Unknown-version session counts as stranded only while `sessions.schema_version` is NULL or below SCHEMA_VERSION; missing-column warning unchanged; test covers stale (NULL and SCHEMA_VERSION-1) warns and current does not — `analysis/qgis/soundings.py:630-650`, `analysis/qgis/tests/test_soundings.py:342`
+- [x] (suggestion) Importer selects `format` and re-reads an unknown-version session only when its format is points.csv; new test `test_schema2_unknown_app_version_without_points_is_current` — `analysis/qgis/import_sessions.py:540-555`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110 tests, OK (skipped=5)
