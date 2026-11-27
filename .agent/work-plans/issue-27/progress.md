@@ -481,3 +481,25 @@ Owner's answer on finding 1 (AskUserQuestion "What should flagging a capture do 
 ### Checks
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 108 tests, OK (skipped=5)
 - `./gradlew testDebugUnitTest --max-workers 4`: 179 tests, 0 failures (C: 114 GB free)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:29 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #33 at `5af2b92`
+**Commits**: 5af2b92 (merge of origin/main 738af9b, PR #32 / issue 9)
+
+### Actions
+- [x] Merged origin/main; conflicts resolved keeping both features. `captures` = MEAS + ENU + source/elapsed_ns/note/label + LOGGER_06 + VOID; refs keep VOID + void_copy_mtime; sessions keep n_voided and schema_version — `analysis/qgis/import_sessions.py:105`
+- [x] run(): #9's stale-session log/`stale` return key and #27's `refs_csv_voided` both kept — `analysis/qgis/import_sessions.py:670`
+- [x] read_points returns both the 0.6 columns and void/void_reason (docstring updated) — `analysis/qgis/logger_session.py:265`
+- [x] soundings.logger_source: one SELECT with tilt columns (NULL fallback) and void columns (coalesce, 0 fallback for a gpkg without them); #9's tilt warnings and #27's void count both kept — `analysis/qgis/soundings.py:623`
+- [x] SCHEMA_VERSION 4 (captures/refs gain the void flag). The single SCHEMA_MIN_APP became SCHEMA_APP per step {3: 0.6, 4: 0.9} with schema_min_app(schema): a session at schema 3 is re-read only from a 0.9+ (or unknown, points.csv) app; one at schema 2 still from 0.6 — `analysis/qgis/import_sessions.py:87`
+- [x] New test test_schema3_reread_fills_void_only_for_09_sessions — `analysis/qgis/tests/test_import.py:472`
+- [x] Test conflicts: both sides' tests kept (import line merged with `_i` and `zip_entry_mtime`); logger/README.md paragraph combined (importer carries 0.6 and void columns)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 125 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
+- `./gradlew testDebugUnitTest --max-workers 4`: 179 tests, 0 failures (C: 114 GB free)
