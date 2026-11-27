@@ -64,3 +64,13 @@ issue: 16
 - [ ] Define attach rule as for photos (PhotoRule): reuse the same time window and the same own-row-with-position fallback, and reuse PhotoRule's logic rather than duplicating it.
 - [ ] Privacy: audio lives only in the session folder and the shared zip; confirm `.gitignore` and the importer never copy audio into the repo, and say in the README that notes may contain names.
 - [ ] Define behaviour on flag/undo for notes on a flagged capture, in the same way as for photos.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:52 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (mechanism; owner asked to orchestrate in parallel while busy)
+**After**: issue-actions
+**Decision**: proceed
+
+Host decisions (owner may veto): a dedicated NOTE button (tap to start, tap to stop, vibration and tone), not the volume keys or a PHOTO long-press; mono AAC m4a ~32 kbps, auto-stop at 60 s with a cue; attach by PhotoRule's window and own-row fallback; a flagged capture's notes move like its photos (consistency with #27); RECORD_AUDIO, foreground only; older sessions read fine; audio only in the session folder and shared zip, README privacy note. Speech-to-text is NOT in the first PR; whether it is wanted at all (and if a later local desktop transcription is acceptable) is an owner question, asked at the hand-back. Implementation after #15 and #35.
