@@ -392,7 +392,8 @@ def _plane_cases():
     out.append(("flat_cluster_not_steep", fc))
     # a 0.3 m/m bank surveyed along the one line y = 1 (node row 2) plus 6 captures 15 cm
     # up near node (2, 2): every neighbour centroid sits on Y = 0 (up to roundoff), so the
-    # normal matrix is singular and the gradient's y part is not pinned (code 9)
+    # normal matrix is singular and the gradient's y part is not pinned (code 9, from the
+    # conditioning check on the unscaled covariance, whatever the neighbours' summation order)
     rnd = random.Random(3)
     ln = []
     for _ in range(30):

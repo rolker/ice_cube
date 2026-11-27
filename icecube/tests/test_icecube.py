@@ -803,6 +803,16 @@ class TestPlanePass(unittest.TestCase):
         self.assertTrue(np.isnan(nodes._sigma_g_max(float("nan"), 0.0, 1.0)))
         self.assertAlmostEqual(nodes._sigma_g_max(4.0, 0.0, 1.0), 2.0)
         self.assertAlmostEqual(nodes._sigma_g_max(2.0, 1.0, 2.0), np.sqrt(3.0))
+        # an infinite limit still fails a non-finite value: collinear centroids (no proper
+        # covariance) and an overflowing chi stop at their gates
+        inf = float("inf")
+        coll = [(0.5 * k, 0.0, 0.1 * k, 1e4, False) for k in range(6)]
+        self.assertEqual(nodes.plane_fit(coll, 5, 2, 0.25, inf, inf)[0], nodes.PLANE_ILL_CONDITIONED)
+        huge = nbrs[:-1] + [(0.5, 0.5, 1e300, 1e4, False)]
+        with np.errstate(over="ignore"):
+            code, fit = nodes.plane_fit(huge, 5, 2, 0.25, inf, inf)
+        self.assertEqual(code, nodes.PLANE_NOT_PLANAR)
+        self.assertEqual(fit["chi"], inf)
         self.assertFalse(nodes._pos_def(np.diag([1e-4, 1.0, -1e-9])))
         self.assertFalse(nodes._pos_def(np.diag([0.0, 1e-4, 1e-4])))
         self.assertTrue(nodes._pos_def(np.diag([1e-4, 1e-4, 1e-4])))
@@ -810,10 +820,9 @@ class TestPlanePass(unittest.TestCase):
     def test_collinear_centroids_never_pass(self):
         # centroids on one random line through the node: N is singular up to roundoff, and a
         # plain inverse returned code 0 on 121 of these 500 (an indefinite C_g whose larger
-        # eigenvalue passed the conditioning gate). Planarity is gated before conditioning,
-        # so a fit whose roundoff beta leaves large residuals stops at PLANE_NOT_PLANAR (67
-        # of the 500 here); the rest must stop at the conditioning gate, so a regression that
-        # lets a garbage beta reach planarity cannot hide behind NOT_PLANAR
+        # eigenvalue passed the conditioning gate). Conditioning is checked on the unscaled
+        # covariance before beta is solved, so every one stops there, never at planarity
+        # (when planarity came first, 67 of the 500 stopped at PLANE_NOT_PLANAR on roundoff)
         rng = np.random.default_rng(0)
         codes = []
         for _ in range(500):
@@ -822,8 +831,25 @@ class TestPlanePass(unittest.TestCase):
                      float(0.3 * u * np.cos(th) + rng.normal(0, 0.01)), float(rng.uniform(1e3, 1e4)), False)
                     for u in t]
             codes.append(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0])
-        self.assertEqual(set(codes) - {nodes.PLANE_ILL_CONDITIONED, nodes.PLANE_NOT_PLANAR}, set())
-        self.assertGreaterEqual(codes.count(nodes.PLANE_ILL_CONDITIONED), 400)   # 433 at writing
+        self.assertEqual(set(codes), {nodes.PLANE_ILL_CONDITIONED})
+
+    def test_collinear_code_does_not_depend_on_summation_order(self):
+        # the collinear plane vector's centre node, its neighbours in 200 random orders:
+        # always PLANE_ILL_CONDITIONED (the Java port sums in its own order)
+        from unittest import mock
+        from icecube import logger_vectors as lv
+        (name, snd), = [c for c in lv._plane_cases() if c[0] == "collinear_ill_conditioned"]
+        real, rng, codes = nodes.plane_fit, np.random.default_rng(5), []
+
+        def shuffled(nbrs, *a):
+            for _ in range(200):
+                order = rng.permutation(len(nbrs))
+                codes.append(real([nbrs[i] for i in order], *a)[0])
+            return real(nbrs, *a)
+        with mock.patch.object(nodes, "plane_fit", shuffled):
+            lv._plane_case(name, snd)
+        self.assertTrue(codes)
+        self.assertEqual(set(codes), {nodes.PLANE_ILL_CONDITIONED})
 
     def test_wrong_cluster_keeps_pass1(self):
         # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes
@@ -912,6 +938,11 @@ class TestPlanePass(unittest.TestCase):
         rs[self.C] = np.nan      # elsewhere flat: only the node's own slope is read
         s = bank_run(p, grid, raw_slope=rs)
         self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        # only NaN skips the gate: an infinite DEM slope fails it, as any non-finite limit
+        rs[self.C] = np.inf
+        s = bank_run(p, grid, raw_slope=rs)
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_DEM)
+        self.assert_pass1(s, s0, self.C)
 
     def test_running_mode_ignores_plane(self):
         p, grid = bank_block(0.3, 0)

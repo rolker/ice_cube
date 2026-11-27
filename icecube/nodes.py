@@ -99,11 +99,13 @@ node red after pass 1 (clear and amber nodes are never touched):
    significance, |g| - allowance > k_sigma * sigma_g along g (the node's slope allowance,
    as raised by slope_from_dem); and with a raw DEM slope s (`raw_slope`, batch
    slope_from_dem only) |g| <= `plane_dem_cap` * s + `plane_dem_floor`, skipped where s
-   is not finite (outside the DEM's cover). Every continuous gate fails closed: a NaN or
-   infinite value fails it. Conditioning also fails unless A'WA passes a Cholesky
-   factorisation and the covariance has var_a > 0 and C_g positive definite (exactly
-   collinear centroids), and a directional variance u'C_g u that is not positive fails
-   it rather than clamping to 0.
+   is NaN (outside the DEM's cover). Every continuous gate fails closed: a NaN or
+   infinite value or limit fails it (an infinite DEM slope included). Conditioning also
+   fails unless A'WA passes a Cholesky factorisation and the covariance has var_a > 0
+   and C_g positive definite (exactly collinear centroids), and a directional variance
+   u'C_g u that is not positive fails it rather than clamping to 0. Conditioning is
+   checked on the unscaled covariance before planarity, and again after the chi^2
+   scaling, so ill-conditioned centroids stop at conditioning whatever the roundoff.
 3. Pass 2: every entry reduced to the node centre, z' = z - (gx*dx + gy*dy), with
    v' = sz^2 + (|g| * sh)^2 + d' C_g d (C_g the gradient covariance; the slope-allowance
    term dropped), then the same rebuild as pass 1 (Eeg included). The rebuild treats the
@@ -427,18 +429,20 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     `nbrs`: (X, Y, z, W, red) per usable neighbour: (X, Y) where its z sits relative to the
     node (its grid offset plus its main's weighted centroid, m), W the main's weight. Red
     ones are weighted by `red_weight`. Returns (code, fit) with code a PLANE_* gate code
-    (0 when the fit passes the count, planarity and conditioning gates) and fit a dict a,
+    (0 when the fit passes the count, conditioning and planarity gates) and fit a dict a,
     var_a, gx, gy, cov_g (2x2), cov_ag (the 2-vector cov(a, (gx, gy)) = cov[0, 1:]), chi
     (the weighted RMS residual per degree of freedom, in neighbour sigmas) and sigma_g
     (the square root of cov_g's larger eigenvalue, m/m); on PLANE_NOT_PLANAR the dict
-    holds chi alone, on PLANE_ILL_CONDITIONED chi and sigma_g (sigma_g alone, infinite,
-    when the factorisation fails).
-    The covariance is scaled by max(1, chi^2). Every continuous gate fails closed: a NaN
-    or infinite chi or sigma_g fails it. Conditioning also needs the normal matrix to pass
-    a Cholesky factorisation and var_a > 0 with C_g positive definite; otherwise
-    PLANE_ILL_CONDITIONED with sigma_g infinite (exactly collinear centroids: N is singular
-    only up to roundoff, and a plain inverse can return an indefinite C_g whose larger
-    eigenvalue still passes)."""
+    holds chi alone, on PLANE_ILL_CONDITIONED sigma_g (and chi when the scaled check
+    failed; sigma_g infinite when the covariance is not positive definite).
+    Conditioning is checked twice. First on the unscaled (A'WA)^-1, before beta is
+    solved: it must pass a Cholesky factorisation of A'WA, be finite with var_a > 0 and
+    C_g positive definite, and have sigma_g <= max_sigma_g; so a fit whose centroids do
+    not pin the gradient (collinear ones: A'WA singular up to roundoff) stops here
+    whatever its roundoff, never at planarity. Then planarity, and the covariance scaled
+    by max(1, chi^2) must again be positive definite with sigma_g <= max_sigma_g. Every
+    continuous gate fails closed: a NaN or infinite chi or sigma_g fails it, whatever
+    the limit (an infinite limit included)."""
     use = [(X, Y, z, W * (red_weight if red else 1.0), red) for X, Y, z, W, red in nbrs]
     use = [u for u in use if u[3] > 0]
     if len(use) < max(min_neighbours, 4):
@@ -456,17 +460,22 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
         Linv = np.linalg.inv(L)
         Ninv = Linv.T @ Linv
     except np.linalg.LinAlgError:
-        return PLANE_ILL_CONDITIONED, dict(sigma_g=float("inf"))   # no fit: chi not computed
+        return PLANE_ILL_CONDITIONED, dict(sigma_g=float("inf"))
+    if not _pos_def(Ninv):             # near-singular N: roundoff can leave (L L')^-1 indefinite
+        return PLANE_ILL_CONDITIONED, dict(sigma_g=float("inf"))
+    sigma_g = _sigma_g_max(Ninv[1, 1], Ninv[1, 2], Ninv[2, 2])
+    if not (math.isfinite(sigma_g) and sigma_g <= max_sigma_g):
+        return PLANE_ILL_CONDITIONED, dict(sigma_g=sigma_g)
     beta = Ninv @ (A.T @ (w * z))
     r = z - A @ beta
     chi = math.sqrt(max(float(np.sum(w * r * r)), 0.0) / (len(use) - 3))
-    if not chi <= planarity:
+    if not (math.isfinite(chi) and chi <= planarity):
         return PLANE_NOT_PLANAR, dict(chi=chi)
     cov = Ninv * max(1.0, chi * chi)
+    if not _pos_def(cov):
+        return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=float("inf"))
     sigma_g = _sigma_g_max(cov[1, 1], cov[1, 2], cov[2, 2])
-    if not _pos_def(cov):              # near-singular N: roundoff can leave (L L')^-1 indefinite
-        sigma_g = float("inf")
-    if not sigma_g <= max_sigma_g:
+    if not (math.isfinite(sigma_g) and sigma_g <= max_sigma_g):
         return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=sigma_g)
     return 0, dict(a=float(beta[0]), gx=float(beta[1]), gy=float(beta[2]), var_a=float(cov[0, 0]),
                    cov_g=cov[1:, 1:], cov_ag=cov[0, 1:], chi=chi, sigma_g=sigma_g)
@@ -561,11 +570,11 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
             res[idx] = (PLANE_NOT_STEEP, None, g)
             continue
         s = raw_slope(a, b) if raw_slope is not None else None
-        if s is not None and math.isfinite(s):    # no DEM slope here (outside its cover): gate skipped
-            s = float(s)
+        if s is not None and not math.isnan(s):    # NaN: no DEM slope here (outside its cover), gate skipped
+            lim = p["dem_cap"] * float(s) + p["dem_floor"]
             if trace is not None:
-                trace.append(("dem", g, p["dem_cap"] * s + p["dem_floor"]))
-            if not g <= p["dem_cap"] * s + p["dem_floor"]:
+                trace.append(("dem", g, lim))
+            if not (math.isfinite(lim) and g <= lim):     # an infinite slope fails, as any gate
                 res[idx] = (PLANE_DEM, None, g)
                 continue
         es2 = reduce_to_plane(stores[idx], fit["gx"], fit["gy"], fit["cov_g"])
@@ -590,7 +599,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         tol = k_sigma * math.sqrt(max(vagree, 0.0)) if math.isfinite(vagree) else float("nan")
         if trace is not None:
             trace.append(("agreement", abs(o2["z"] - fit["a"]), tol))
-        if not abs(o2["z"] - fit["a"]) <= tol:
+        if not (math.isfinite(tol) and abs(o2["z"] - fit["a"]) <= tol):
             res[idx] = (PLANE_OFF_PLANE, None, g)
             continue
         res[idx] = (PLANE_ACCEPTED, o2, g)

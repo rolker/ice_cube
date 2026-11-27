@@ -143,16 +143,17 @@ its main's members, weighted, not of all its soundings; red neighbours at
 `plane_red_weight`, 0.25; usable ones need
 `plane_min_nin`, 2, members). The node's own soundings are not used: they are what the
 first pass already split. The fit must pass, in order: at least `plane_min_neighbours`
-(5) usable, at least `plane_min_clear` (2) of them not red, a weighted RMS residual of at
-most `plane_planarity` neighbour sigmas (default `k_sigma`), a gradient pinned by where
+(5) usable, at least `plane_min_clear` (2) of them not red, a gradient pinned by where
 the neighbours' heights actually sit (the gradient's largest one-sigma uncertainty at most
 `plane_max_sigma_g`, 0.08 m/m: at a survey fringe the neighbours' members all lie on the
-survey side, their centroids bunch and the plane is not determined across them), and a
+survey side, their centroids bunch and the plane is not determined across them; checked
+before and again after the uncertainty is scaled by the residual), a weighted RMS
+residual of at most `plane_planarity` neighbour sigmas (default `k_sigma`), and a
 gradient that exceeds the node's slope allowance by more than `k_sigma` of its own sigma.
 With `slope_from_dem` the gradient must also stay under
 `plane_dem_cap * DEM slope + plane_dem_floor` (2.0, 0.05 m/m); with a single `slope` that
 gate is skipped, and so it is at a node outside the DEM's cover (no DEM slope there).
-A gate whose value is not a finite number fails, and so does a gradient whose
+A gate whose value or limit is not a finite number fails (an infinite DEM slope too), and so does a gradient whose
 uncertainty is not a proper (positive definite) covariance, as when every neighbour's
 height sits on one line through the node. The node's soundings are then moved to the node along the gradient
 (variance `sz^2 + (|g| sh)^2` plus the gradient's own uncertainty, no slope allowance) and
