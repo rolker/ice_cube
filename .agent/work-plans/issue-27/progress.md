@@ -625,3 +625,633 @@ No human reviews, no conversation comments, no inline comments. Both Local Revie
 **Decision**: merge
 
 Owner's answer to "Merge now and fix F1/F2 in part B, or fix them first?": "Merge, fix in part B (Recommended)". F1 (zip DOS times read in the PC's time zone) and F2 (a real PHOTO in the same second as a voided capture's moved photo loses its window) are deferred to PR B. Outside reviewers: Copilot not available (quota); Codex cold read approved; Gemini and Codex ran in earlier rounds.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:47 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan.md changed since its last review, 8bffd83 -> 9b39fc4, and PR B must take on items deferred from PR A; run-issue step 13 allows only revise)
+**After**: plan
+**Decision**: revise
+
+PR A merged as #33 (6a9a9fe). Owner said "27b" (start part B). Refresh the plan's PR B part with what PR A deferred: F1 zip DOS times read in the importing PC's time zone (logger_session.py:176; e.g. the logger writes the zip extended UTC timestamp); F2 a real PHOTO in the same second as a voided capture's moved photo row loses its window (soundings.py:821; also match the "photos of voided" note); the camera-target fallback when the latest capture is flagged (Survey.java:643); a false error: event when a flag lands as a ref finishes; the photo file-name number after a move; MapView drawing; the undo window's time source; version 0.9.0.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 20:49 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `58382ef`
+
+Revision after PR A merged as #33: PR A marked delivered; PR B rewritten against main as steps 10 to 20 (Undo notice, Recent captures, PHOTO target line, MapView flagged drawing, camera-target fallback, photo file-name number, false error: event ordering, one undo clock, F1 zip extended timestamp with tie rule, F2 note match, docs and 0.9.0), each with its test.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 20:58 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #27 — Logger: undo or flag an accidental capture
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `58382ef`
+**Branch**: `feature/issue-27`
+
+Scope: PR B, steps 10 to 20, checked against main at 5da4114.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | About 12 files, one feature finish plus the deferred fixes; fits one PR. |
+| Issue alignment | Good | Undo bar, Recent captures with reasons and un-flag, PHOTO target line (owner's comment), flagged drawing. Keep-and-flag (owner's veto) is respected: nothing in steps 10-20 deletes. Serves: Project goal "surveyed with the logger" (`docs/roadmap.md` Direction); the project has no design document. |
+| File targeting | Needs work | Step 15 says "if a parse is found": there is one (`logger_session.py:603-617`, see finding 4). `import_sessions.py` (the tie rule's SQL, finding 1) is missing from the PR B file list. |
+| Consequences | Needs work | Step 18's tie rule must also go into `import_refs_csv`'s stored-flag UPDATE (`void_copy_mtime` comparison), or a re-run decides differently from a first run. |
+| Principle alignment | Needs work | Test what breaks: step 14's test would pass on main (its premise is wrong, finding 2); step 18's `ShareZipTest` runs on the desktop JDK, not Android libcore, so it cannot show what the phone writes. |
+| ADR compliance | Good | The project keeps no ADRs. Public repo: fixtures are synthetic; the step 13 screenshot must be in local frame with no basemap (stated). |
+
+### Findings
+
+1. **[Consequences] Step 18's 26 h tie window.** It cannot flag every ref in a normal re-export. In `import_refs_csv` the "flagged wins" branch fires only when copies disagree on a row's flag, and refs.csv rows only change flag in the session that made them. Same-day re-exports with no flag change are unaffected. The real cost runs the other way: flag, export, un-flag, export within 26 h makes a tie, flagged wins, and the un-flag is lost. Only a copy more than 26 h newer recovers it (the refs.csv entry time is the file's mtime, which a later append moves). A tighter rule is available for the old zips. Each logger zip carries `events.csv`, whose last line has `wall_ms` (UTC), and whose DOS entry time is that file's mtime, in the phone's zone. Their difference, rounded to 15 min, is that zip's zone offset. Correct the DOS times by it, and keep the tie only for a zip with no usable `events.csv`. Either way the plan should say: (a) the mixed case (one copy with 0x5455, one DOS-only) and how they compare; (b) that the same rule applies in the stored-flag SQL (`void_copy_mtime`); (c) "report them" means only the rows whose flag a tie decided, not every row of tied copies; (d) add a test for the un-flag case.
+2. **[Principle alignment] Step 14's premise does not hold on main.** `PhotoRule.attachTo(PointRow, photoNs)` already returns -1 unless `0 <= photoNs - last.elapsedNs <= 60 s`, and `photoTaken` passes `p.pressNs`. So the re-ask already applies the 60 s window at the press. An older live capture is taken only when it was within 60 s of the press, the same rule `planPhoto` uses. `replanAttach` as written would reproduce today's behaviour. Its test passes without the change. Also, a flag cannot happen while the camera activity is in front: Recent captures and UNDO live in `MainActivity`. Choose one: (a) drop the step and keep a lock-in test, or (b) say what rule should apply instead. One candidate is the void-move rule (step 5: nearest earlier live, no window), so a photo aimed at a capture flagged while the camera was open goes where that capture's earlier photos went. The only real residue is the file name number, which step 15 covers.
+3. **[Principle alignment] Step 16: the cause is confirmed in code, but the second half of the fix is unneeded and risky.** `onEpoch` queues `poleCheck` after its synchronized block (`Survey.java:236-238`) on a single-thread executor (`:155`). A `voidCapture` in that gap queues `setVoid` before the append. `finishTilt` is a synchronized method that already queues `poleCheck` under the lock (`:425-428`), so only the occupation path needs the move. Moving `run(() -> poleCheck(f))` inside the lock fixes the ordering. Making `refsVoidEvent` treat `holding == 0` as "pending" would also hide a real failure: when `RefsStore.append` threw, holding 0 is a true error. Drop that half. The gap is microseconds and a ref's UNDO notice is set only by `poleCheck`, after the append, so the UI cannot reproduce it. The test comment states the reasoning (the plan allows this). A Survey-free sequencer is not worth building for a one-line move.
+4. **[File targeting] Step 15: the importer does use the name number and the original event.** In `load_session` a photo's `n` is `by_file` (column), else the `photo file=... attached to|own row n=` event, else `PHOTO_RE`'s number from the name. `attached` (capture / own row) comes from the original event only. A photo moved by a void to a new `photo` row therefore keeps `attached="capture"` from the old event. The `photo moved` events are not read. Make the column the only source of `n` and `attached` when the row has the file. Use the event or name only for an orphan file. Test it with a moved-to-own-row photo.
+5. **[Principle alignment] Step 18: the Android zip writer is not testable on the JVM.** minSdk is 26, so `setLastModifiedTime` exists. The unit tests run on the desktop JDK's `ZipOutputStream`, not Android's libcore, so a passing `ShareZipTest` says nothing about what the phone writes. Write the 0x5455 extra by hand (`setExtra` with the tested `ShareZip.extendedTimestamp`) so the bytes do not depend on the platform. Add a phone check: share a zip, then read `info.extra` with the importer's `zip_entry_mtime`.
+6. **[Issue alignment] Step 10: the new fields duplicate `Notice.at`.** `Notice.at` already carries the row (`n`, `elapsedNs`) but is also set by photo notices. A boolean `undoable`, set only by a capture's own notice, does what `undoN` and `undoCaptureNs` do without copying the row. Note that a ref's notice comes from `poleCheck` (async, after `RefsStore.readAll`), so its UNDO can show with less than 8 s left. That is acceptable, but say so. Step 17 is then mostly part of step 10: `MainActivity` has no undo yet, and `VoidRule.undoOpen` already uses `elapsedRealtimeNanos`.
+7. **[Issue alignment] Step 19.** Match the note exactly (`== "photos of voided n=<n>"`, or a regex with an end or word boundary), not by prefix, so `n=1` never matches `n=12`. Confirm `note` is in the clist dict.
+8. **[Principle alignment] The phone try-out has no checklist.** The repo has JVM JUnit tests only (no Robolectric), so the bar, dialog, PHOTO label and drawing are checked only on the phone. Add the list the PR text will report against:
+   - UNDO shows after surface, object, tilt and ref notices, and never on a "Photo on" notice.
+   - A double tap or held press in the first 750 ms does nothing.
+   - UNDO goes at 8 s. Screen off for more than 8 s, then on: no UNDO, or a "Too late" refusal.
+   - A newer notice removes UNDO.
+   - Recent captures is disabled during a ref or tilt. It lists 10 rows, newest first. Free-text reasons with a comma come out clean. Un-flag works.
+   - `info` shows "1 flagged". The REC count drops.
+   - A flagged capture draws as a grey cross with no camera. A moved photo row keeps its camera.
+   - The coverage overlay recovers.
+   - The PHOTO line counts up, switches to "own row" after 60 s and after flagging the last capture.
+   - A shared zip carries 0x5455 (finding 5).
+   - A flagged ref is skipped by the next pole check.
+
+   The step 13 "screenshot of a synthetic session" needs a way to put a synthetic session on the phone. Say how (adb push a folder made by `synth.py`?) or drop it for a field session shown in the local frame.
+
+### Summary
+
+The plan is sound in shape and respects keep-and-flag. Three steps rest on readings of main that need correcting before implementation:
+- Step 14 fixes behaviour that is already correct.
+- Step 16's "pending" half would mask real errors.
+- Step 18's tie rule loses same-day un-flags and is missing from the stored-flag SQL. A per-zip offset from `events.csv` is tighter.
+
+Also add a phone try-out checklist.
+
+### Recommended Actions
+
+- [ ] Step 18: state the mixed-copy and SQL handling and the report scope; consider the per-zip `events.csv` offset; add the un-flag test; write 0x5455 by hand and check it on a phone zip; add `import_sessions.py` to the file list.
+- [ ] Step 14: drop it (keep a lock-in test) or name the rule that should replace the 60 s re-ask.
+- [ ] Step 16: only move `run(() -> poleCheck(f))` inside `onEpoch`'s lock; keep `refsVoidEvent`'s error for holding 0.
+- [ ] Step 15: make the column the source of `n` and `attached`; test a moved-to-own-row photo.
+- [ ] Step 10/17: use one `undoable` flag on `Notice`; fold 17 into 10.
+- [ ] Step 19: exact note match.
+- [ ] Add the phone try-out checklist to step 20, and say how the step 13 screenshot session gets onto the phone.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:52 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work on mechanism only; orchestrator table allows revise; second host revise in a row, so a further plan checkpoint answer is the owner's)
+**After**: plan
+**Decision**: revise
+
+Revise PR B per the Plan Review at 7bfe31d, all 8 findings: step 18 uses the per-zip zone offset from events.csv's last wall_ms vs its DOS time (15-min rounding), the tie only for a zip with no usable events.csv, the same rule in the stored-flag SQL, extended-vs-DOS comparison stated, report only tie-decided rows, an un-flag test, import_sessions.py in the files; write 0x5455 by hand with setExtra and check a phone zip. Drop step 14 (keep a lock-in test). Step 16: move the run(poleCheck) inside the lock only; no "pending" treatment. Step 15: the photo column is the only source for n/attached when the row has the file. Steps 10+17: a boolean undoable on Notice, elapsed clock via VoidRule.undoOpen. Step 19: exact note match. Add the phone try-out checklist and how a synthetic session gets onto the phone.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 20:54 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `fda6dda`
+
+PR B revised for all 8 plan-review findings: step 18 uses a per-zip zone offset from events.csv (tie only without it), the same rule in the stored-flag SQL, 0x5455 written by hand, un-flag test; step 14 dropped to a lock-in test; step 16 is only the move inside the lock; step 15 takes n/attached from the photo column; steps 10 and 17 merged with one undoable flag; step 19 exact note match; step 20 has the phone checklist and how a synthetic session gets on the phone.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 21:02 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: ready
+
+**Issue**: #27 — Logger: undo or flag an accidental capture
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `fda6dda`
+**Branch**: `feature/issue-27`
+
+Re-review of PR B (steps 10 to 20) after the revision for the Plan Review at 7bfe31d. Checked against main (5da4114): `logger_session.zip_entry_mtime`, `SessionSource.refs_csv_dated`, `load_session` photos (lines 600-617), `import_sessions` stored-flag UPDATE (lines 405-412), the `soundings` clist query (lines 627-634), `Sharer.zip`, `ShareZip.addFile` and `Session.event`.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | About 12 files. Step 14 is now only a lock-in test and step 17 is folded into step 10, so the PR is smaller than before. |
+| Issue alignment | Good | All 8 earlier findings are resolved in the text: 1 (step 18 b-d, the un-flag test), 2 (step 14 dropped), 3 (step 16 is only the move), 4 (step 15 makes the column the source), 5 (0x5455 by hand plus a phone check), 6 (one `undoable` flag), 7 (exact note match, `note` added to cols) and 8 (step 20 checklist and how a synthetic session gets onto the phone). Keep-and-flag holds. A voided capture's stop "depends on reason" is kept in step 11. Serves: Project goal "surveyed with the logger" (`docs/roadmap.md` Direction); the project has no design document. |
+| File targeting | Good | `import_sessions.py` and `ShareZip.java` are now listed. The step 15 lines match main. |
+| Consequences | Good | The stored-flag SQL gets the same rule (18c). |
+| Principle alignment | Needs work (minor) | Test what breaks: the step 18b offset can be silently wrong in two cases main's code allows (findings 1 and 2). Neither case has a test yet. |
+| ADR compliance | Good | The project keeps no ADRs. Public repo: fixtures are synthetic, and a screenshot must be in local frame with no basemap. |
+
+### Findings
+
+1. **[Principle alignment] Step 18b: a snapshot zip can give the wrong 15-min offset, silently.**
+   - In `Sharer.zip` the lengths are fixed first (line 151). `ShareZip.addFile` then reads `f.lastModified()` for each entry later, while the session keeps recording.
+   - `Session.event` flushes every line. Any event during a long zip (big `gps.ubx` or photos) therefore moves `events.csv`'s mtime past the last line in the cut.
+   - A gap over 7.5 min rounds to an offset 15 min off. The +-14 h check does not catch it.
+   - The same happens to any zip whose `events.csv` mtime was reset by a copy tool. `find_sessions` reads every zip, not only logger ones.
+   - The reverse case (last line after the entry time) is only DOS 2 s truncation or a clock step, and rounding covers it.
+   - Fix: accept the offset only when the residual `|(dos_utc - wall) - offset|` is at most a small bound, for example 120 s. Otherwise mark the zip `mtime_approx`.
+   - Compute both sides without the PC zone: `calendar.timegm(info.date_time) - wall_ms/1000`, and the corrected time as `timegm(date_time) - offset`. Do not use `time.mktime` and then shift.
+   - Tests: a snapshot-like zip with a 10 min gap is `mtime_approx`, not corrected by 15 min; a residual of a few seconds is accepted.
+2. **[Principle alignment] Step 18b: DST between the two files' mtimes.**
+   - The offset is the phone's offset at `events.csv`'s mtime. A DST change inside a session does not matter, because the last line and the mtime are close together.
+   - The entry that matters, though, is `refs.csv`. It is the storage root's cross-session file, and its mtime is its last append, possibly days earlier. If a DST change falls between that append and `events.csv`'s mtime, the corrected `refs.csv` time is off by 1 h.
+   - Rule to state and test: when an entry's DOS time is more than about 12 h from `events.csv`'s DOS time, treat that entry as uncertain by 1 h. Two copies within 1 h of each other are then a tie (flagged wins, reported as in 18d), not ordered.
+   - The same rule goes into the stored-flag SQL (18c).
+   - 15-min rounding is right as it stands: every real zone offset is a multiple of 15 min.
+
+### Summary
+
+The revision resolves all 8 earlier findings, and each one checks out against main's code. The events.csv offset is the right idea. It needs a residual bound, so a snapshot zip or a re-timed copy cannot get a confident wrong offset, and a 1 h DST allowance for a `refs.csv` entry far from `events.csv` in time. Both are small, precise additions to step 18. They can go in during implementation without another plan round.
+
+### Recommended Actions
+
+- [ ] Step 18b: residual bound (about 120 s) on the rounded offset, else `mtime_approx`; compute with `calendar.timegm`; test a 10 min snapshot gap.
+- [ ] Step 18b/c: 1 h DST allowance (tie) for an entry more than about 12 h from `events.csv`'s DOS time, in Python and the stored-flag SQL; test it.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:56 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready, no must-fix; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+The two new step-18b findings from the Plan Review at 967586e are taken into implementation: accept the events.csv zone offset only when the remainder after 15-min rounding is under about 120 s (else mtime_approx), both times via calendar.timegm, a 10-min snapshot-gap test; a refs.csv entry more than about 12 h from events.csv is uncertain by 1 h (copies within 1 h tie, flagged wins), the same in the stored-flag SQL, with a test.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 21:13 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Branch**: feature/issue-27 at `17ae5a3`
+
+PR B (plan steps 10-20) plus the two step-18b refinements from the Checkpoint at 4f521a7. Keep-and-flag holds: nothing deletes a row, a photo or a file.
+
+- `2869933` step 10: `Survey.Notice.undoable` (set by surface/object MARK, tilt end and the ref's pole-check notices; photo notices false). MainActivity shows UNDO beside the notice while `VoidRule.undoOpen(at.elapsedNs, elapsedRealtimeNanos)` holds and the row is not flagged; taps ignored for 750 ms after it first shows (`VoidRule.armed`); a tap calls `voidCapture(n, "accidental", "undo")`, Survey re-checks the window ("Too late to undo"). `PointRow.label` moved to core (Survey.label delegates).
+- `4527c12` step 11: MENU > Recent captures… (`VoidRule.recent`, `recentLine`, `ageText`; `Survey.recent(10)`), reason picker from `VoidRule.REASONS` plus typed text, Un-flag for a flagged row, refused while a ref/tilt runs; info box says `N flagged` (`Survey.flagged`).
+- `b069672` steps 12 and 14: PHOTO second line `→ S12 (14 s)` / `→ own row` from `PhotoRule.targetText` via `Survey.photoTarget()`, refreshed by the existing 250 ms tick; step-14 lock-in test (flagged planned capture re-asks from the press under the 60 s window); file-name number documented in PhotoRule.
+- `98119c6` step 13: flagged capture drawn as a grey cross with grey `S12 ✕` label, no class symbol, no camera; photo rows keep the camera (`VoidRule.glyph`: LIVE/FLAGGED/PHOTO). Also fixes one wrong assertion in the step-11 test.
+- `fba12f1` step 16: `run(() -> poleCheck(f))` moved inside onEpoch's synchronized block (as finishTilt); `refsVoidEvent` holding-0 stays an error (test comment added).
+- `9760338` step 18a: `ShareZip.extendedTimestamp` (hand-built 0x5455, flags 1, LE UTC seconds) set on every entry; tests for the bytes and the round trip through ZipInputStream (DEFLATED and STORED).
+- `b641283` steps 18b-d with both refinements: `zip_zone_offset` (events.csv last wall_ms vs its DOS time via `calendar.timegm`, rounded to 15 min, accepted only with remainder <= 120 s and |offset| <= 14 h), `zip_entry_stamp` -> (mtime, uncertainty): 0 for 0x5455/folder/corrected DOS, 3600 for an entry > 12 h from events.csv (DST), 26 h for mtime_approx. `refs_csv_dated` now returns (text, mtime, uncertainty). `import_refs_csv`: copies within the larger uncertainty tie, flagged wins; the same rule against the stored flag (computed in Python now, new refs column `void_copy_unc`, NULL from before read as 26 h); optional `ties` list, logged in the report and returned as `refs_csv_ties`. One existing test changed: `test_voided_captures_kept_and_flag_updates` dated its un-flag zip +1 h, which is now a tie (its synthetic events.csv gives no offset, so mtime_approx); moved to +2 days with a comment. New `RefsCopyTimeTest` (8 tests): offsets, 10 min snapshot gap, extended across zones, corrected DOS, no events.csv tie and report, mixed, un-flag within 26 h plus re-run, DST allowance (in-run and against the stored flag). `synth.phone_zip` added.
+- `89bac66` step 15: a photo listed in a row's photo column takes `n` and `attached` from that row only; event/name only for an orphan. Test with a photo moved to own row n=5 (name/event say n=2). Importer docstring notes files are never renamed.
+- `d2d72a8` step 19: `clist_windows` skips only a photo row whose note is exactly `photos of voided n=<n>` (anchored regex) for a voided n at that utc; `note` added to the soundings clist query. Tests: real photo same second keeps window, moved row does not, n=1 vs n=12, edited note.
+- `17ae5a3` step 20: logger/README.md (Main screen UNDO and info, PHOTO line, MENU item, Recent captures and grey cross, Photos file-name number, Share 0x5455 and the importer's zone rule), docs/log.md entry, versionName 0.9.0 / versionCode 13.
+
+Tests (every hook ran on each commit):
+- `cd logger && ./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 189 tests, 0 failures. C: 112.8 GB free before and after.
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 140, OK (skipped=5); also OK under TZ=Asia/Kolkata and TZ=Pacific/Kiritimati.
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK.
+
+APK: `logger/app/build/outputs/apk/debug/app-debug.apk`, versionName 0.9.0, versionCode 13. Not installed.
+
+Not done here / for the phone try-out: the whole step-20 checklist (UNDO after each capture kind and never on a photo notice, 750 ms arm, 8 s and screen-off, newer notice ends UNDO, Recent captures list/reasons/Un-flag/refused during ref or tilt, info `flagged` and REC count, grey cross, coverage recovery, PHOTO line, 0x5455 in a phone-made zip read by `zip_entry_mtime`, flagged ref skipped by the next pole check). No screenshot taken. The #20/#21/#23 issue comments from PR A are still not posted.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:22 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `6fc69be`
+**Base**: main
+**Depth**: Deep (reason: 1254 lines across 21 files, Android app plus QGIS importer: cross-layer)
+**Must-fix**: 2 | **Suggestions**: 5
+**Round**: 1 | **Ship**: continue — round 1: 2 must-fix; first round always re-reviews after fixes
+
+PR B only (PR A merged as #33). Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 140, OK (skipped=5); `./gradlew --max-workers 4 testDebugUnitTest lintDebug` 189 tests, 0 failures, lint on changed files only SetTextI18n warnings (existing pattern). No Python linter installed (py_compile only). Focus areas: UI threading is sound (every row change synchronized, writes on the io executor, poleCheck now queued under the lock, poleCheck's result check under the lock skips a voided ref; main-thread reads of PointRow.voided are benign because only main-thread calls write it). Undo window is checked twice on one clock (elapsedRealtime) with the 750 ms arm delay, and photo notices are never undoable. `void_copy_unc` without a schema bump is compatible: ensure_schema adds the column, NULL reads as APPROX_S (the conservative side), refs.csv rows are re-evaluated every run, and no 0.9.0 session with moved photos exists before this app, so no session re-read is needed. The changed existing test (test_import unflag re-import, `later` +1 h to +2 days) is justified: synthetic zips have no 0x5455 and no usable zone offset, so they fall in the 26 h tie; the test_soundings change follows the deliberate exact-note rule. Owner rules held: flags stay flags end to end; a voided stop's use depends on the reason. Outside reviewers: Gemini and Codex (both completed); Claude adversarial subagent (no must-fix). Dropped as false positives: poleCheck voided check (present at Survey.java:516), PHOTO allCaps (bigButton sets false), voidReason null (initialised ""), MapView stroke reset (each branch sets its own).
+
+### Findings
+- [x] (must-fix) Stored-flag update bypasses the tie rule when the stored copy time is unknown (`st is None` gives order 1): an unknown-time unflagged copy clears an unknown-time stored flag, against "disagreeing unknown-time copies give flagged"; route it through `_stamp_order` (Gemini, Codex) — `analysis/qgis/import_sessions.py:451`
+- [x] (must-fix) On a tie the UPDATE replaces the stored `void_copy_mtime`/`void_copy_unc` with the incoming copy's, which may be older or exact: e.g. stored (flagged, T, 26 h) tied by (flagged, T-25 h, 0) becomes (T-25 h, 0), and a later exact unflag at T-24 h then clears it; on a tie keep the later stamp and the larger uncertainty (merge), and add a test (Gemini) — `analysis/qgis/import_sessions.py:456`
+- [x] (suggestion) The tie report can name refs a tie did not decide: refs of imported sessions (source points.csv, filter as n_void does) and in-run ties that a surely newer stored copy overrode (Gemini, Codex) — `analysis/qgis/import_sessions.py:465`
+- [x] (suggestion) UNDO is keyed on Notice identity: a tilt ref's finishTilt notice is replaced by poleCheck's notice for the same row, so taps in between are dropped silently and the arm delay restarts; key on `nt.at` and give an error cue for an ignored tap (Gemini, Claude) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:533`
+- [x] (suggestion) Recent captures dialog callbacks use the captured `sv`: a session stopped (from the notification) while the dialog is open gets flagged in memory with its writes silently rejected; check `survey() == sv` before acting (Gemini) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:569`
+- [x] (suggestion) The changed unflag test now covers only the 26 h fallback; let `synth.write_zip` write 0x5455 and keep a +1 h end-to-end unflag case for real 0.9.0 zips (Claude) — `analysis/qgis/tests/test_import.py:157`
+- [x] (suggestion) ShareZip: skip the extended timestamp when `lastModified()` is 0 (it would claim an exact 1970 time), and soften the "bytes do not depend on the platform" comment (OpenJDK re-encodes 0x5455 from `setExtra`); confirm on the phone that a shared zip carries one 0x5455 (Gemini, Claude) — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java:91`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 21:28 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-27 at `eed240b`
+**Addressed**: Local Review (Pre-Push) at `6fc69be` (2026-11-26 21:22 -05:00)
+**Commits**: 3fd28d0, 4bafbe8, 130c01c, 2f1a766, eed240b
+
+### Actions
+- [x] (must-fix) Unknown stored copy time now goes through `_stamp_order` (both unknown: a tie, flagged wins); test `test_unknown_stored_time_ties_an_unknown_copy` — `analysis/qgis/import_sessions.py`
+- [x] (must-fix) On a tie the stored `void_copy_mtime`/`void_copy_unc` keep the later time and the larger uncertainty; test `test_tie_keeps_the_later_stored_time_and_larger_uncertainty` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) Tie report lists only refs stored from refs.csv, and drops in-run ties a surely newer stored copy overrode; test `test_tie_report_only_names_refs_a_tie_decided` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) UNDO keyed on `nt.at` (row identity, as Survey uses); an ignored tap plays the error cue. No unit test: Activity code, needs the phone — `logger/.../MainActivity.java`
+- [x] (suggestion) Recent captures checks `survey() == sv` at each step (item, un-flag confirm, flag) and toasts "That session has ended: nothing was changed" with the error cue. No unit test: Activity code — `logger/.../MainActivity.java`
+- [x] (suggestion) `synth.write_zip(refs_utc=...)` writes 0x5455; end-to-end test `test_flag_cleared_an_hour_later_with_extended_timestamps` — `analysis/qgis/tests/synth.py`, `analysis/qgis/tests/test_import.py`
+- [x] (suggestion) ShareZip skips the extended timestamp when `lastModified()` is 0 (sets the oldest DOS time instead), comment softened; tests check exactly one 0x5455 per entry and none for mtime 0. On-phone confirmation of one 0x5455 in a shared zip still to do — `logger/.../core/ShareZip.java`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 144, OK (skipped=5); the three new importer tests fail on the previous code
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 190 tests, 0 failures; APK `logger/app/build/outputs/apk/debug/app-debug.apk` (0.9.0, versionCode 13). C: had 112.8 GB free.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:36 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `29f67e2`
+**Base**: main
+**Depth**: Deep (reason: 1437 lines across 21 files, Android app plus QGIS importer: cross-layer; fix round classified on the whole diff)
+**Must-fix**: 2 | **Suggestions**: 5
+**Round**: 2 | **Ship**: continue — round 2: 2 must-fix include a design/correctness concern (not mechanical)
+
+PR B only. All seven round-1 items are fixed as described in the Implementation at eed240b (checked in the code and by the new tests). Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 144, OK (skipped=5); `./gradlew --max-workers 4 testDebugUnitTest lintDebug` 190 tests, 0 failures, lint warnings only (SetTextI18n, existing pattern); C: 112.8 GB free. No Python linter installed (py_compile only). Both must-fix items concern zips without a 0x5455 timestamp (re-zipped copies, or void-column refs.csv from builds before 0.9.0); real 0.9.0 phone zips are exact. Owner rules held: flags stay flags; nothing deletes a row or file. Outside reviewers: Gemini and Codex (both completed); Claude adversarial subagent (no must-fix; raised the tie-merge and DST items as suggestions). Dropped: poleCheck voided guard (present, round 1), onUndo on an expired notice (error cue given, Survey says too late), the ms-vs-s ordering granularity between phone and importer (needs flag and un-flag within one second plus a partial write; errs to flagged).
+
+### Findings
+- [x] (must-fix) Copy-time uncertainty arithmetic: `_stamp_order` ties within max(ua, ub), but independent errors add (two DST-uncertain copies 90 min apart can be in reverse order; 26 h vs 1 h mixes), and the tie merge stores (max t, max u), a bound wider than any input's (stored (T, 26 h) tied by (T+20 h, 0) becomes (T+20 h, 26 h), so an exact un-flag at T+30 h ties and the result depends on import order). Treat a copy time as an interval: tie when the intervals overlap (|d| <= ua + ub, or keep max only where a shared PC-zone error is the reason, and say so), and on a tie store the hull; decide the 26 h same-PC case explicitly (Codex, Gemini, Claude) — `analysis/qgis/import_sessions.py:376`, `:427`, `:460`
+- [x] (must-fix) A DST change less than DST_FAR_S (12 h) from events.csv is still possible: Java converts each file's mtime with the zone rules at that moment, so a refs.csv written just across a transition gets a corrected time 1 h off with uncertainty 0 (e.g. fall 2026, ref 05:30 UTC and events 06:30 UTC share a DOS wall time). Give every corrected-DOS entry other than events.csv itself DST_S, or test whether a transition can lie between the two, with a test (Codex, Claude) — `analysis/qgis/logger_session.py:286`
+- [x] (suggestion) Stored-flag UPDATE on a tie copies the incoming copy's `void_reason` even when the stored flag's copy is later (the in-run rule keeps the newest copy's reason); and a row stored from a pre-0.9.0 refs.csv (void 0, time NULL) is reported as a tie against a later unknown-time flagged copy though it had no void column (Gemini) — `analysis/qgis/import_sessions.py:457`, `:466`
+- [x] (suggestion) UNDO arm delay is checked when the click completes, so a press that starts inside the 750 ms and ends after it undoes; check the arm at ACTION_DOWN (or require the press to start after arming), as the plan's "a press in progress cannot undo" means (Codex) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:554`
+- [x] (suggestion) ShareZipTest reads entries with ZipInputStream (local headers); the importer reads the central directory's extra field: also check through java.util.zip.ZipFile or ZipFile's CEN extra (Gemini) — `logger/app/src/test/java/rink/icecube/logger/core/ShareZipTest.java:65`
+- [x] (suggestion) `refs_csv_dated` reads and decodes events.csv for the zone offset even when refs.csv has a 0x5455 time; look for the extended timestamp first. Optionally make the zone residual one-sided (DOS truncates down by up to 2 s) to halve false offsets (Gemini, Claude) — `analysis/qgis/logger_session.py:156`, `:264`
+- [x] (suggestion) Docs drift from the round-1 UNDO change: README says "a newer notice ends it" and taps in the first 750 ms "are ignored" (now a notice for the same capture keeps UNDO and an ignored tap plays the error cue); the javadoc above `undoAt` still describes the notice; ShareZip javadoc line 71 is 158 characters (reflow) — `logger/README.md:139`, `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:110`, `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java:71`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 21:46 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-27 at `3e22699`
+**Addressed**: Local Review (Pre-Push) at `29f67e2` (2026-11-26 21:36 -05:00)
+**Commits**: bef1761, 810d7c4, aa1b335, 3e22699
+
+Must-fix 1 rule decided by the host (owner may veto): each copy time is the interval [t-u, t+u]; two copies tie when the intervals overlap (|t1-t2| <= u1+u2) and a tie gives flagged; on a tie the stored void_copy_mtime/void_copy_unc become the union interval's centre and half-width, otherwise the surely newer copy's own interval is stored. The 26 h no-offset case follows the same rule (only wider). Consequence: two corrected-DOS copies (now each +-1 h) must be more than 2 h apart to order, and two mtime_approx copies more than 52 h; existing tests moved their later copies accordingly.
+
+### Actions
+- [x] (must-fix) Interval overlap ties, union stored on a tie, surely newer copy's own interval otherwise; in-run and against the stored flag; tests `test_tie_stores_the_union_interval` (exact un-flag at T+30 h now clears), `test_two_dst_uncertain_copies_90_min_apart_tie` (both orders, in one run and across runs, then an exact un-flag clears only once surely newer), `test_import_order_does_not_change_the_result` (all permutations, one run and one copy per run) — `analysis/qgis/import_sessions.py` (`_stamp_order`, `_stamp_hull`, `import_refs_csv`)
+- [x] (must-fix) Every corrected-DOS entry other than events.csv itself gets DST_S (DST_FAR_S removed); test `test_dst_change_just_before_events_csv` (fall 2026 transition an hour before events.csv) and `test_dst_allowance_for_every_corrected_entry_but_events_csv` — `analysis/qgis/logger_session.py` (`zip_entry_stamp`)
+- [x] (suggestion) A tie keeps the newest flagged copy's void_reason (`_flag_reason`, by time then text, order-independent); a ref stored from copies without a void column now has void NULL, so the first copy with one decides it as if new and no tie is reported; tests `test_tie_keeps_the_flagged_copys_reason`, `test_row_from_a_refs_csv_without_void_column_is_not_a_tie` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) UNDO arm delay checked against the press's ACTION_DOWN time (touch listener, elapsedRealtime; a click with no press seen is timed at the click) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`, `core/VoidRule.java` javadoc
+- [x] (suggestion) ShareZipTest also reads the central directory through java.util.zip.ZipFile (both the 0x5455 and the no-timestamp cases) — `logger/app/src/test/java/rink/icecube/logger/core/ShareZipTest.java`
+- [x] (suggestion) `refs_csv_dated` takes a 0x5455 time before reading events.csv (test `test_extended_timestamp_skips_events_csv`); zone residual one-sided, -2 s (DOS truncation) to +120 s — `analysis/qgis/logger_session.py`
+- [x] (suggestion) Docs: README UNDO paragraph (press-down, error cue, same-capture notice keeps UNDO), README zip-ordering paragraph (1 h DST, 26 h, either-order tie), javadoc above `undoAt`, ShareZip javadoc reflowed; import_sessions module docstring describes the interval rule — `logger/README.md`, `MainActivity.java`, `ShareZip.java`, `analysis/qgis/import_sessions.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 150, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 190 tests, 0 failures; app-debug.apk 315686 bytes, sha256 69c86cc0…6139d (C: 112 GB free before the build)
+- Pre-commit hooks ran on every commit; nothing pushed.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:50 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `48ea20e`
+**Base**: main
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 1 | **Suggestions**: 0
+**Round**: 3 | **Ship**: continue — round 3: 1 must-fix is a design/correctness concern (not mechanical)
+
+Scope: round 2's seven findings and the fix diff 2998717..48ea20e only. Cross-model: skipped (round-3 convergence check, per handoff). All seven round-2 items are fixed as the Implementation at 3e22699 says (interval overlap in `_stamp_order`, union stored on a tie, DST_S for every corrected-DOS entry but events.csv, newest flagged reason kept, void NULL for copies without a void column, UNDO arm at ACTION_DOWN, ShareZipTest reads the central directory, 0x5455 looked up before events.csv, docs). Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 150, OK (skipped=5); `ANDROID_HOME=~/Android/Sdk ./gradlew testDebugUnitTest --max-workers 4` 190 tests, 0 failures. Tie rule consistency: two copies are compared the same way in one run and against the stored flag (overlap, |d| <= u1+u2), and a copy surely newer than every tied copy is surely newer than their union, so a later surely newer copy is handled alike. But the stored union keeps the flag of a copy that a later surely newer copy would have dropped (below). Probe (not committed): with X flagged exact at T, Z cleared exact at T+1 h, Y cleared at T+10 h with 26 h (mtime_approx), all three in one run give cleared, as does one per run in the order X, Z, Y; one per run in the orders X,Y,Z / Y,X,Z / Y,Z,X / Z,Y,X give flagged. A random search over 3 copies (uncertainties 0, 1 h, 26 h; 150 cases, all orders) found 32 such differences, every one toward flagged in the run-by-run result, never toward cleared: so no flag is lost, but the docstring's "neither import order nor a later run" claim does not hold and `test_import_order_does_not_change_the_result` does not cover it.
+
+### Findings
+- [x] (must-fix) Tie rule differs in one run and across runs, and across runs with import order: in a run a copy surely older than another top copy is dropped before ties are looked at, while across runs its flag is already folded into the stored union and cannot be dropped (X flagged T exact, Z cleared T+1 h exact, Y cleared T+10 h +-26 h: one run cleared; runs X,Y,Z flagged; runs X,Z,Y cleared). It always errs to flagged. Decide: keep each copy's interval and flag per ref (e.g. a refs_copies table) and apply the in-run rule over all copies seen in every run, or accept run-by-run flagged as the safe side and say so in the docstring and README, with a test of the case above — `analysis/qgis/import_sessions.py:445`, `:478`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 21:51 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (one must-fix on a mechanism the host decided; the permanent fix is in reach; first host address at rounds)
+**After**: rounds
+**Decision**: address
+
+Host decision on the round-3 must-fix (owner may veto): take option 1. Keep every refs.csv copy's (ref, copy time, uncertainty, void, reason) in a new table (refs_copies, deduped by copy identity), and on every import recompute each ref's flag from all copies seen with the one-run rule, so one run and any sequence of runs give the same result. The stored void_copy_mtime/void_copy_unc become derived. A gpkg without the table seeds it from the stored values (treated as one copy). Tests: the reproduced X/Y/Z case in all 6 orders as separate runs equals one run; a random permutation test over 3-4 copies, one run vs. runs.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 21:56 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-27 at `5d2d4be`
+**Addressed**: Local Review (Pre-Push) at `48ea20e` (2026-11-26 21:50 -05:00)
+**Commits**: 5d2d4be
+
+Option 1 as the Checkpoint decided. New `refs_copies` table (copy_id, session, n, mtime, unc, void, void_reason), unique per (copy_id, session, n); copy_id is the refs.csv content hash plus its (mtime, uncertainty), so the same file met again (same zip re-imported, or the same refs.csv in two exports) is one copy, while the same text at another time is another. Only rows with a void column are kept. Every import upserts this run's copies, then recomputes each touched ref's flag from all its copies with the one-run rule (`_decide_flag`: copies no other is surely newer than decide; any flagged gives flagged with the newest flagged reason; stored interval is their union). void_copy_mtime/void_copy_unc are now derived. ensure_schema seeds a new refs_copies from each stored refs.csv flag as one copy (copy_id 'stored', unc NULL taken as APPROX_S). Tie report kept: refs stored from refs.csv, held by this run's copies, whose deciding copies disagree. Two older tests encoded the run-by-run union and were changed to the one-run answer: a cleared copy surely older than an exact flagged one no longer reports a tie; an exact un-flag at T+2 h now clears the 90-min DST pair (as one run of all three does).
+
+### Actions
+- [x] (must-fix) One-run and run-by-run tie rules differ: refs_copies table, flag recomputed from all copies seen; tests `test_one_run_and_runs_agree_on_the_reviewers_case` (X/Y/Z, all 6 orders, split and together), `test_random_copies_one_run_equals_every_order_of_runs` (60 random cases of 3-4 copies, every permutation, one per run and mixed), `test_same_zip_imported_twice_adds_no_copy`, `test_gpkg_without_refs_copies_seeds_it_from_the_stored_flag`; module and function docstrings, `docs/howto/qgis.md` table list and `logger/README.md` zip-ordering paragraph — `analysis/qgis/import_sessions.py` (`_copy_id`, `_decide_flag`, `import_refs_csv`, `ensure_schema`)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 154, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK
+- No Java change; gradle not run. Pre-commit hooks ran on every commit; nothing pushed.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:59 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-27 at `d87686b`
+**Base**: main
+**Depth**: Deep (reason: round 4 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 1
+**Round**: 4 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Scope: round 3's one must-fix and the fix diff 85dfcc3..d87686b only. Cross-model: skipped (round-4 convergence check, per handoff). The must-fix is fixed: the flag is now `_decide_flag` over every copy in `refs_copies`, a function of the set of copies, so one run and any run sequence agree as long as each copy gets the same copy_id every time. Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 154, OK (skipped=5). Probe (not committed): 80 random cases of 3-4 copies plus one duplicate copy, with unknown (None) times, uncertainties 0/1 h/26 h, two refs per text (one sometimes absent), every permutation imported one per run, split in two runs at a random cut, and the whole set imported twice: 6336 permutations, 0 differences from one run. Copy identity: copy_id is a 128-bit content hash plus mtime and uncertainty; two copies that differ in content or time never collide, and two that share all three carry the same (mtime, unc, void, reason) per ref, so merging them changes nothing. The same copy is counted twice only when its computed time changes between imports (below). Seeding: an old gpkg seeds one 'stored' copy per refs.csv flag (NULL unc taken as APPROX_S, unknown mtime kept as unknown, which is older than any known time, as before); because a tie union is stored as one wide copy, an old gpkg can still err toward flagged, never toward cleared. Tested by `test_gpkg_without_refs_copies_seeds_it_from_the_stored_flag`. The two changed tests now expect the one-run answer, which I checked by hand: the cleared T-24 h copy is surely older than the exact T+20 h flagged copy, so it is dropped and no tie is reported; the exact T+2 h un-flag is surely newer than flagged T+-1 h and ties only cleared T+1.5 h+-1 h, so the result is cleared over [T+0.5 h, T+2.5 h]. Docs (`docs/howto/qgis.md`, `logger/README.md`) match.
+
+### Findings
+- [ ] (suggestion) copy_id includes the mtime_approx time, which is read in the PC's own zone. A zip without a 0x5455 stamp and without events.csv, imported again on a PC in another zone, therefore becomes a second copy with a shifted interval, and that copy can change which copies decide the flag, in either direction. This is rare: logger 0.9.0+ zips carry 0x5455, and pre-0.9.0 copies have no void column. Key that path on the raw DOS stamp instead, or note it in the docstring — `analysis/qgis/import_sessions.py:421`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:00 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+One open suggestion (the copy id includes an approximate time read in the importing PC's zone) is carried into the PR-mode review.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 22:00 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #36 at `cd73f5f`
+**Sources**: 1 (Local Review (Pre-Push) @ `d87686b` (covers `cd73f5f` via bookkeeping)); no hosted reviews (Copilot out of quota), no PR comments, no CI checks
+**Cross-source confirmations**: 0
+**CI**: none (no checks configured on the PR head)
+
+### Findings
+- [x] (suggestion, Local Review (Pre-Push) @ `d87686b`) Valid, still open at head: `_copy_id` keys a copy on its mtime and uncertainty, and on the mtime_approx path (no 0x5455 stamp, no events.csv) that time is the DOS stamp read in the importing PC's zone. The same zip imported on a PC in another zone becomes a second copy with a shifted interval, which can change which copies decide the flag. Rare (logger 0.9.0+ zips carry 0x5455; pre-0.9.0 copies have no void column). Fix: key that path on the raw DOS stamp, or state the limitation in the `_copy_id` docstring — `analysis/qgis/import_sessions.py:421`
+
+### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:01 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (one valid suggestion with a small permanent fix; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Key the copy id of a zip with no 0x5455 and no usable events.csv on its raw DOS stamp (zone-free), not the PC-zone reading; test that importing the same zip under two TZ settings adds one copy.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:05 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `ecbdcd9`
+**Addressed**: Integrated Review at `cd73f5f` (2026-11-26 22:00 -05:00)
+**Commits**: ecbdcd9
+
+### Actions
+- [x] mtime_approx refs.csv copy (no 0x5455, no usable events.csv offset) is now identified by its raw DOS stamp: new `logger_session.zip_entry_time_key`, returned as an optional 4th element of `refs_csv_dated`, used by `_copy_id` in place of the PC-zone mtime; the decided time and interval are unchanged. New test `test_approx_copy_imported_in_two_zones_is_one_copy` imports one zip under TZ=UTC0 and TZ=JST-9 (approx times 9 h apart): one copy, flag 1 both times; it fails without the fix (2 copies) — `analysis/qgis/import_sessions.py:421`, `analysis/qgis/logger_session.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 155 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
+- Full pre-commit pass left to the host. Note: a gpkg that stored an approx copy under the old id gets one more row for it on re-import, with the same time, so the flag does not change.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:12 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #36 at `46796b3`
+**Depth**: Deep (reason: +1930 -156 over 22 files, cross-layer Android logger + Python importer)
+**Must-fix**: 1 | **Suggestions**: 4
+
+PR-mode round 1. Specialists: static (no project pre-commit config and no pre-commit/flake8/ruff installed; ran `git diff --check` clean and py_compile on the changed Python files; public-repo grep of added lines clean), governance (no ADRs in project; public-repo and no-delete rules hold: no row, photo or file is deleted), plan drift (PR B files match the plan's Files to Change), Claude adversarial, cross-model Gemini and Codex (both completed). Checks: analysis/qgis 155 OK (5 skipped), icecube 94 OK; gradle not run. No PR comments or reviews; no CI checks.
+
+### Findings
+- [x] (must-fix) The round-4 fix is incomplete: an mtime_approx copy now keeps one copy_id across PCs, but `gp.upsert("refs_copies", ...)` updates `mtime` on conflict, so re-importing the same zip on a PC in another zone overwrites the stored time with that PC's reading and can flip the flag, against the PR's order-independence claim. Store a zone-free time (zip_dos_seconds with an uncertainty covering ZONE_MAX_S + ZONE_TRUNC_S) or keep the first mtime/unc on conflict; extend `test_approx_copy_imported_in_two_zones_is_one_copy` to check the flag against an exact copy ~20-30 h away. Found by Claude adversarial, Gemini and Codex — `analysis/qgis/import_sessions.py:493`, `analysis/qgis/logger_session.py:291`
+- [x] (suggestion) The seed for a gpkg from before refs_copies takes every `void IS NOT NULL` row, but main's importer wrote void=0 for every refs.csv row (pre-0.9.0 copies included), so those seed unflagged copies of unknown time (spurious ties, void 0 instead of the documented NULL); and the 'stored' copy never retires, so a later phone un-flag within 26 h cannot clear it. Seed only `void = 1 OR void_copy_mtime IS NOT NULL`, or document it — `analysis/qgis/import_sessions.py:272`
+- [x] (suggestion) zip_zone_offset accepts a stale or reset events.csv mtime whenever its gap to the last line falls within -2..+120 s of a multiple of 15 min (about 1 in 7 random gaps), giving an offset wrong by k x 15 min with only the 1 h DST uncertainty; the docstring says such a case gives None. State the limit, or cap the accepted gap (e.g. require the offset to match the phone's zone column if one exists) — `analysis/qgis/logger_session.py:273`
+- [x] (suggestion) A 0x5455 time is floored to whole seconds with uncertainty 0, while a folder copy uses sub-second st_mtime with uncertainty 0, so two copies in the same second can misorder (a cleared folder copy at T.2 beats a flagged zip copy written at T.7). Give a 0x5455 time uncertainty 1 s (or centre +0.5 s, unc 0.5) — `analysis/qgis/logger_session.py:159`
+- [x] (suggestion) `undoDownNs` is cleared only in onUndo; a press that slides off UNDO leaves it set, and a later non-touch click (keyboard, accessibility) is timed at that old press and refused with the error cue. Reset it on ACTION_CANCEL and when a new UNDO is shown (safe side, rare) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:207`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:23 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `f435b62`
+**Addressed**: Local Review at `46796b3` (2026-11-26 22:12 -05:00)
+**Commits**: dd5e0ab, 216503a, c230eb4, 60d1ead, f435b62
+
+### Actions
+- [x] (must-fix, host-decided, owner may veto) An mtime_approx copy now stores its DOS date/time read as if UTC (zip_dos_seconds), uncertainty 26 h, so its time and copy id are the same on every PC and an upsert never changes them; zip_entry_time_key and the 4-tuple plumbing removed (redundant). Test imports one zip under TZ UTC0, JST-9 and EST5EDT with an exact copy 20 h after the stored time: same stored time, flag (tie, flagged), refs row and refs_copies rows each time (the old PC-zone reading in JST would clear it) — `analysis/qgis/logger_session.py` zip_entry_stamp, `analysis/qgis/import_sessions.py` _copy_id
+- [x] (suggestion) Seed from an older gpkg only `void = 1 OR void_copy_mtime IS NOT NULL`; test that an untimed void 0 is not seeded and a later surely-newer un-flag clears a seeded copy (timed: past 26 h, within is a tie; untimed: any known time) — `analysis/qgis/import_sessions.py` ensure_schema
+- [x] (suggestion) zip_zone_offset: the corrected events.csv mtime must be within -2..+10 s of its last wall_ms (was 120 s; the logger flushes every events.csv line, so its mtime is that line's), else None. A stale mtime still landing in that window of a 15 min multiple (about 1 in 75 random gaps) cannot be told from events.csv; documented as a limit in the docstring and logger/README.md. Test: stale gap 2x15 min + 60 s gives None, + 5 s is accepted (the limit) — `analysis/qgis/logger_session.py` zip_zone_offset
+- [x] (suggestion) A 0x5455 time carries a 1 s uncertainty (EXT_S); test a folder copy cleared at T+0.2 s ties a zipped flag at T+0.7 s (stored T), 2 s apart does not — `analysis/qgis/logger_session.py` zip_entry_stamp, refs_csv_dated
+- [x] (suggestion) undoDownNs reset on ACTION_CANCEL, on ACTION_UP outside the button plus touch slop, and when a new UNDO is shown with no press held (a held press keeps its earlier press-down, so it still cannot undo). No JVM test (MainActivity) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 156, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, app-debug.apk 22:21 (C: 112.6 GB free before)
+- Not pushed; the host owns the push.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:32 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #36 at `f73949d`
+**Depth**: Deep (reason: whole-PR diff 22 files, +2021 -158, logger and importer cross-layer; fix round 2 classified on the whole diff)
+**Must-fix**: 0 | **Suggestions**: 5
+
+Round-1 must-fix (zone-free mtime_approx copy) verified fixed: the DOS time read as if UTC with 26 h is the same on every PC, so copy id and stored time no longer change on re-import; the 26 h bound covers writer zones -12..+14 h. Zone-offset window -2..+10 s holds for how the logger writes events.csv: Session.event takes System.currentTimeMillis and flushes each line (since 0.2), close() adds no data after the last line, and ShareZip sets each entry's time from lastModified (since 0.5.1), so the corrected mtime sits within DOS truncation before to milliseconds after the last wall_ms; a separate bound is not needed (only caveat: suggestion 2). Python tests 156 OK (5 skipped); Gradle testDebugUnitTest passes. Cross-model: Gemini and Codex completed. Dropped: 2038 int cast of 0x5455 (format limit), NULL refs.void callers (coalesce/falsy already), outside-diff "verify" items.
+
+### Findings
+- [ ] (suggestion) UNDO pressed, slid out past slop and back in, then lifted: View gives no click but the listener keeps undoDownNs (the UP is inside), so a later key/accessibility click is timed at that press; reset at ACTION_UP when `!v.isPressed()` (or on ACTION_MOVE outside slop) and fix the "as View decides" comment (Claude, Gemini) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:210`
+- [ ] (suggestion) Zone window lower bound: file mtimes come from the coarse kernel clock, a few ms behind currentTimeMillis, so with DOS truncation the residual can be just under -2 s and a good events.csv gives no offset (falls to 26 h, safe side); allow e.g. -(ZONE_TRUNC_S + 0.05), and README "under 10 s" should say -2..+10 s (Claude) — `analysis/qgis/logger_session.py:276`, `logger/README.md:738`
+- [ ] (suggestion) A zone-corrected entry's uncertainty leaves out the 2 s DOS truncation: DST_S becomes up to 3602 s off; use DST_S + ZONE_TRUNC_S (and ZONE_TRUNC_S for events.csv itself) (Gemini) — `analysis/qgis/logger_session.py:305`
+- [ ] (suggestion) ShareZip's unknown-mtime sentinel (DOS 1980-01-01 00:00, no 0x5455) is read as a known time, so it is newer than an unknown-time (None) copy such as an untimed seeded flag and can clear it; treat that DOS stamp as None in zip_dos_seconds (Gemini) — `analysis/qgis/logger_session.py:219`
+- [ ] (suggestion) Duplicate (session, n) rows within one refs.csv copy: the importer keeps the last row's flag, the phone's liveRefs takes flagged if any same-time row is; the logger never writes duplicates (append once per n), so only a hand-edited file differs; OR the flags of a copy's duplicate rows (Codex) — `analysis/qgis/import_sessions.py:490`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 22:34 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #36 at `44f0c31`
+**Sources**: 1 (Local Review @ `f73949d`, covers 44f0c31 via bookkeeping; no hosted reviews, Copilot out of quota; no CI checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks reported for the head)
+
+All five suggestions from the PR-mode round-2 Local Review were checked against the code at 44f0c31 and are valid. None is must-fix; the review approved.
+
+### Findings
+- [x] (suggestion, Local Review @ `f73949d`) UNDO slid out past slop and back in, then lifted: View cleared its pressed state on the MOVE and gives no click, but the listener only resets on CANCEL or an UP outside slop, so undoDownNs survives and a later key or accessibility click is timed at that old press. Reset at ACTION_UP when `!v.isPressed()` (the listener runs before onTouchEvent, so isPressed is still the pre-UP state; mind prepressed, which only arises in a scrolling container) and fix the "as View decides" comment — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`
+- [x] (suggestion, Local Review @ `f73949d`) zip_zone_offset's lower bound is exactly -ZONE_TRUNC_S; DOS truncation (up to 2 s) plus a file mtime from the coarse kernel clock a few ms behind wall_ms can put the residual just under -2 s, so a good events.csv gives no offset (falls back to 26 h, safe side). Allow e.g. -(ZONE_TRUNC_S + 0.05), and make the README's "under 10 s" say -2 to +10 s — `analysis/qgis/logger_session.py`, `logger/README.md`
+- [x] (suggestion, Local Review @ `f73949d`) zip_entry_stamp's zone-corrected uncertainty omits DOS truncation: 0 for events.csv and DST_S for other entries, but each DOS time can be up to 2 s early. Use ZONE_TRUNC_S and DST_S + ZONE_TRUNC_S — `analysis/qgis/logger_session.py`
+- [x] (suggestion, Local Review @ `f73949d`) ShareZip writes DOS_EPOCH_MS (1980-01-01 local) and no 0x5455 for a file with lastModified() 0; zip_dos_seconds reads that as a real time, so such a copy ranks newer than an unknown-time (None) copy and can decide against it. Return None for the 1980-01-01 00:00 DOS stamp in zip_dos_seconds — `analysis/qgis/logger_session.py`
+- [x] (suggestion, Local Review @ `f73949d`) Duplicate (session, n) rows in one refs.csv copy: the importer's copies dict keeps the last row's flag, while VoidRule.liveRefs on the phone treats it as flagged if any row is. The logger never writes duplicates, so only a hand-edited file differs; OR the flags of a copy's duplicate rows to match the phone — `analysis/qgis/import_sessions.py`
+
+### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:34 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (5 small valid suggestions, each a few lines with a test; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Fix all five as the Integrated Review at 3c7b8e3 describes.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:42 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `9be3f4d`
+**Addressed**: Integrated Review at `44f0c31` (2026-11-26 22:34 -05:00)
+**Commits**: 04c534a, 5ec6292, a64b0d2, 5ec6772, d9621e4, 9be3f4d
+
+### Actions
+- [x] UNDO press lifted after sliding out past slop and back is forgotten: VoidRule.pressEndsWithoutClick (cancel, or up when not pressed or outside slop), comment fixed, prepressed noted (UNDO is in no scrolling container; a prepressed tap would be timed at the click, within the tap timeout), test undoPressForgottenWithoutClick — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`, `core/VoidRule.java`
+- [x] zip_zone_offset lower bound -(ZONE_TRUNC_S + ZONE_CLOCK_S), ZONE_CLOCK_S = 0.05; README says -2 s to +10 s; test for 1.99/2.03/2.1 s early — `analysis/qgis/logger_session.py`, `logger/README.md`
+- [x] zip_entry_stamp uncertainty ZONE_TRUNC_S for events.csv, DST_S + ZONE_TRUNC_S for other corrected entries; existing expectations updated (3600 to 3602, 0 to 2) — `analysis/qgis/logger_session.py`
+- [x] zip_dos_seconds returns None for 1980-01-01 00:00:00 (ShareZip's no-mtime stamp), ShareZip comment notes it; test_dos_epoch_is_unknown_time — `analysis/qgis/logger_session.py`
+- [x] duplicate (session, n) rows in one refs.csv copy are flagged if any is, as VoidRule.liveRefs; test in both row orders — `analysis/qgis/import_sessions.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 32 test classes, 0 failures (VoidRuleTest 14 tests); app-debug.apk 315934 bytes. C: had 112.4 GB free before the build.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:45 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #36 at `524e0d9`
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the newest Integrated Review's 5 findings (at `44f0c31`) and the fix diff 223d7e2..524e0d9. Cross-model: skipped (round-3 convergence check, per handoff). Each of the 5 fixes checked against the code: UNDO press reset via VoidRule.pressEndsWithoutClick (up when !isPressed, prepressed path falls back to click time at MainActivity:580); zone residual lower bound -(2 + 0.05) s with README updated; zone-corrected uncertainty 2 s / 3602 s; 1980-01-01 00:00 DOS stamp read as unknown (ShareZip's GregorianCalendar local epoch stays in DOS range, so no 0x5455 is written); duplicate refs.csv rows in one copy flagged if any is, in both orders. The changed unc and DOS-epoch handling change copy ids only for data from this unreleased PR. Verified: `python3 -m unittest discover -s analysis/qgis/tests` 159 tests OK (skipped=5); Gradle result taken from the Implementation entry.
+
+### Findings
+- [ ] No issues found. LGTM.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:44 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #36 at `4c8fd95`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 0 | **Suggestions**: 1
+
+### Findings
+- [ ] (suggestion) The 0x5455 extended timestamp casts epoch seconds to int, which wraps from 2038 on (the importer reads it signed, so a newer copy would look decades older). Leave the field out when the time is out of range, and test the boundary. `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java:76`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 22:48 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #36 at `3c1fe51`
+**Sources**: 2 (Local Review @ `524e0d9` round 3, approved, 0 findings, covers `3c1fe51` via bookkeeping; Local Review @ `4c8fd95` Codex cold read, approved, 1 suggestion, covers `3c1fe51` via bookkeeping). No hosted reviews; CI rollup has no checks.
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+Earlier entries at `d87686b` and `f73949d` are stale (code changed since) and were closed by the Integrated Review at `44f0c31` and its fix round; not re-listed.
+
+### Findings
+- [x] (suggestion, Local Review @ `4c8fd95` covers head via bookkeeping) Valid, confirmed in code: `extendedTimestamp` does `int t = (int) epochSeconds;`, so from 2038-01-19 the field wraps negative, and the importer reads 0x5455 as signed, so a post-2038 copy would order as decades old. Fix: in `addFile`, write the 0x5455 extra only when `0 < seconds <= Integer.MAX_VALUE` (otherwise fall back to the DOS time alone, as for unknown mtime), or have `extendedTimestamp` reject out-of-range input; add a boundary test at `Integer.MAX_VALUE` and `Integer.MAX_VALUE + 1`. Low urgency (12 years out) but cheap. — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java`
+
+### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:48 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (one valid suggestion, a few lines with a boundary test; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Write 0x5455 only when the seconds fit a signed 32-bit int, else the DOS time alone; boundary tests at Integer.MAX_VALUE and one past.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:50 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `96a9446`
+**Addressed**: Integrated Review at `3c1fe51` (2026-11-26 22:48 -05:00)
+**Commits**: 96a9446
+
+### Actions
+- [x] ShareZip 2038 wrap: `extendedTimestamp` now throws outside the signed 32-bit range; `addFile` writes 0x5455 only when `fitsExtendedTimestamp` (0 < s <= Integer.MAX_VALUE), else the DOS time alone; boundary tests at Integer.MAX_VALUE and one past — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 194 tests, 0 failures, 0 errors (ShareZipTest 10/10); app-debug.apk 315934 bytes
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:52 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #36 at `5e6ae4c`
+**Depth**: Deep (reason: round 4 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the newest Integrated Review's one finding (at `3c1fe51`, the 0x5455 2038 wrap) and the fix diff 542db7e..5e6ae4c. Cross-model: skipped (round-4 convergence check, per handoff). Checked in code: `extendedTimestamp` now throws outside the signed 32-bit range instead of wrapping; `addFile` writes 0x5455 only when `fitsExtendedTimestamp` (0 < s <= Integer.MAX_VALUE) and otherwise keeps `setTime(mtime)` alone, which stays in DOS range to 2107, so the JDK adds no 0x5455 of its own; the unknown-mtime path is unchanged. Tests cover Integer.MAX_VALUE encoding, rejection one past, the predicate boundary, and an end-to-end addFile at both sides. Verified: ShareZipTest result at this head 10 tests, 0 failures (from the Implementation run; a rerun here could not find the Android SDK in this shell).
+
+### Findings
+- [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 22:51 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #36 at `bf9b7a6`
+**Sources**: 1 (Local Review @ `5e6ae4c` (covers `bf9b7a6` via bookkeeping); no hosted reviews, Copilot out of quota; no CI checks on this repo)
+**Cross-source confirmations**: 0
+**CI**: all-pass
+
+The convergence Local Review at `5e6ae4c` approved with 0 must-fix and 0 suggestions, resolving the previous Integrated Review's one finding (the ShareZip 0x5455 2038 wrap; also the Codex cold read's one suggestion). `bf9b7a6` adds only the progress entry. Earlier entries' open findings (`d87686b`, `f73949d`, `4c8fd95`) are stale and were ruled on by earlier Integrated Reviews. The PR has no reviews, no conversation comments and no CI check-runs.
+
+### Findings
+None.
+
+### False positives
+None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 08:33 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #36?": "Merge now" (before the phone try-out; anything the try-out finds becomes a new issue).

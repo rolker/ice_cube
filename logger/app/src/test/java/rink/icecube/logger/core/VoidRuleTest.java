@@ -31,6 +31,58 @@ public class VoidRuleTest {
         assertTrue(VoidRule.UNDO_ARM_MS < VoidRule.UNDO_WINDOW_MS);
     }
 
+    @Test public void undoArmDelay() {
+        long shown = 5000 * MS;
+        assertFalse(VoidRule.armed(shown, shown));                                  // the frame it appears
+        assertFalse(VoidRule.armed(shown, shown + VoidRule.UNDO_ARM_MS * MS - 1));  // a double tap
+        assertTrue(VoidRule.armed(shown, shown + VoidRule.UNDO_ARM_MS * MS));
+        assertFalse(VoidRule.armed(shown, shown - MS));                             // clock went backwards
+        // a ref's notice can appear late: the window still counts from the row's own time
+        long capture = 1000 * MS, appeared = capture + 7500 * MS;
+        assertTrue(VoidRule.armed(appeared, appeared + VoidRule.UNDO_ARM_MS * MS));
+        assertFalse(VoidRule.undoOpen(capture, appeared + VoidRule.UNDO_ARM_MS * MS));
+    }
+
+    @Test public void undoPressForgottenWithoutClick() {
+        assertFalse(VoidRule.pressEndsWithoutClick(false, true, true, false));   // a tap: click follows
+        assertTrue(VoidRule.pressEndsWithoutClick(false, true, false, false));   // slid out and back, then lifted
+        assertTrue(VoidRule.pressEndsWithoutClick(false, true, true, true));     // lifted outside the slop
+        assertTrue(VoidRule.pressEndsWithoutClick(true, false, true, false));    // cancelled
+        assertFalse(VoidRule.pressEndsWithoutClick(false, false, false, true));  // a move keeps the press
+    }
+
+    @Test public void recentCapturesNewestFirst() {
+        List<PointRow> rows = new ArrayList<>();
+        for (int n = 1; n <= 14; n++) rows.add(row(n, n % 4 == 0 ? PointRow.PHOTO : PointRow.SURFACE));
+        rows.get(12).voided = true;   // n=13
+        rows.get(12).voidReason = "moved";
+        List<PointRow> r = VoidRule.recent(rows, 10);
+        assertEquals(10, r.size());
+        assertEquals(14, r.get(0).n);
+        assertEquals(13, r.get(1).n);                       // a flagged one stays in the list
+        for (PointRow x : r) assertTrue(x.isCapture());    // photo rows left out
+        assertEquals(2, r.get(r.size() - 1).n);
+        assertEquals(3, VoidRule.recent(rows.subList(0, 4), 10).size());   // fewer than k; n=4 is a photo row
+        assertEquals(1, VoidRule.flaggedCount(rows));
+        assertEquals("S13  surface  14 s ago  FLAGGED: moved", VoidRule.recentLine(rows.get(12), 14_500 * MS));
+        assertEquals("S14  surface  2 min ago", VoidRule.recentLine(rows.get(13), 150_000 * MS));
+        assertEquals("1 h", VoidRule.ageText(3_700_000 * MS));
+        assertEquals("?", VoidRule.ageText(-1));
+    }
+
+    @Test public void mapGlyphs() {
+        PointRow s = row(1, PointRow.SURFACE), r = row(2, PointRow.REF), p = row(3, PointRow.PHOTO);
+        assertEquals(VoidRule.Glyph.LIVE, VoidRule.glyph(s));
+        assertEquals(VoidRule.Glyph.LIVE, VoidRule.glyph(r));
+        assertEquals(VoidRule.Glyph.PHOTO, VoidRule.glyph(p));
+        s.voided = true;
+        r.voided = true;
+        assertEquals(VoidRule.Glyph.FLAGGED, VoidRule.glyph(s));
+        assertEquals(VoidRule.Glyph.FLAGGED, VoidRule.glyph(r));
+        PointRow moved = VoidRule.photoRowFor(s, 4);   // a photo row made by a flag keeps its camera
+        assertEquals(VoidRule.Glyph.PHOTO, VoidRule.glyph(moved));
+    }
+
     @Test public void reasonsAreSafeInCsvAndEvents() {
         assertEquals(VoidRule.ACCIDENTAL, VoidRule.REASONS.get(0));
         for (String r : VoidRule.REASONS) assertEquals(r, VoidRule.reason(r));
@@ -150,6 +202,9 @@ public class VoidRuleTest {
     @Test public void refsVoidEventReportsPartialWrites() {
         assertEquals("ref n=3 voided in refs.csv (1 row)", VoidRule.refsVoidEvent(3, true, 1, 1, 1, 0));
         assertEquals("ref n=3 unvoided in refs.csv (2 rows)", VoidRule.refsVoidEvent(3, false, 2, 2, 2, 0));
+        // holding 0 stays an error: a flag can no longer be queued before its ref's append
+        // (Survey.onEpoch queues the pole check under the lock), so no row means the append failed
+        assertTrue(VoidRule.refsVoidEvent(3, true, 0, 0, 0, 0).startsWith("error: "));
         String none = VoidRule.refsVoidEvent(3, true, 1, 0, 0, 0);
         assertTrue(none, none.startsWith("error: ref n=3 not voided in refs.csv (no row rewritten"));
         String part = VoidRule.refsVoidEvent(3, true, 2, 1, 1, 0);

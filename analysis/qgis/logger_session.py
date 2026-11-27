@@ -20,6 +20,7 @@ Nothing here prints coordinates.
 from __future__ import annotations
 
 import bisect
+import calendar
 import csv
 import io
 import math
@@ -119,9 +120,10 @@ class SessionSource:
         return got[0] if got else None
 
     def refs_csv_copies(self):
-        """[(text, mtime)] of the refs.csv shipped with this session and with each other copy
-        of it that find_sessions set aside (another export of the same session may carry a
-        newer refs.csv), so the newest-copy rule sees them all. Each copy once (same file)."""
+        """[(text, mtime, uncertainty_s)] (see refs_csv_dated) of the refs.csv shipped with this
+        session and with each other copy of it that find_sessions set aside (another export of
+        the same session may carry a newer refs.csv), so the newest-copy rule sees them all.
+        Each copy once (same file)."""
         out, seen = [], set()
         for s in [self, *self.others]:
             where = (str(s.path), s.zip_prefix is not None)
@@ -138,11 +140,13 @@ class SessionSource:
         return out
 
     def refs_csv_dated(self):
-        """(text, mtime) of the refs.csv shipped with this session, or None. mtime is in
-        seconds since the epoch (UTC), so zip and folder copies compare: the file's
-        modification time, or the zip entry's time (see zip_entry_mtime; None when the zip
-        has no usable date). It orders refs.csv copies, so the newest one decides a row's
-        void flag."""
+        """(text, mtime, uncertainty_s) of the refs.csv shipped with this session, or None.
+        mtime is in seconds since the epoch (UTC), so zip and folder copies compare: the
+        file's modification time, or the zip entry's time (see zip_entry_stamp; mtime None
+        when the zip has no usable date). uncertainty_s is how far off mtime may be (0 for a
+        file, 1 s for a UTC extended timestamp; see zip_entry_stamp). It orders refs.csv copies,
+        so the newest one decides a row's void flag. Every time is zone-free (an mtime_approx
+        one too, see zip_entry_stamp), so the same zip gives the same copy on any PC."""
         if self.is_zip:
             inner = self.zip_prefix.rstrip("/")
             parent = inner.rsplit("/", 1)[0] + "/" if "/" in inner else ""
@@ -151,11 +155,27 @@ class SessionSource:
                     info = self._z().getinfo(cand)
                 except KeyError:
                     continue
-                return (self._z().read(info).decode("utf-8", "replace"),
-                        zip_entry_mtime(info))
+                text = self._z().read(info).decode("utf-8", "replace")
+                ext = zip_extended_mtime(info)   # UTC: events.csv not needed
+                if ext is not None:
+                    return text, ext, EXT_S
+                zone, events_info = self.zone_offset()
+                return (text,) + zip_entry_stamp(info, zone, events_info)
             return None
         p = self.path.parent / "refs.csv"
-        return (p.read_text("utf-8", "replace"), p.stat().st_mtime) if p.is_file() else None
+        return (p.read_text("utf-8", "replace"), p.stat().st_mtime, 0.0) if p.is_file() else None
+
+    def zone_offset(self):
+        """(zone offset in seconds, events.csv ZipInfo) of this zip's writer, from the
+        session's events.csv (see zip_zone_offset), or (None, None) for a folder or a zip
+        whose events.csv gives no usable offset."""
+        if not self.is_zip:
+            return None, None
+        try:
+            info = self._z().getinfo(self.zip_prefix + "events.csv")
+        except KeyError:
+            return None, None
+        return zip_zone_offset(info, self._z().read(info)), info
 
     @property
     def snapshot(self):
@@ -173,13 +193,20 @@ class SessionSource:
         return self.path.name + (f"!{self.zip_prefix}" if self.is_zip else "")
 
 
-def zip_entry_mtime(info):
-    """Modification time of a zip entry in seconds since the epoch (UTC), or None. Uses the
-    entry's extended timestamp (extra field 0x5455, UTC) when it has one; otherwise the DOS
-    date and time, which a zip stores in the writer's local time and which is read here in
-    this machine's local time zone (the logger's zips carry only that, so a phone and a PC
-    in different zones can misorder copies by the offset). A zero or invalid DOS date
-    gives None."""
+ZONE_STEP_S = 900            # every real zone offset is a multiple of 15 min
+ZONE_RESIDUAL_S = 10         # events.csv's entry time this close after its last line, after rounding
+                             # (the logger flushes each line as it writes it, so its mtime is that line's)
+ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
+ZONE_CLOCK_S = 0.05          # a file mtime (coarse kernel clock) may be a few ms behind wall_ms
+ZONE_MAX_S = 14 * 3600       # the largest zone offsets
+APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
+DST_S = 3600                 # another entry than events.csv may have another DST offset
+EXT_S = 1.0                  # a 0x5455 time is whole seconds (floored), a file mtime is not
+
+
+def zip_extended_mtime(info):
+    """The UTC modification time of a zip entry's extended timestamp (extra 0x5455, which
+    the logger writes from 0.9.0), or None."""
     extra, i = info.extra or b"", 0
     while i + 4 <= len(extra):
         tag, size = int.from_bytes(extra[i:i + 2], "little"), int.from_bytes(extra[i + 2:i + 4], "little")
@@ -187,12 +214,104 @@ def zip_entry_mtime(info):
         if tag == 0x5455 and len(body) >= 5 and body[0] & 1:
             return float(int.from_bytes(body[1:5], "little", signed=True))
         i += 4 + size
+    return None
+
+
+def zip_dos_seconds(info):
+    """A zip entry's DOS date and time read as if UTC (calendar.timegm, no PC zone), or
+    None for a zero or invalid date, or for 1980-01-01 00:00:00, the DOS epoch the logger's
+    ShareZip writes for a file with no modification time (lastModified() 0). Minus the
+    writer's zone offset it is UTC."""
     y, mo, d, h, mi, sec = info.date_time
+    if (y, mo, d, h, mi, sec) == (1980, 1, 1, 0, 0, 0):
+        return None
     try:
         datetime(y, mo, d, h, mi, sec)   # rejects a zero month or day
+    except (ValueError, OverflowError):
+        return None
+    return float(calendar.timegm((y, mo, d, h, mi, sec, 0, 0, 0)))
+
+
+def zip_entry_mtime(info, zone_offset_s=None):
+    """Modification time of a zip entry in seconds since the epoch (UTC), or None. Uses the
+    entry's extended timestamp (extra field 0x5455, UTC) when it has one. Otherwise the DOS
+    date and time, which a zip stores in the writer's local time: corrected by
+    `zone_offset_s` (the writer's offset east of UTC, see zip_zone_offset) when given, else
+    read in this machine's local time zone (a phone and a PC in different zones can then
+    misorder copies by the offset). A zero or invalid DOS date gives None."""
+    ext = zip_extended_mtime(info)
+    if ext is not None:
+        return ext
+    dos = zip_dos_seconds(info)
+    if dos is None:
+        return None
+    if zone_offset_s is not None:
+        return dos - zone_offset_s
+    y, mo, d, h, mi, sec = info.date_time
+    try:
         return time.mktime((y, mo, d, h, mi, sec, 0, 0, -1))
     except (ValueError, OverflowError):
         return None
+
+
+def zip_zone_offset(events_info, events_bytes):
+    """The zone offset (seconds east of UTC) of the phone that wrote a logger zip, or None.
+    events.csv's last line carries wall_ms (UTC) and its DOS entry time is that file's
+    mtime in the phone's zone, a moment later (the logger flushes each line as it writes
+    it), so their difference rounded to 15 min is the offset. Accepted only when the
+    events.csv mtime, corrected by that offset, is within -(ZONE_TRUNC_S + ZONE_CLOCK_S) (DOS
+    truncation, and a file mtime a few ms behind wall_ms) to +ZONE_RESIDUAL_S of its last
+    wall_ms, and the offset within +-14 h; otherwise None, so a snapshot zip (events written
+    while it was zipped) or a copy tool that reset the mtime gives no offset rather than a
+    confidently wrong one.
+
+    Limit: events.csv alone cannot tell a stale or reset mtime that happens to land within
+    that window of a 15 min multiple (about 1 in 75 random gaps under 14 h) from a real
+    one; such a zip gets an offset wrong by a multiple of 15 min, with only the 1 h DST
+    allowance (zip_entry_stamp). A zip from 0.9.0 has 0x5455 times and never comes here."""
+    dos = zip_dos_seconds(events_info)
+    if dos is None or not events_bytes:
+        return None
+    wall = None
+    for line in events_bytes.decode("utf-8", "replace").splitlines()[::-1]:
+        parts = line.split(",", 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            wall = int(parts[1]) / 1000.0
+            break
+    if wall is None:
+        return None
+    diff = dos - wall
+    off = round(diff / ZONE_STEP_S) * ZONE_STEP_S
+    if not -(ZONE_TRUNC_S + ZONE_CLOCK_S) <= diff - off <= ZONE_RESIDUAL_S or abs(off) > ZONE_MAX_S:
+        return None
+    return float(off)
+
+
+def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
+    """(mtime, uncertainty_s) of a zip entry for ordering refs.csv copies. With an extended
+    timestamp: that UTC time, uncertainty EXT_S (it is whole seconds, a folder copy's mtime is
+    not). A DOS time corrected by the zip's zone offset (zip_zone_offset): uncertainty
+    ZONE_TRUNC_S for events.csv itself (`events_info`, the entry the offset came from; a DOS
+    time is truncated down to 2 s), DST_S + ZONE_TRUNC_S for any other entry (Java converts
+    each file's mtime with the zone rules of that moment, so a DST change between it and
+    events.csv, however near, shifts it by an hour). Without an offset
+    (mtime_approx): the DOS date and time read as if UTC (zip_dos_seconds), uncertainty
+    APPROX_S. That time is off by the writer's zone offset, but it does not depend on the
+    importing PC's zone, so the same zip gives the same copy time (and copy id,
+    import_sessions._copy_id) on every PC and a re-import never changes it. Each time is the
+    interval mtime +- uncertainty; two copies whose intervals overlap are a tie (flagged
+    wins)."""
+    ext = zip_extended_mtime(info)
+    if ext is not None:
+        return ext, EXT_S
+    dos = zip_dos_seconds(info)
+    if dos is None:
+        return None, 0.0
+    if zone_offset_s is None:
+        return dos, APPROX_S
+    same = events_info is not None and info.filename == events_info.filename
+    unc = float(ZONE_TRUNC_S) if same else float(DST_S + ZONE_TRUNC_S)
+    return dos - zone_offset_s, unc
 
 
 def _sessions_in_zip(path):
@@ -603,17 +722,25 @@ def load_session(src: SessionSource) -> Session:
         m = re.match(r"photo file=photos/(\S+) .*?(attached to|own row) n=(\d+)", text)
         if m:
             attach[m.group(1)] = (int(m.group(3)), "capture" if m.group(2) == "attached to" else "own row")
+    # A photo's row: the points.csv row whose photo column lists the file is the only source
+    # of its n and whether it is attached (a flag in 0.9.0 moves photos to another row, so
+    # the number in the file name and the original "photo file=..." event can be stale; the
+    # file is never renamed). The event, then the name, only for an orphan file.
     by_file = {}
     for c in s.captures:
         for p in c["photo_files"]:
-            by_file[p] = c["n"]
+            by_file[p] = c
     for name in src.photo_names():
         m = PHOTO_RE.match(name)
-        n = by_file.get(name) or (attach.get(name) or (None,))[0] or (int(m.group(1)) if m else None)
         utc = None
         if m:
             utc = datetime.strptime(m.group(2), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
-        kind = (attach.get(name) or (None, None))[1]
+        row = by_file.get(name)
+        if row is not None:
+            n, kind = row["n"], "own row" if row["class"] == "photo" else "capture"
+        else:
+            n = (attach.get(name) or (None,))[0] or (int(m.group(1)) if m else None)
+            kind = (attach.get(name) or (None, None))[1]
         s.photos.append({"n": n, "name": name, "utc": utc, "attached": kind,
                          "bytes": src.size("photos/" + name)})
     caps = {c["n"]: c for c in s.captures}

@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.8.1
+# Ice Cube Logger 0.9.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -132,6 +132,18 @@ for Details), and for 10 s after a capture, ref or pole check a green (or red) n
 e.g. `S12  FIXED  5 ep  ±0.4 cm`; amber with dark text when the capture is flagged, e.g.
 `S12  FIXED  5 ep  ±0.4 cm  fix may be false (jumped 2.2 m)`. A notice about a capture has
 a second line with its ground position in the map frame (see Map), e.g. `G x 12.345 y -3.210 z -0.452`.
+A capture's own notice (a surface or object MARK, a tilt capture's end, a ref's pole-check
+notice) has an UNDO button beside it for 8 s from the capture (the row's own time, so a
+ref's notice, which comes after the pole check, can show it with less left). A tap flags
+the capture as `accidental` (see Flagged captures). A tap pressed down in the first 750 ms
+after UNDO appears (a double tap, a press already under way) does nothing but play the error
+sound. A newer notice for the same capture (a ref's pole check after its save) keeps UNDO;
+one for another capture replaces it.
+If the screen was off past the 8 s, UNDO is gone or says `Too late to undo`. Photo notices
+(`Photo on S12`, `Photo saved`) never offer UNDO, so a stray photo cannot flag the capture
+it landed on; an accidental capture whose photo went to it (a MARK a few seconds after
+another) is flagged from Recent captures. The info box says `2 flagged` when a session has
+flagged captures.
 
 Four large buttons, a column on the right edge in landscape, a row along the bottom in
 portrait (each at least 64 dp):
@@ -142,10 +154,11 @@ portrait (each at least 64 dp):
   Long-press: start a tilt capture in the current mode (see Tilt capture). During a tilt
   capture MODE reads `LEAN` with the next lean number and MARK reads `TILT 2/4` until four
   leans, then `FINISH TILT`.
-- PHOTO: the system camera (see Photos).
+- PHOTO: the system camera (see Photos). Its second line says where a photo would go now:
+  `→ S12 (14 s)` (the latest capture not flagged, and its age, within 60 s) or `→ own row`.
 - ☰ MENU: a panel from the right: Connect/Disconnect GPS and caster (with their state),
   Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs),
-  Layers… (a checkbox per layer file, applied at once, and Import…, see Map layers),
+  Recent captures… (see Flagged captures), Layers… (a checkbox per layer file, applied at once, and Import…, see Map layers),
   Coverage overlay (☑ on / ☐ off, remembered, on by default; see Coverage),
   Share last session, Sessions, Details, Settings. Back or a tap outside closes it.
 
@@ -180,9 +193,18 @@ in `events.csv` (the same row; events.csv turns commas into `;`). Captures are n
 ### Flagged (void) captures
 From 0.9.0 a capture can be flagged as bad (voided): an accidental MARK, a bad pole
 placement. Nothing is deleted and numbers are never reused: the row stays in `points.csv`
-with `void` = 1 and a `void_reason`, and readers leave it out (see below). The buttons for
-it (UNDO right after a capture, and flagging from a list of recent captures) come with the
-0.9.0 build.
+with `void` = 1 and a `void_reason`, and readers leave it out (see below). Two ways in:
+- UNDO beside a capture's notice for 8 s (see Main screen), reason `accidental`.
+- MENU > Recent captures…: the last 10 captures (surface, object, ref; photo rows not
+  listed), newest first, with label, class, age and, for a flagged one, `FLAGGED:
+  <reason>`. Tap one that is not flagged to pick a reason (or type one); tap a flagged one
+  to un-flag it. Not while a ref occupation or a tilt set runs. A flagged capture is only
+  flagged, never deleted, and its reason is kept. Whether a pole stop at a flagged capture
+  is still used depends on the reason, in `soundings.py`: `accidental` frees it, any other
+  reason keeps it flagged.
+- On the map a flagged capture is a small grey cross with a grey `S12 ✕` label, never its
+  class symbol or camera; a photo row (also one a flag made for moved photos) keeps its
+  camera.
 - Who can be flagged: surface, object and ref rows, including tilt captures (one row
   each; their leans stay in `tilt_obs.csv`. No reader of `tilt_obs.csv` exists yet; one
   written later must drop the leans of a voided `n`).
@@ -455,11 +477,15 @@ in the app media folder.
 ## Photos
 PHOTO opens the phone's camera app (no camera permission needed) to take one photo into
 the session's `photos/` folder, named `photo_<n>_<utc>.jpg` (UTC `yyyyMMddTHHmmssZ`).
-If the most recent capture was taken at most 60 s before PHOTO was pressed, the photo is
-attached to it (its `photo` column, `n` in the file name is that capture's); otherwise it
-gets a row of its own, class `photo`, with the averaged position of that moment (empty
+If the most recent capture that is not flagged was taken at most 60 s before PHOTO was
+pressed, the photo is attached to it (its `photo` column; `n` in the file name is that
+capture's); otherwise it gets a row of its own, class `photo`, with the averaged position of that moment (empty
 when there is no fix). Cancelled in the camera: the empty file is deleted and the
 cancellation logged. Photos are drawn as a camera icon and are included in the shared zip.
+The number in a file name is a unique, time-ordered label, not a link: after a flag moves a
+photo (see Flagged captures) it no longer matches the row that holds it, and files are never
+renamed (that would break `events.csv` lines, shares and the importer's lookup). The row
+whose `photo` column lists the file is the link; the importer reads it so.
 
 Photos can carry EXIF GPS (the camera app may write the phone's location into them). They
 belong with the session data in Drive and must never go into the public repo.
@@ -704,7 +730,19 @@ title, and the provider's display name, are all that file name, so Drive keeps t
 The zip holds `<session>/...` and, at its top level next to the session folder, a copy of
 `refs.csv` from the storage root (the session's own root, else the first one found; left out
 if there is none). JPEG photos (and other already-compressed files) are stored as they are;
-logs and text are deflated. If the session is still recording the app asks:
+logs and text are deflated. From 0.9.0 every entry carries its file's modification time
+in UTC as a zip extended timestamp (extra field 0x5455) besides the DOS time, which is the
+phone's local time; the importer orders `refs.csv` copies from zips made in other time
+zones by it. For an older zip it finds the phone's zone offset from the session's
+`events.csv` (its last line's `wall_ms` against its entry time, rounded to 15 min, taken
+only when what is left is -2 s to +10 s, the DOS time being truncated to 2 s; an `events.csv` time reset by a copy tool that still
+lands that close to a 15 min step gives a wrong offset, which the file cannot show) and
+allows 1 h for a DST change between an entry and `events.csv`; without an offset it allows
+26 h. Copies whose times, with those allowances, may be in either order are a tie (flagged
+wins, named in the report). The importer keeps every copy it has seen (`refs_copies` in the
+gpkg) and decides each ref from all of them, so importing the zips together or one at a
+time, in any order, gives the same flag.
+If the session is still recording the app asks:
 Stop and share (stops the session, then zips the complete files), or Share snapshot (keeps
 recording; flushes the files and zips each one, `refs.csv` included, up to its length at that
 moment, plus a `SNAPSHOT.txt` saying so, in `IceCubeLogger_<session>_snapshot.zip`; the last

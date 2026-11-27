@@ -309,7 +309,8 @@ class TestBuild(unittest.TestCase):
         p = ses / "points.csv"
         lines = p.read_text().splitlines()
         if photo_row:
-            lines.append("3,photo," + [l for l in lines if l.startswith("2,")][0][len("2,surface,"):])
+            lines.append("3,photo," + [l for l in lines if l.startswith("2,")][0][len("2,surface,"):]
+                         + "photos of voided n=2")
         lines = [lines[0] + ",void,void_reason"] + [
             l + (f",1,{reason}" if l.startswith("2,") else ",0,") for l in lines[1:]]
         p.write_text("\n".join(lines) + "\n")
@@ -374,13 +375,31 @@ class TestBuild(unittest.TestCase):
         self.assertIn("dup_capture", snd.flags_of(stops[0]))
 
     def test_photo_row_window_only_when_not_of_a_voided_capture(self):
-        """A photo row makes a capture window unless a voided capture has the same utc."""
-        caps = [{"utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 1},
-                {"utc": "2026-01-01T00:00:10Z", "class": "photo", "void": 0},
-                {"utc": "2026-01-01T00:01:10Z", "class": "photo", "void": 0}]
+        """A photo row makes a capture window unless it is the row a flag made for a voided
+        capture's photos: same utc and a note of exactly "photos of voided n=<n>" (#27)."""
+        caps = [{"n": 1, "utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 1},
+                {"n": 2, "utc": "2026-01-01T00:00:10Z", "class": "photo", "void": 0, "note": "photos of voided n=1"},
+                {"n": 3, "utc": "2026-01-01T00:01:10Z", "class": "photo", "void": 0, "note": None}]
         t = snd.parse_iso(caps[2]["utc"])
         self.assertEqual(snd.clist_windows(caps), [(t - 1.0, t)])
         self.assertEqual(len(snd.clist_windows(caps, include_voided=True)), 2)   # the capture's own and the other photo row
+
+    def test_real_photo_in_the_same_second_as_a_voided_capture_keeps_its_window(self):
+        t0 = "2026-01-01T00:00:10Z"
+        voided = {"n": 1, "utc": t0, "class": "ground", "void": 1}
+        real = {"n": 2, "utc": t0, "class": "photo", "void": 0, "note": ""}
+        moved = {"n": 3, "utc": t0, "class": "photo", "void": 0, "note": "photos of voided n=1"}
+        t = snd.parse_iso(t0)
+        self.assertEqual(snd.clist_windows([voided, real]), [(t - 1.0, t)])   # a real PHOTO
+        self.assertEqual(snd.clist_windows([voided, moved]), [])              # the moved-photo row
+        self.assertEqual(snd.clist_windows([voided, real, moved]), [(t - 1.0, t)])
+        # n=1 never matches n=12 and the other way round; a longer note does not match
+        v12 = {"n": 12, "utc": t0, "class": "photo", "void": 0, "note": "photos of voided n=12"}
+        self.assertEqual(len(snd.clist_windows([voided, v12])), 1)
+        v12c = {"n": 12, "utc": t0, "class": "ground", "void": 1}
+        self.assertEqual(len(snd.clist_windows([v12c, moved])), 1)
+        edited = dict(moved, note="photos of voided n=1 (checked)")
+        self.assertEqual(len(snd.clist_windows([voided, edited])), 1)
 
     def test_void_stop_windows(self):
         """Only captures voided for a reason other than 'accidental' make a void-stop window,

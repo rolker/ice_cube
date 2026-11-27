@@ -625,7 +625,7 @@ def logger_source(cfg, src, con, frame, history, log):
     sessions = src.get("sessions")
     include_voided = bool(cfg.get("include_voided"))
     cols = ["session", "n", "class", "utc", "lat", "lon", "h_ground", "pole_m", "fix", "n_epochs",
-            "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label"]
+            "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label", "note"]
     have = {r[1] for r in con.execute("PRAGMA table_info(captures)")}
     missing = [k for k in TILT_COLUMNS if k not in have]   # a gpkg from before import schema 3
     void_sel = ["coalesce(void, 0) AS void", "void_reason"] if "void" in have \
@@ -818,21 +818,28 @@ def is_accidental(c):
     return (c.get("void_reason") or "").strip().lower() == "accidental"
 
 
+MOVED_PHOTO_NOTE = re.compile(r"photos of voided n=(\d+)\Z")
+
+
 def clist_windows(clist, include_voided=False):
     """Time windows (unix s) of the captures of a session, to drop stops that are captures.
     A capture flagged void in the logger (#27) makes no window unless include_voided, so an
     accidental MARK does not hide a real pole stop as dup_capture (a capture voided for any
-    other reason flags its stop through void_stop_windows instead). Nor does a photo row at
-    a voided capture's time: the logger moves a voided capture's photos to such a row
-    (VoidRule.photoRowFor, same utc) when no earlier live capture can take them, and it is
-    part of the voided capture, not a capture of its own."""
-    voided_utc = {c["utc"] for c in clist if c["utc"] and c["void"]}
+    other reason flags its stop through void_stop_windows instead). Nor does the photo row
+    the logger makes for a voided capture's photos when no earlier live capture can take
+    them (VoidRule.photoRowFor: same utc, note exactly "photos of voided n=<n>"): it is part
+    of the voided capture, not a capture of its own. Only that exact note skips: a real
+    PHOTO in the same second keeps its window, and a note the user edited just loses the
+    skip (the safe side)."""
+    voided = {(c["utc"], c.get("n")) for c in clist if c["utc"] and c["void"]}
     out = []
     for c in clist:
         if not c["utc"] or (c["void"] and not include_voided):
             continue
-        if c["class"] == "photo" and not c["void"] and c["utc"] in voided_utc:
-            continue
+        if c["class"] == "photo" and not c["void"]:
+            m = MOVED_PHOTO_NOTE.match(c.get("note") or "")
+            if m and (c["utc"], int(m.group(1))) in voided:
+                continue
         out.append(_capture_span(c))
     return out
 

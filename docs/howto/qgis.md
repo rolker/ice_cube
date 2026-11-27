@@ -327,6 +327,7 @@ The parcels GeoJSON holds the location like the imagery: keep it private.
 | `refs` | ref occupations, with pole-check result, visits, and `site` (refs within 0.30 m share a site number) | `note` |
 | `tracks` | the GGA track at 1 Hz, one line per stretch of the same fix quality | |
 | `track_points` | the 1 Hz epochs: fix, satellites, HDOP, correction age | |
+| `refs_copies` | every refs.csv copy's void flag per ref (content hash and time as its id): the importer decides each ref's flag from all copies seen, so the import order never matters | |
 | `sessions` | one row per session: times, app, link, caster mount, frame lines, base station, pole heights, counts, link losses, % fixed | `note` |
 | `layer_*` | your map-layer GeoJSON files, one table per file and geometry type | (replaced on import) |
 

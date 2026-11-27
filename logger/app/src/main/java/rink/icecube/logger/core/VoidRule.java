@@ -20,7 +20,7 @@ import java.util.Map;
 public final class VoidRule {
     /** UNDO is offered for this long after a capture (its notice stays up longer). */
     public static final long UNDO_WINDOW_MS = 8000;
-    /** Taps on UNDO are ignored this long after it appears (a double tap or a press in progress). */
+    /** A tap on UNDO pressed down this soon after it appears is ignored (a double tap, a press under way). */
     public static final long UNDO_ARM_MS = 750;
 
     public static final String ACCIDENTAL = "accidental";
@@ -37,6 +37,29 @@ public final class VoidRule {
     public static boolean undoOpen(long captureNs, long nowNs) {
         long d = nowNs - captureNs;
         return d >= 0 && d <= UNDO_WINDOW_MS * 1_000_000L;
+    }
+
+    /**
+     * True once UNDO has been on screen long enough to take a tap: shownNs is when it first
+     * showed, nowNs when the tap's press went down (same clock), so a press already under way
+     * when it appears, or a double tap, falls inside {@link #UNDO_ARM_MS} and is ignored
+     * however long it is held; a clock going backwards is not armed.
+     */
+    public static boolean armed(long shownNs, long nowNs) {
+        return nowNs - shownNs >= UNDO_ARM_MS * 1_000_000L;
+    }
+
+    /**
+     * True when a touch event on UNDO ends its press with no click to follow, so the press-down
+     * it recorded must be forgotten: a cancel, or a lift (up) when the button is no longer
+     * pressed (View cleared it on a move past the touch slop, even if the finger came back) or
+     * lands outside the button and its slop. pressed is the button's state before View sees the
+     * lift. A lift while only prepressed (a tap shorter than the tap timeout, inside a scrolling
+     * container, which UNDO is not in) is also forgotten; its click is then timed at the click,
+     * at most that timeout after the press.
+     */
+    public static boolean pressEndsWithoutClick(boolean cancel, boolean up, boolean pressed, boolean outsideSlop) {
+        return cancel || (up && (!pressed || outsideSlop));
     }
 
     /**
@@ -66,6 +89,52 @@ public final class VoidRule {
         PointRow best = null;
         for (PointRow r : rows) if (r.isLive() && (best == null || r.n > best.n)) best = r;
         return best;
+    }
+
+    /**
+     * The list of recent captures: the k newest capture rows (surface, object, ref; flagged
+     * ones included, photo rows left out), newest (highest n) first.
+     */
+    public static List<PointRow> recent(List<PointRow> rows, int k) {
+        List<PointRow> out = new ArrayList<>();
+        for (PointRow r : rows) if (r.isCapture()) out.add(r);
+        Collections.sort(out, (a, b) -> Integer.compare(b.n, a.n));
+        return out.size() > k ? new ArrayList<>(out.subList(0, k)) : out;
+    }
+
+    /** Flagged capture rows. */
+    public static int flaggedCount(List<PointRow> rows) {
+        int k = 0;
+        for (PointRow r : rows) if (r.isCapture() && r.voided) k++;
+        return k;
+    }
+
+    /** An age for the recent-captures list: "14 s", "5 min", "2 h"; "?" for a negative one. */
+    public static String ageText(long ageNs) {
+        if (ageNs < 0) return "?";
+        long s = ageNs / 1_000_000_000L;
+        if (s < 60) return s + " s";
+        if (s < 3600) return (s / 60) + " min";
+        return (s / 3600) + " h";
+    }
+
+    /** One line of the recent-captures list: "S12  surface  14 s ago", plus "  FLAGGED: reason". */
+    public static String recentLine(PointRow r, long nowNs) {
+        String t = PointRow.label(r.cls) + r.n + "  " + r.cls + "  " + ageText(nowNs - r.elapsedNs) + " ago";
+        return r.voided ? t + "  FLAGGED: " + (r.voidReason.isEmpty() ? "other" : r.voidReason) : t;
+    }
+
+    /** How the map draws a row: its class symbol, a flagged cross, or a photo row's camera. */
+    public enum Glyph { LIVE, FLAGGED, PHOTO }
+
+    /**
+     * The map glyph of a row: PHOTO for any photo row (a row a flag moved photos to keeps its
+     * camera), FLAGGED for a voided capture (a grey cross, never its class symbol or camera),
+     * LIVE otherwise.
+     */
+    public static Glyph glyph(PointRow r) {
+        if (!r.isCapture()) return Glyph.PHOTO;
+        return r.voided ? Glyph.FLAGGED : Glyph.LIVE;
     }
 
     /** Live captures (photo rows and voided rows not counted). */

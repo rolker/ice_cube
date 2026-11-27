@@ -5,6 +5,9 @@ import contextlib
 import csv
 import math
 import io
+import os
+import itertools
+import random
 import shutil
 import sqlite3
 import sys
@@ -21,7 +24,8 @@ import export_labels  # noqa: E402
 import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
-from logger_session import _i, find_sessions, load_session, zip_entry_mtime  # noqa: E402
+from logger_session import (_i, find_sessions, load_session, zip_entry_mtime, zip_entry_stamp,  # noqa: E402
+                            zip_zone_offset)
 
 
 def run(*argv):
@@ -29,6 +33,12 @@ def run(*argv):
     with contextlib.redirect_stdout(out):
         imp.main([str(a) for a in argv])
     return out.getvalue()
+
+
+def clear_refs(gp):
+    """Forget every ref and every refs.csv copy seen, as in a new gpkg."""
+    gp.con.execute("DELETE FROM refs")
+    gp.con.execute("DELETE FROM refs_copies")
 
 
 class ImportTest(unittest.TestCase):
@@ -153,7 +163,10 @@ class ImportTest(unittest.TestCase):
         # unflagged on the phone since: a re-import clears the flags, rows and fids unchanged
         fids = self.q("SELECT n, fid FROM captures ORDER BY n")
         z.unlink()
-        later = time.localtime(time.time() + 3600)[:6]     # zip times have 2 s steps: newer, not tied
+        # these zips' events.csv gives no zone offset (synthetic wall times), so their DOS
+        # times are mtime_approx (read as if UTC, 26 h each): a copy is surely newer only
+        # beyond the two intervals, 52 h (#27 step 18)
+        later = time.localtime(time.time() + 3 * 86400)[:6]
         z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False),
                             refs_date=later)
         summary = imp.run([str(z), "--gpkg", str(self.gpkg)], log=lambda *a: None)
@@ -184,6 +197,21 @@ class ImportTest(unittest.TestCase):
         export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True)
         rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
         self.assertEqual(rows["1"]["void"], "0")
+
+    def test_flag_cleared_an_hour_later_with_extended_timestamps(self):
+        """Real 0.9.0 zips carry a 0x5455 UTC time on refs.csv: a copy unflagged 1 h after the
+        flagged one is surely newer and clears the stored flag, end to end (#27)."""
+        name = "IceCubeLogger_2026-12-01_10-00-00.zip"
+        now = time.time()
+        z = synth.write_zip(self.d / name, synth.session_v05(), refs=synth.refs_csv_void(True), refs_utc=now)
+        run(z, "--gpkg", self.gpkg)
+        sql = "SELECT void, void_copy_mtime, void_copy_unc FROM refs WHERE session='2026-11-30_09-00-00'"
+        self.assertEqual(self.q(sql), [(1, float(int(now)), 1.0)])   # 0x5455: whole seconds
+        z.unlink()
+        z = synth.write_zip(self.d / name, synth.session_v05(), refs=synth.refs_csv_void(False),
+                            refs_utc=now + 3600)
+        run(z, "--gpkg", self.gpkg)
+        self.assertEqual(self.q(sql), [(0, float(int(now + 3600)), 1.0)])
 
     def test_void_reason_stored_only_when_flagged(self):
         """A row with void=0 but a reason left over stores no void_reason, in captures and in
@@ -276,7 +304,7 @@ class ImportTest(unittest.TestCase):
         void = lambda: gp.con.execute("SELECT void, void_reason FROM refs").fetchall()  # noqa: E731
         for copies in ([(flagged, 100.0), (cleared, 100.0)], [(cleared, 100.0), (flagged, 100.0)],
                        [flagged, cleared], [cleared, flagged]):
-            gp.con.execute("DELETE FROM refs")
+            clear_refs(gp)
             self.assertEqual(imp.import_refs_csv(gp, copies), (1, 1))
             self.assertEqual(void(), [(1, "moved")])
         # a later run: a copy of the stored flag's time does not clear it; a newer one does
@@ -302,6 +330,30 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0)]), (1, 0))
         self.assertEqual(gp.con.execute("SELECT source, void FROM refs").fetchall(), [("points.csv", 1)])
         gp.close()
+
+    def test_moved_photo_takes_n_and_attached_from_the_photo_column(self):
+        """A flag moved a photo to a photo row of its own (0.9.0): the file name and the
+        original event still say capture n=2, the photo column says the photo row n=5. The
+        column decides n and attached; the file keeps its name (#27 step 15)."""
+        rows = synth.captures_v05()
+        rows[1] = rows[1].replace("photo_2_20261201T100010Z.jpg", "")
+        lat, lon, h = synth.offset(3.0, 2.0, 1.9)
+        rows.append(f"5,photo,{synth.T0_NS + 20_000_000_000},2026-12-01T10:00:20.00Z,{lat:.9f},{lon:.9f},"
+                    f"{h:.4f},1.800,{h - 1.8:.4f},4,5,0.0020,0.0020,0.0040,1.0,"
+                    "photo_2_20261201T100010Z.jpg,photos of voided n=2")
+        files = synth.with_void(synth.session_v05(points=[synth.POINTS_HDR] + rows), {2: "accidental"})
+        z = synth.write_zip(self.d / "moved.zip", files)
+        src = find_sessions([z])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: x for x in s.photos}
+        self.assertEqual((p["photo_2_20261201T100010Z.jpg"]["n"], p["photo_2_20261201T100010Z.jpg"]["attached"]),
+                         (5, "own row"))
+        self.assertEqual((p["photo_4_20261201T100030Z.jpg"]["n"], p["photo_4_20261201T100030Z.jpg"]["attached"]),
+                         (4, "own row"))
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual(caps[2]["photo_files"], [])            # the event's capture does not take it back
+        self.assertEqual(caps[5]["photo_files"], ["photo_2_20261201T100010Z.jpg"])
 
     def test_zip_entry_mtime_utc_and_zero_date(self):
         """A zip entry's time for ordering refs.csv copies: the UTC extended timestamp when
@@ -676,6 +728,437 @@ class ImportTest(unittest.TestCase):
         info = pyogrio.read_info(self.gpkg, layer="captures")
         self.assertEqual((info["features"], info["crs"]), (4, "EPSG:4326"))
 
+
+
+class RefsCopyTimeTest(unittest.TestCase):
+    """Ordering refs.csv copies from zips written on phones in other zones (#27 step 18):
+    the 0x5455 UTC time, else the DOS time corrected by the zone offset from events.csv,
+    else (mtime_approx) the DOS time read as if UTC within 26 h; a 1 h DST allowance for a corrected
+    entry other than events.csv. Overlapping intervals tie, decided flagged and reported."""
+    T = 1_796_000_000.0     # a made-up moment in late 2026 (UTC)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(self.gp)
+        hdr = "session," + synth.POINTS_HDR + ",void,void_reason\n"
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        self.flagged, self.cleared = hdr + row + ",1,moved\n", hdr + row + ",0,\n"
+        self.k = 0
+
+    def tearDown(self):
+        self.gp.close()
+        self.tmp.cleanup()
+
+    def copy(self, refs, utc, zone_s, **kw):
+        """(text, mtime, uncertainty) of the refs.csv of a phone zip, as the importer reads it."""
+        self.k += 1
+        z = synth.phone_zip(self.d / f"z{self.k}.zip", refs, utc, zone_s, **kw)
+        src = find_sessions([z])
+        if src:
+            got = src[0].refs_csv_dated()
+            src[0].close()
+            return got
+        with zipfile.ZipFile(z) as zf:   # no events.csv: not a session, read the entry itself
+            info = zf.getinfo("refs.csv")
+            return (zf.read(info).decode(),) + zip_entry_stamp(info)
+
+    def void(self, copies, ties=None):
+        imp.import_refs_csv(self.gp, copies, ties)
+        return self.gp.con.execute("SELECT void FROM refs WHERE session='s1' AND n=5").fetchone()[0]
+
+    def test_zone_offset_from_events_csv(self):
+        for zone in (-5 * 3600, 3600, 5 * 3600 + 1800, 0):
+            self.k += 1
+            z = synth.phone_zip(self.d / f"o{self.k}.zip", self.cleared, self.T, zone)
+            with zipfile.ZipFile(z) as zf:
+                info = zf.getinfo("2026-12-01_10-00-00/events.csv")
+                self.assertEqual(zip_zone_offset(info, zf.read(info)), zone)
+        # a residual of a few seconds is accepted; a 10 min snapshot gap is not (no offset
+        # 15 min off), nor is an offset beyond 14 h.
+        # a stale mtime 2 x 15 min + 60 s after the last line is not taken for a zone 30 min
+        # east (a 120 s window let it through); one 5 s past a 15 min multiple still is, the
+        # documented limit (zip_zone_offset)
+        for gap, want in ((5, -18000.0), (600, None), (1860, None), (1805, -18000.0 + 1800)):
+            self.k += 1
+            z = synth.phone_zip(self.d / f"g{self.k}.zip", self.cleared, self.T, -18000, events_gap_s=gap)
+            with zipfile.ZipFile(z) as zf:
+                info = zf.getinfo("2026-12-01_10-00-00/events.csv")
+                self.assertEqual(zip_zone_offset(info, zf.read(info)), want)
+        self.k += 1
+        z = synth.phone_zip(self.d / f"f{self.k}.zip", self.cleared, self.T, 15 * 3600)
+        with zipfile.ZipFile(z) as zf:
+            info = zf.getinfo("2026-12-01_10-00-00/events.csv")
+            self.assertIsNone(zip_zone_offset(info, zf.read(info)))
+            self.assertIsNone(zip_zone_offset(info, b"elapsed_ns,wall_ms,event\n"))
+
+    def test_snapshot_gap_is_approx(self):
+        text, mtime, unc = self.copy(self.cleared, self.T, -18000, events_gap_s=600)
+        self.assertEqual(unc, 26 * 3600)                       # mtime_approx, not shifted by 15 min
+        self.assertEqual(mtime, self.T - 18000)                # the DOS stamp read as if UTC
+
+    def test_approx_copy_imported_in_two_zones_is_one_copy(self):
+        """A copy with no 0x5455 and no usable events.csv offset (mtime_approx) stores its
+        DOS time read as if UTC, which no PC zone changes: importing the same zip on PCs in
+        two zones, with an exact copy 20 h after that time (a tie; read in JST, 9 h earlier,
+        the approx copy would be surely older), stores one copy, one time and one flag (#27)."""
+        z = synth.phone_zip(self.d / "zones.zip", self.flagged, self.T, -18000, events_gap_s=600)
+        exact = (self.cleared, self.T - 18000 + 20 * 3600, 0.0)
+        old_tz = os.environ.get("TZ")
+        got = []
+        try:
+            for tz in ("UTC0", "JST-9", "EST5EDT"):
+                os.environ["TZ"] = tz
+                time.tzset()
+                src = find_sessions([z])[0]
+                copies = src.refs_csv_copies()
+                src.close()
+                ties = []
+                void = self.void(copies + [exact], ties)
+                got.append((copies[0][1:], void, ties, self.stored(),
+                            self.gp.con.execute("SELECT mtime, unc FROM refs_copies WHERE session='s1' "
+                                                "ORDER BY mtime").fetchall()))
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+        self.assertEqual(got[0][0], (self.T - 18000, 26 * 3600))
+        self.assertEqual(got[0][1:3], (1, [("s1", 5, "flagged")]))   # a tie: flagged wins
+        for g in got[1:]:
+            self.assertEqual(g, got[0])                         # same time, flag and copies
+        self.assertEqual(len(got[0][4]), 2)                     # the approx copy and the exact one
+
+    def test_extended_timestamp_orders_across_zones(self):
+        # flagged on a phone at UTC+3, cleared 10 min later at UTC-5: the DOS times say the
+        # flagged copy is 7 h 50 min newer, the UTC times say the cleared one is newer
+        a = self.copy(self.flagged, self.T, 3 * 3600, extended=True)
+        b = self.copy(self.cleared, self.T + 600, -5 * 3600, extended=True)
+        self.assertEqual((a[1:], b[1:]), ((self.T, 1.0), (self.T + 600, 1.0)))
+        self.assertEqual(self.void([a, b]), 0)
+
+    def test_extended_timestamp_skips_events_csv(self):
+        z = synth.phone_zip(self.d / "x.zip", self.cleared, self.T, 3 * 3600, extended=True)
+        src = find_sessions([z])[0]
+        src.zone_offset = lambda: self.fail("events.csv read for a refs.csv with 0x5455")
+        try:
+            self.assertEqual(src.refs_csv_dated()[1:], (self.T, 1.0))
+        finally:
+            src.close()
+
+    def test_extended_timestamp_is_uncertain_by_a_second(self):
+        """A 0x5455 time is floored to whole seconds, a folder copy's st_mtime is not: a
+        folder copy cleared at T + 0.2 s and a zip copy flagged at T + 0.7 s (stored as T) may
+        be in either order, so they tie, flagged; 2 s apart they do not."""
+        z = synth.phone_zip(self.d / "sub.zip", self.flagged, self.T + 0.7, -18000, extended=True)
+        src = find_sessions([z])[0]
+        try:
+            zipped = src.refs_csv_dated()
+        finally:
+            src.close()
+        self.assertEqual(zipped[1:], (self.T, 1.0))
+        ties = []
+        self.assertEqual(self.void([(self.cleared, self.T + 0.2, 0.0), zipped], ties), 1)
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+        clear_refs(self.gp)
+        self.assertEqual(self.void([(self.cleared, self.T + 2.2, 0.0), zipped]), 0)
+
+    def test_dos_time_corrected_by_zone_offset(self):
+        a = self.copy(self.flagged, self.T, 3 * 3600)
+        b = self.copy(self.cleared, self.T + 3 * 3600, -5 * 3600)
+        self.assertEqual(a[1:], (self.T, 3602))                # a possible DST change, DOS 2 s
+        self.assertEqual(b[1:], (self.T + 3 * 3600, 3602))
+        self.assertEqual(self.void([a, b]), 0)                 # read in the PC's zone, a would win
+
+    def test_no_events_csv_is_a_tie_within_26_h_and_reported(self):
+        a = self.copy(self.flagged, self.T, 3 * 3600, with_events=False)
+        b = self.copy(self.cleared, self.T + 3600, -5 * 3600)
+        self.assertEqual(a[2], 26 * 3600)
+        ties = []
+        self.assertEqual(self.void([b, a], ties), 1)           # tie: flagged wins
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+        # beyond 26 h the later copy wins, no tie reported (a's DOS time is read as if UTC,
+        # so it is off by its zone offset, up to 14 h: c is well past that)
+        clear_refs(self.gp)
+        c = self.copy(self.cleared, self.T + 45 * 3600, 0)
+        ties = []
+        self.assertEqual(self.void([a, c], ties), 0)
+        self.assertEqual(ties, [])
+
+    def test_mixed_extended_and_corrected_dos(self):
+        a = self.copy(self.flagged, self.T, 3 * 3600, extended=True)
+        b = self.copy(self.cleared, self.T + 7200, -5 * 3600)   # DOS only, corrected (+-1 h)
+        self.assertEqual(self.void([a, b]), 0)
+        clear_refs(self.gp)
+        c = self.copy(self.cleared, self.T + 600, -5 * 3600, with_events=False)   # DOS only, approx
+        self.assertEqual(self.void([a, c]), 1)
+
+    def test_unflag_then_export_within_26_h_later_wins_and_rerun_keeps_it(self):
+        flag = self.copy(self.flagged, self.T, -5 * 3600)
+        unflag = self.copy(self.cleared, self.T + 3 * 3600, -5 * 3600)   # past both 1 h allowances
+        ties = []
+        self.assertEqual(self.void([flag, unflag], ties), 0)
+        self.assertEqual(ties, [])
+        self.assertEqual(self.void([unflag, flag]), 0)         # a re-run decides as the first
+        self.assertEqual(self.void([flag]), 0)                 # the older copy alone: no change
+
+    def test_dst_allowance_for_every_corrected_entry_but_events_csv(self):
+        # refs.csv last written 3 days before the export: its DOS time may carry another DST
+        # offset, so it is uncertain by 1 h
+        old = self.copy(self.cleared, self.T, -5 * 3600, refs_utc=self.T - 3 * 86400)
+        self.assertEqual(old[1:], (self.T - 3 * 86400, 3602))
+        near = self.copy(self.flagged, self.T - 3 * 86400 + 1800, -4 * 3600)
+        self.assertEqual(near[1:], (self.T - 3 * 86400 + 1800, 3602))
+        ties = []
+        self.assertEqual(self.void([near, old], ties), 1)      # 30 min apart: a tie, flagged
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+        clear_refs(self.gp)
+        newer = self.copy(self.cleared, self.T - 3 * 86400 + 4 * 3600, -4 * 3600)
+        self.assertEqual(self.void([near, newer]), 0)          # 3.5 h apart: past both, later wins
+        # the stored flag keeps the rule: a stored copy uncertain by 1 h ties a copy 30 min off
+        clear_refs(self.gp)
+        self.assertEqual(self.void([old]), 0)
+        ties = []
+        self.assertEqual(self.void([near], ties), 1)
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+
+    def test_dst_change_just_before_events_csv(self):
+        # fall 2026: refs.csv at 05:30 UTC (EDT, -4 h), events.csv at 06:30 UTC (EST, -5 h)
+        # share a DOS wall time; corrected by events.csv's -5 h, refs.csv reads an hour late,
+        # so it carries the 1 h allowance though it is only an hour from events.csv
+        ev_utc = 1793514600.0                                   # 2026-11-01 06:30 UTC
+        z = self.d / "dst.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            wall = int((ev_utc - 1) * 1000)
+            zf.writestr(zipfile.ZipInfo("2026-11-01_01-00-00/events.csv", time.gmtime(ev_utc - 5 * 3600)[:6]),
+                        f"elapsed_ns,wall_ms,event\n{synth.T0_NS},{wall},stop\n")
+            zf.writestr(zipfile.ZipInfo("refs.csv", time.gmtime(ev_utc - 3600 - 4 * 3600)[:6]), self.flagged)
+        with zipfile.ZipFile(z) as zf:
+            ev = zf.getinfo("2026-11-01_01-00-00/events.csv")
+            off = zip_zone_offset(ev, zf.read(ev))
+            self.assertEqual(off, -5 * 3600)
+            self.assertEqual(zip_entry_stamp(ev, off, ev), (ev_utc, 2.0))   # events.csv itself: DOS 2 s
+            t, u = zip_entry_stamp(zf.getinfo("refs.csv"), off, ev)
+        self.assertEqual((t, u), (ev_utc, 3602))               # an hour late, within its 1 h and 2 s
+        self.assertLessEqual(abs(t - (ev_utc - 3600)), u)
+
+    def test_zone_offset_takes_a_residual_just_under_minus_2_s(self):
+        """events.csv's DOS time is truncated to 2 s and its file mtime may be a few ms behind
+        the last line's wall_ms, so a residual a little under -2 s still gives the offset;
+        one 2.1 s early does not."""
+        zone, dos_local = -5 * 3600, 1_796_000_000          # even, as a DOS time is
+        for early_s, want in ((1.99, zone), (2.03, zone), (2.1, None)):
+            info = zipfile.ZipInfo("s/events.csv", time.gmtime(dos_local)[:6])
+            wall = int((dos_local - zone + early_s) * 1000)
+            body = f"elapsed_ns,wall_ms,event\n{synth.T0_NS},{wall},stop\n".encode()
+            self.assertEqual(zip_zone_offset(info, body), want, early_s)
+
+    def test_dos_epoch_is_unknown_time(self):
+        """The logger writes 1980-01-01 00:00 for a file with no mtime: an unknown time, not
+        a real one that would rank newer than another unknown-time copy."""
+        info = zipfile.ZipInfo("refs.csv", date_time=(1980, 1, 1, 0, 0, 0))
+        self.assertEqual(zip_entry_stamp(info), (None, 0.0))
+        self.assertIsNone(zip_entry_mtime(info))
+        self.assertIsNotNone(zip_entry_stamp(zipfile.ZipInfo("refs.csv", date_time=(1980, 1, 1, 0, 0, 2)))[0])
+
+    def test_duplicate_rows_in_one_copy_flagged_if_any(self):
+        """A hand-edited refs.csv with two rows of one ref: flagged if either is, in either
+        order, as the phone (VoidRule.liveRefs) reads it."""
+        row = self.flagged.splitlines()[1]
+        clear_row = self.cleared.splitlines()[1]
+        hdr = self.flagged.splitlines()[0]
+        for rows in ((row, clear_row), (clear_row, row)):
+            clear_refs(self.gp)
+            self.assertEqual(self.void([("\n".join((hdr,) + rows) + "\n", self.T, 0.0)]), 1)
+
+    def test_unknown_stored_time_ties_an_unknown_copy(self):
+        """A stored flag of unknown time goes through _stamp_order too: an unknown-time copy
+        that clears it ties, so it stays flagged and the tie is reported; a known time is
+        surely newer and clears it."""
+        self.assertEqual(self.void([self.cleared]), 0)
+        self.assertEqual(self.void([self.flagged]), 1)          # tie: flagging wins
+        ties = []
+        self.assertEqual(self.void([self.cleared], ties), 1)    # tie: not cleared
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+        self.assertEqual(self.void([(self.cleared, self.T, 0.0)]), 0)
+
+    def stored(self):
+        return self.gp.con.execute("SELECT void, void_reason, void_copy_mtime, void_copy_unc FROM refs WHERE session='s1' AND n=5").fetchone()
+
+    def flagged_as(self, reason):
+        return self.flagged.replace(",1,moved\n", f",1,{reason}\n")
+
+    def test_tie_stores_the_union_interval(self):
+        H = 3600.0
+        self.assertEqual(self.void([(self.flagged, self.T, 26 * H)]), 1)
+        self.assertEqual(self.void([(self.flagged, self.T - 25 * H, 0.0)]), 1)   # a tie, agreeing
+        self.assertEqual(self.stored()[2:], (self.T, 26 * H))   # inside the stored interval
+        self.assertEqual(self.void([(self.flagged, self.T + 20 * H, 0.0)]), 1)
+        self.assertEqual(self.stored()[2:], (self.T, 26 * H))
+        ties = []
+        # surely older than the exact T + 20 h copy, so it decides nothing (as in one run),
+        # though it overlaps the union stored before that copy came
+        self.assertEqual(self.void([(self.cleared, self.T - 24 * H, 0.0)], ties), 1)
+        self.assertEqual(ties, [])
+        # an exact copy past the union clears it (the old max-merge stored (T + 20 h, 26 h),
+        # so this copy tied and the result depended on the import order)
+        self.assertEqual(self.void([(self.cleared, self.T + 30 * H, 0.0)]), 0)
+        self.assertEqual(self.stored()[2:], (self.T + 30 * H, 0.0))   # its own interval
+
+    def test_two_dst_uncertain_copies_90_min_apart_tie(self):
+        H = 3600.0
+        a, b = (self.flagged, self.T, H), (self.cleared, self.T + 1.5 * H, H)
+        for copies in ([a, b], [b, a]):
+            clear_refs(self.gp)
+            ties = []
+            self.assertEqual(self.void(copies, ties), 1)
+            self.assertEqual(ties, [("s1", 5, "flagged")])
+            self.assertEqual(self.stored(), (1, "moved", self.T + 0.75 * H, 1.75 * H))   # [T - 1 h, T + 2.5 h]
+        # across runs: the stored copy and this run's tie the same way
+        for first, second in ((a, b), (b, a)):
+            clear_refs(self.gp)
+            self.void([first])
+            self.assertEqual(self.void([second]), 1)
+            self.assertEqual(self.stored(), (1, "moved", self.T + 0.75 * H, 1.75 * H))
+        # a later exact un-flag at T + 2 h is surely newer than the flagged copy (T +- 1 h) and
+        # ties only the cleared one, so the ref is cleared, as one run of all three gives
+        self.assertEqual(self.void([(self.cleared, self.T + 2 * H, 0.0)]), 0)
+        self.assertEqual(self.stored(), (0, None, self.T + 1.5 * H, H))   # [T + 0.5 h, T + 2.5 h]
+        self.assertEqual(self.void([(self.cleared, self.T + 3 * H, 0.0)]), 0)
+        self.assertEqual(self.stored(), (0, None, self.T + 3 * H, 0.0))
+
+    def test_import_order_does_not_change_the_result(self):
+        H = 3600.0
+        copies = [(self.flagged_as("early"), self.T, 26 * H), (self.flagged_as("late"), self.T + 20 * H, 0.0),
+                  (self.cleared, self.T + 10 * H, H), (self.cleared, self.T + 30 * H, 0.0)]
+        import itertools
+        for n in (3, 4):   # without and with the surely newer un-flag
+            want = None
+            for perm in itertools.permutations(copies[:n]):
+                for one_run in (True, False):
+                    clear_refs(self.gp)
+                    if one_run:
+                        self.void(list(perm))
+                    else:
+                        for c in perm:
+                            self.void([c])
+                    got = self.stored()
+                    want = want or got
+                    self.assertEqual(got, want, (n, perm, one_run))
+            self.assertEqual(want[:2], (1, "late") if n == 3 else (0, None))
+
+    def runs(self, copies, split):
+        """Import `copies` in one run (split False) or one copy per run; the stored flag."""
+        clear_refs(self.gp)
+        for batch in ([[c] for c in copies] if split else [list(copies)]):
+            self.void(batch)
+        return self.stored()
+
+    def test_one_run_and_runs_agree_on_the_reviewers_case(self):
+        # X flagged at T exact, Z cleared at T + 1 h exact, Y cleared at T + 10 h +- 26 h: in
+        # one run X is surely older than Z and drops out, Z and Y tie and agree: cleared.
+        # Runs used to fold X's flag into a stored union that Z could no longer drop.
+        H = 3600.0
+        x, z, y = (self.flagged, self.T, 0.0), (self.cleared, self.T + H, 0.0), (self.cleared, self.T + 10 * H, 26 * H)
+        want = self.runs([x, y, z], False)
+        self.assertEqual(want[:2], (0, None))
+        for perm in itertools.permutations([x, y, z]):
+            self.assertEqual(self.runs(perm, True), want, perm)
+            self.assertEqual(self.runs(perm, False), want, perm)
+
+    def test_random_copies_one_run_equals_every_order_of_runs(self):
+        H = 3600.0
+        rng = random.Random(27)
+        for case in range(60):
+            k = rng.choice((3, 4))
+            copies = []
+            for i in range(k):
+                text = self.flagged_as(f"r{i}") if rng.random() < 0.5 else self.cleared
+                copies.append((text, self.T + rng.choice((0, 1, 2, 5, 10, 24, 30, 55)) * H + i,
+                               rng.choice((0.0, H, 26 * H))))
+            want = self.runs(copies, False)
+            for perm in itertools.permutations(copies):
+                self.assertEqual(self.runs(perm, True), want, (case, perm))
+                # and half in one run, the rest one per run
+                clear_refs(self.gp)
+                self.void(list(perm[:2]))
+                for c in perm[2:]:
+                    self.void([c])
+                self.assertEqual(self.stored(), want, (case, perm, "mixed"))
+
+    def test_same_zip_imported_twice_adds_no_copy(self):
+        z = self.d / "twice.zip"
+        synth.write_zip(z, synth.session_v05(), refs=synth.refs_csv_void(True), refs_utc=self.T)
+        for _ in range(2):
+            src = find_sessions([z])[0]
+            imp.import_refs_csv(self.gp, src.refs_csv_copies())
+            src.close()
+        self.assertEqual(self.gp.con.execute("SELECT count(DISTINCT copy_id) FROM refs_copies").fetchone(), (1,))
+        # the same text at another time is another copy
+        self.void([(self.flagged, self.T, 0.0)])
+        self.void([(self.flagged, self.T, 0.0)])
+        self.void([(self.flagged, self.T + 1, 0.0)])
+        self.assertEqual(self.gp.con.execute("SELECT count(*) FROM refs_copies WHERE session='s1'").fetchone(), (2,))
+
+    def test_gpkg_without_refs_copies_seeds_it_from_the_stored_flag(self):
+        H = 3600.0
+        six, seven = (self.cleared.replace("s1,5,", "s1,6,"), self.flagged.replace("s1,5,", "s1,7,"))
+        self.void([(self.flagged, self.T, H)])
+        imp.import_refs_csv(self.gp, [(six, self.T, H), (seven, self.T, H)])
+        self.gp.drop_table("refs_copies")
+        self.gp.con.execute("UPDATE refs SET void_copy_unc = NULL")   # from before that column
+        # as main's importer stored them: no copy time
+        self.gp.con.execute("UPDATE refs SET void_copy_mtime = NULL WHERE n IN (6, 7)")
+        imp.ensure_schema(self.gp)
+        self.assertEqual(self.gp.con.execute("SELECT n, copy_id, mtime, unc, void, void_reason FROM refs_copies "
+                                             "WHERE session='s1' ORDER BY n").fetchall(),
+                         [(5, "stored", self.T, float(imp.APPROX_S), 1, "moved"),
+                          (7, "stored", None, float(imp.APPROX_S), 1, "moved")])   # untimed void 0: no copy
+        # a later copy surely newer than the seeded one clears it: past its 26 h for n=5,
+        # any known time for n=7 (an unknown time is older than every known one)
+        self.assertEqual(self.void([(self.cleared, self.T + 25 * H, 0.0)]), 1)   # within 26 h: a tie
+        self.assertEqual(self.void([(self.cleared, self.T + 27 * H, 0.0)]), 0)
+        imp.import_refs_csv(self.gp, [(self.cleared.replace("s1,5,", "s1,7,"), self.T, 0.0)])
+        self.assertEqual(self.gp.con.execute("SELECT n, void FROM refs WHERE session='s1' ORDER BY n").fetchall(),
+                         [(5, 0), (6, 0), (7, 0)])
+
+    def test_tie_keeps_the_flagged_copys_reason(self):
+        H = 3600.0
+        self.void([(self.flagged_as("late"), self.T + 600, H)])
+        self.assertEqual(self.void([(self.flagged_as("early"), self.T, H)]), 1)   # older, tied
+        self.assertEqual(self.stored()[:2], (1, "late"))
+        self.assertEqual(self.void([(self.cleared, self.T + 1200, H)]), 1)       # cleared, tied
+        self.assertEqual(self.stored()[:2], (1, "late"))
+        clear_refs(self.gp)
+        self.void([(self.cleared, self.T + 600, H)])
+        self.assertEqual(self.void([(self.flagged_as("early"), self.T, H)]), 1)
+        self.assertEqual(self.stored()[:2], (1, "early"))
+
+    def test_row_from_a_refs_csv_without_void_column_is_not_a_tie(self):
+        old = synth.refs_csv().replace("2026-11-30_09-00-00", "s1")
+        self.assertIsNone(self.void([old]))   # no void column: no flag recorded
+        ties = []
+        self.assertEqual(self.void([self.flagged], ties), 1)   # unknown time: decides as if new
+        self.assertEqual(ties, [])
+        self.assertEqual(self.void([old]), 1)             # an old copy again changes nothing
+
+    def test_tie_report_only_names_refs_a_tie_decided(self):
+        # an in-run tie that a surely newer stored copy overrides decided nothing
+        self.assertEqual(self.void([(self.cleared, 1000.0, 0.0)]), 0)
+        ties = []
+        self.assertEqual(self.void([(self.flagged, 100.0, 0.0), (self.cleared, 100.0, 0.0)], ties), 0)
+        self.assertEqual(ties, [])
+        # a ref of an imported session follows its points.csv: never reported
+        clear_refs(self.gp)
+        self.gp.upsert("refs", [{"session": "s1", "n": 5, "source": "points.csv", "void": 0}],
+                       key=("session", "n"))
+        ties = []
+        imp.import_refs_csv(self.gp, [(self.flagged, 100.0, 0.0), (self.cleared, 100.0, 0.0)], ties)
+        self.assertEqual(ties, [])
 
 if __name__ == "__main__":
     unittest.main()

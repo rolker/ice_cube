@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Random;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
@@ -29,6 +30,126 @@ public class ShareZipTest {
     @Test public void fileNameEndsInZip() {
         assertEquals("IceCubeLogger_2026-11-11_14-02-28.zip", ShareZip.fileName("2026-11-11_14-02-28", false));
         assertEquals("IceCubeLogger_2026-11-11_14-02-28_snapshot.zip", ShareZip.fileName("2026-11-11_14-02-28", true));
+    }
+
+    @Test public void extendedTimestampBytes() {
+        // 2026-11-26T12:00:00Z = 1795694400 = 0x6B081F40
+        assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, 0x40, 0x1F, 0x08, 0x6B},
+                ShareZip.extendedTimestamp(1795694400L));
+        assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, 0, 0, 0, 0}, ShareZip.extendedTimestamp(0));
+        assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x7F},
+                ShareZip.extendedTimestamp(Integer.MAX_VALUE));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void extendedTimestampRejectsPast2038() {
+        ShareZip.extendedTimestamp(Integer.MAX_VALUE + 1L);
+    }
+
+    @Test public void fitsExtendedTimestampBoundary() {
+        assertTrue(ShareZip.fitsExtendedTimestamp(Integer.MAX_VALUE));   // 2038-01-19T03:14:07Z
+        assertFalse(ShareZip.fitsExtendedTimestamp(Integer.MAX_VALUE + 1L));
+        assertTrue(ShareZip.fitsExtendedTimestamp(1));
+        assertFalse(ShareZip.fitsExtendedTimestamp(0));
+    }
+
+    /** The 0x5455 fields addFile writes for a file whose mtime is {@code seconds}. */
+    private int extendedCountForMtime(long seconds) throws IOException {
+        File f = tmp.newFile();
+        try (OutputStream o = new FileOutputStream(f)) { o.write("x\n".getBytes("UTF-8")); }
+        assertTrue(f.setLastModified(seconds * 1000L));
+        assertEquals(seconds * 1000L, f.lastModified());
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bytes)) {
+            ShareZip.addFile(z, "refs.csv", f, f.length(), new byte[64], null);
+        }
+        try (ZipFile zf = new ZipFile(writeZip(bytes))) {
+            byte[] extra = zf.getEntry("refs.csv").getExtra();
+            if (extendedCount(extra) == 1) assertEquals(seconds, extendedMtime(extra));
+            return extendedCount(extra);
+        }
+    }
+
+    @Test public void past2038GetsNoExtendedTimestamp() throws IOException {
+        assertEquals(1, extendedCountForMtime(Integer.MAX_VALUE));
+        assertEquals(0, extendedCountForMtime(Integer.MAX_VALUE + 1L));   // not a wrapped 1901 time
+    }
+
+    /** The mtime of the 0x5455 field in an extra block, or -1. */
+    static long extendedMtime(byte[] extra) {
+        if (extra == null) return -1;
+        for (int i = 0; i + 4 <= extra.length; ) {
+            int id = (extra[i] & 0xFF) | (extra[i + 1] & 0xFF) << 8, size = (extra[i + 2] & 0xFF) | (extra[i + 3] & 0xFF) << 8;
+            if (id == 0x5455 && size >= 5 && (extra[i + 4] & 1) != 0) {
+                return (extra[i + 5] & 0xFF) | (extra[i + 6] & 0xFF) << 8 | (extra[i + 7] & 0xFF) << 16 | (long) extra[i + 8] << 24;
+            }
+            i += 4 + size;
+        }
+        return -1;
+    }
+
+    @Test public void entriesCarryTheExtendedTimestamp() throws IOException {
+        File f = tmp.newFile("refs.csv");
+        try (OutputStream o = new FileOutputStream(f)) { o.write("session,n\n".getBytes("UTF-8")); }
+        long mtimeMs = 1795694400_000L + 1234;
+        assertTrue(f.setLastModified(mtimeMs));
+        mtimeMs = f.lastModified();   // the file system's resolution
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bytes)) {
+            ShareZip.addFile(z, "refs.csv", f, f.length(), new byte[64], null);
+            ShareZip.addFile(z, "p.jpg", f, f.length(), new byte[64], null);   // STORED too
+        }
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            for (int k = 0; k < 2; k++) {
+                ZipEntry e = in.getNextEntry();
+                assertEquals(Math.floorDiv(mtimeMs, 1000L), extendedMtime(e.getExtra()));
+                assertEquals(1, extendedCount(e.getExtra()));   // one 0x5455, not a copy per writer
+            }
+        }
+        // the importer (Python zipfile) reads the central directory's extra field, which
+        // ZipFile returns, not the local header's above
+        try (ZipFile zf = new ZipFile(writeZip(bytes))) {
+            for (String n : new String[] {"refs.csv", "p.jpg"}) {
+                byte[] extra = zf.getEntry(n).getExtra();
+                assertEquals(Math.floorDiv(mtimeMs, 1000L), extendedMtime(extra));
+                assertEquals(1, extendedCount(extra));
+            }
+        }
+    }
+
+    private File writeZip(ByteArrayOutputStream bytes) throws IOException {
+        File z = tmp.newFile();
+        try (OutputStream o = new FileOutputStream(z)) { bytes.writeTo(o); }
+        return z;
+    }
+
+    /** How many 0x5455 fields an extra block holds. */
+    static int extendedCount(byte[] extra) {
+        int n = 0;
+        for (int i = 0; extra != null && i + 4 <= extra.length; ) {
+            int id = (extra[i] & 0xFF) | (extra[i + 1] & 0xFF) << 8, size = (extra[i + 2] & 0xFF) | (extra[i + 3] & 0xFF) << 8;
+            if (id == 0x5455) n++;
+            i += 4 + size;
+        }
+        return n;
+    }
+
+    @Test public void unknownMtimeGetsNoExtendedTimestamp() throws IOException {
+        File f = tmp.newFile("refs.csv");
+        try (OutputStream o = new FileOutputStream(f)) { o.write("session,n\n".getBytes("UTF-8")); }
+        assertTrue(f.setLastModified(0));
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bytes)) {
+            ShareZip.addFile(z, "refs.csv", f, f.length(), new byte[64], null);
+        }
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            ZipEntry e = in.getNextEntry();
+            assertEquals(0, extendedCount(e.getExtra()));   // no claim of an exact 1970 time
+            assertEquals(ShareZip.DOS_EPOCH_MS, e.getTime());
+        }
+        try (ZipFile zf = new ZipFile(writeZip(bytes))) {   // the central directory too
+            assertEquals(0, extendedCount(zf.getEntry("refs.csv").getExtra()));
+        }
     }
 
     @Test public void methodByExtension() {

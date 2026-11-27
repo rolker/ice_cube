@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.text.InputType;
 import android.text.SpannableStringBuilder;
@@ -24,7 +25,9 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -59,6 +62,7 @@ import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TrackPoint;
+import rink.icecube.logger.core.VoidRule;
 
 /**
  * The main screen: the local map, full screen, for a phone on a survey pole used with gloves.
@@ -102,7 +106,19 @@ public final class MainActivity extends Activity {
     private MapView map;
     private TextView info, warnBar, noticeBar;
     private TextView fixChip, gpsItem, casterItem, poleItem, recItem;
-    private Button modeB, markB, photoB, menuB, centerB, fitB;
+    private Button modeB, markB, photoB, menuB, centerB, fitB, undoB;
+    /** The notice bar and its UNDO button, side by side. */
+    private LinearLayout noticeRow;
+    /**
+     * The capture UNDO is shown for (the notice's row, by identity, not the notice), when UNDO
+     * first showed for it, and when the press on UNDO went down (-1: none seen), both
+     * elapsedRealtime ns, for the arm delay.
+     */
+    private PointRow undoAt;
+    private long undoShownNs;
+    private long undoDownNs = -1;
+    /** PHOTO's second line as last shown ("" for none). */
+    private String photoTargetShown = "";
     private FrameLayout mapFrame, drawer;
     private LinearLayout drawerItems;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -182,6 +198,38 @@ public final class MainActivity extends Activity {
         warnBar = bar(0xFFC62828);
         warnBar.setOnClickListener(v -> startActivity(new Intent(this, DetailsActivity.class)));
         noticeBar = bar(0xFF2E7D32);
+        undoB = smallButton("UNDO", v -> onUndo());
+        undoB.setTextSize(16);
+        undoB.setTypeface(Typeface.DEFAULT_BOLD);
+        undoB.setVisibility(View.GONE);
+        // the arm delay is checked against the press-down, so a press already under way when
+        // UNDO appears cannot undo however long it is held. A press that ends with no click
+        // (cancelled, lifted outside the button and its touch slop, or lifted after sliding
+        // out past the slop and back, which already cleared the pressed state) is forgotten,
+        // so a later key or accessibility click is timed at that click instead. The listener
+        // runs before View's own onTouchEvent, so isPressed() is still the state before the lift.
+        int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+        undoB.setOnTouchListener((v, e) -> {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_DOWN) {
+                undoDownNs = SystemClock.elapsedRealtimeNanos();
+            } else if (VoidRule.pressEndsWithoutClick(a == MotionEvent.ACTION_CANCEL,
+                    a == MotionEvent.ACTION_UP, v.isPressed(),
+                    e.getX() < -slop || e.getY() < -slop
+                        || e.getX() >= v.getWidth() + slop || e.getY() >= v.getHeight() + slop)) {
+                undoDownNs = -1;
+            }
+            return false;   // the button still handles the press and the click
+        });
+        noticeRow = new LinearLayout(this);
+        noticeRow.setOrientation(LinearLayout.HORIZONTAL);
+        noticeRow.setBackgroundColor(STRIP_BG);
+        noticeRow.addView(noticeBar, new LinearLayout.LayoutParams(0, -1, 1));
+        LinearLayout.LayoutParams up = new LinearLayout.LayoutParams(Screen.dp(this, 88), -1);
+        up.setMargins(Screen.dp(this, 3), Screen.dp(this, 3), Screen.dp(this, 3), Screen.dp(this, 3));
+        noticeRow.addView(undoB, up);
+        undoB.setMinHeight(Screen.dp(this, 48));
+        undoB.setMinimumHeight(Screen.dp(this, 48));
 
         fixChip = chip(v -> startActivity(new Intent(this, DetailsActivity.class)));
         gpsItem = chip(v -> onGpsDot());
@@ -260,7 +308,7 @@ public final class MainActivity extends Activity {
      */
     private void arrange() {
         boolean land = Screen.landscape(this);
-        for (View v : new View[] {mapFrame, warnBar, noticeBar, fixChip, gpsItem, casterItem, poleItem, recItem,
+        for (View v : new View[] {mapFrame, warnBar, noticeRow, fixChip, gpsItem, casterItem, poleItem, recItem,
                 modeB, markB, photoB, menuB, drawer}) Screen.detach(v);
         showStatusBar(!land);
         int m = Screen.dp(this, 3);
@@ -280,7 +328,7 @@ public final class MainActivity extends Activity {
         left.setOrientation(LinearLayout.VERTICAL);
         left.addView(strip, new LinearLayout.LayoutParams(-1, -2));
         left.addView(warnBar, new LinearLayout.LayoutParams(-1, -2));
-        left.addView(noticeBar, new LinearLayout.LayoutParams(-1, -2));
+        left.addView(noticeRow, new LinearLayout.LayoutParams(-1, -2));
         left.addView(mapFrame, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout buttons = new LinearLayout(this);
@@ -497,6 +545,110 @@ public final class MainActivity extends Activity {
         }
         updateModeButtons();
         refresh();
+    }
+
+    /**
+     * UNDO beside the notice: shown while the notice is a capture's own (Notice.undoable),
+     * its row is not flagged and the 8 s window from the row's own time is open (one clock,
+     * elapsedRealtime, as Survey checks). Keyed on the notice's row, not the notice: a newer
+     * notice for the same capture (a ref's pole check after its save) keeps UNDO and its arm
+     * delay; one for another capture replaces it. The first frame that shows it starts the
+     * arm delay.
+     */
+    private void updateUndo(Survey.Notice nt) {
+        long now = SystemClock.elapsedRealtimeNanos();
+        boolean show = nt != null && nt.undoable && !nt.at.voided && VoidRule.undoOpen(nt.at.elapsedNs, now);
+        if (show && nt.at != undoAt) {
+            undoAt = nt.at;
+            undoShownNs = now;
+            // a press left from an earlier UNDO is forgotten; one still held keeps its
+            // press-down, which predates this UNDO, so it cannot undo (the safe side)
+            if (!undoB.isPressed()) undoDownNs = -1;
+        } else if (!show) {
+            undoAt = null;
+        }
+        undoB.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * A tap on UNDO: flags the notice's capture as accidental. A tap that is ignored (pressed
+     * down in the first 750 ms, or the notice no longer names the capture UNDO was shown for)
+     * plays the error cue, so it is never dropped silently. A click without a press seen (a
+     * key or accessibility action) is timed at the click.
+     */
+    private void onUndo() {
+        long down = undoDownNs >= 0 ? undoDownNs : SystemClock.elapsedRealtimeNanos();
+        undoDownNs = -1;
+        Survey sv = survey();
+        Survey.Notice nt = sv == null ? null : sv.notice();
+        PointRow at = undoAt;
+        if (nt == null || at == null || !nt.undoable || nt.at != at || !VoidRule.armed(undoShownNs, down)) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            return;
+        }
+        Survey.Outcome o = sv.voidCapture(at.n, VoidRule.ACCIDENTAL, VoidRule.VIA_UNDO);
+        Feedback.play(this, o.ok ? Feedback.Cue.REF_CANCEL : Feedback.Cue.ERROR);
+        undoAt = null;
+        handle(o);
+    }
+
+    /**
+     * MENU > Recent captures: the last 10 capture rows, newest first. A live one can be
+     * flagged with a reason (kept, never deleted); a flagged one can be un-flagged. Not while
+     * a ref or tilt set runs (their cancel is the undo for those). Each step checks that the
+     * session is still the current one (it can be stopped from the notification while the
+     * dialog is open) and says so instead of acting on a closed session.
+     */
+    private void recentCaptures() {
+        Survey sv = survey();
+        if (sv == null) { toast("No session: tap REC to start one"); return; }
+        if (sv.refRunning() || sv.tiltRunning()) { toast("Finish or cancel the running capture first"); return; }
+        List<PointRow> rows = sv.recent(10);
+        if (rows.isEmpty()) { toast("No captures yet"); return; }
+        long now = SystemClock.elapsedRealtimeNanos();
+        String[] lines = new String[rows.size()];
+        for (int i = 0; i < lines.length; i++) lines[i] = VoidRule.recentLine(rows.get(i), now);
+        new AlertDialog.Builder(this).setTitle("Recent captures").setItems(lines, (d, which) -> {
+            if (!stillCurrent(sv)) return;
+            PointRow r = rows.get(which);
+            String name = Survey.label(r.cls) + r.n;
+            if (r.voided) {
+                confirm("Un-flag " + name + "?", "Flagged: " + r.voidReason + ". Its photos stay where they were moved.",
+                        "Un-flag", () -> { if (stillCurrent(sv)) handle(sv.unvoidCapture(r.n)); });
+            } else {
+                pickReason(sv, r.n, name);
+            }
+        }).setNegativeButton("Close", null).show();
+    }
+
+    /** The reason for flagging capture n: one of VoidRule.REASONS or typed text. */
+    private void pickReason(Survey sv, int n, String name) {
+        String[] items = new String[VoidRule.REASONS.size() + 1];
+        for (int i = 0; i < VoidRule.REASONS.size(); i++) items[i] = VoidRule.REASONS.get(i);
+        items[items.length - 1] = "Type a reason…";
+        new AlertDialog.Builder(this).setTitle("Flag " + name + ": why?").setItems(items, (d, which) -> {
+            if (which < VoidRule.REASONS.size()) { flag(sv, n, VoidRule.REASONS.get(which)); return; }
+            EditText e = new EditText(this);
+            e.setSingleLine(true);
+            new AlertDialog.Builder(this).setTitle("Flag " + name + ": reason").setView(e)
+                    .setPositiveButton("Flag", (d2, w) -> flag(sv, n, e.getText().toString()))
+                    .setNegativeButton("Cancel", null).show();
+        }).setNegativeButton("Cancel", null).show();
+    }
+
+    /** True if sv is still the running session; else plays the error cue and says it ended. */
+    private boolean stillCurrent(Survey sv) {
+        if (survey() == sv) return true;
+        Feedback.play(this, Feedback.Cue.ERROR);
+        toast("That session has ended: nothing was changed");
+        return false;
+    }
+
+    private void flag(Survey sv, int n, String reason) {
+        if (!stillCurrent(sv)) return;
+        Survey.Outcome o = sv.voidCapture(n, reason, VoidRule.VIA_LIST);
+        Feedback.play(this, o.ok ? Feedback.Cue.REF_CANCEL : Feedback.Cue.ERROR);
+        handle(o);
     }
 
     private void confirmCancelTilt() {
@@ -727,6 +879,7 @@ public final class MainActivity extends Activity {
         Survey sv = survey();
         if (sv != null && sv.tiltRunning()) item("Cancel tilt capture", this::confirmCancelTilt);
         else item("Tilt capture (" + mode().key + ")", () -> tiltAction("start"));
+        item("Recent captures…", this::recentCaptures);
         item("Layers…", this::pickLayers);
         item((coverageOn ? "☑" : "☐") + " Coverage overlay", this::toggleCoverage);
         item("Share last session", () -> {
@@ -984,12 +1137,26 @@ public final class MainActivity extends Activity {
         if (w != null) warnBar.setText(w);
         Survey.Notice nt = sv == null ? null : sv.notice();
         noticeBar.setVisibility(nt == null ? View.GONE : View.VISIBLE);
+        noticeRow.setVisibility(nt == null ? View.GONE : View.VISIBLE);
+        updateUndo(nt);
         if (nt != null) {
             MapOrigin o = shownOrigin;
             String at = o == null || nt.at == null ? null : o.readout(nt.at.lat, nt.at.lon, nt.at.hGround);
             noticeBar.setText(at == null ? nt.text : nt.text + "\n" + at);
             noticeBar.setBackgroundColor(nt.warn ? AMBER : nt.ok ? 0xFF2E7D32 : 0xFFC62828);
             noticeBar.setTextColor(nt.warn ? TEXT : Color.WHITE);
+        }
+
+        // PHOTO's second line: where a photo would go now
+        String target = sv == null ? "" : "→ " + sv.photoTarget();
+        if (!target.equals(photoTargetShown)) {
+            photoTargetShown = target;
+            if (target.isEmpty()) photoB.setText("PHOTO");
+            else {
+                SpannableStringBuilder pb = new SpannableStringBuilder("PHOTO\n" + target);
+                pb.setSpan(new RelativeSizeSpan(0.65f), 6, pb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                photoB.setText(pb);
+            }
         }
 
         StringBuilder t = new StringBuilder();
@@ -1002,6 +1169,8 @@ public final class MainActivity extends Activity {
             t.append('\n');
         }
         t.append(map.frame() == null ? "origin: none yet" : map.originNote());
+        int flagged = sv == null ? 0 : sv.flagged();
+        if (flagged > 0) t.append('\n').append(flagged).append(" flagged");
         if (layerErrors > 0) t.append(String.format(Locale.US, "\n%d layer file(s) have errors (Settings)", layerErrors));
         String okLine = Status.layerOkText(s);
         if (okLine != null) t.append('\n').append(okLine);

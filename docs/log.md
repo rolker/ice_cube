@@ -118,3 +118,9 @@ Reference material is in `howto/`, the narrative in `story/`.
   Each sessions row records the import schema it was read with, so an existing gpkg
   re-reads its 0.6 sessions (snapshot guard kept, user columns kept) the next time their
   sources are among the inputs, without `--force`; pre-0.6 sessions are marked current.
+- 11-26: logger 0.9.0 (#27): an accidental capture is flagged, never deleted. UNDO beside a
+  capture's notice for 8 s, MENU > Recent captures to flag (with a reason) or un-flag later,
+  PHOTO shows where the next photo goes, a flagged capture is a grey cross on the map. Zip
+  entries carry a UTC timestamp; the importer also corrects older zips' local times by the
+  phone's zone offset from events.csv, takes a moved photo's row from the photo column, and
+  soundings.py keeps a real photo's window in the same second as a flagged capture.

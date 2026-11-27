@@ -29,6 +29,8 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
   sessions      table   one row per session: times, app, link, caster mount, frame
                         lines, base station, pole heights, counts, losses; `note` is yours.
   layer_<file>_<points|lines|polygons>  the map-layer GeoJSON files, replaced on import.
+  refs_copies   table   each refs.csv copy's void flag per ref (copy_id, session, n, mtime,
+                        unc, void, void_reason): what the newest-copy rule decides from.
   icecube_meta  table   season name, the local frame origin, the base, and the display
                         CRS (WKT2 and proj string) for build_project.py.
 
@@ -52,9 +54,23 @@ many; the report and the sessions table (`n_voided`, `remarks`) count them. A fi
 without the `void` column has none. A flagged ref gets no `site` and plays no part in
 grouping the others. When several refs.csv copies hold a row, the newest copy (zip entry
 or file time) gives it, and the newest copy with a `void` column gives its flag, flagged
-when copies of that same time disagree (the logger reads its copies by the same rule,
-VoidRule.liveRefs); refs keep that copy's time (`void_copy_mtime`), so a later import of
-an older copy cannot change it.
+when copies whose times may be in either order disagree (the logger reads its copies by
+the same rule, VoidRule.liveRefs); a ref with no copy that has a `void` column has void
+NULL. A flag moves a capture's photos to another row (the files keep their names): a
+photo's `n` and `attached` come from the points.csv row whose photo column lists it, not
+from the number in its file name or its original event. A zip entry's time is its UTC
+extended timestamp (logger 0.9.0, whole seconds, so within 1 s), else its DOS time corrected by the zone offset
+found from the zip's events.csv (within 1 h: a DST change may lie between the entry and
+events.csv), else (mtime_approx) the DOS time read as if UTC (within 26 h: off by the writer's zone
+offset, but the same on every PC, so importing the zip on a PC in another zone adds no copy
+and changes no time). Each copy time is thus an interval; copies whose intervals overlap are a tie,
+decided flagged, and the report names each ref a tie decided. Every copy's flag per ref is kept in the
+`refs_copies` table (once per copy: content hash and time), and each import decides the
+flag from all copies seen so far, so one import of all the copies and any sequence of
+imports, in any order, agree; refs keep the interval of the copies that decided it
+(`void_copy_mtime` its centre, `void_copy_unc` its half-width). A gpkg from before the
+table seeds it with each stored flag as one copy (a set flag, or one with a copy time: an
+untimed void 0 is how older importers stored a row from any copy, so it is not seeded).
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it). Each sessions row records the schema_version it was
@@ -72,6 +88,7 @@ importing from the command line; the Ice Cube QGIS plugin (plugin/) does that it
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -84,7 +101,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gpkg_writer import GeoPackage, gpkg_geometry, point, point_xyz  # noqa: E402
 from local_frame import LocalFrame, ecef_to_geodetic  # noqa: E402
-from logger_session import app_version, find_sessions, load_session, read_refs_csv  # noqa: E402
+from logger_session import APPROX_S, app_version, find_sessions, load_session, read_refs_csv  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
@@ -128,7 +145,7 @@ SCHEMA = {
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
-            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R)],
+            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -144,6 +161,9 @@ SCHEMA = {
                  ("remarks", T), ("source", T), ("source_sig", T), ("imported_utc", T),
                  ("note", T), ("schema_version", I)],
 }
+
+REFS_COPIES = [("copy_id", T), ("session", T), ("n", I), ("mtime", R), ("unc", R), ("void", I),
+               ("void_reason", T)]   # one row per refs.csv copy and ref with a void column
 
 
 # ----------------------------------------------------------------------------- config
@@ -247,6 +267,19 @@ def ensure_schema(gp):
                                description="One row per logger session")
     gp.ensure_attributes_table("icecube_meta", [("key", T), ("value", T)], unique=("key",),
                                description="Season and local frame settings")
+    seed = "refs_copies" not in gp.tables()
+    gp.ensure_attributes_table("refs_copies", REFS_COPIES, unique=("copy_id", "session", "n"),
+                               description="Every refs.csv copy's void flag per ref, for the newest-copy rule")
+    if seed:
+        # a gpkg from before the table: each stored flag becomes one copy, but only a set
+        # flag or one with a copy time; main's importer wrote void 0 for every refs.csv row,
+        # a pre-0.9.0 copy's (no void column) included, and that is no copy's flag. A later
+        # copy surely newer than the seeded one decides as with any other copy.
+        gp.con.execute(
+            "INSERT INTO refs_copies (copy_id, session, n, mtime, unc, void, void_reason) "
+            "SELECT 'stored', session, n, void_copy_mtime, coalesce(void_copy_unc, ?), void, "
+            "CASE WHEN void = 1 THEN void_reason END FROM refs "
+            "WHERE source = 'refs.csv' AND (void = 1 OR void_copy_mtime IS NOT NULL)", (APPROX_S,))
     for table in ("captures", "refs"):
         left = gp.drop_columns(table, LEGACY_ENU)
         for c in left:   # SQLite older than 3.35: keep the column, empty
@@ -359,58 +392,140 @@ def track_lines(session, track):
     return out
 
 
-def import_refs_csv(gp, texts):
+def _stamp_order(a, b):
+    """1 if copy time a = (mtime, uncertainty_s) is surely later than b, -1 if surely earlier,
+    0 for a tie. Each known time is the interval [t - u, t + u]; two copies tie when their
+    intervals overlap (|ta - tb| <= ua + ub: independent errors add), so equal exact times
+    tie. This holds for the 26 h no-offset case (a DOS time read as if UTC) too: its
+    intervals are only wider, the cautious side. An unknown time (None) is older than any
+    known one and ties only another unknown time."""
+    (ta, ua), (tb, ub) = a, b
+    if ta is None or tb is None:
+        return 0 if ta is None and tb is None else (-1 if ta is None else 1)
+    d, w = ta - tb, (ua or 0.0) + (ub or 0.0)
+    if abs(d) <= w:
+        return 0
+    return 1 if d > 0 else -1
+
+
+def _stamp_hull(stamps):
+    """(centre, half-width) of the union of the intervals [t - u, t + u] of copy times that
+    tie, or (None, 0.0) when the times are unknown (an unknown time ties only another)."""
+    known = [(t, u or 0.0) for t, u in stamps if t is not None]
+    if not known:
+        return None, 0.0
+    lo, hi = min(t - u for t, u in known), max(t + u for t, u in known)
+    return (lo + hi) / 2, (hi - lo) / 2
+
+
+def _flag_reason(cands):
+    """void_reason of the newest flagged copy among (mtime, void_reason) pairs: by time, then
+    by reason text, so the input order never changes it."""
+    return max(cands, key=lambda c: (-math.inf if c[0] is None else c[0], c[1] or ""))[1]
+
+
+def _copy_id(text, mtime, unc):
+    """Identity of one refs.csv copy: its content hash and its time (mtime, uncertainty), so
+    the same file met again (the same zip imported twice, or shipped in two exports of a
+    session, on any PC: every copy time is zone-free, logger_session.zip_entry_stamp) is one
+    copy, and a copy whose content or time differs is another."""
+    h = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:32]
+    return f"{h}@{'' if mtime is None else repr(float(mtime))}+{float(unc or 0.0)!r}"
+
+
+def _decide_flag(cs):
+    """(void, reason, stamp, unc, tied) of a ref from its copies [(mtime, unc, void, reason)]
+    with a void column: the copies no other is surely newer than (_stamp_order) decide,
+    flagged if any of them is (the reason of the newest flagged one), and the stored interval
+    is the union of theirs; tied when they disagree. A function of the set of copies only, so
+    the input order and how the copies are split over runs never change it."""
+    top = [c for c in cs if not any(_stamp_order(o[:2], c[:2]) == 1 for o in cs)]
+    void = any(c[2] for c in top)
+    reason = _flag_reason([(c[0], c[3]) for c in top if c[2]]) if void else None
+    stamp, unc = _stamp_hull([c[:2] for c in top])
+    return void, reason, stamp, unc, len({c[2] for c in top}) > 1
+
+
+def import_refs_csv(gp, texts, ties=None):
     """refs.csv rows of sessions not otherwise imported (rows already there are kept, except
     that the void flag of a row taken from a refs.csv follows the refs.csv copies, both ways).
-    `texts` holds refs.csv texts, or (text, mtime) pairs. When copies disagree, the newest
-    copy (by mtime; equal or unknown times keep input order) gives the row, and its void
-    flag comes from the newest copy that has a void column, so a copy from before 0.9.0
-    never clears a flag, not even one stored by an earlier import. Copies of the same time
-    (or all of unknown time) that disagree on the flag give flagged, the safe side. This is
-    the logger's rule too (VoidRule.liveRefs), so the gpkg and the phone agree on a ref
-    after a partial write. The mtime of the copy a stored flag came from is kept in
-    `void_copy_mtime`; a later run changes the flag only with a newer copy, or one of the
-    same time that flags it (one of unknown time changes only a flag of unknown time), so
-    an older 0.9.0 copy met in a later run cannot clear (or set) a newer stored flag.
+    `texts` holds refs.csv texts, or (text, mtime) or (text, mtime, uncertainty_s) tuples (see
+    logger_session.zip_entry_stamp and SessionSource.refs_csv_dated). When copies disagree,
+    the newest copy of this run (by mtime; equal or unknown times keep input order) gives a
+    new row's values.
+
+    The void flag comes from every copy with a void column seen in this run or any earlier
+    one: each copy's (time, uncertainty, void, reason) per ref is kept in `refs_copies`, once
+    per copy (_copy_id: content hash and time, so importing the same zip again adds
+    nothing), and every import recomputes the flag of each ref its copies hold from all of
+    them (_decide_flag): the copies no other is surely newer than decide (_stamp_order: a
+    copy time is the interval t +- uncertainty, and overlapping intervals tie); when they
+    disagree, flagged, the safe side, with the reason of the newest flagged copy. One run
+    with all the copies and any sequence of runs, in any order, thus give the same flag. A
+    copy from before 0.9.0 (no void column) plays no part, so it never clears a flag. This
+    is the logger's rule too (VoidRule.liveRefs, whose phone-side times are exact), so the
+    gpkg and the phone agree on a ref after a partial write. `void_copy_mtime` and
+    `void_copy_unc` are derived: the centre and half-width of the union of the deciding
+    copies' intervals. A ref with no copy that has a void column has void NULL.
+    `ties`, when a list, gets (session, n, "flagged") for each ref stored from refs.csv, of
+    those this run's copies hold, whose deciding copies disagree (a tie decided its flag).
 
     Returns (refs.csv rows seen, of which flagged): every row of every copy counts as seen,
     but only rows stored from refs.csv (source 'refs.csv', sessions not imported) count as
     flagged, read from the refs table so a stored flag counts even when this run's copies
     predate 0.9.0. A ref of an imported session follows its points.csv, whatever refs.csv
     says, and is counted with that session's flagged captures, not here."""
-    dated = [(t, None) if isinstance(t, str) else tuple(t) for t in texts]
+    dated = []
+    for t in texts:
+        t = (t,) if isinstance(t, str) else tuple(t)
+        dated.append((t[0], t[1] if len(t) > 1 else None, (t[2] if len(t) > 2 else 0.0) or 0.0))
     dated = sorted(enumerate(dated), key=lambda it: (it[1][1] if it[1][1] is not None else float("-inf"), it[0]))
-    rows, flags = {}, {}
-    for _, (text, _mtime) in dated:   # oldest first: later copies win
+    rows, copies = {}, {}
+    for _, (text, mtime, unc) in dated:   # oldest first: later copies give the row
+        cid = _copy_id(text, mtime, unc)
         for r in read_refs_csv(text):
             key = (r["session"], r["n"])
             rows[key] = r
-            if r.get("void_known"):
-                was = flags.get(key)
-                if was and was[0] and was[2] == _mtime and not r.get("void"):
-                    continue          # same time, disagreeing: flagged wins
-                flags[key] = (bool(r.get("void")), r.get("void_reason"), _mtime)
+            prev = copies.get((cid,) + key)
+            if r.get("void_known") and not (prev and prev["void"]):
+                # duplicate rows of a ref in one copy (only a hand-edited file has them): flagged
+                # if any is, as VoidRule.liveRefs on the phone reads them
+                copies[(cid,) + key] = {"copy_id": cid, "session": key[0], "n": key[1], "mtime": mtime,
+                                        "unc": unc, "void": int(bool(r.get("void"))),
+                                        "void_reason": r.get("void_reason") if r.get("void") else None}
+    gp.upsert("refs_copies", list(copies.values()), key=("copy_id", "session", "n"))
     out = []
     for (sess, n), r in sorted(rows.items()):
-        void, reason, stamp = flags.get((sess, n), (False, None, None))
         d = {k: r.get(k) for k, _ in MEAS}
-        d.update({"session": sess, "n": n, "source": "refs.csv",
-                  "void": int(void), "void_reason": reason if void else None, "void_copy_mtime": stamp,
+        d.update({"session": sess, "n": n, "source": "refs.csv", "void": None, "void_reason": None,
+                  "void_copy_mtime": None, "void_copy_unc": None,
                   "geom": _geom(r.get("lat"), r.get("lon"), r.get("h_ground"))})
         out.append(d)
+    tied = set()
     if out:
+        # a new row is inserted whole; an existing one keeps its values (the flag is set below)
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
-        # only rows a copy in this run has a void column for: copies from before 0.9.0 alone
-        # never reset a flag that an earlier import took from a newer copy; and only from a
-        # copy newer than the one the stored flag came from (void_copy_mtime), or as new and
-        # flagging it (same time, disagreeing: flagged wins)
+        upd = []
+        for d in out:
+            key = (d["session"], d["n"])
+            cs = gp.con.execute("SELECT mtime, unc, void, void_reason FROM refs_copies "
+                                "WHERE session=? AND n=?", key).fetchall()
+            if not cs:   # no copy with a void column, in any run: the flag stays as it is
+                continue
+            void, reason, stamp, unc, tie = _decide_flag([(t, u or 0.0, bool(v), why) for t, u, v, why in cs])
+            if tie:
+                tied.add(key)
+            upd.append({"void": int(void), "reason": reason, "stamp": stamp, "unc": unc,
+                        "session": key[0], "n": key[1]})
         gp.con.executemany(
-            "UPDATE refs SET void=:void, void_reason=:reason, void_copy_mtime=:stamp "
-            "WHERE session=:session AND n=:n AND source='refs.csv' "
-            "AND (void_copy_mtime IS NULL OR :stamp > void_copy_mtime "
-            "OR (:stamp = void_copy_mtime AND (:void = 1 OR coalesce(void, 0) = 0)))",
-            [{"void": d["void"], "reason": d["void_reason"], "stamp": d["void_copy_mtime"],
-              "session": d["session"], "n": d["n"]} for d in out if (d["session"], d["n"]) in flags])
+            "UPDATE refs SET void=:void, void_reason=:reason, void_copy_mtime=:stamp, void_copy_unc=:unc "
+            "WHERE session=:session AND n=:n AND source='refs.csv'", upd)
+    if ties is not None:
+        # only rows stored from refs.csv: a ref of an imported session follows its points.csv
+        stored = {(d["session"], d["n"]) for d in out if gp.con.execute(
+            "SELECT 1 FROM refs WHERE session=? AND n=? AND source='refs.csv'",
+            (d["session"], d["n"])).fetchone()}
+        ties.extend((sess, n, "flagged") for sess, n in sorted(tied) if (sess, n) in stored)
     # flagged count from the refs table (stored flags included), not just this run's copies
     n_void = sum(1 for d in out if gp.con.execute(
         "SELECT 1 FROM refs WHERE session=? AND n=? AND source='refs.csv' AND coalesce(void, 0) = 1",
@@ -671,7 +786,8 @@ def run(argv=None, log=print, progress=None):
         if stale:
             log(f"{len(stale)} session(s) still at an older schema (not in the inputs, or only a "
                 f"snapshot seen), re-read on a later import: {', '.join(sorted(stale))}")
-        n_refs, n_refs_voided = import_refs_csv(gp, refs_texts)
+        refs_ties = []
+        n_refs, n_refs_voided = import_refs_csv(gp, refs_texts, refs_ties)
 
         meta = get_meta(gp)
         base = resolve_base(args, cfg, cfg_dir, layer_files, parsed)
@@ -716,6 +832,8 @@ def run(argv=None, log=print, progress=None):
     gp.close()
     log(f"refs.csv rows seen: {n_refs}" + (f" ({n_refs_voided} flagged void)" if n_refs_voided else "")
         + f"; photos extracted this run: {n_photos}")
+    for sess, n, way in refs_ties:
+        log(f"  refs.csv copies of {sess} ref n={n} tie in time and disagree: decided {way}")
     if frame is None:
         log("local frame: none (no origin or base given; x_m/y_m/z_m left empty)")
     else:
@@ -729,6 +847,7 @@ def run(argv=None, log=print, progress=None):
     return {"gpkg": str(gpkg_path), "season": name, "found": len(sources), "added": added,
             "unchanged": unchanged, "stale": sorted(stale), "photos_extracted": n_photos,
             "refs_csv_rows": n_refs, "refs_csv_voided": n_refs_voided,
+            "refs_csv_ties": [{"session": a, "n": b, "decided": c} for a, b, c in refs_ties],
             "totals": summary, "origin": frame.name if frame is not None else None,
             "recomputed": bool(recompute)}
 
