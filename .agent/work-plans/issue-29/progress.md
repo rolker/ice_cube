@@ -595,3 +595,13 @@ No GitHub reviews, inline comments or conversation comments on the PR. Both roun
 **Decision**: merge
 
 Owner's answer to "Merge PR #34?": "Merge (Recommended)". Issue 29 stays open for PR B (the logger port).
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 08:54 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan.md changed since its last review, 9a19cee -> e7a80fe, and PR A's review rounds changed the estimator PR B ports; run-issue step 13 allows only revise)
+**After**: plan
+**Decision**: revise
+
+PR A merged as #34 (5da4114). Owner said "Yes" to starting part B. Refresh the plan's PR B (port the plane pass to the logger's live coverage overlay) against main as merged: the gate order (unscaled conditioning, planarity, scaled conditioning, significance, DEM), the noise-only agreement variance with its 2·d̄'cov(a,g) cross term, the limit rules (non-finite value or NaN limit fails; infinite planarity/max_sigma_g turns that gate off; NaN DEM slope skips, infinite fails), PLANE_NOT_PLANAR carrying sigma_g, and parity with the 9 plane_vectors in coverage_vectors.json (incl. the diagonal bank). Say where the logger gets a DEM (or that the DEM gate is skipped on the phone), what the overlay shows for a planar node, and the version bump.
