@@ -910,3 +910,20 @@ Must-fix 1 rule decided by the host (owner may veto): each copy time is the inte
 - `python3 -m unittest discover icecube/tests`: Ran 94, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 190 tests, 0 failures; app-debug.apk 315686 bytes, sha256 69c86cc0…6139d (C: 112 GB free before the build)
 - Pre-commit hooks ran on every commit; nothing pushed.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:50 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `48ea20e`
+**Base**: main
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 1 | **Suggestions**: 0
+**Round**: 3 | **Ship**: continue — round 3: 1 must-fix is a design/correctness concern (not mechanical)
+
+Scope: round 2's seven findings and the fix diff 2998717..48ea20e only. Cross-model: skipped (round-3 convergence check, per handoff). All seven round-2 items are fixed as the Implementation at 3e22699 says (interval overlap in `_stamp_order`, union stored on a tie, DST_S for every corrected-DOS entry but events.csv, newest flagged reason kept, void NULL for copies without a void column, UNDO arm at ACTION_DOWN, ShareZipTest reads the central directory, 0x5455 looked up before events.csv, docs). Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 150, OK (skipped=5); `ANDROID_HOME=~/Android/Sdk ./gradlew testDebugUnitTest --max-workers 4` 190 tests, 0 failures. Tie rule consistency: two copies are compared the same way in one run and against the stored flag (overlap, |d| <= u1+u2), and a copy surely newer than every tied copy is surely newer than their union, so a later surely newer copy is handled alike. But the stored union keeps the flag of a copy that a later surely newer copy would have dropped (below). Probe (not committed): with X flagged exact at T, Z cleared exact at T+1 h, Y cleared at T+10 h with 26 h (mtime_approx), all three in one run give cleared, as does one per run in the order X, Z, Y; one per run in the orders X,Y,Z / Y,X,Z / Y,Z,X / Z,Y,X give flagged. A random search over 3 copies (uncertainties 0, 1 h, 26 h; 150 cases, all orders) found 32 such differences, every one toward flagged in the run-by-run result, never toward cleared: so no flag is lost, but the docstring's "neither import order nor a later run" claim does not hold and `test_import_order_does_not_change_the_result` does not cover it.
+
+### Findings
+- [ ] (must-fix) Tie rule differs in one run and across runs, and across runs with import order: in a run a copy surely older than another top copy is dropped before ties are looked at, while across runs its flag is already folded into the stored union and cannot be dropped (X flagged T exact, Z cleared T+1 h exact, Y cleared T+10 h +-26 h: one run cleared; runs X,Y,Z flagged; runs X,Z,Y cleared). It always errs to flagged. Decide: keep each copy's interval and flag per ref (e.g. a refs_copies table) and apply the in-run rule over all copies seen in every run, or accept run-by-run flagged as the safe side and say so in the docstring and README, with a test of the case above — `analysis/qgis/import_sessions.py:445`, `:478`
