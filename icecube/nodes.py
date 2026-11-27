@@ -433,7 +433,7 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     var_a, gx, gy, cov_g (2x2), cov_ag (the 2-vector cov(a, (gx, gy)) = cov[0, 1:]), chi
     (the weighted RMS residual per degree of freedom, in neighbour sigmas) and sigma_g
     (the square root of cov_g's larger eigenvalue, m/m); on PLANE_NOT_PLANAR the dict
-    holds chi alone, on PLANE_ILL_CONDITIONED sigma_g (and chi when the scaled check
+    holds chi and the unscaled sigma_g (the conditioning gate it passed), on PLANE_ILL_CONDITIONED sigma_g (and chi when the scaled check
     failed; sigma_g infinite when the covariance is not positive definite).
     Conditioning is checked twice. First on the unscaled (A'WA)^-1, before beta is
     solved: it must pass a Cholesky factorisation of A'WA, be finite with var_a > 0 and
@@ -470,7 +470,7 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     r = z - A @ beta
     chi = math.sqrt(max(float(np.sum(w * r * r)), 0.0) / (len(use) - 3))
     if not (math.isfinite(chi) and chi <= planarity):
-        return PLANE_NOT_PLANAR, dict(chi=chi)
+        return PLANE_NOT_PLANAR, dict(chi=chi, sigma_g=sigma_g)
     cov = Ninv * max(1.0, chi * chi)
     if not _pos_def(cov):
         return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=float("inf"))
