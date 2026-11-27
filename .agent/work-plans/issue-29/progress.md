@@ -499,3 +499,13 @@ No must-fix. All nine round-2 suggestions were checked against the code at `677b
 - [ ] (suggestion, Local Review @ `61612f4`) The PR body's Decision summary is stale: it says "icecube 85 OK", its review history stops at pre-push round 3, and it does not mention that the agreement gate is noise-only. Refresh it before merge — PR #34 body
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:30 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (all 9 open findings are suggestions checked valid; most are test gaps on gates the Java port in PR B must match, and fixing them is cheaper than carrying them; no owner-level question)
+**After**: findings
+**Decision**: address
+
+Address all nine: pin the cross term and the untested gates with behavioural tests; make the infinite-limit wording true (or the code); fix the docstring order and the bias wording; return sigma_g on NOT_PLANAR; fix the rstrip test; update plan.md port notes; document NoData NaN. Item 9 (the PR body's Decision summary) is the host's and is updated before the merge question.
