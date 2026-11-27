@@ -56,3 +56,13 @@ issue: 35
 - [ ] Keep the arming logic a pure, testable state machine separate from the sensor and UI code.
 - [ ] Gloved use: large touch targets, and an audible or haptic cue for calibration progress and for auto-capture armed or off.
 - [ ] Check how "tilt set in progress" is represented in the code. If #9 has not landed, gate on a flag that #9 will set.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:52 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (mechanism of a behaviour the owner decided; owner asked to orchestrate in parallel while busy)
+**After**: issue-actions
+**Decision**: proceed
+
+Host decisions (owner may veto): auto capture arms only on an RTK-fixed fix that #15 marks neither young (< 120 s) nor suspect; MARK still captures on a young fix with the amber cue; the screen and a cue say which condition is unmet. Calibration as a reusable routine (hold still, lean ~10 s, two slow twists) storing the pole axis now, with an extension point for #38's lever arm and gyro bias. Arming logic a pure, unit-tested state machine. Large touch targets and audible/haptic cues for gloved use. Correction to the review: tilt capture exists in logger/ (core/TiltSet.java, TiltSolver, Survey's tilt mode); auto capture is off while a tilt set is in progress. Implementation after #15 merges.
