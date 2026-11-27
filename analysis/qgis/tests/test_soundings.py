@@ -340,16 +340,27 @@ class TestBuild(unittest.TestCase):
         self.assertNotIn("warning", self._build_logger(gpkg)[1])
 
     def test_unknown_app_version_counts_as_new(self):
-        """No readable app version: the session may be 0.6, so both warnings still fire."""
+        """No readable app version: the session may be 0.6, so it warns while not yet re-read
+        at the current schema; once re-read, empty tilt values are what its source holds."""
         gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
         con = gw.connect(gpkg)
-        con.execute("UPDATE sessions SET app=NULL")
+        con.execute("UPDATE sessions SET app=NULL, schema_version=NULL")     # stale
         con.execute("UPDATE captures SET method=NULL, tilt_sd_e_m=NULL, tilt_sd_n_m=NULL, tilt_sd_u_m=NULL")
         con.commit()
         con.close()
         logged = self._build_logger(gpkg)[1]
         self.assertEqual(logged.count("warning"), 1)
         self.assertIn("no method/tilt values", logged)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_VERSION - 1,))   # still stale
+        con.commit()
+        con.close()
+        self.assertEqual(self._build_logger(gpkg)[1].count("warning"), 1)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_VERSION,))       # re-read
+        con.commit()
+        con.close()
+        self.assertNotIn("warning", self._build_logger(gpkg)[1])
         con = gw.connect(gpkg)
         for k, _ in imp.LOGGER_06:
             con.execute(f"ALTER TABLE captures DROP COLUMN {k}")

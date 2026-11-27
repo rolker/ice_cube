@@ -75,6 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gpkg_writer as gw  # noqa: E402
 from local_frame import LocalFrame, geodetic_to_ecef  # noqa: E402
+from import_sessions import SCHEMA_VERSION  # noqa: E402
 from logger_session import app_version as _version, find_sessions, read_chunks, read_events, _nmea_deg  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -620,9 +621,19 @@ def logger_source(cfg, src, con, frame, history, log):
         apps = dict(con.execute("SELECT session, app FROM sessions"))
     except sqlite3.Error:
         pass
+    schemas = {}
+    try:
+        schemas = dict(con.execute("SELECT session, schema_version FROM sessions"))
+    except sqlite3.Error:       # a sessions table from before the per-session schema_version
+        pass
     def maybe_06(ses):          # 0.6 or later, or unknown (no readable app version)
         v = _version(apps.get(ses))
         return not v or v >= (0, 6)
+    def stranded_06(ses):       # as maybe_06, but an unknown version already re-read at the
+        v = _version(apps.get(ses))     # current schema holds what its source has: not stranded
+        if v:
+            return v >= (0, 6)
+        return (schemas.get(ses) or 0) < SCHEMA_VERSION
     new_app = [c for c in caps if c["class"] != "photo" and maybe_06(c["session"])]
     if missing and new_app:
         log(f"  warning: the captures table has no {', '.join(missing)} column(s): tilt captures get "
@@ -631,6 +642,8 @@ def logger_source(cfg, src, con, frame, history, log):
     elif new_app:
         by_ses = {}
         for c in new_app:
+            if not stranded_06(c["session"]):
+                continue
             by_ses.setdefault(c["session"], []).append(c["method"])
         stranded = sorted(k for k, m in by_ses.items() if all(v is None for v in m))
         if stranded:
