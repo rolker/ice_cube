@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Random;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
@@ -69,6 +70,21 @@ public class ShareZipTest {
                 assertEquals(1, extendedCount(e.getExtra()));   // one 0x5455, not a copy per writer
             }
         }
+        // the importer (Python zipfile) reads the central directory's extra field, which
+        // ZipFile returns, not the local header's above
+        try (ZipFile zf = new ZipFile(writeZip(bytes))) {
+            for (String n : new String[] {"refs.csv", "p.jpg"}) {
+                byte[] extra = zf.getEntry(n).getExtra();
+                assertEquals(Math.floorDiv(mtimeMs, 1000L), extendedMtime(extra));
+                assertEquals(1, extendedCount(extra));
+            }
+        }
+    }
+
+    private File writeZip(ByteArrayOutputStream bytes) throws IOException {
+        File z = tmp.newFile();
+        try (OutputStream o = new FileOutputStream(z)) { bytes.writeTo(o); }
+        return z;
     }
 
     /** How many 0x5455 fields an extra block holds. */
@@ -94,6 +110,9 @@ public class ShareZipTest {
             ZipEntry e = in.getNextEntry();
             assertEquals(0, extendedCount(e.getExtra()));   // no claim of an exact 1970 time
             assertEquals(ShareZip.DOS_EPOCH_MS, e.getTime());
+        }
+        try (ZipFile zf = new ZipFile(writeZip(bytes))) {   // the central directory too
+            assertEquals(0, extendedCount(zf.getEntry("refs.csv").getExtra()));
         }
     }
 

@@ -68,8 +68,9 @@ public final class ShareZip {
      * id 0x5455, data size 5, flags 1, then the time as 4-byte little-endian signed UTC
      * seconds. Built by hand rather than through setLastModifiedTime; a ZipOutputStream may
      * still re-encode the field from setExtra (OpenJDK does), so a zip should carry one
-     * 0x5455 per entry with this time, not necessarily these exact bytes. Readers (the importer's zip_entry_mtime) then order copies by UTC instead of by the
-     * DOS time, which is the phone's local time.
+     * 0x5455 per entry with this time, not necessarily these exact bytes. Readers (the
+     * importer's zip_entry_mtime) then order copies by UTC instead of by the DOS time, which
+     * is the phone's local time.
      */
     public static byte[] extendedTimestamp(long epochSeconds) {
         int t = (int) epochSeconds;
