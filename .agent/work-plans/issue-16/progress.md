@@ -82,3 +82,45 @@ Host decisions (owner may veto): a dedicated NOTE button (tap to start, tap to s
 **Plan**: `.agent/work-plans/issue-16/plan.md` at `459f04c`
 
 NOTE button records mono AAC m4a (60 s cap) into notes/, attached via PhotoRule's window, new trailing voice column, notes move with photos on flag, zip and importer carry them. No speech-to-text. Implement after #15 and #35 (shared Survey, MainActivity).
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 17:54 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: ready
+
+**Issue**: #16 — Logger: voice notes attached to captures
+**Plan**: `.agent/work-plans/issue-16/plan.md` at `459f04c`
+**Branch**: `feature/issue-16`
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | One PR: one new pure rule, one column, a recorder, zip and importer pass-through. Sequenced after #15 and #35. |
+| Issue alignment | Good | Every Issue Review action and Checkpoint decision is covered (NOTE button, AAC 32 kbps, 60 s cap, PhotoRule reuse, move on flag, foreground-only mic, privacy note, no STT). Serves: "Project has no goals document or design document: none. Serves the logger's field-capture purpose (winter gloved operation)." |
+| File targeting | Good | Right files. `ShareZip` already treats `.m4a` as STORED, so that change is the `notes/` listing only. Missing: `.gitignore`, `docs/howto/qgis.md`, existing importer tests (findings 1, 2, 4). |
+| Consequences | Needs work | Importer `SCHEMA_VERSION` bump not planned; a note-only own row has knock-on effects (finding 3). All settleable during implementation. |
+| Principle alignment | Good | Reuse over duplication, tests for pure logic, manual device check stated; privacy limit starts strict, but see finding 1. |
+| ADR compliance | Good | No workspace ADR triggered (project feature). |
+| ROS conventions | N/A | Android app and Python importer. |
+
+Host decisions taken as given (owner may veto): `voice` goes after whatever #15 (`fix_start`, `float_spell_s`, `suspect_reason`, `fix_young`, COLUMNS 29 -> 33) and #35 add, `COLUMNS` recomputed at implementation; #20's icecube reader carries or ignores `voice` (note only; no current `icecube/` code reads `points.csv`); speech-to-text out (owner question pending).
+
+### Findings
+
+1. **[Principle alignment / privacy]** `.gitignore` ignores `*.jpg` and `*.csv` but not `*.m4a`, and the importer copies notes into `notes/<session>/` beside `photos/`. The plan says "gitignored like photos", but photos are ignored by extension, not by folder. Add `*.m4a` (with a comment like the photos one), and generate the placeholder `.m4a` in the test at run time (tmp_path), never commit it. Small; do it in the PR.
+2. **[Consequences]** `analysis/qgis/import_sessions.py` keeps a `SCHEMA_VERSION` with a history entry per change, so a re-import picks up new columns (#15 takes it 4 -> 5). Adding `voice` to captures/photos/refs needs the next bump and history line, and `docs/howto/qgis.md` (importer tables, logger versions) needs the `voice` column and `notes/` folder. Settle at implementation.
+3. **[Consequences]** Own-row fallback makes a class `photo` row that holds only a note (no photo). Check what that does to `VoidRule.glyph` (camera icon), `liveCount`/`n_photo` counts, `VoidRule.photoRowFor` (note text "photos of voided n="), and the importer's photos table (one row per photo file: a note-only row has none, so it must still appear somewhere, e.g. via captures or its own handling). Decide at implementation (a test for each behaviour chosen); not blocking.
+4. **[File targeting]** Importer tests already exist: `analysis/qgis/tests/test_import.py` with the `synth.py` session generator. Extend those rather than a new fixture. Minor.
+
+### Summary
+
+The plan is complete and reuses the photo path throughout; it is ready for implementation once #15 and #35 land. The four findings are small and can be settled in the PR, the `.gitignore` one being the one not to forget in a public repo.
+
+### Recommended Actions
+
+- [ ] Add `*.m4a` to `.gitignore`; test audio generated at run time only (finding 1).
+- [ ] Bump importer `SCHEMA_VERSION` after #15's, with its history line; update `docs/howto/qgis.md` (finding 2).
+- [ ] Decide and test how a note-only own row shows on the map, in counts and in the importer (finding 3).
+- [ ] Extend `analysis/qgis/tests/test_import.py` / `synth.py` for the `voice` column and `notes/` copy (finding 4).
