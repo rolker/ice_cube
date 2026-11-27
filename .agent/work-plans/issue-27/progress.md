@@ -787,3 +787,31 @@ The revision resolves all 8 earlier findings, and each one checks out against ma
 **Decision**: proceed
 
 The two new step-18b findings from the Plan Review at 967586e are taken into implementation: accept the events.csv zone offset only when the remainder after 15-min rounding is under about 120 s (else mtime_approx), both times via calendar.timegm, a 10-min snapshot-gap test; a refs.csv entry more than about 12 h from events.csv is uncertain by 1 h (copies within 1 h tie, flagged wins), the same in the stored-flag SQL, with a test.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 21:13 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Branch**: feature/issue-27 at `17ae5a3`
+
+PR B (plan steps 10-20) plus the two step-18b refinements from the Checkpoint at 4f521a7. Keep-and-flag holds: nothing deletes a row, a photo or a file.
+
+- `2869933` step 10: `Survey.Notice.undoable` (set by surface/object MARK, tilt end and the ref's pole-check notices; photo notices false). MainActivity shows UNDO beside the notice while `VoidRule.undoOpen(at.elapsedNs, elapsedRealtimeNanos)` holds and the row is not flagged; taps ignored for 750 ms after it first shows (`VoidRule.armed`); a tap calls `voidCapture(n, "accidental", "undo")`, Survey re-checks the window ("Too late to undo"). `PointRow.label` moved to core (Survey.label delegates).
+- `4527c12` step 11: MENU > Recent captures… (`VoidRule.recent`, `recentLine`, `ageText`; `Survey.recent(10)`), reason picker from `VoidRule.REASONS` plus typed text, Un-flag for a flagged row, refused while a ref/tilt runs; info box says `N flagged` (`Survey.flagged`).
+- `b069672` steps 12 and 14: PHOTO second line `→ S12 (14 s)` / `→ own row` from `PhotoRule.targetText` via `Survey.photoTarget()`, refreshed by the existing 250 ms tick; step-14 lock-in test (flagged planned capture re-asks from the press under the 60 s window); file-name number documented in PhotoRule.
+- `98119c6` step 13: flagged capture drawn as a grey cross with grey `S12 ✕` label, no class symbol, no camera; photo rows keep the camera (`VoidRule.glyph`: LIVE/FLAGGED/PHOTO). Also fixes one wrong assertion in the step-11 test.
+- `fba12f1` step 16: `run(() -> poleCheck(f))` moved inside onEpoch's synchronized block (as finishTilt); `refsVoidEvent` holding-0 stays an error (test comment added).
+- `9760338` step 18a: `ShareZip.extendedTimestamp` (hand-built 0x5455, flags 1, LE UTC seconds) set on every entry; tests for the bytes and the round trip through ZipInputStream (DEFLATED and STORED).
+- `b641283` steps 18b-d with both refinements: `zip_zone_offset` (events.csv last wall_ms vs its DOS time via `calendar.timegm`, rounded to 15 min, accepted only with remainder <= 120 s and |offset| <= 14 h), `zip_entry_stamp` -> (mtime, uncertainty): 0 for 0x5455/folder/corrected DOS, 3600 for an entry > 12 h from events.csv (DST), 26 h for mtime_approx. `refs_csv_dated` now returns (text, mtime, uncertainty). `import_refs_csv`: copies within the larger uncertainty tie, flagged wins; the same rule against the stored flag (computed in Python now, new refs column `void_copy_unc`, NULL from before read as 26 h); optional `ties` list, logged in the report and returned as `refs_csv_ties`. One existing test changed: `test_voided_captures_kept_and_flag_updates` dated its un-flag zip +1 h, which is now a tie (its synthetic events.csv gives no offset, so mtime_approx); moved to +2 days with a comment. New `RefsCopyTimeTest` (8 tests): offsets, 10 min snapshot gap, extended across zones, corrected DOS, no events.csv tie and report, mixed, un-flag within 26 h plus re-run, DST allowance (in-run and against the stored flag). `synth.phone_zip` added.
+- `89bac66` step 15: a photo listed in a row's photo column takes `n` and `attached` from that row only; event/name only for an orphan. Test with a photo moved to own row n=5 (name/event say n=2). Importer docstring notes files are never renamed.
+- `d2d72a8` step 19: `clist_windows` skips only a photo row whose note is exactly `photos of voided n=<n>` (anchored regex) for a voided n at that utc; `note` added to the soundings clist query. Tests: real photo same second keeps window, moved row does not, n=1 vs n=12, edited note.
+- `17ae5a3` step 20: logger/README.md (Main screen UNDO and info, PHOTO line, MENU item, Recent captures and grey cross, Photos file-name number, Share 0x5455 and the importer's zone rule), docs/log.md entry, versionName 0.9.0 / versionCode 13.
+
+Tests (every hook ran on each commit):
+- `cd logger && ./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 189 tests, 0 failures. C: 112.8 GB free before and after.
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 140, OK (skipped=5); also OK under TZ=Asia/Kolkata and TZ=Pacific/Kiritimati.
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK.
+
+APK: `logger/app/build/outputs/apk/debug/app-debug.apk`, versionName 0.9.0, versionCode 13. Not installed.
+
+Not done here / for the phone try-out: the whole step-20 checklist (UNDO after each capture kind and never on a photo notice, 750 ms arm, 8 s and screen-off, newer notice ends UNDO, Recent captures list/reasons/Un-flag/refused during ref or tilt, info `flagged` and REC count, grey cross, coverage recovery, PHOTO line, 0x5455 in a phone-made zip read by `zip_entry_mtime`, flagged ref skipped by the next pole check). No screenshot taken. The #20/#21/#23 issue comments from PR A are still not posted.
