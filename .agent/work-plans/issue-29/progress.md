@@ -679,3 +679,44 @@ Host decisions for PR B (owner may veto): aggregate sz2/sh from exact moments WS
 **Plan**: `.agent/work-plans/issue-29/plan.md` at `e8ef68c`
 
 Revised PR B per the plan review: fold test checks z' equality and the moment-formula variance (not the unfolded result); ring is the Chebyshev-1 dilation of the actual fed set (up to 30); plane_sequences expectations from a full per-capture recompute with the 1e-6 guard; all three n_in sites listed; memory keeps doubles with no fallback table; host decisions recorded and Open Questions removed.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 09:02 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #29 — Steep-bank relief for the node rebuild: a gradient from the neighbourhood, not the node's own split
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `e8ef68c`
+**Branch**: `feature/issue-29`
+**Serves**: Roadmap line "`icecube` runs on logger sessions in the project's local frame"; the project keeps no goals or design document, so none.
+
+Re-review of the revision for the Plan Review at 9c71951, checked against `icecube/nodes.py` and `Coverage.java` on main (94 Python tests pass).
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Unchanged: one PR, eight steps each with a test. |
+| Issue alignment | Good | Host decisions (1)-(8) recorded; Open Questions removed (prior 7 resolved). |
+| File targeting | Good | All three `len(stores[..]) - n_out` sites (lines 540, 553, 598) listed with the `_running` fallback (prior 4 resolved). |
+| Consequences | Good | Ring is the Chebyshev-1 dilation of the fed set, tie case tested (prior 2); sequences from a full recompute (prior 3); doubles kept, no fallback table (prior 5); 1e-6 guard extended (prior 6). |
+| Principle alignment | Needs work | "Test what breaks": step 1 still plans two assertions that do not hold in general (findings 1, 2). |
+| ADR compliance | Good | Project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Principle: test what breaks]** Step 1's new check "the folded variance is checked to be at least the unfolded `1/W'`" is false in general (my previous review offered it as optional; that was wrong). The unfolded `reduce_to_plane` gives each entry its own `d_i'C_g d_i`, a conservative per-entry term, while the aggregate carries only `d_agg'C_g d_agg`. Counterexample: two equal entries at `d = (±1, 0)`, `C_g = cI`, `sh = 0`: folded `s/2`, unfolded `1/W' = (s + c)/2`, so folded < unfolded. The inequality holds only with `C_g = 0` (then it is Gauss-Markov: the folded pass-1 weights are not optimal). Resolve: drop it, or assert it only with `cov_g = 0` passed to `reduce_to_plane`.
+2. **[Principle: test what breaks]** "A bank whose nodes each exceed CAP gets the same plane code and a `z'` within 1e-9 of the unfolded block" is under-specified. `NodeStore` drops (not folds) stored outliers when the store holds no main member, and the conditioning and significance gates use the neighbours' pass-1 `w`, which differs between folded and unfolded mains; so the code can differ near a threshold and dropped entries change `n_out'` (NO_GAIN). `z'` and the gradient match only on a noise-free linear surface where every neighbour main lies on the plane. Resolve: state the case is noise-free linear with no entry dropped (assert `n_dropped == 0`), name what "unfolded" is (the same `NodeStore` with `cap` large, not the batch `_robust`, which uses weight promotion and Eeg), and run the 1e-6 gate-margin guard on both runs so the code equality is not a coincidence; otherwise assert only `z'` and the gradient.
+3. **[Minor, plan text]** The Principles Self-Check row "New settings in `icecube.example.toml`" contradicts "no new setting" (PR B adds none); decisions (4) and (7) both say "no Settings toggle". Tidy when revising.
+
+### Summary
+
+Every finding from 9c71951 is resolved and matches main's code. The revision added two test claims in step 1 that assert things that are not true in general (one was my earlier suggestion). These are plan-text fixes; once made, the plan is ready to implement.
+
+### Recommended Actions
+
+- [ ] Drop the "folded >= unfolded `1/W'`" check, or restrict it to `cov_g = 0`
+- [ ] Pin the bank-past-CAP test: noise-free linear, `n_dropped == 0`, "unfolded" = large-cap `NodeStore`, margin guard; or assert only `z'` and gradient
+- [ ] Fix the stale `icecube.example.toml` self-check row and the duplicate toggle decision
