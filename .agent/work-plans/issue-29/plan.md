@@ -51,7 +51,11 @@ a bank node that is now trusted needs nothing). Planar/gradient/code are on `Nod
 line, not drawn. (4) A `Coverage(Params, boolean plane)` flag (default true); the existing tests and vectors
 run with it false where they pin pass-1 status, and `eventText` gains `plane=1 plane_min_neighbours=5 ...
 plane_max_sigma_g=0.08` so a session replays exactly. No Settings toggle. (5) Version 0.10.0, versionCode 14
-(`logger/app/build.gradle`, README title and Coverage section, `docs/howto/ice-cube.md` logger paragraph).
+(`logger/app/build.gradle`, README title and Coverage section, `docs/howto/ice-cube.md` logger paragraph;
+current 0.9.0 / 13). (6) The aggregate's `sz2`, `sh` come from the exact moments `WS`, `WH`, not a simpler `1/W`
+and 0. (7) No new tint or tap readout for planar nodes, no Settings toggle (always on, recorded in the events
+line). (8) Memory: per-entry geometry stays as doubles (floats would break the 1e-9 parity) and there is no
+per-capture fallback table; the store is bounded per node by CAP, so `manyCapturesStayBounded` stays as is.
 
 **Folded aggregate (new definition, Python first).** A node past CAP folds members into the aggregate, so the
 plane pass needs the aggregate's geometry. Add moments `WDX = sum w dx`, `WDY = sum w dy`, `WS = sum w^2 sz2`,
@@ -66,16 +70,25 @@ a fold, so no worse than pass 1). Pass-1 weights stay `w = W, v = 1/W`. The aggr
 1. **Python reference, `nodes.py`.** `NodeStore.add(z, v, id, dx, dy, sz2, sh)` keeps per-entry geometry and the
    four moments (zeroed when the aggregate is dropped); `_all()` builds the geometry-carrying pseudo-entry;
    `outputs()` adds `cx, cy`; `_robust` returns `n_in = main.cnt` and `n_out = sum(cnt) - main.cnt`;
-   `plane_pass` takes `n_in` from `o["n_in"]` when present (falling back to `len - n_out`) and adds
-   `n_dropped` to `n_out'` through `run`. Tests (`test_icecube.py`): batch results and all 94 existing tests
-   unchanged; a node folded past CAP with moments equals the same entries unfolded to the reduced mean `z'` and
-   to the pass-2 variance within 1e-9 for a linear surface; a dropped aggregate zeroes the moments; a bank
-   whose nodes each exceed CAP clears like the unfolded block.
+   `plane_pass` takes `n_in` from `o["n_in"]` when present (falling back to `len - n_out`) at all three
+   `len(entries) - n_out` sites (the red map, the neighbour `min_nin` usability, and the NO_GAIN test on `es2`;
+   `_running` has no `n_in` and keeps the fallback), and adds `n_dropped` to `n_out'` through `run`. For the
+   batch this changes nothing (every batch entry has `cnt = 1`, so `main.cnt == len - n_out`): no PR A result or
+   committed vector changes, and the PR body says so. Tests (`test_icecube.py`): the 94 existing tests and the
+   `plane_vectors` bytes unchanged; on a noise-free linear surface a node folded past CAP gives the same reduced
+   mean `z'` as the same entries unfolded, within 1e-9; the aggregate's pass-2 variance equals the stated moment
+   formula `WS/W^2 + g^2 WH/W^2 + d_bar'C_g d_bar` within 1e-9 (not the unfolded result: the unfolded pass
+   reweights each entry by its own slope and `d_i'C_g d_i`, so it differs by design; the folded variance is
+   checked to be at least the unfolded `1/W'`); a dropped aggregate zeroes the moments; a bank whose nodes each
+   exceed CAP gets the same plane code and a `z'` within 1e-9 of the unfolded block.
 2. **Vectors, `logger_vectors.py`.** Keep `plane_vectors` byte-identical. Add `plane_folded_vectors`: 2 blocks
    at about 40 soundings per disc (nodes past CAP), fed in arrival order through `NodeStore`, expected per node
-   as in `_plane_case` plus `cx, cy`; and `plane_sequences`: a bank block fed one capture at a time through
-   `LiveCoverage(plane=True)`, steps listing the nodes whose final status changed (pins the 25-node ring and the
-   touched list). Threshold guards as for `plane_vectors`. Update the module docstring and
+   as in `_plane_case` plus `cx, cy`; and `plane_sequences`: a bank block fed one capture at a time, steps
+   listing the nodes whose final status changed. The expectations come from a full recompute after each
+   capture (rebuild every node, then `plane_pass` over the whole grid), not from a Python twin of the ring, so a
+   wrong ring rule cannot be pinned on both sides; `LiveCoverage(plane=True)` is used only to check the
+   twin against that recompute. The 1e-6 relative gate-margin guard and the off-the-radius-circle rule of
+   `plane_vectors` apply to the folded and sequence vectors too (absolute 1e-9 parity stays). Update the module docstring and
    `test_logger_vectors.py` (cases do what they are named for; committed file matches); regenerate
    `coverage_vectors.json`.
 3. **Java, geometry in the store (`Coverage.java`).** Node arrays `edx, edy, esz2, esh` (capture minus node
@@ -83,21 +96,26 @@ a fold, so no worse than pass 1). Pass-1 weights stay `w = W, v = 1/W`. The aggr
    aggregate drop mirror step 1. Pass-1 `cx, cy` stored on `Node` (weighted mean over the main's members,
    aggregate at `(WDX/W, WDY/W)`). Test: with `plane=false` every existing `CoverageTest` (nodes, sequences,
    order, bounded, incremental) passes unchanged; a new test that `cx, cy` match the vectors' `cx, cy`.
-   Memory: four more doubles per entry is up to 2x the store; measure a 20k-node, full-CAP session heap
-   (`manyCapturesStayBounded`) and note it in the README.
+   Memory: four more doubles per entry is up to 2x the store; doubles stay (no floats, no per-capture table).
+   Report in the README the worst-case bytes for a full grid (`MAX_NODES` at CAP entries) and a typical session;
+   `manyCapturesStayBounded` is unchanged.
 4. **Java, the fit (`core/PlanePass.java`, pure).** Codes as `static final int` equal to `nodes.PLANE_*`;
    `fit(nbrs, ...)` with a 3x3 Cholesky, `posDef`, closed-form `sigmaGMax`, the three-stage conditioning and
    planarity order, gates in the `!(x <= limit)` form (NaN fails, infinity off for planarity and max_sigma_g),
    and `reduce`. Unit tests (`PlanePassTest`): each gate by hand (few, few-clear, collinear singular `A'WA`
    code 9 with `sigma_g` inf, non-PD scaled covariance, NaN and infinite limits, NaN and infinite `chi`),
    non-positive directional variance fails closed (9), weights of red neighbours.
-5. **Java, the pass in `Coverage`.** After a feed, the nodes whose pass 1 changed are the 3x3 fed; the plane
-   result of every node within Chebyshev 1 of them (5x5, 25) is recomputed from the pass-1 state of its 8
-   neighbours (one sweep: a neighbour cleared by its plane stays red for its neighbours' fits; red is the
-   pass-1 colour). Reuses the scratch arrays (no allocation per capture; run on the worker thread). Node
+5. **Java, the pass in `Coverage`.** `Coverage.add` feeds every node within `captureRadius` (0.75 m on a 0.5 m
+   grid), which is 3x3 only when the capture is near a node and up to 4 wide at a tie (capture 0.25 m off a
+   node row). The ring is the Chebyshev-1 dilation of the actual fed set (typically 25 nodes, up to 30), not a
+   fixed 5x5. A node's plane result depends only on its own pass-1 state and its 8 neighbours' pass-1
+   `z, w, cx, cy, n_in` and red flag (fit reach is one cell), so this is exact. Each ring node is recomputed
+   from the pass-1 state of its 8 neighbours (one sweep: a neighbour cleared by its plane stays red for its
+   neighbours' fits; red is the pass-1 colour). A neighbour not created (`MAX_NODES`) is absent, as in the
+   Python reference (confirm in step 2's twin check). Reuses the scratch arrays (no allocation per capture; run on the worker thread). Node
    gets the final fields; `status`/`displaySigma` read them; `drainTouched` lists a node whose final status
    or colour changed even when it was not fed; `eventText` adds the plane settings. Tests: `plane=false`
-   status unchanged; `incrementalEqualsRebuild` and `onlyChangedNodesAreTouched` repeated with `plane=true`;
+   status unchanged; `incrementalEqualsRebuild` (against a full rebuild, including a tie capture with 4 nodes in a line) and `onlyChangedNodesAreTouched` repeated with `plane=true`;
    `eventText` golden string.
 6. **Parity (`CoverageTest`).** `everyPlaneVector`: all 9 `plane_vectors` cases, every node: `z1`, `n_out1`,
    `code`, `planar`, `gradient` (null as NaN), final `z`, `sigma` to 1e-9, `n_in`, `n_out`; fed in identity and
@@ -107,7 +125,7 @@ a fold, so no worse than pass 1). Pass-1 weights stay `w = W, v = 1/W`. The aggr
 7. **Timing and repaint.** `CoverageWorkerTest`: a dense bank session of 5000 captures rebuilt under a time
    bound comparable to the pre-plane run recorded in the same test (ratio, not wall seconds); the raster
    patch for a ring-touched node. Report measured per-capture cost in the PR.
-8. **Docs and version.** `logger/README.md` (Coverage section: the plane pass, 25-node ring, no DEM on the
+8. **Docs and version.** `logger/README.md` (Coverage section: the plane pass, fed-set ring (about 25 nodes), no DEM on the
    phone, final-status overlay, events line, vectors list, 0.10.0 build 14), `docs/howto/ice-cube.md` (logger
    paragraph), `logger/app/build.gradle` (0.10.0, 14), `docs/log.md` entry. Run `./gradlew test lint` plus
    `python3 -m unittest discover icecube/tests`.
@@ -144,7 +162,7 @@ the rink through the season; the project keeps no goals or design document, so n
 ## Design Picture
 
 No change to the design picture (the project has no design document). The logger's re-reduction cost
-grows from 9 to 25 nodes per capture; noted in `logger/README.md` in PR B.
+grows from 9 to about 25 nodes (up to 30) per capture; noted in `logger/README.md` in PR B.
 
 ## Principles Self-Check
 
@@ -166,18 +184,7 @@ grows from 9 to 25 nodes per capture; noted in `logger/README.md` in PR B.
 |---|---|---|
 | entry and aggregate format | parity vectors both sides, `logger_vectors.py` | Yes (B: folded vectors, Python first) |
 | rebuild outputs | `report.py`, `docs/howto/ice-cube.md`, `logger/README.md` | Yes |
-| ring 9 to 25 nodes | logger timing on the phone | Yes, PR B |
-
-## Open Questions
-
-- Aggregate sz2 and sh from the moments `WS`, `WH` (exact for the weighted mean) rather than a simpler `1/W`
-  and 0: the plan takes the exact form; say if you prefer the simpler one.
-- Overlay: a planar node draws by its final status, no distinct colour or tap readout. Say if a tint or
-  hatch for "cleared by the plane" is wanted.
-- Version 0.10.0 / build 14 (a visible overlay behaviour change, as 0.8.0 was for #24); 0.9.1 if you read it as a fix.
-- Always on, no Settings toggle (replayable through the events line). Say if a toggle is wanted.
-- Memory of the per-entry geometry (step 3) is measured, not assumed; if it is too much, `dx, dy` could be
-  derived from stored capture x, y (same cost) or the store shrunk by moving `sz2, sh` to a per-capture table.
+| ring 9 to about 25 nodes | logger timing on the phone | Yes, PR B |
 
 ## Estimated Scope
 
