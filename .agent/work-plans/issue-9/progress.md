@@ -409,3 +409,18 @@ Scope: the cold read's must-fix and its fix commit 4f656e1. The importer half of
 
 ### Checks
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110 tests, OK (skipped=5)
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:17 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #32 at `f702cb9`
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the round-2 entry's must-fix and suggestion, and the fix commits bb1ecc3 and 3827f8d. Both are resolved. Soundings: `stranded_06` counts an unknown-version session only while `sessions.schema_version` is NULL or below SCHEMA_VERSION, the missing-column warning still uses `maybe_06`, and a gpkg without the schema_version column falls back to stranded (a re-import clears it). Importer: an unknown-version session is re-read only when its format is "points.csv" (the exact string logger_session sets); the `format` column is in the sessions table on main, so older rows are not NULL there. The new `from import_sessions import SCHEMA_VERSION` in soundings.py makes no cycle (import_sessions does not import soundings), and soundings is not part of the plugin's vendored pipeline. Cross-model: skipped (round-3 convergence check, per handoff). Tests run in review: analysis/qgis 110 OK (5 skipped); both changed tests fail against the pre-fix code. Static analysis: no Python linter installed here (ruff, flake8, pyflakes absent), so not checked. Public-repo check: no coordinates or private data in the fix diff.
+
+### Findings
+- [ ] No issues found. LGTM.
