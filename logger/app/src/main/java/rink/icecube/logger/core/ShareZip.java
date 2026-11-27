@@ -70,9 +70,13 @@ public final class ShareZip {
      * still re-encode the field from setExtra (OpenJDK does), so a zip should carry one
      * 0x5455 per entry with this time, not necessarily these exact bytes. Readers (the
      * importer's zip_entry_mtime) then order copies by UTC instead of by the DOS time, which
-     * is the phone's local time.
+     * is the phone's local time. Throws for seconds outside the signed 32-bit range (see
+     * {@link #fitsExtendedTimestamp}) rather than wrapping.
      */
     public static byte[] extendedTimestamp(long epochSeconds) {
+        if (epochSeconds < Integer.MIN_VALUE || epochSeconds > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(epochSeconds + " s does not fit an extended timestamp");
+        }
         int t = (int) epochSeconds;
         return new byte[] {
             (byte) (EXTENDED_TIMESTAMP_ID & 0xFF), (byte) (EXTENDED_TIMESTAMP_ID >>> 8),
@@ -83,13 +87,24 @@ public final class ShareZip {
     }
 
     /**
+     * Whether {@code epochSeconds} is a known mtime the 0x5455 field can hold: after 1970 and
+     * no later than 2038-01-19T03:14:07Z ({@link Integer#MAX_VALUE}). Later times would wrap
+     * negative, and the importer reads the field as signed, so a newer copy would order as
+     * decades old.
+     */
+    static boolean fitsExtendedTimestamp(long epochSeconds) {
+        return epochSeconds > 0 && epochSeconds <= Integer.MAX_VALUE;
+    }
+
+    /**
      * Writes the first {@code length} bytes of {@code f} as entry {@code entryName}, STORED
      * or DEFLATED by {@link #method}. STORED reads the file twice (CRC, then data). Every
      * entry carries the file's UTC mtime as an extended timestamp ({@link #extendedTimestamp})
      * besides the DOS time. A file whose mtime is unknown ({@code lastModified()} 0) gets no
      * extended timestamp, which would claim an exact 1970 time, and the oldest DOS time
      * ({@link #DOS_EPOCH_MS}), so a reader takes its copy as old, never as the newest (the
-     * desktop importer reads that exact DOS time as unknown).
+     * desktop importer reads that exact DOS time as unknown). A mtime past 2038-01-19, which
+     * the field cannot hold ({@link #fitsExtendedTimestamp}), gets the DOS time alone.
      */
     public static void addFile(ZipOutputStream z, String entryName, File f, long length, byte[] buf,
                                Progress progress) throws IOException {
@@ -97,7 +112,8 @@ public final class ShareZip {
         long mtime = f.lastModified();
         if (mtime > 0) {
             e.setTime(mtime);
-            e.setExtra(extendedTimestamp(Math.floorDiv(mtime, 1000L)));
+            long seconds = Math.floorDiv(mtime, 1000L);
+            if (fitsExtendedTimestamp(seconds)) e.setExtra(extendedTimestamp(seconds));
         } else {
             e.setTime(DOS_EPOCH_MS);
         }

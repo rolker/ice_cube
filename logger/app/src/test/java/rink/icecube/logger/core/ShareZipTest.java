@@ -37,6 +37,42 @@ public class ShareZipTest {
         assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, 0x40, 0x1F, 0x08, 0x6B},
                 ShareZip.extendedTimestamp(1795694400L));
         assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, 0, 0, 0, 0}, ShareZip.extendedTimestamp(0));
+        assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, 0x7F},
+                ShareZip.extendedTimestamp(Integer.MAX_VALUE));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void extendedTimestampRejectsPast2038() {
+        ShareZip.extendedTimestamp(Integer.MAX_VALUE + 1L);
+    }
+
+    @Test public void fitsExtendedTimestampBoundary() {
+        assertTrue(ShareZip.fitsExtendedTimestamp(Integer.MAX_VALUE));   // 2038-01-19T03:14:07Z
+        assertFalse(ShareZip.fitsExtendedTimestamp(Integer.MAX_VALUE + 1L));
+        assertTrue(ShareZip.fitsExtendedTimestamp(1));
+        assertFalse(ShareZip.fitsExtendedTimestamp(0));
+    }
+
+    /** The 0x5455 fields addFile writes for a file whose mtime is {@code seconds}. */
+    private int extendedCountForMtime(long seconds) throws IOException {
+        File f = tmp.newFile();
+        try (OutputStream o = new FileOutputStream(f)) { o.write("x\n".getBytes("UTF-8")); }
+        assertTrue(f.setLastModified(seconds * 1000L));
+        assertEquals(seconds * 1000L, f.lastModified());
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bytes)) {
+            ShareZip.addFile(z, "refs.csv", f, f.length(), new byte[64], null);
+        }
+        try (ZipFile zf = new ZipFile(writeZip(bytes))) {
+            byte[] extra = zf.getEntry("refs.csv").getExtra();
+            if (extendedCount(extra) == 1) assertEquals(seconds, extendedMtime(extra));
+            return extendedCount(extra);
+        }
+    }
+
+    @Test public void past2038GetsNoExtendedTimestamp() throws IOException {
+        assertEquals(1, extendedCountForMtime(Integer.MAX_VALUE));
+        assertEquals(0, extendedCountForMtime(Integer.MAX_VALUE + 1L));   // not a wrapped 1901 time
     }
 
     /** The mtime of the 0x5455 field in an extra block, or -1. */

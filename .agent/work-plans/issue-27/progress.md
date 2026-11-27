@@ -1182,7 +1182,7 @@ Scope: the newest Integrated Review's 5 findings (at `44f0c31`) and the fix diff
 Earlier entries at `d87686b` and `f73949d` are stale (code changed since) and were closed by the Integrated Review at `44f0c31` and its fix round; not re-listed.
 
 ### Findings
-- [ ] (suggestion, Local Review @ `4c8fd95` covers head via bookkeeping) Valid, confirmed in code: `extendedTimestamp` does `int t = (int) epochSeconds;`, so from 2038-01-19 the field wraps negative, and the importer reads 0x5455 as signed, so a post-2038 copy would order as decades old. Fix: in `addFile`, write the 0x5455 extra only when `0 < seconds <= Integer.MAX_VALUE` (otherwise fall back to the DOS time alone, as for unknown mtime), or have `extendedTimestamp` reject out-of-range input; add a boundary test at `Integer.MAX_VALUE` and `Integer.MAX_VALUE + 1`. Low urgency (12 years out) but cheap. — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java`
+- [x] (suggestion, Local Review @ `4c8fd95` covers head via bookkeeping) Valid, confirmed in code: `extendedTimestamp` does `int t = (int) epochSeconds;`, so from 2038-01-19 the field wraps negative, and the importer reads 0x5455 as signed, so a post-2038 copy would order as decades old. Fix: in `addFile`, write the 0x5455 extra only when `0 < seconds <= Integer.MAX_VALUE` (otherwise fall back to the DOS time alone, as for unknown mtime), or have `extendedTimestamp` reject out-of-range input; add a boundary test at `Integer.MAX_VALUE` and `Integer.MAX_VALUE + 1`. Low urgency (12 years out) but cheap. — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java`
 
 ### False positives
 
