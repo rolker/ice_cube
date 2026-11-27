@@ -550,3 +550,18 @@ Merge resolution checked: both features intact (0.6 method/tilt columns and per-
 - `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
 - `./gradlew testDebugUnitTest --max-workers 4`: 182 tests, 0 failures, 0 errors (C: 114 GB free)
 - Not pushed; the host owns the push.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:55 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #33 at `cac6b56`
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+PR-mode round 3: narrow check of the round-2 Local Review (@ 9b5a108) findings and the fix diff 02c804f..cac6b56. Cross-model: skipped (round-3 convergence check, per handoff). All seven addressed items verified in code and tests: voided capture's photo row (same utc) makes no window, so an accidental capture with photos leaves its stop live, per the owner's "depends on reason" rule; stranded_06 compares with SCHEMA_TILT = 3; phone (VoidRule.liveRefs with RefsCopy mtimes, PointRow.voidKnown) and importer (within a run and against void_copy_mtime in SQL) apply the same newest-copy rule, ties flagged, pre-0.9.0 rows never decide; README documents the partial-write event; refs.csv of every export reaches the rule (find_sessions others, refs_csv_copies, deduped and closed); n_voided coalesced to 0 when marking current; schema-3 gpkg lacking the void columns upgrades. The camera-target fallback stays deferred to PR B (host decision). Flags stay flags end to end (owner rule). Noted, not a finding: under the aligned rule a copy a partial void did not reach brings the old flag back if a ref is later appended to it; this follows the host decision and is documented in logger/README.md and the error event. Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 130, OK (skipped=5); `./gradlew testDebugUnitTest --max-workers 4 --tests 'rink.icecube.logger.core.*'` OK. No PR comments, reviews or CI checks.
+
+### Findings
+- [ ] No issues found. LGTM.
