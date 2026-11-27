@@ -212,7 +212,12 @@ it (UNDO right after a capture, and flagging from a list of recent captures) com
   `unflag n=<n>`, `photo moved n=<from> to=<to> photos=<files>` (with `own row` when a new
   photo row took them, followed by its `capture` line), and `ref n=<n> voided|unvoided in
   refs.csv (<k> rows)`, or `error: ref n=<n> not voided|unvoided in refs.csv (…)` when no
-  refs.csv could be rewritten (later sessions then still read the old flag).
+  refs.csv could be rewritten (later sessions then still read the old flag). A partial
+  write is an error too: `error: ref n=<n> voided|unvoided in <k> of <m> refs.csv copies
+  holding it (<rows> rows[; <u> refs.csv copies could not be read]); …`, also used when
+  every copy holding the row was rewritten but some copy could not be read at all. The
+  rewritten copies are then the newest, so readers take their flag; a copy not rewritten
+  brings the old flag back only if it is written to (a ref appended) later.
 
 The phone never reopens a session, so `points.csv` is written from the app's state, and
 `refs.csv` is the only void state the app reads back (the pole check, the earlier refs).
