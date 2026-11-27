@@ -78,6 +78,39 @@ public final class VoidRule {
         return best;
     }
 
+    /**
+     * The list of recent captures: the k newest capture rows (surface, object, ref; flagged
+     * ones included, photo rows left out), newest (highest n) first.
+     */
+    public static List<PointRow> recent(List<PointRow> rows, int k) {
+        List<PointRow> out = new ArrayList<>();
+        for (PointRow r : rows) if (r.isCapture()) out.add(r);
+        Collections.sort(out, (a, b) -> Integer.compare(b.n, a.n));
+        return out.size() > k ? new ArrayList<>(out.subList(0, k)) : out;
+    }
+
+    /** Flagged capture rows. */
+    public static int flaggedCount(List<PointRow> rows) {
+        int k = 0;
+        for (PointRow r : rows) if (r.isCapture() && r.voided) k++;
+        return k;
+    }
+
+    /** An age for the recent-captures list: "14 s", "5 min", "2 h"; "?" for a negative one. */
+    public static String ageText(long ageNs) {
+        if (ageNs < 0) return "?";
+        long s = ageNs / 1_000_000_000L;
+        if (s < 60) return s + " s";
+        if (s < 3600) return (s / 60) + " min";
+        return (s / 3600) + " h";
+    }
+
+    /** One line of the recent-captures list: "S12  surface  14 s ago", plus "  FLAGGED: reason". */
+    public static String recentLine(PointRow r, long nowNs) {
+        String t = PointRow.label(r.cls) + r.n + "  " + r.cls + "  " + ageText(nowNs - r.elapsedNs) + " ago";
+        return r.voided ? t + "  FLAGGED: " + (r.voidReason.isEmpty() ? "other" : r.voidReason) : t;
+    }
+
     /** Live captures (photo rows and voided rows not counted). */
     public static int liveCount(List<PointRow> rows) {
         int k = 0;

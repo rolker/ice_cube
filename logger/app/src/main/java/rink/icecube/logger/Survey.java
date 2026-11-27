@@ -675,6 +675,9 @@ final class Survey {
 
     synchronized PointRow[] rows() { return rows.toArray(new PointRow[0]); }
     synchronized int captures() { return captures; }
+    /** The k newest capture rows, flagged ones included, newest first (see VoidRule.recent). */
+    synchronized List<PointRow> recent(int k) { return VoidRule.recent(rows, k); }
+    synchronized int flagged() { return VoidRule.flaggedCount(rows); }
     synchronized RefView refView() {
         long now = SystemClock.elapsedRealtimeNanos();
         return ref == null ? null : new RefView(ref, refSeconds, now, guard.settling(now));

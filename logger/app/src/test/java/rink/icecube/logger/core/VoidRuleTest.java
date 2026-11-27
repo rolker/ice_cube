@@ -43,6 +43,25 @@ public class VoidRuleTest {
         assertFalse(VoidRule.undoOpen(capture, appeared + VoidRule.UNDO_ARM_MS * MS));
     }
 
+    @Test public void recentCapturesNewestFirst() {
+        List<PointRow> rows = new ArrayList<>();
+        for (int n = 1; n <= 14; n++) rows.add(row(n, n % 4 == 0 ? PointRow.PHOTO : PointRow.SURFACE));
+        rows.get(12).voided = true;   // n=13
+        rows.get(12).voidReason = "moved";
+        List<PointRow> r = VoidRule.recent(rows, 10);
+        assertEquals(10, r.size());
+        assertEquals(14, r.get(0).n);
+        assertEquals(13, r.get(1).n);                       // a flagged one stays in the list
+        for (PointRow x : r) assertTrue(x.isCapture());    // photo rows left out
+        assertEquals(2, r.get(r.size() - 1).n);
+        assertEquals(2, VoidRule.recent(rows.subList(0, 3), 10).size());
+        assertEquals(1, VoidRule.flaggedCount(rows));
+        assertEquals("S13  surface  14 s ago  FLAGGED: moved", VoidRule.recentLine(rows.get(12), 14_500 * MS));
+        assertEquals("S14  surface  2 min ago", VoidRule.recentLine(rows.get(13), 150_000 * MS));
+        assertEquals("1 h", VoidRule.ageText(3_700_000 * MS));
+        assertEquals("?", VoidRule.ageText(-1));
+    }
+
     @Test public void reasonsAreSafeInCsvAndEvents() {
         assertEquals(VoidRule.ACCIDENTAL, VoidRule.REASONS.get(0));
         for (String r : VoidRule.REASONS) assertEquals(r, VoidRule.reason(r));

@@ -549,6 +549,53 @@ public final class MainActivity extends Activity {
         handle(o);
     }
 
+    /**
+     * MENU > Recent captures: the last 10 capture rows, newest first. A live one can be
+     * flagged with a reason (kept, never deleted); a flagged one can be un-flagged. Not while
+     * a ref or tilt set runs (their cancel is the undo for those).
+     */
+    private void recentCaptures() {
+        Survey sv = survey();
+        if (sv == null) { toast("No session: tap REC to start one"); return; }
+        if (sv.refRunning() || sv.tiltRunning()) { toast("Finish or cancel the running capture first"); return; }
+        List<PointRow> rows = sv.recent(10);
+        if (rows.isEmpty()) { toast("No captures yet"); return; }
+        long now = SystemClock.elapsedRealtimeNanos();
+        String[] lines = new String[rows.size()];
+        for (int i = 0; i < lines.length; i++) lines[i] = VoidRule.recentLine(rows.get(i), now);
+        new AlertDialog.Builder(this).setTitle("Recent captures").setItems(lines, (d, which) -> {
+            PointRow r = rows.get(which);
+            String name = Survey.label(r.cls) + r.n;
+            if (r.voided) {
+                confirm("Un-flag " + name + "?", "Flagged: " + r.voidReason + ". Its photos stay where they were moved.",
+                        "Un-flag", () -> handle(sv.unvoidCapture(r.n)));
+            } else {
+                pickReason(sv, r.n, name);
+            }
+        }).setNegativeButton("Close", null).show();
+    }
+
+    /** The reason for flagging capture n: one of VoidRule.REASONS or typed text. */
+    private void pickReason(Survey sv, int n, String name) {
+        String[] items = new String[VoidRule.REASONS.size() + 1];
+        for (int i = 0; i < VoidRule.REASONS.size(); i++) items[i] = VoidRule.REASONS.get(i);
+        items[items.length - 1] = "Type a reason…";
+        new AlertDialog.Builder(this).setTitle("Flag " + name + ": why?").setItems(items, (d, which) -> {
+            if (which < VoidRule.REASONS.size()) { flag(sv, n, VoidRule.REASONS.get(which)); return; }
+            EditText e = new EditText(this);
+            e.setSingleLine(true);
+            new AlertDialog.Builder(this).setTitle("Flag " + name + ": reason").setView(e)
+                    .setPositiveButton("Flag", (d2, w) -> flag(sv, n, e.getText().toString()))
+                    .setNegativeButton("Cancel", null).show();
+        }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void flag(Survey sv, int n, String reason) {
+        Survey.Outcome o = sv.voidCapture(n, reason, VoidRule.VIA_LIST);
+        Feedback.play(this, o.ok ? Feedback.Cue.REF_CANCEL : Feedback.Cue.ERROR);
+        handle(o);
+    }
+
     private void confirmCancelTilt() {
         confirm("Cancel tilt capture?", "The leans are kept in tilt_obs.csv but no point is written.", "Cancel tilt",
                 () -> tiltAction("cancel"));
@@ -777,6 +824,7 @@ public final class MainActivity extends Activity {
         Survey sv = survey();
         if (sv != null && sv.tiltRunning()) item("Cancel tilt capture", this::confirmCancelTilt);
         else item("Tilt capture (" + mode().key + ")", () -> tiltAction("start"));
+        item("Recent captures…", this::recentCaptures);
         item("Layers…", this::pickLayers);
         item((coverageOn ? "☑" : "☐") + " Coverage overlay", this::toggleCoverage);
         item("Share last session", () -> {
@@ -1054,6 +1102,8 @@ public final class MainActivity extends Activity {
             t.append('\n');
         }
         t.append(map.frame() == null ? "origin: none yet" : map.originNote());
+        int flagged = sv == null ? 0 : sv.flagged();
+        if (flagged > 0) t.append('\n').append(flagged).append(" flagged");
         if (layerErrors > 0) t.append(String.format(Locale.US, "\n%d layer file(s) have errors (Settings)", layerErrors));
         String okLine = Status.layerOkText(s);
         if (okLine != null) t.append('\n').append(okLine);
