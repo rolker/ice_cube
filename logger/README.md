@@ -24,7 +24,7 @@ folder in Android Studio and press Run.
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
 The first line of the screen (and the last line of the MENU panel) shows the app version,
-e.g. "Ice Cube Logger 0.8.1 (build 12)".
+e.g. "Ice Cube Logger 0.11.0 (build 15)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting

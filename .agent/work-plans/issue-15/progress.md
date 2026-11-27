@@ -271,7 +271,7 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 - [x] (suggestion) `refView()` uses `guard.young(now)`, not the `refYoung` latch, so "(fix young)" drops off the ring even though the saved ref will be young (gemini) — `Survey.java:715`
 - [x] (suggestion) `mark()`/`lean()` test young at `now` but record `fix_age_s` at `a.lastNs`, so a row at the boundary can have `fix_age_s` < limit with `fix_young` 0. Use `a.lastNs` (gemini) — `Survey.java:330,375`
 - [x] (suggestion) When a logger source has no `session_paths`, the logger's own `fix_suspect`/`suspect_reason` are ignored and float-spell captures get use = 1. This predates the change, but the change widens it; fall back to the capture's columns (codex) — `analysis/qgis/soundings.py:782`
-- [ ] (suggestion) README version example still reads "0.8.1 (build 12)"; plan step 6 said to update it (gemini) — `logger/README.md:27`
+- [x] (suggestion) README version example still reads "0.8.1 (build 12)"; plan step 6 said to update it (gemini) — `logger/README.md:27`
 - [ ] (suggestion) Stale docstring "(SCHEMA_APP: 0.6 for 3, 0.9 for 4)" is missing "0.11 for 5" (Claude) — `analysis/qgis/import_sessions.py:81`
 - [ ] (suggestion) Python treats a negative `float_spell_s` as on (Java needs > 0), and the build log says "float spell >= 0 s" when the rule is off (gemini) — `analysis/qgis/soundings.py:393,1382`
 - [ ] (suggestion) Owner call: "young if any counted epoch was young" makes a ref started at fix age 100 s permanently unusable as a pole-check reference. This follows the plan's decision 3 and is documented in the README. Confirm it, or decide by the age at the end or the share of young epochs (Claude) — `Survey.java:217`, `PoleCheck.java`
