@@ -315,4 +315,71 @@ public class CoverageWorkerTest {
             assertEquals(w.generation(), got.get(got.size() - 1).gen);
         }
     }
+    /** A 0.3 m/m bank (z = 0.3 e + 2 cm noise) over a w by h metre patch, captures in random order. */
+    private static PointRow[] bank(int n, double w, double h, long seed) {
+        java.util.Random rnd = new java.util.Random(seed);
+        PointRow[] rows = new PointRow[n];
+        for (int k = 0; k < n; k++) {
+            double e = w * rnd.nextDouble(), no = h * rnd.nextDouble();
+            rows[k] = surface(e, no, 0.3 * e + 0.02 * rnd.nextGaussian());
+            rows[k].n = k;
+        }
+        return rows;
+    }
+
+    /** Feeds on a bank: a node the plane pass clears or reddens without being fed is repainted by the patch. */
+    @Test public void ringTouchedNodesArePatched() {
+        Queue q = new Queue();
+        Ui ui = new Ui();
+        CoverageWorker w = new CoverageWorker(q, ui::take, 64, 4);
+        ui.w = w;
+        Object session = new Object();
+        PointRow[] rows = bank(400, 6, 6, 7);
+        assertTrue(w.update(session, F, P, Arrays.copyOf(rows, 20)));
+        q.runAll();
+        ui.drain();
+        Coverage shadow = direct(P, Arrays.copyOf(rows, 20));
+        shadow.drainTouched();
+        int ringOnly = 0;
+        for (int n = 21; n <= rows.length; n++) {
+            assertFalse(w.update(session, F, P, Arrays.copyOf(rows, n)));
+            q.runAll();
+            ui.drain();
+            ui.screen.assertMatches(direct(P, Arrays.copyOf(rows, n)));
+            shadow.add(rows[n - 1], F);
+            double[] enu = F.toEnu(rows[n - 1].lat, rows[n - 1].lon, rows[n - 1].hGround);
+            for (Coverage.Node nd : shadow.drainTouched()) {
+                if (nd.n > 0 && Math.hypot(nd.i * P.cell - enu[0], nd.j * P.cell - enu[1]) > P.captureRadius) ringOnly++;
+            }
+        }
+        assertTrue("ring-only repaints " + ringOnly, ringOnly > 0);
+        int planar = 0;
+        for (Coverage.Node nd : direct(P, rows).nodes()) if (nd.planar) planar++;
+        assertTrue("planar " + planar, planar > 5);
+    }
+
+    /**
+     * A dense bank session of 5000 captures rebuilt with the plane pass, against the same
+     * rebuild without it in the same run (a ratio, not wall seconds, so a slow runner does
+     * not fail it). Prints the per-capture cost.
+     */
+    @Test public void planePassCostIsBounded() {
+        PointRow[] rows = bank(5000, 20, 10, 11);
+        Coverage.Params p = P;
+        long[] best = {Long.MAX_VALUE, Long.MAX_VALUE};
+        for (int rep = 0; rep < 3; rep++) {   // the first round warms the JIT up
+            for (int plane = 0; plane < 2; plane++) {
+                long t0 = System.nanoTime();
+                Coverage c = new Coverage(p, plane == 1);
+                for (PointRow r : rows) { c.add(r, F); c.drainTouched(); }
+                long t = System.nanoTime() - t0;
+                if (rep > 0) best[plane] = Math.min(best[plane], t);
+            }
+        }
+        double ratio = (double) best[1] / best[0];
+        System.out.printf(java.util.Locale.US, "coverage rebuild of %d bank captures: %.1f us/capture without the plane "
+                + "pass, %.1f us/capture with it (ratio %.2f)%n", rows.length, best[0] / 1e3 / rows.length,
+                best[1] / 1e3 / rows.length, ratio);
+        assertTrue("plane pass costs " + ratio + " x the pass-1 rebuild", ratio < 6.0);
+    }
 }
