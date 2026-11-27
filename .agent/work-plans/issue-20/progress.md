@@ -107,3 +107,13 @@ Sound direction and good reuse, but the plan names the wrong `soundings.py` entr
 - [ ] Plan step 3: call `soundings.build(..., gpkg=scratch, write=False)` with a generated one-source `[soundings]` config, not `logger_source` directly.
 - [ ] Plan step 3/4: require an ENU `[site]` origin; name the source of the current base and the `base_history` key, written to the scratch gpkg's meta; add the keys to `icecube.example.toml`.
 - [ ] During implementation: `session_paths` wiring; fallback in `logger_source` with its test; `from_file` default; `kinds` default; settle drop rule scope in the re-fit; re-check #15 names.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:55 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work on mechanism; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Revise per the Plan Review at 9390e09: call soundings.build(..., write=False) on a scratch gpkg with a generated one-source [soundings] block (note in the howto that anchors/verify_suspect then see only this session); require an ENU [site]; base position from a survey key, else read-only from the season gpkg, else base_from_sessions, written to the scratch gpkg metadata; pass base_history through; placeholders only in icecube.example.toml. Fold in the implementation-level items 3-6 (session_paths, the points.csv-only fallback with its own test in soundings.py, pass_rule.from_file defaulted by the reader, expose kinds with captures-only default, and state that the settle re-fit changes the sigma inflation only, the pass-drop rule stays at #15's 120 s, Java mirror the same scope).
