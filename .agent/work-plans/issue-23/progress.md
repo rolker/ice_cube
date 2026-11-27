@@ -121,3 +121,13 @@ The plan is ready for PR A once #15 merges. The reference rule, cues and setting
 - [ ] State the even-count median in the README rule.
 - [ ] Give the expected colour per ref (72, 127, 128, 329) for the step 8 replay.
 - [ ] Move the Open Questions to a Decisions section and re-check #15's merged names before step 1.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:55 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implementation (PR A) held until #15 merges; then rebase on main and re-check #15's names and column count. Settle during implementation the Plan Review at bc9125d's items, with these host decisions (owner may veto): the steadiness cue covers held (occupation) refs only, not tilt refs; a doubtful two-visit failure plays the existing warning cue (not the alarm) and does not set the persistent warnings bar; a pass against a single earlier visit is green with "1 earlier visit" in the text; #15's young/suspect amber notice and the pole-check result appear together, the more severe colour wins; even-count median = mean of the middle two, written in the README; replay expectations 127 red, 72 amber (placement), 128 and 329 not failing; fix the mislabelled test and add a three-visit median test; Open Questions become a Decisions section.
