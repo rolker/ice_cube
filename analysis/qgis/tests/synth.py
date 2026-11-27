@@ -195,6 +195,32 @@ def write_zip(path: Path, files: dict, refs: str | None = None, refs_date: tuple
     return path
 
 
+def phone_zip(path: Path, refs: str, utc: float, zone_s: int, refs_utc: float | None = None,
+              extended: bool = False, with_events: bool = True, events_gap_s: float = 1.0,
+              name: str = "2026-12-01_10-00-00"):
+    """A zip as a phone in a zone `zone_s` seconds east of UTC writes it at `utc`: DOS entry
+    times are local (utc + zone_s). <name>/events.csv (unless with_events is False) has a
+    last line whose wall_ms is events_gap_s before the zip time; refs.csv at the top level
+    is dated refs_utc (default utc), with a 0x5455 extended timestamp when `extended`."""
+    import time as _time
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def info(n, t):
+        zi = zipfile.ZipInfo(n, date_time=_time.gmtime(t + zone_s)[:6])
+        if extended:
+            zi.extra = (0x5455).to_bytes(2, "little") + (5).to_bytes(2, "little") + b"\x01" + \
+                int(t).to_bytes(4, "little", signed=True)
+        return zi
+    with zipfile.ZipFile(path, "w") as z:
+        if with_events:
+            wall = int((utc - events_gap_s) * 1000)
+            z.writestr(info(name + "/events.csv", utc),
+                       f"elapsed_ns,wall_ms,event\n{T0_NS},{wall - 60000},session start app=0.9.0\n"
+                       f"{T0_NS + 60 * 10**9},{wall},stop\n")
+        z.writestr(info("refs.csv", utc if refs_utc is None else refs_utc), refs)
+    return path
+
+
 def write_dir(root: Path, files: dict):
     for k, v in files.items():
         p = root / k

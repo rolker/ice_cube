@@ -20,6 +20,7 @@ Nothing here prints coordinates.
 from __future__ import annotations
 
 import bisect
+import calendar
 import csv
 import io
 import math
@@ -119,7 +120,7 @@ class SessionSource:
         return got[0] if got else None
 
     def refs_csv_copies(self):
-        """[(text, mtime)] of the refs.csv shipped with this session and with each other copy
+        """[(text, mtime, uncertainty_s)] of the refs.csv shipped with this session and with each other copy
         of it that find_sessions set aside (another export of the same session may carry a
         newer refs.csv), so the newest-copy rule sees them all. Each copy once (same file)."""
         out, seen = [], set()
@@ -138,11 +139,12 @@ class SessionSource:
         return out
 
     def refs_csv_dated(self):
-        """(text, mtime) of the refs.csv shipped with this session, or None. mtime is in
-        seconds since the epoch (UTC), so zip and folder copies compare: the file's
-        modification time, or the zip entry's time (see zip_entry_mtime; None when the zip
-        has no usable date). It orders refs.csv copies, so the newest one decides a row's
-        void flag."""
+        """(text, mtime, uncertainty_s) of the refs.csv shipped with this session, or None.
+        mtime is in seconds since the epoch (UTC), so zip and folder copies compare: the
+        file's modification time, or the zip entry's time (see zip_entry_stamp; mtime None
+        when the zip has no usable date). uncertainty_s is how far off mtime may be (0 for a
+        file or a UTC extended timestamp; see zip_entry_stamp). It orders refs.csv copies, so
+        the newest one decides a row's void flag."""
         if self.is_zip:
             inner = self.zip_prefix.rstrip("/")
             parent = inner.rsplit("/", 1)[0] + "/" if "/" in inner else ""
@@ -151,11 +153,23 @@ class SessionSource:
                     info = self._z().getinfo(cand)
                 except KeyError:
                     continue
-                return (self._z().read(info).decode("utf-8", "replace"),
-                        zip_entry_mtime(info))
+                mtime, unc = zip_entry_stamp(info, *self.zone_offset())
+                return self._z().read(info).decode("utf-8", "replace"), mtime, unc
             return None
         p = self.path.parent / "refs.csv"
-        return (p.read_text("utf-8", "replace"), p.stat().st_mtime) if p.is_file() else None
+        return (p.read_text("utf-8", "replace"), p.stat().st_mtime, 0.0) if p.is_file() else None
+
+    def zone_offset(self):
+        """(zone offset in seconds, events.csv ZipInfo) of this zip's writer, from the
+        session's events.csv (see zip_zone_offset), or (None, None) for a folder or a zip
+        whose events.csv gives no usable offset."""
+        if not self.is_zip:
+            return None, None
+        try:
+            info = self._z().getinfo(self.zip_prefix + "events.csv")
+        except KeyError:
+            return None, None
+        return zip_zone_offset(info, self._z().read(info)), info
 
     @property
     def snapshot(self):
@@ -173,13 +187,17 @@ class SessionSource:
         return self.path.name + (f"!{self.zip_prefix}" if self.is_zip else "")
 
 
-def zip_entry_mtime(info):
-    """Modification time of a zip entry in seconds since the epoch (UTC), or None. Uses the
-    entry's extended timestamp (extra field 0x5455, UTC) when it has one; otherwise the DOS
-    date and time, which a zip stores in the writer's local time and which is read here in
-    this machine's local time zone (the logger's zips carry only that, so a phone and a PC
-    in different zones can misorder copies by the offset). A zero or invalid DOS date
-    gives None."""
+ZONE_STEP_S = 900            # every real zone offset is a multiple of 15 min
+ZONE_RESIDUAL_S = 120        # events.csv's entry time this close to its last line, after rounding
+ZONE_MAX_S = 14 * 3600       # the largest zone offsets
+APPROX_S = 26 * 3600         # a time read in this PC's zone may be off by up to two zone offsets
+DST_FAR_S = 12 * 3600        # an entry this far from events.csv may have another DST offset
+DST_S = 3600
+
+
+def zip_extended_mtime(info):
+    """The UTC modification time of a zip entry's extended timestamp (extra 0x5455, which
+    the logger writes from 0.9.0), or None."""
     extra, i = info.extra or b"", 0
     while i + 4 <= len(extra):
         tag, size = int.from_bytes(extra[i:i + 2], "little"), int.from_bytes(extra[i + 2:i + 4], "little")
@@ -187,12 +205,86 @@ def zip_entry_mtime(info):
         if tag == 0x5455 and len(body) >= 5 and body[0] & 1:
             return float(int.from_bytes(body[1:5], "little", signed=True))
         i += 4 + size
+    return None
+
+
+def zip_dos_seconds(info):
+    """A zip entry's DOS date and time read as if UTC (calendar.timegm, no PC zone), or
+    None for a zero or invalid date. Minus the writer's zone offset it is UTC."""
     y, mo, d, h, mi, sec = info.date_time
     try:
         datetime(y, mo, d, h, mi, sec)   # rejects a zero month or day
+    except (ValueError, OverflowError):
+        return None
+    return float(calendar.timegm((y, mo, d, h, mi, sec, 0, 0, 0)))
+
+
+def zip_entry_mtime(info, zone_offset_s=None):
+    """Modification time of a zip entry in seconds since the epoch (UTC), or None. Uses the
+    entry's extended timestamp (extra field 0x5455, UTC) when it has one. Otherwise the DOS
+    date and time, which a zip stores in the writer's local time: corrected by
+    `zone_offset_s` (the writer's offset east of UTC, see zip_zone_offset) when given, else
+    read in this machine's local time zone (a phone and a PC in different zones can then
+    misorder copies by the offset). A zero or invalid DOS date gives None."""
+    ext = zip_extended_mtime(info)
+    if ext is not None:
+        return ext
+    dos = zip_dos_seconds(info)
+    if dos is None:
+        return None
+    if zone_offset_s is not None:
+        return dos - zone_offset_s
+    y, mo, d, h, mi, sec = info.date_time
+    try:
         return time.mktime((y, mo, d, h, mi, sec, 0, 0, -1))
     except (ValueError, OverflowError):
         return None
+
+
+def zip_zone_offset(events_info, events_bytes):
+    """The zone offset (seconds east of UTC) of the phone that wrote a logger zip, or None.
+    events.csv's last line carries wall_ms (UTC) and its DOS entry time is that file's
+    mtime in the phone's zone, a moment later, so their difference rounded to 15 min is the
+    offset. Accepted only when the remainder after rounding is at most ZONE_RESIDUAL_S and
+    the offset within +-14 h: a snapshot zip (events written while it was zipped) or a copy
+    tool that reset the mtime gives None rather than a confidently wrong offset."""
+    dos = zip_dos_seconds(events_info)
+    if dos is None or not events_bytes:
+        return None
+    wall = None
+    for line in events_bytes.decode("utf-8", "replace").splitlines()[::-1]:
+        parts = line.split(",", 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            wall = int(parts[1]) / 1000.0
+            break
+    if wall is None:
+        return None
+    diff = dos - wall
+    off = round(diff / ZONE_STEP_S) * ZONE_STEP_S
+    if abs(diff - off) > ZONE_RESIDUAL_S or abs(off) > ZONE_MAX_S:
+        return None
+    return float(off)
+
+
+def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
+    """(mtime, uncertainty_s) of a zip entry for ordering refs.csv copies. With an extended
+    timestamp: that UTC time, uncertainty 0. A DOS time corrected by the zip's zone offset
+    (zip_zone_offset): uncertainty 0, or DST_S when the entry's DOS time is more than
+    DST_FAR_S from events.csv's (a DST change may lie between them). Without an offset
+    (mtime_approx): the time read in this PC's zone, uncertainty APPROX_S. Two copies whose
+    times are within the larger uncertainty of the two are a tie (flagged wins)."""
+    ext = zip_extended_mtime(info)
+    if ext is not None:
+        return ext, 0.0
+    if zone_offset_s is None:
+        t = zip_entry_mtime(info)
+        return t, (APPROX_S if t is not None else 0.0)
+    dos = zip_dos_seconds(info)
+    if dos is None:
+        return None, 0.0
+    ev = zip_dos_seconds(events_info) if events_info is not None else None
+    unc = DST_S if ev is not None and abs(dos - ev) > DST_FAR_S else 0.0
+    return dos - zone_offset_s, unc
 
 
 def _sessions_in_zip(path):
