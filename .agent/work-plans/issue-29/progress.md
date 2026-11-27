@@ -762,3 +762,24 @@ Owner's answer to "How should it continue?": "Proceed, fix in code (Recommended)
 ### Deferred
 - PR body (no batch result or committed vector changes; the measured cost and memory) is the host's
 - The worst-case full-grid memory (600 MB) is beyond a phone heap, as the 290 MB before was; not reachable in a real session, noted in the README
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 09:33 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-29 at `cbba472`
+**Base**: main
+**Depth**: Deep (reason: ~1,650 code lines across Python reference, Java port and tests (+8,415 generated vector lines), cross-layer batch/logger parity)
+**Must-fix**: 0 | **Suggestions**: 4
+**Round**: 1 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Specialists: static (gradle lintDebug clean; no Python linter installed, py_compile clean), governance, plan drift, Claude adversarial, cross-model (gemini, codex: both complete).
+Verified: `./gradlew testDebugUnitTest lintDebug --max-workers 4` 214 tests, 0 failures (C: 111 GB free); `python3 -m unittest discover icecube/tests` 101 OK; regenerated `coverage_vectors.json` is byte-identical to the committed file, and every pre-existing section (incl. `plane_vectors`) equals main's. Parity of PlanePass/Coverage with `plane_fit`/`plane_pass`/`reduce_to_plane` checked gate by gate (order, `!(v <= lim)` form, Cholesky inverse, posDef, NaN/inf); ring = Chebyshev-1 dilation of the fed set is exact (pass-1 state changes only in feed; tested against `replaneAll` at zero tolerance); Coverage stays on the single worker thread, UI sees immutable frames only; batch `plane_pass` caller passes no `dropped` and `_robust` counts are unchanged for cnt = 1. The 11-21 live 1 vs batch 2 planar difference is pre-existing #24 behaviour: on main `NodeStore.rebuild` uses `promote="count"` and `_robust` `promote="weight"`. Memory: real sessions 0.5-1.3 MB, well within what the overlay held before; only the unreachable full-grid bound doubles (290 -> ~600 MB).
+
+### Findings
+- [ ] (suggestion) `plane_over` hardcodes `PLANE_PARAMS["cell"]`; pass `cov.cell`/`self.cell` from `_ring` and `_full_plane` (gemini + codex) — `icecube/logger_vectors.py:172`
+- [ ] (suggestion) Ring size "up to 30" is wrong: the largest fed-set dilation at the defaults is 26 (the tie capture's 5x6 box minus 4 corners); fix the comment, the test javadoc and the README — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:56`, `logger/app/src/test/java/rink/icecube/logger/core/CoverageTest.java:341`, `logger/README.md`
+- [ ] (suggestion) `Node.varFinal` javadoc says 1/W' but it holds 1/W' + d_bar'C_g d_bar — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:150`
+- [ ] (suggestion) `LiveCoverage.gtrace` is set and never used — `icecube/logger_vectors.py:202`
