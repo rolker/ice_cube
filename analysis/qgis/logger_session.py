@@ -156,7 +156,7 @@ class SessionSource:
                 except KeyError:
                     continue
                 text = self._z().read(info).decode("utf-8", "replace")
-                ext = zip_extended_mtime(info)   # exact: events.csv not needed
+                ext = zip_extended_mtime(info)   # UTC: events.csv not needed
                 if ext is not None:
                     return text, ext, EXT_S
                 zone, events_info = self.zone_offset()
@@ -200,7 +200,7 @@ ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may re
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
 APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
 DST_S = 3600                 # another entry than events.csv may have another DST offset
-EXT_S = 0.0                  # a 0x5455 time is exact
+EXT_S = 1.0                  # a 0x5455 time is whole seconds (floored), a file mtime is not
 
 
 def zip_extended_mtime(info):

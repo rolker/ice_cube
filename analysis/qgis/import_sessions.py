@@ -59,7 +59,7 @@ the same rule, VoidRule.liveRefs); a ref with no copy that has a `void` column h
 NULL. A flag moves a capture's photos to another row (the files keep their names): a
 photo's `n` and `attached` come from the points.csv row whose photo column lists it, not
 from the number in its file name or its original event. A zip entry's time is its UTC
-extended timestamp (logger 0.9.0, exact), else its DOS time corrected by the zone offset
+extended timestamp (logger 0.9.0, whole seconds, so within 1 s), else its DOS time corrected by the zone offset
 found from the zip's events.csv (within 1 h: a DST change may lie between the entry and
 events.csv), else (mtime_approx) the DOS time read as if UTC (within 26 h: off by the writer's zone
 offset, but the same on every PC, so importing the zip on a PC in another zone adds no copy

@@ -206,12 +206,12 @@ class ImportTest(unittest.TestCase):
         z = synth.write_zip(self.d / name, synth.session_v05(), refs=synth.refs_csv_void(True), refs_utc=now)
         run(z, "--gpkg", self.gpkg)
         sql = "SELECT void, void_copy_mtime, void_copy_unc FROM refs WHERE session='2026-11-30_09-00-00'"
-        self.assertEqual(self.q(sql), [(1, float(int(now)), 0.0)])
+        self.assertEqual(self.q(sql), [(1, float(int(now)), 1.0)])   # 0x5455: whole seconds
         z.unlink()
         z = synth.write_zip(self.d / name, synth.session_v05(), refs=synth.refs_csv_void(False),
                             refs_utc=now + 3600)
         run(z, "--gpkg", self.gpkg)
-        self.assertEqual(self.q(sql), [(0, float(int(now + 3600)), 0.0)])
+        self.assertEqual(self.q(sql), [(0, float(int(now + 3600)), 1.0)])
 
     def test_void_reason_stored_only_when_flagged(self):
         """A row with void=0 but a reason left over stores no void_reason, in captures and in
@@ -838,7 +838,7 @@ class RefsCopyTimeTest(unittest.TestCase):
         # flagged copy is 7 h 50 min newer, the UTC times say the cleared one is newer
         a = self.copy(self.flagged, self.T, 3 * 3600, extended=True)
         b = self.copy(self.cleared, self.T + 600, -5 * 3600, extended=True)
-        self.assertEqual((a[1:], b[1:]), ((self.T, 0.0), (self.T + 600, 0.0)))
+        self.assertEqual((a[1:], b[1:]), ((self.T, 1.0), (self.T + 600, 1.0)))
         self.assertEqual(self.void([a, b]), 0)
 
     def test_extended_timestamp_skips_events_csv(self):
@@ -846,9 +846,26 @@ class RefsCopyTimeTest(unittest.TestCase):
         src = find_sessions([z])[0]
         src.zone_offset = lambda: self.fail("events.csv read for a refs.csv with 0x5455")
         try:
-            self.assertEqual(src.refs_csv_dated()[1:], (self.T, 0.0))
+            self.assertEqual(src.refs_csv_dated()[1:], (self.T, 1.0))
         finally:
             src.close()
+
+    def test_extended_timestamp_is_uncertain_by_a_second(self):
+        """A 0x5455 time is floored to whole seconds, a folder copy's st_mtime is not: a
+        folder copy cleared at T + 0.2 s and a zip copy flagged at T + 0.7 s (stored as T) may
+        be in either order, so they tie, flagged; 2 s apart they do not."""
+        z = synth.phone_zip(self.d / "sub.zip", self.flagged, self.T + 0.7, -18000, extended=True)
+        src = find_sessions([z])[0]
+        try:
+            zipped = src.refs_csv_dated()
+        finally:
+            src.close()
+        self.assertEqual(zipped[1:], (self.T, 1.0))
+        ties = []
+        self.assertEqual(self.void([(self.cleared, self.T + 0.2, 0.0), zipped], ties), 1)
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+        clear_refs(self.gp)
+        self.assertEqual(self.void([(self.cleared, self.T + 2.2, 0.0), zipped]), 0)
 
     def test_dos_time_corrected_by_zone_offset(self):
         a = self.copy(self.flagged, self.T, 3 * 3600)
