@@ -379,7 +379,9 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
     (non-float epochs, or none), so a one-epoch dropout before the fix cannot hide it.
 
     Clock: t, the GGA time, for every gap test, with GAP_TOL_S of slack so a whole-epoch
-    dropout that lands on gap_s reads as in the logger (which uses the GGA time too).
+    dropout that lands on gap_s reads as in the logger (which uses the GGA time too). A
+    backward time step is never within gap_s: it starts a stretch and ends a float spell, as
+    in the logger.
 
     With a station filter, a fixed epoch from another station is not one of ours but not a
     dropout either: like a float epoch it ends the stretch, and it also ends a float spell
@@ -392,16 +394,21 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
     why, spell = "", None
     float_since, last_float_t = None, None
     gap = gap_s + GAP_TOL_S
+
+    def in_gap(a, b):
+        """Epoch b at most gap_s after epoch a; a backward time step is never within (#15)."""
+        return 0 <= ep.t[b] - ep.t[a] <= gap
+
     for i in range(len(ep)):
         has = ep.x[i] is not None
         other = (ep.fix[i] == 4 and has and station is not None
                  and ep.station[i] not in (station, -1))
         fixed = ep.fix[i] == 4 and has and not other
         is_float = ep.fix[i] == 5 and has
-        spell_on = float_since is not None and ep.t[i] - last_float_t <= gap
+        spell_on = float_since is not None and 0 <= ep.t[i] - last_float_t <= gap
         if fixed:
             new, within = True, False
-            if last_fix is not None and ep.t[i] - ep.t[last_fix] <= gap \
+            if last_fix is not None and in_gap(last_fix, i) \
                     and ep.station[i] == ep.station[last_fix]:
                 d = math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[last_fix], ep.y[last_fix], ep.za[last_fix]))
                 within = d > max(in_fix_jump_m, in_fix_speed * (ep.t[i] - ep.t[last_fix]))
@@ -413,7 +420,7 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
                 # corrections yet) always "jumps" by metres; that is not a false-fix signature
                 if within:
                     jump = d
-                elif last_corr is not None and ep.t[i] - ep.t[last_corr] <= gap:
+                elif last_corr is not None and in_gap(last_corr, i):
                     k = last_corr
                     jump = math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[k], ep.y[k], ep.za[k]))
                 else:

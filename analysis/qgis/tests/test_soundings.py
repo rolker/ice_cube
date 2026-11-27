@@ -147,6 +147,27 @@ class TestStretchesAndStops(unittest.TestCase):
             ep = run(seg(0, 60, 5) + seg(60, 0.25, q, e=3.0) + seg(60.25, 2, 4, n=0.48))
             self.assertAlmostEqual(ep.jump[ep.stretch.index(0)], 0.48, delta=0.01)
 
+    def test_backward_time_step_parity_with_logger_fixguard(self):
+        """#15, FixGuardTest backwardGgaTimeStepStartsAStretch: a fixed epoch whose GGA time
+        steps back from the last fixed epoch starts a stretch (the next one continues it), and
+        a fix that steps back from the last float epoch ends the float spell."""
+        fix = lambda t0, s: [(t0 + k / 4, 0.0, 0.0, 1.8, 4) for k in range(int(s * 4))]  # noqa: E731
+        flt = lambda t0, s: [(t0 + k / 4, 0.0, 0.0, 1.8, 5) for k in range(int(s * 4))]  # noqa: E731
+        ep = epochs_from(fix(0, 3))
+        ep.t[8] = ep.t[7] - 0.5                              # 1.75 s, then 1.25 s
+        snd.fix_stretches(ep, suspect_jump_m=1.0)
+        self.assertEqual(ep.stretch[7], 0)
+        self.assertEqual(ep.stretch[8], 1)
+        self.assertEqual(ep.stretch[9], 1)                   # 2.25 s: 1 s after it, same stretch
+        ep = epochs_from(flt(0, 30) + fix(30, 2))
+        i = len(flt(0, 30))
+        ep.t[i] = ep.t[i - 1] - 0.25
+        snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0)
+        self.assertEqual(ep.stretch[i], 0)
+        self.assertIsNone(ep.float_spell[i])
+        self.assertIsNone(ep.jump[i])
+        self.assertFalse(ep.suspect[i])
+
     def test_jump_carries_over_a_short_dropout(self):
         """#15, FixGuardTest startJumpCarriesOverAShortDropout: the start jump is measured from
         the last float or fixed epoch across a dropout (no position, single or DGPS) of 2 s or

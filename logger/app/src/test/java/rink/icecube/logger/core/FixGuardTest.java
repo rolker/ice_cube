@@ -251,6 +251,33 @@ public class FixGuardTest {
         assertEquals(1.5, FixGuard.dt(new Epoch(0, Double.NaN, 0, 0, 0, 1, 4), new Epoch(1500_000_000L, 1.0, 0, 0, 0, 1, 4)), 1e-9);
     }
 
+    /** An epoch at phone time t (ns) with GGA time of day tod (s) at the origin. */
+    static Epoch atTod(long t, double tod, int q) {
+        double[] g = F.toGeodetic(0, 0, 0);
+        return new Epoch(t, tod, g[0], g[1], g[2], 1, q);
+    }
+
+    // #15 parity with test_soundings test_backward_time_step_parity_with_logger_fixguard: a
+    // backward GGA time step starts a stretch and ends a float spell
+    @Test public void backwardGgaTimeStepStartsAStretch() {
+        FixGuard g = guard();
+        FixGuard.Stretch a = g.onEpoch(atTod(0, 1.5, 4));
+        assertNull(g.onEpoch(atTod(Q, 1.75, 4)));
+        FixGuard.Stretch b = g.onEpoch(atTod(2 * Q, 1.25, 4));
+        assertNotNull(b);
+        assertEquals(2, g.count());
+        assertNull(g.onEpoch(atTod(3 * Q, 2.25, 4)));   // 1 s after it: same stretch
+        assertEquals(b, g.current());
+        assertNotNull(a);
+        FixGuard h = guard();
+        long t = feed(h, 0, 30, 5, 0, 0, 0);            // tod 0..29.75
+        FixGuard.Stretch s = h.onEpoch(atTod(t, 29.5, 4));
+        assertNotNull(s);
+        assertTrue(Double.isNaN(s.floatSpellS));
+        assertTrue(Double.isNaN(s.jump));
+        assertFalse(s.suspect);
+    }
+
     @Test public void distanceIsHorizontalWithoutHeight() {
         Epoch a = ep(0, 4, 0, 0, 0), b = ep(0, 4, 3, 4, 10);
         Epoch bNoH = new Epoch(0, 0, b.lat, b.lon, Double.NaN, 1, 4);

@@ -113,8 +113,15 @@ public final class FixGuard {
         return d;
     }
 
-    /** Whether b is at most 2 s after a ({@link #dt}, with {@link #GAP_TOL_S} of slack). */
-    static boolean within2s(Epoch a, Epoch b) { return dt(a, b) <= GAP_S + GAP_TOL_S; }
+    /**
+     * Whether b is at most 2 s after a ({@link #dt}, with {@link #GAP_TOL_S} of slack). A
+     * backward step of the receiver clock is never within, so it starts a stretch and ends a
+     * float spell (#15; soundings.fix_stretches is the same).
+     */
+    static boolean within2s(Epoch a, Epoch b) {
+        double d = dt(a, b);
+        return d >= 0 && d <= GAP_S + GAP_TOL_S;
+    }
 
     /** 3D distance in metres; horizontal only if either height is missing. */
     public static double distance(Epoch a, Epoch b) {
