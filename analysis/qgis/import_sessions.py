@@ -334,7 +334,7 @@ def import_refs_csv(gp, texts):
     `texts` holds refs.csv texts, or (text, mtime) pairs. When copies disagree, the newest
     copy (by mtime; equal or unknown times keep input order) gives the row, and its void
     flag comes from the newest copy that has a void column, so a copy from before 0.9.0
-    never clears a flag. Returns (refs.csv rows, of which flagged void=1)."""
+    never clears a flag, not even one stored by an earlier import. Returns (refs.csv rows, of which flagged void=1)."""
     dated = [(t, None) if isinstance(t, str) else tuple(t) for t in texts]
     dated = sorted(enumerate(dated), key=lambda it: (it[1][1] if it[1][1] is not None else float("-inf"), it[0]))
     rows, flags = {}, {}
@@ -354,8 +354,11 @@ def import_refs_csv(gp, texts):
         out.append(d)
     if out:
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
+        # only rows a copy in this run has a void column for: copies from before 0.9.0 alone
+        # never reset a flag that an earlier import took from a newer copy
         gp.con.executemany("UPDATE refs SET void=?, void_reason=? WHERE session=? AND n=? AND source='refs.csv'",
-                           [(d["void"], d["void_reason"], d["session"], d["n"]) for d in out])
+                           [(d["void"], d["void_reason"], d["session"], d["n"]) for d in out
+                            if (d["session"], d["n"]) in flags])
     return len(out), sum(d["void"] for d in out)
 
 

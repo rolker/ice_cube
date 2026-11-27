@@ -186,7 +186,7 @@ class ImportTest(unittest.TestCase):
 
     def test_refs_csv_copies_newest_decides_void(self):
         """Copies of refs.csv that disagree: the newest decides, and an older-format copy
-        (no void column) never clears a flag, whatever the input order."""
+        (no void column) never clears a flag, whatever the input order, nor in a later run."""
         gp = gw.GeoPackage(self.d / "r.gpkg")
         imp.ensure_schema(gp)
         hdr = "session," + synth.POINTS_HDR
@@ -201,6 +201,8 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(void(), [(1, "moved")])
         self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0), (pre09, 200.0)]), (1, 1))
         self.assertEqual(void(), [(1, "moved")])              # the newer copy has no void column
+        imp.import_refs_csv(gp, [(pre09, 400.0)])            # a later run with only the old copy
+        self.assertEqual(void(), [(1, "moved")])              # keeps the stored flag
         self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 100.0)]), (1, 0))
         self.assertEqual(void(), [(0, None)])                 # unflagged since: newest wins
         gp.close()
