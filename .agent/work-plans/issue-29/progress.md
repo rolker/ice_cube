@@ -473,3 +473,29 @@ Specialists: static (no Python linter installed; py_compile clean; 90 tests OK; 
 - [ ] (suggestion) plan.md PR B port notes still say the output sigma feeds the agreement test; now noise-only (1/W' + d_bar'C_g d_bar, pass bias out), conditioning runs on the unscaled covariance before planarity, an infinite DEM slope fails (plan drift) — `.agent/work-plans/issue-29/plan.md:84-90`
 - [ ] (suggestion) A NaN raw DEM slope also comes from NoData holes inside the DEM, not only outside its cover; docs say "outside the DEM's cover" — say holes skip the gate too, or treat them differently (codex) — `icecube/nodes.py:573`, `icecube/topo.py:159`
 - [ ] (suggestion) PR body Decision summary is stale (85 tests, review history ends at the pre-push round 3, agreement gate not noise-only); refresh before merge — PR #34 body
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 20:29 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #34 at `677b6cb`
+**Sources**: 1 (Local Review @ `61612f4`, covers `677b6cb` via bookkeeping; no hosted reviews; no CI checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass
+
+No must-fix. All nine round-2 suggestions were checked against the code at `677b6cb` and are valid; none is a false positive.
+
+### Findings
+- [ ] (suggestion, Local Review @ `61612f4`) Agreement cross term `2 d_bar'cov(a, g)` is pinned by no test: flipping its sign or deleting it passes the suite. Emit `vagree`/`tol` (or `var_a`, `cov_ag`) in the plane vectors, or unit-test `vagree` against `[1, d_bar]' Cov [1, d_bar] + 1/W'` — `icecube/nodes.py`, `icecube/logger_vectors.py`
+- [ ] (suggestion, Local Review @ `61612f4`) Gates with no behavioural test: the scaled conditioning check, the significance allowance term and the `n_out` strictly-drops clause (only `test_committed_file_is_current` catches them). The `_pos_def(cov)` after scaling is reachable only if `chi^2` scaling overflows (a non-finite `planarity` limit); add tests or a comment on why — `icecube/nodes.py`
+- [ ] (suggestion, Local Review @ `61612f4`) Module docstring says "a NaN or infinite value or limit fails" every gate, and the howto says "a gate whose value or limit is not a finite number fails". But `plane_fit`'s `chi <= planarity` and `sigma_g <= max_sigma_g` pass a finite value against an infinite limit, and only the DEM gate checks its limit. Check the limits, or reword to "a non-finite computed value fails" (the `plane_fit` docstring already says that) — `icecube/nodes.py:102-103`, `docs/howto/ice-cube.md:156`
+- [ ] (suggestion, Local Review @ `61612f4`) Module docstring "Gates, in order" lists planarity before conditioning; the code runs unscaled conditioning, then planarity, then scaled conditioning. Step 1 says the pass bias "mostly" shifts the plane, but step 4 says it "cancels" in `z' - a`; make the two agree — `icecube/nodes.py:92-94`, `icecube/nodes.py:119-122`
+- [ ] (suggestion, Local Review @ `61612f4`) `PLANE_NOT_PLANAR` returns `dict(chi=chi)` only, so the vector threshold guard never traces the unscaled conditioning gate that a not-planar node passed. Return `sigma_g` too — `icecube/nodes.py:473`
+- [ ] (suggestion, Local Review @ `61612f4`) In `test_outlier_table_lists_planar_nodes_first` the gradient-filled check is vacuous: `rstrip(" |")` strips an empty last cell, so `[-1]` reads the sigma cell. Use `split("|")[-2]` as the next line does — `icecube/tests/test_icecube.py:725`
+- [ ] (suggestion, Local Review @ `61612f4`) plan.md's PR B port notes still say the output sigma feeds the agreement test. Update them: the test is now noise-only (`1/W' + d_bar'C_g d_bar` plus the cross term, pass bias left out), conditioning runs on the unscaled covariance before planarity, and an infinite DEM slope fails — `.agent/work-plans/issue-29/plan.md:84-91`
+- [ ] (suggestion, Local Review @ `61612f4`) A NaN raw DEM slope also comes from NoData holes inside the DEM (`dem.bilinear` returns NaN next to NaN cells), not only from outside its cover. The comment, docstring and howto say "outside the DEM's cover"; say that holes skip the gate too, or treat them differently — `icecube/nodes.py:573`, `icecube/topo.py:159`, `docs/howto/ice-cube.md:155`
+- [ ] (suggestion, Local Review @ `61612f4`) The PR body's Decision summary is stale: it says "icecube 85 OK", its review history stops at pre-push round 3, and it does not mention that the agreement gate is noise-only. Refresh it before merge — PR #34 body
+
+### False positives
