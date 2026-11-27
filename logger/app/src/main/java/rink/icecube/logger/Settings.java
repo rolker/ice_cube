@@ -68,8 +68,14 @@ final class Settings {
     static SharedPreferences prefs(Context c) {
         SharedPreferences p = c.getSharedPreferences("settings", Context.MODE_PRIVATE);
         if (!settleChecked) {
-            settleChecked = true;
-            migrateSettle(p);
+            // the flag is set only after the migration, under a lock, so a concurrent first
+            // read (service and Settings screen) waits rather than seeing the old 10
+            synchronized (Settings.class) {
+                if (!settleChecked) {
+                    migrateSettle(p);
+                    settleChecked = true;
+                }
+            }
         }
         return p;
     }
