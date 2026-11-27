@@ -344,17 +344,19 @@ def _plane_params():
     return PLANE_PARAMS | {"plane_" + k: v for k, v in nodes.PLANE_DEFAULTS.items()}
 
 
-def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01, surface=None, ymin=None):
-    """Soundings at random (stdlib random, seeded) over an n x n block of nodes from (0, 0),
-    `per_disc` per capture disc on average, z = g*x (or `surface(x, y)`) plus N(0, sz),
-    rounded to 0.1 mm; `ymin` drops the soundings below it (a survey edge)."""
+def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01, surface=None, ymin=None, ny=None):
+    """Soundings at random (stdlib random, seeded) over an n x n block of nodes from (0, 0)
+    (n columns along x by `ny` rows along y when given), `per_disc` per capture disc on
+    average, z = g*x (or `surface(x, y)`) plus N(0, sz), rounded to 0.1 mm; `ymin` drops
+    the soundings below it (a survey edge)."""
     import random
     rnd = random.Random(seed)
-    lo, hi = -0.75, (n - 1) * 0.5 + 0.75
-    m = int(round(per_disc / (math.pi * 0.75 ** 2) * (hi - lo) ** 2))
+    ny = n if ny is None else ny
+    lo, hi, hiy = -0.75, (n - 1) * 0.5 + 0.75, (ny - 1) * 0.5 + 0.75
+    m = int(round(per_disc / (math.pi * 0.75 ** 2) * (hi - lo) * (hiy - lo)))
     out = []
     for _ in range(m):
-        x, y = round(rnd.uniform(lo, hi), 4), round(rnd.uniform(lo, hi), 4)
+        x, y = round(rnd.uniform(lo, hi), 4), round(rnd.uniform(lo, hiy), 4)
         z0 = g * x if surface is None else surface(x, y)
         out.append([x, y, round(z0 + rnd.gauss(0.0, sz), 4), sz, sh])
     return [r for r in out if ymin is None or r[1] >= ymin]
@@ -365,6 +367,9 @@ def _plane_cases():
     (test_logger_vectors checks)."""
     import random
     out = [("bank_0.3_clears", _plane_block(0.3, 3)), ("bank_0.2_clears", _plane_block(0.2, 3))]
+    # a bank along (+x, -y), z = 0.2 x - 0.2 y, on 7 columns by 5 rows: node (3, 2) clears,
+    # which needs the y part of the gradient (its sign, cy on the y axis) right
+    out.append(("bank_diag_clears", _plane_block(0.0, 14, n=7, ny=5, surface=lambda x, y: 0.2 * x - 0.2 * y)))
     # flat ground, one +15 cm capture 0.7 m from node (2, 2): no node planar
     flat = _plane_block(0.0, 7)
     flat.append([round(1.0 + 0.7 * math.cos(0.9), 4), round(1.0 + 0.7 * math.sin(0.9), 4), 0.15, 0.02, 0.01])

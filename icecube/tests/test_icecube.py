@@ -614,18 +614,18 @@ class TestRobustNodes(unittest.TestCase):
         self.assertEqual(nodes.eeg_cull(e, list(range(len(z))), q_cube * 1.001), [])
 
 
-def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None, ny=None):
+def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None, ny=None, gy=0.0):
     """Soundings at random on a block of n x n nodes (n x `ny` when given: n columns along x,
     ny rows along y; cell 0.5 m, node (0, 0) at the origin), `per_disc` per 0.75 m capture
-    disc on average, z = g*x plus N(0, sz) noise; `extra` (x, y, z) arrays appended; `ymin`
-    drops soundings below it (a survey edge)."""
+    disc on average, z = g*x + gy*y plus N(0, sz) noise; `extra` (x, y, z) arrays appended;
+    `ymin` drops soundings below it (a survey edge)."""
     ny = n if ny is None else ny
     rng = np.random.default_rng(seed)
     lo, hi, hiy = -0.75, (n - 1) * 0.5 + 0.75, (ny - 1) * 0.5 + 0.75
     m = int(round(per_disc / (np.pi * 0.75 ** 2) * (hi - lo) * (hiy - lo)))
     x = rng.uniform(lo, hi, m)
     y = rng.uniform(lo, hiy, m)
-    z = g * x + rng.normal(0, sz, m)
+    z = g * x + gy * y + rng.normal(0, sz, m)
     if extra is not None:
         x, y, z = np.r_[x, extra[0]], np.r_[y, extra[1]], np.r_[z, extra[2]]
     if ymin is not None:
@@ -694,6 +694,20 @@ class TestPlanePass(unittest.TestCase):
             for k in SAME:
                 np.testing.assert_array_equal(getattr(s, k)[~red_of(s0)], getattr(s0, k)[~red_of(s0)])
         self.assertEqual(red_neighbours(s0, *self.C), 3)   # the 0.3 case has red neighbours
+
+    def test_bank_along_y_and_diagonal_on_a_non_square_grid(self):
+        # 9 columns by 7 rows, a bank along +y and one along (+x, -y): a regression in the
+        # y part (gy's sign, cy on the wrong axis) would reduce the entries the wrong way,
+        # so accepted heights would miss the bank or the agreement gate would refuse them
+        for gx, gy, seed in ((0.0, 0.3, 0), (0.2, -0.2, 4)):
+            p, grid = bank_block(gx, seed, n=9, ny=7, gy=gy)
+            s0, s = bank_run(p, grid, plane=False), bank_run(p, grid)
+            acc = s.plane_code == nodes.PLANE_ACCEPTED
+            self.assertGreaterEqual(acc.sum(), 0.7 * red_of(s0).sum(), (gx, gy))
+            Y, X = np.mgrid[0:grid.ny, 0:grid.nx] * grid.cell
+            np.testing.assert_allclose(s.z[acc], (gx * X + gy * Y)[acc], atol=0.03)
+            np.testing.assert_allclose(s.gradient[acc], np.hypot(gx, gy), atol=0.06)
+            self.assertFalse(np.any(red_of(s) & ~red_of(s0)))
 
     def test_accepted_sigma_carries_the_common_gradient_error(self):
         # the gradient error is common to every reduced entry: the output sigma'^2 is the
