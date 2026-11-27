@@ -409,3 +409,22 @@ Merged origin/main (#32, issue 9): auto-merged cleanly; coverage_vectors.json re
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110, OK (skipped=5)
 - `./gradlew testDebugUnitTest --max-workers 4`: BUILD OK (C: 113 GB free)
 - Private replays (counts only), unchanged: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:52 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: changes-requested
+
+**PR**: #34 at `dc5bfb8`
+**Depth**: Standard (reason: whole-PR re-review after fix round, ~1.5k hand-written lines in icecube/ plus a generated 10.7k-line vector file; no security or governance-file triggers)
+**Must-fix**: 1 | **Suggestions**: 4
+
+Specialists: static (no Python linter installed: ruff/flake8/pyflakes absent, py_compile only; 87 tests OK), governance (public-repo check clean: synthetic local metres only), plan drift (fix round matches the four triaged items), Claude adversarial, cross-model gemini + codex (both complete). The fix round itself (fac18d6..70293ea) is correct: the cross-term sign checks out (error of z' - a is -dg.d_bar + noise - da), and the two tests now pin what they claim.
+
+### Findings
+- [ ] (must-fix) Agreement gate tolerance includes the node's pass-bias variance (o2 sigma = noise + var_bias + vbar) while var_a is noise-only by design; by the module's own argument the shared bias cancels in z' - a, so tol is inflated by k*sb. Reproduced: test_wrong_cluster_keeps_pass1's +15 cm cluster goes PLANE_OFF_PLANE -> PLANE_ACCEPTED (cleared, +14 cm error) with sb = 0.01, 0.02 or 0.03; every TestPlanePass test runs sb = 0. Use the noise-only variance (1/W' + vbar) in vagree, keep var_bias in the output sigma, and add a test with sb > 0 (gemini, confirmed locally) — `icecube/nodes.py:584`
+- [ ] (suggestion) Check conditioning on the unscaled Ninv (PD + sigma_g) before solving beta and gating planarity, so collinear fits return ILL_CONDITIONED deterministically; the committed collinear_ill_conditioned vector depends on a roundoff Cholesky failure, and 18 of 120 neighbour summation orders give PLANE_NOT_PLANAR instead, a parity hazard for the Java port (gemini) — `icecube/nodes.py:448-468`, `icecube/logger_vectors.py:404`
+- [ ] (suggestion) Non-finite inputs fail open at the edges: with plane_max_sigma_g = inf an indefinite covariance passes (sigma_g set to inf compares <= inf), likewise chi = inf with plane_planarity = inf; an infinite raw DEM slope skips the DEM gate (only NaN means outside cover). Return ILL_CONDITIONED directly when not _pos_def, and skip the DEM gate on NaN only (gemini, codex) — `icecube/nodes.py:461-468`, `icecube/nodes.py:562`
+- [ ] (suggestion) Every plane test and vector bank slopes along x only; a y-axis regression (gy sign, cy on the wrong axis) would pass. Add one bank sloping along y or diagonally on a non-square grid (Claude adversarial; a probe shows it works today) — `icecube/tests/test_icecube.py:617`, `icecube/logger_vectors.py:347`
+- [ ] (suggestion) table_outliers now lists planar nodes but still sorts by maxnr and cuts at 30; cleared planar nodes have low maxnr and drop off on large grids while the header counts them. Say the list is truncated or give planar nodes their own ordering (Claude adversarial) — `icecube/report.py:181`
