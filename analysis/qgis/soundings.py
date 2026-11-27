@@ -822,10 +822,16 @@ def clist_windows(clist, include_voided=False):
     """Time windows (unix s) of the captures of a session, to drop stops that are captures.
     A capture flagged void in the logger (#27) makes no window unless include_voided, so an
     accidental MARK does not hide a real pole stop as dup_capture (a capture voided for any
-    other reason flags its stop through void_stop_windows instead)."""
+    other reason flags its stop through void_stop_windows instead). Nor does a photo row at
+    a voided capture's time: the logger moves a voided capture's photos to such a row
+    (VoidRule.photoRowFor, same utc) when no earlier live capture can take them, and it is
+    part of the voided capture, not a capture of its own."""
+    voided_utc = {c["utc"] for c in clist if c["utc"] and c["void"]}
     out = []
     for c in clist:
         if not c["utc"] or (c["void"] and not include_voided):
+            continue
+        if c["class"] == "photo" and not c["void"] and c["utc"] in voided_utc:
             continue
         out.append(_capture_span(c))
     return out

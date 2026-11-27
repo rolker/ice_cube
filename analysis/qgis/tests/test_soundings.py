@@ -299,12 +299,17 @@ class TestBuild(unittest.TestCase):
         self.assertIn("voided_included", snd.flags_of(cap[2]))   # the trace stays
         self.assertEqual(cap[2]["use"], 1)
 
-    def _voided_stops(self, reason, include_voided=False):
+    def _voided_stops(self, reason, include_voided=False, photo_row=False):
         """Build the make_session data with capture 2 (surface, on the stop at x = 9 m)
-        voided for `reason`; returns (the stop rows at x = 9 m, the capture row 2, the log)."""
-        ses = make_session(self.d / f"{reason.replace(' ', '_')}_{int(include_voided)}" / "sessions")
+        voided for `reason`; returns (the stop rows at x = 9 m, the capture row 2, the log).
+        photo_row adds row 3, the photo row the logger makes for a voided capture's photos
+        (VoidRule.photoRowFor: class photo, the voided row's utc and position)."""
+        ses = make_session(self.d / f"{reason.replace(' ', '_')}_{int(include_voided)}_{int(photo_row)}"
+                           / "sessions")
         p = ses / "points.csv"
         lines = p.read_text().splitlines()
+        if photo_row:
+            lines.append("3,photo," + [l for l in lines if l.startswith("2,")][0][len("2,surface,"):])
         lines = [lines[0] + ",void,void_reason"] + [
             l + (f",1,{reason}" if l.startswith("2,") else ",0,") for l in lines[1:]]
         p.write_text("\n".join(lines) + "\n")
@@ -355,6 +360,27 @@ class TestBuild(unittest.TestCase):
         self.assertIn("void:accidental", snd.flags_of(cap))
         self.assertEqual(cap["use"], 0)
         self.assertFalse(any("pole stops at captures voided" in l for l in logged))
+
+    def test_capture_voided_as_accidental_with_photo_row_leaves_its_stop(self):
+        """An accidental capture with photos and no earlier live capture gets a photo row at
+        its time (#27); that row makes no capture window either, so the pole stop is used."""
+        stops, cap, _ = self._voided_stops("accidental", photo_row=True)
+        self.assertEqual(len(stops), 1)
+        fl = snd.flags_of(stops[0])
+        self.assertFalse(any(f.startswith("void_stop:") or f == "dup_capture" for f in fl), fl)
+        self.assertEqual(stops[0]["use"], 1, fl)
+        # with include_voided the voided capture's own window makes the stop a dup_capture
+        stops, _, _ = self._voided_stops("accidental", include_voided=True, photo_row=True)
+        self.assertIn("dup_capture", snd.flags_of(stops[0]))
+
+    def test_photo_row_window_only_when_not_of_a_voided_capture(self):
+        """A photo row makes a capture window unless a voided capture has the same utc."""
+        caps = [{"utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 1},
+                {"utc": "2026-01-01T00:00:10Z", "class": "photo", "void": 0},
+                {"utc": "2026-01-01T00:01:10Z", "class": "photo", "void": 0}]
+        t = snd.parse_iso(caps[2]["utc"])
+        self.assertEqual(snd.clist_windows(caps), [(t - 1.0, t)])
+        self.assertEqual(len(snd.clist_windows(caps, include_voided=True)), 2)   # the capture's own and the other photo row
 
     def test_void_stop_windows(self):
         """Only captures voided for a reason other than 'accidental' make a void-stop window,
