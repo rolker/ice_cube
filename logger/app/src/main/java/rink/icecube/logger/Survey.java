@@ -128,7 +128,7 @@ final class Survey {
         final double remainingS, progress;
         final int epochs, durationS;
         final boolean paused;
-        /** The fix is young now (the ref goes on and will be marked young). */
+        /** The ref will be marked young: a counted epoch was young (the latch), or the fix is young now. */
         final boolean young;
         RefView(RefOccupation r, int durationS, long nowNs, boolean young) {
             remainingS = r.remainingSeconds(); progress = r.progress(); epochs = r.epochs();
@@ -720,7 +720,8 @@ final class Survey {
     synchronized String photoTarget() { return PhotoRule.targetText(lastCapture, SystemClock.elapsedRealtimeNanos()); }
     synchronized RefView refView() {
         long now = SystemClock.elapsedRealtimeNanos();
-        return ref == null ? null : new RefView(ref, refSeconds, now, guard.young(now));
+        // the refYoung latch keeps "(fix young)" on the ring once the saved ref will be young
+        return ref == null ? null : new RefView(ref, refSeconds, now, refYoung || guard.young(now));
     }
     synchronized boolean refRunning() { return ref != null; }
     Notice notice() { Notice n = notice; return n != null && SystemClock.uptimeMillis() < n.untilMs ? n : null; }
