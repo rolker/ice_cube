@@ -1230,7 +1230,7 @@ class TestNodeStore(unittest.TestCase):
                 cov.add(r[0], r[1], 0.3 * r[0], r[3], r[4], k)
             st = cov.stores()
             gt = []
-            res = lv.plane_over(st, 3.0, 0.05, gtrace=gt)
+            res = lv.plane_over(st, 0.5, 3.0, 0.05, gtrace=gt)
             for g in gt:
                 self.assertGreater(abs(g[1] - g[2]), 1e-6 * max(1.0, abs(g[2])), g)
             return st, res
@@ -1248,6 +1248,21 @@ class TestNodeStore(unittest.TestCase):
                 accepted_folded += sa[k].agg_n > 0
         self.assertGreater(len(both), 20)
         self.assertGreater(accepted_folded, 5)
+
+    def test_live_plane_uses_its_cell(self):
+        """LiveCoverage(plane=True) on a 0.25 m grid fits its planes on 0.25 m spacing: a
+        0.3 m/m bank (the 0.5 m block scaled by half) gives accepted nodes a gradient near
+        0.3, not the 0.15 a fit on 0.5 m spacing would give."""
+        from icecube import logger_vectors as lv
+        cov = lv.LiveCoverage(0.25, 0.375, 0.0, plane=True)
+        for k, r in enumerate(lv._plane_block(0.3, 3, per_disc=12)):
+            x, y = 0.5 * r[0], 0.5 * r[1]
+            cov.add(x, y, 0.3 * x + 0.5 * (r[2] - 0.3 * r[0]), 0.5 * r[3], 0.5 * r[4], k)
+        grads = [cov.final(nd)["gradient"] for nd in cov.nodes.values()
+                 if nd.store is not None and nd.plane is not None and nd.plane[0] == nodes.PLANE_ACCEPTED]
+        self.assertGreater(len(grads), 3)
+        for g in grads:
+            self.assertAlmostEqual(g, 0.3, delta=0.06)
 
 class TestGrowth(unittest.TestCase):
     def _surf(self, name, dz, frame="A", seed=0):

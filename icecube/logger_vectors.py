@@ -154,9 +154,9 @@ def _count_run(k_sigma, trace=None):
     return run
 
 
-def plane_over(stores, k_sigma, slope, trace=None, gtrace=None):
+def plane_over(stores, cell, k_sigma, slope, trace=None, gtrace=None):
     """nodes.plane_pass over `stores`, a dict (i, j) -> nodes.NodeStore (the logger's
-    nodes with soundings), with PLANE_DEFAULTS, the constant slope allowance and no DEM.
+    nodes with soundings) on a grid of spacing `cell`, with PLANE_DEFAULTS, the constant slope allowance and no DEM.
     Returns (i, j) -> (code, pass-2 output or None, |g| or NaN) for the tried nodes. The
     pass-2 n_out includes the store's dropped entries; `trace`/`gtrace` as in
     `_check_trace` and plane_pass."""
@@ -169,7 +169,7 @@ def plane_over(stores, k_sigma, slope, trace=None, gtrace=None):
     es = {q: stores[key]._all() for q, key in idx.items()}
     out1 = {q: stores[key].outputs() for q, key in idx.items()}
     dropped = {q: stores[key].n_dropped for q, key in idx.items() if stores[key].n_dropped}
-    tried = nodes.plane_pass(es, out1, nx, ny, PLANE_PARAMS["cell"], k_sigma, _count_run(k_sigma, trace),
+    tried = nodes.plane_pass(es, out1, nx, ny, cell, k_sigma, _count_run(k_sigma, trace),
                              lambda a, b: slope, None, gtrace, dropped=dropped,
                              **{k: v for k, v in nodes.PLANE_DEFAULTS.items()})
     return {idx[q]: r for q, r in tried.items()}
@@ -241,7 +241,7 @@ class LiveCoverage:
         ring = {(i + di, j + dj) for i, j in fed for di in (-1, 0, 1) for dj in (-1, 0, 1)}
         near = {(i + di, j + dj) for i, j in ring for di in (-1, 0, 1) for dj in (-1, 0, 1)}
         st = {k: self.nodes[k].store for k in near if k in self.nodes and self.nodes[k].store is not None}
-        res = plane_over(st, self.k_sigma, self.slope)
+        res = plane_over(st, self.cell, self.k_sigma, self.slope)
         for k in ring:
             if k in st:
                 self.nodes[k].plane = res.get(k)
@@ -560,7 +560,7 @@ def _full_plane(name, cov):
     threshold guards; checks that cov's ring (Coverage.java's rule) gave the same result
     for every node, then sets each node's plane result from the recompute."""
     trace, gtrace = [], []
-    res = plane_over(cov.stores(), cov.k_sigma, cov.slope, trace, gtrace)
+    res = plane_over(cov.stores(), cov.cell, cov.k_sigma, cov.slope, trace, gtrace)
     _check_trace(name, trace + cov.trace, cov.k_sigma)
     for g in gtrace:
         assert abs(g[1] - g[2]) > 1e-6 * max(1.0, abs(g[2])), (name, "plane gate on its threshold", g)
