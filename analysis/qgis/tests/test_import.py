@@ -778,8 +778,11 @@ class RefsCopyTimeTest(unittest.TestCase):
                 info = zf.getinfo("2026-12-01_10-00-00/events.csv")
                 self.assertEqual(zip_zone_offset(info, zf.read(info)), zone)
         # a residual of a few seconds is accepted; a 10 min snapshot gap is not (no offset
-        # 15 min off), nor is an offset beyond 14 h
-        for gap, want in ((5, -18000.0), (600, None)):
+        # 15 min off), nor is an offset beyond 14 h.
+        # a stale mtime 2 x 15 min + 60 s after the last line is not taken for a zone 30 min
+        # east (a 120 s window let it through); one 5 s past a 15 min multiple still is, the
+        # documented limit (zip_zone_offset)
+        for gap, want in ((5, -18000.0), (600, None), (1860, None), (1805, -18000.0 + 1800)):
             self.k += 1
             z = synth.phone_zip(self.d / f"g{self.k}.zip", self.cleared, self.T, -18000, events_gap_s=gap)
             with zipfile.ZipFile(z) as zf:

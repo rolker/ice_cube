@@ -194,7 +194,8 @@ class SessionSource:
 
 
 ZONE_STEP_S = 900            # every real zone offset is a multiple of 15 min
-ZONE_RESIDUAL_S = 120        # events.csv's entry time this close after its last line, after rounding
+ZONE_RESIDUAL_S = 10         # events.csv's entry time this close after its last line, after rounding
+                             # (the logger flushes each line as it writes it, so its mtime is that line's)
 ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
 APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
@@ -251,11 +252,17 @@ def zip_entry_mtime(info, zone_offset_s=None):
 def zip_zone_offset(events_info, events_bytes):
     """The zone offset (seconds east of UTC) of the phone that wrote a logger zip, or None.
     events.csv's last line carries wall_ms (UTC) and its DOS entry time is that file's
-    mtime in the phone's zone, a moment later, so their difference rounded to 15 min is the
-    offset. Accepted only when the remainder after rounding is from -ZONE_TRUNC_S (DOS
-    truncation) to ZONE_RESIDUAL_S (the file is written after its last line) and
-    the offset within +-14 h: a snapshot zip (events written while it was zipped) or a copy
-    tool that reset the mtime gives None rather than a confidently wrong offset."""
+    mtime in the phone's zone, a moment later (the logger flushes each line as it writes
+    it), so their difference rounded to 15 min is the offset. Accepted only when the
+    events.csv mtime, corrected by that offset, is within -ZONE_TRUNC_S (DOS truncation) to
+    +ZONE_RESIDUAL_S of its last wall_ms, and the offset within +-14 h; otherwise None, so
+    a snapshot zip (events written while it was zipped) or a copy tool that reset the mtime
+    gives no offset rather than a confidently wrong one.
+
+    Limit: events.csv alone cannot tell a stale or reset mtime that happens to land within
+    that window of a 15 min multiple (about 1 in 75 random gaps under 14 h) from a real
+    one; such a zip gets an offset wrong by a multiple of 15 min, with only the 1 h DST
+    allowance (zip_entry_stamp). A zip from 0.9.0 has 0x5455 times and never comes here."""
     dos = zip_dos_seconds(events_info)
     if dos is None or not events_bytes:
         return None
