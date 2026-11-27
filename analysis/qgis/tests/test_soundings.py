@@ -555,6 +555,24 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(caps[1]["tilt_deg"], sg["tilt_bubble_deg"])
         self.assertNotIn("warning", logged)
 
+    def test_no_raw_capture_uses_the_loggers_suspect_flags(self):
+        """#15: with no session_paths a capture's own fix_suspect/suspect_reason give its
+        flags, so a logger float-spell capture gets use 0; fix_suspect with no reason (logger
+        0.6 to 0.10) is a jump."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        caps, _ = self._build_logger(gpkg)
+        self.assertEqual(caps[1]["use"], 1)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='float_spell' WHERE n=1")
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason=NULL WHERE n=2")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg)
+        self.assertIn("float_spell", snd.flags_of(caps[1]))
+        self.assertNotIn("suspect_jump", snd.flags_of(caps[1]))
+        self.assertEqual(caps[1]["use"], 0)
+        self.assertIn("suspect_jump", snd.flags_of(caps[2]))
+
     def test_tilt_capture_gst_floors(self):
         """With GST (1.5 cm height sigma) above the tilt sd_u the GST term wins."""
         ses = make_session(self.d / "sessions", tilt_sd=(0.004, 0.004, 0.005))

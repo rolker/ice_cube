@@ -390,7 +390,8 @@ issue #9); a change here means regenerating `python3 -m icecube.logger_vectors`.
 The slowly varying RTK wander is not in this sigma: it is the pass bias the crossover
 solves. Rows are left out (flags) when float, on another reference station, in a fix that
 began with a float-to-fix jump over 1 m (`suspect_jump`, a false fix) or right after a
-float spell of at least `float_spell_s` (default 20 s; `float_spell`, logger 0.11.0, #15)
+float spell of at least `float_spell_s` (default 20 s; `float_spell`, logger 0.11.0, #15;
+without the raw session, from the capture's own `fix_suspect` and `suspect_reason`)
 unless other data agree with that pass (`suspect_verified`), a SW Maps point or pole stop
 within `settle_s` (default 120 s, 90 s until logger 0.11.0) of its fix start (`settle`; a
 logger capture there keeps its larger settle sigma instead), listed as known bad, flagged as bad in the logger (`void`, kept

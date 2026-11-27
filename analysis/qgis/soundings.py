@@ -662,6 +662,22 @@ def _listed_reason(by_n, by_t, session, n, t):
 
 
 TILT_COLUMNS = ("method", "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m")
+# the logger's own fix flags (0.6 fix_suspect, 0.11.0 suspect_reason): used when the raw
+# session is not read (no session_paths), see capture_suspect_flags
+FIX_COLUMNS = ("fix_suspect", "suspect_reason")
+
+
+def capture_suspect_flags(r, c):
+    """The suspect flags from a capture's own logger columns, for a capture with no raw
+    epochs to rebuild its stretch from: suspect_reason's "jump" and "float_spell" (0.11.0),
+    or suspect_jump for fix_suspect 1 with no reason (0.6 to 0.10 flagged only jumps)."""
+    if not c.get("fix_suspect"):
+        return
+    why = c.get("suspect_reason") or ""
+    if "jump" in why or not why:
+        add_flag(r, "suspect_jump")
+    if "float_spell" in why:
+        add_flag(r, "float_spell")
 
 
 def logger_source(cfg, src, con, frame, history, log):
@@ -678,8 +694,9 @@ def logger_source(cfg, src, con, frame, history, log):
     missing = [k for k in TILT_COLUMNS if k not in have]   # a gpkg from before import schema 3
     void_sel = ["coalesce(void, 0) AS void", "void_reason"] if "void" in have \
         else ["0 AS void", "NULL AS void_reason"]          # a gpkg from before import schema 4
-    sel = cols + [k if k in have else f"NULL AS {k}" for k in TILT_COLUMNS] + void_sel
-    caps = [dict(zip(cols + list(TILT_COLUMNS) + ["void", "void_reason"], r))
+    extra = TILT_COLUMNS + FIX_COLUMNS
+    sel = cols + [k if k in have else f"NULL AS {k}" for k in extra] + void_sel
+    caps = [dict(zip(cols + list(extra) + ["void", "void_reason"], r))
             for r in con.execute(f"SELECT {', '.join(sel)} FROM captures")]
     if sessions:
         caps = [c for c in caps if c["session"] in sessions]
@@ -796,6 +813,7 @@ def logger_source(cfg, src, con, frame, history, log):
                         ep.gst_h[j] is not None for j in win) else None
             else:
                 add_flag(r, "no_fix_info")
+                capture_suspect_flags(r, c)     # no raw epochs: the logger's own flags
             if r["pass_id"] is None:
                 r["pass_id"] = f"{ses}/c{c['n']}"
             r["gst_u_m"] = gst_u
