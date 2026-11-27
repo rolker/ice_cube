@@ -147,7 +147,7 @@ public final class Coverage {
         /** Final values: pass 2's when planar, else pass 1's (sigmaFinal includes d_bar'C_g d_bar). */
         public double zFinal = Double.NaN, wFinal, sigmaFinal = Double.NaN;
         public int nInFinal, nOutFinal;
-        /** 1/W', or 1/W when not planar: the variance compared with the target. */
+        /** 1/W' + d_bar'C_g d_bar when planar, else 1/W: the variance compared with the target. */
         private double varFinal;
         private boolean touched;
         private int ringMark = -1;
