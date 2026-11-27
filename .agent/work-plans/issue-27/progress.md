@@ -727,3 +727,53 @@ Revise PR B per the Plan Review at 7bfe31d, all 8 findings: step 18 uses the per
 **Plan**: `.agent/work-plans/issue-27/plan.md` at `fda6dda`
 
 PR B revised for all 8 plan-review findings: step 18 uses a per-zip zone offset from events.csv (tie only without it), the same rule in the stored-flag SQL, 0x5455 written by hand, un-flag test; step 14 dropped to a lock-in test; step 16 is only the move inside the lock; step 15 takes n/attached from the photo column; steps 10 and 17 merged with one undoable flag; step 19 exact note match; step 20 has the phone checklist and how a synthetic session gets on the phone.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 21:02 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: ready
+
+**Issue**: #27 — Logger: undo or flag an accidental capture
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `fda6dda`
+**Branch**: `feature/issue-27`
+
+Re-review of PR B (steps 10 to 20) after the revision for the Plan Review at 7bfe31d. Checked against main (5da4114): `logger_session.zip_entry_mtime`, `SessionSource.refs_csv_dated`, `load_session` photos (lines 600-617), `import_sessions` stored-flag UPDATE (lines 405-412), the `soundings` clist query (lines 627-634), `Sharer.zip`, `ShareZip.addFile` and `Session.event`.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | About 12 files. Step 14 is now only a lock-in test and step 17 is folded into step 10, so the PR is smaller than before. |
+| Issue alignment | Good | All 8 earlier findings are resolved in the text: 1 (step 18 b-d, the un-flag test), 2 (step 14 dropped), 3 (step 16 is only the move), 4 (step 15 makes the column the source), 5 (0x5455 by hand plus a phone check), 6 (one `undoable` flag), 7 (exact note match, `note` added to cols) and 8 (step 20 checklist and how a synthetic session gets onto the phone). Keep-and-flag holds. A voided capture's stop "depends on reason" is kept in step 11. Serves: Project goal "surveyed with the logger" (`docs/roadmap.md` Direction); the project has no design document. |
+| File targeting | Good | `import_sessions.py` and `ShareZip.java` are now listed. The step 15 lines match main. |
+| Consequences | Good | The stored-flag SQL gets the same rule (18c). |
+| Principle alignment | Needs work (minor) | Test what breaks: the step 18b offset can be silently wrong in two cases main's code allows (findings 1 and 2). Neither case has a test yet. |
+| ADR compliance | Good | The project keeps no ADRs. Public repo: fixtures are synthetic, and a screenshot must be in local frame with no basemap. |
+
+### Findings
+
+1. **[Principle alignment] Step 18b: a snapshot zip can give the wrong 15-min offset, silently.**
+   - In `Sharer.zip` the lengths are fixed first (line 151). `ShareZip.addFile` then reads `f.lastModified()` for each entry later, while the session keeps recording.
+   - `Session.event` flushes every line. Any event during a long zip (big `gps.ubx` or photos) therefore moves `events.csv`'s mtime past the last line in the cut.
+   - A gap over 7.5 min rounds to an offset 15 min off. The +-14 h check does not catch it.
+   - The same happens to any zip whose `events.csv` mtime was reset by a copy tool. `find_sessions` reads every zip, not only logger ones.
+   - The reverse case (last line after the entry time) is only DOS 2 s truncation or a clock step, and rounding covers it.
+   - Fix: accept the offset only when the residual `|(dos_utc - wall) - offset|` is at most a small bound, for example 120 s. Otherwise mark the zip `mtime_approx`.
+   - Compute both sides without the PC zone: `calendar.timegm(info.date_time) - wall_ms/1000`, and the corrected time as `timegm(date_time) - offset`. Do not use `time.mktime` and then shift.
+   - Tests: a snapshot-like zip with a 10 min gap is `mtime_approx`, not corrected by 15 min; a residual of a few seconds is accepted.
+2. **[Principle alignment] Step 18b: DST between the two files' mtimes.**
+   - The offset is the phone's offset at `events.csv`'s mtime. A DST change inside a session does not matter, because the last line and the mtime are close together.
+   - The entry that matters, though, is `refs.csv`. It is the storage root's cross-session file, and its mtime is its last append, possibly days earlier. If a DST change falls between that append and `events.csv`'s mtime, the corrected `refs.csv` time is off by 1 h.
+   - Rule to state and test: when an entry's DOS time is more than about 12 h from `events.csv`'s DOS time, treat that entry as uncertain by 1 h. Two copies within 1 h of each other are then a tie (flagged wins, reported as in 18d), not ordered.
+   - The same rule goes into the stored-flag SQL (18c).
+   - 15-min rounding is right as it stands: every real zone offset is a multiple of 15 min.
+
+### Summary
+
+The revision resolves all 8 earlier findings, and each one checks out against main's code. The events.csv offset is the right idea. It needs a residual bound, so a snapshot zip or a re-timed copy cannot get a confident wrong offset, and a 1 h DST allowance for a `refs.csv` entry far from `events.csv` in time. Both are small, precise additions to step 18. They can go in during implementation without another plan round.
+
+### Recommended Actions
+
+- [ ] Step 18b: residual bound (about 120 s) on the rounded offset, else `mtime_approx`; compute with `calendar.timegm`; test a 10 min snapshot gap.
+- [ ] Step 18b/c: 1 h DST allowance (tie) for an entry more than about 12 h from `events.csv`'s DOS time, in Python and the stored-flag SQL; test it.
