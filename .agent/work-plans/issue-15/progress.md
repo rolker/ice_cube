@@ -324,7 +324,7 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 
 ### Findings
 - [x] (suggestion) The 2 s tests use different clocks: Java phone arrival time (`Epoch.elapsedNs`), Python GGA time; a whole-epoch dropout now lands right on "2 s or less", so the two can disagree at the boundary. Use `Epoch.tod` in FixGuard, or a half-epoch tolerance on both sides (Claude) — `logger/app/src/main/java/rink/icecube/logger/core/FixGuard.java:107-109`, `analysis/qgis/soundings.py:379-382`
-- [ ] (suggestion) The sigma table still reads "8 cm x (1 - t/90 s)^2 ... within 90 s are dropped"; the default is now 120 s (Claude) — `docs/howto/ice-cube.md:382`
+- [x] (suggestion) The sigma table still reads "8 cm x (1 - t/90 s)^2 ... within 90 s are dropped"; the default is now 120 s (Claude) — `docs/howto/ice-cube.md:382`
 - [x] (suggestion) With a station filter, a fixed epoch from another station is a dropout in Python (not in Java): an A-B-A switch within 2 s continues the stretch, a float spell carries over it, and the next start jump can be measured from the other station's fix. End the stretch on it, or note it in the docstring (Claude, gemini, codex) — `analysis/qgis/soundings.py:376-416`
 - [ ] (suggestion) Captures without raw epochs take the logger's suspect flags but not its `fix_age_s`/`fix_young`, so a young capture gets no settle sigma or flag; fall back to the capture's columns (Claude) — `analysis/qgis/soundings.py:691,816`
 - [ ] (suggestion) `capture_suspect_flags`: `fix_suspect` 1 with an unknown non-empty reason (a future one) adds no flag and the capture stays usable; add a generic suspect flag when no known reason matched (gemini) — `analysis/qgis/soundings.py:670-680`

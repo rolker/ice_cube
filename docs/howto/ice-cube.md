@@ -379,7 +379,7 @@ point taken while an older base coordinate was broadcast is moved by the differe
 |---|---|---|
 | RTK | max(1 cm, 1 s scatter, GST height sigma) | the receiver |
 | correction age | 1 mm per second over 2 s | Nov 4: 3 cm low at 35 s |
-| fix settling | 8 cm x (1 - t/90 s)^2 for logger captures; SW Maps points and stops within 90 s are dropped | Nov 3/4: 10-30 cm for 25-75 s after a re-fix |
+| fix settling | 8 cm x (1 - t/120 s)^2 for logger captures; SW Maps points and stops within 120 s are dropped (`settle_s`, 90 s until logger 0.11.0) | Nov 3/4: 10-30 cm for 25-75 s after a re-fix; Nov 26: +6 to +9 cm at 95-113 s |
 | pole | pole x (1 - cos tilt) + 1 cm tip sink (none on a mark); horizontally pole x sin tilt | tilt 1 deg with the bubble, 2 deg IMU-checked, 5 deg unknown |
 | ground | 1.5 cm (none on a mark) | grass and pole placement |
 
