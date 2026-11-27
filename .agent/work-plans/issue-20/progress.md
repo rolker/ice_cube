@@ -125,3 +125,52 @@ Revise per the Plan Review at 9390e09: call soundings.build(..., write=False) on
 **Plan**: `.agent/work-plans/issue-20/plan.md` at `a956d66`
 
 Revised per the Plan Review and checkpoint: reader now calls `soundings.build(write=False)` on a scratch gpkg with a generated one-source config; requires an ENU `[site]`; base from survey key, season gpkg meta or `base_from_sessions`, plus `base_history`; points.csv-only fallback in `logger_source` with its test; `from_file` defaulted; `kinds` captures-only default; settle re-fit changes inflation only (drop rule stays 120 s).
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 17:57 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: ready
+
+**Issue**: #20 — icecube: read Ice Cube Logger sessions
+**Plan**: `.agent/work-plans/issue-20/plan.md` at `a956d66`
+**Branch**: `feature/issue-20`
+
+Repository: rolker/ice_cube. Re-review of the revision for the Plan Review at 9390e09, checked against `origin/main` (b208c31). #15 is still open; the plan waits for it.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | One PR, two commits; re-fit has a stop-and-ask rule and a stated scope (inflation only). |
+| Issue alignment | Good | All Issue Review and Checkpoint items covered. Serves: "Season goal in `docs/roadmap.md` (surface and ice-growth from logger sessions); the project keeps no design document: none." Matches the roadmap line "`icecube` runs on logger sessions in the project's local frame". |
+| File targeting | Good | `soundings.py`/`test_soundings.py` now listed for the fallback; entry point is `soundings.build(write=False)`, which on main opens the gpkg read-only, runs `finish_use`, `assign_anchors`, `verify_suspect`, `flag_local_outliers` and returns the rows. |
+| Consequences | Good | Frame (ENU `[site]` required), base source order, `base_history`, fallback's effect on season rows, and the build-scoped anchors note are all in the table. |
+| Principle alignment | Good | Reuse, one sigma rule, public-repo hygiene, config-not-hardcoded respected. |
+| ADR compliance | Good | No project ADRs; workspace ADRs not triggered. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Previous findings
+
+1. `logger_source` vs `build`: resolved (step 3 Rows).
+2. Frame/base inputs: resolved (step 3 Frame, Base; step 4 keys, placeholders only).
+3. `session_paths` + fallback with test: resolved (step 3, Files table, step 5).
+4. `from_file`: resolved (reader defaults it; `cli.py:93-94` and `topo.py:88-97` call `read_survey` before `passes.segment(pts, scfg.get("pass_rule"))`, so a default set on `scfg` is seen).
+5. `kinds`: resolved (captures-only default).
+6. Re-fit scope: resolved (inflation only, drop rule stays 120 s, Java same scope).
+7. #15 names: covered by step 1.
+
+### Findings (settle during implementation, none blocking)
+
+1. **[Approach]** `import_sessions.resolve_base(args, cfg, cfg_dir, layer_files, sessions)` takes an argparse namespace and reads `cfg["site"]["base"]`/`base_from_sessions`; the icecube `[site]` table is a different shape. Call it with a stub namespace and a generated `{"site": {"base_from_sessions": True}}`, or read the session's `base_ecef` directly. With no base found, raise a clear error: `build` does `float(meta["base_lat"])` and would fail with a bare KeyError.
+2. **[Approach]** Call `import_session(..., extract_photos=False)` so the scratch import writes no photos, and build the scratch gpkg in a `TemporaryDirectory` that is removed afterwards (disk budget).
+3. **[Approach]** The `from_file` default should be set with `setdefault` on the survey's `pass_rule` so a user value wins; a test asserts pass ids come from the stretches.
+4. **[Approach]** Set the scratch gpkg's `origin_*` meta from `site.origin_geodetic` (after `origin_from_gpkg` is resolved by `Site`), so `build`'s frame equals the icecube frame and no shift is needed.
+
+### Summary
+
+All seven earlier findings are resolved in the plan and the main-branch claims check out. Ready for implementation once #15 merges; the four items above are small and belong in the implementation.
+
+### Recommended Actions
+
+- [ ] After #15 merges: step 1 re-check, then implement, folding in findings 1-4.
