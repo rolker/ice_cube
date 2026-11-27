@@ -566,3 +566,22 @@ Codex (EXIT=0, review complete) read the PR title, URL and final diff only and r
 
 ### Findings
 - [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 20:40 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #34 at `5fe7db9`
+**Sources**: 2 (Local Review @ `f53eadf`, covers `5fe7db9` via bookkeeping; Local Review (Codex cold read) @ `b248496`, covers `5fe7db9` via bookkeeping; no hosted or human reviews, Copilot not requested; CI rollup: no checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+No GitHub reviews, inline comments or conversation comments on the PR. Both round-3 reviews approved with no findings. All nine findings of the Integrated Review at `677b6cb` are closed: eight by commits d0c8a53..4ef3b81, checked by the Local Review at `f53eadf`; item 9 (the PR body's Decision summary) is the host's, refreshed before the merge question per Checkpoint 20:30. The stale entries `ef8f74b` and `61612f4` were ruled on by the Integrated Reviews at `6e5ed5c` and `677b6cb`. Re-checked here: `python3 -m unittest discover icecube/tests` ran 94, OK.
+
+### Findings
+- none
+
+### False positives
+- none
