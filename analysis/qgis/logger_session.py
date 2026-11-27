@@ -117,9 +117,11 @@ class SessionSource:
         return got[0] if got else None
 
     def refs_csv_dated(self):
-        """(text, mtime) of the refs.csv shipped with this session, or None. mtime is the
-        zip entry's time or the file's modification time (seconds since the epoch); it
-        orders refs.csv copies, so the newest one decides a row's void flag."""
+        """(text, mtime) of the refs.csv shipped with this session, or None. mtime is in
+        seconds since the epoch (UTC), so zip and folder copies compare: the file's
+        modification time, or the zip entry's time (see zip_entry_mtime; None when the zip
+        has no usable date). It orders refs.csv copies, so the newest one decides a row's
+        void flag."""
         if self.is_zip:
             inner = self.zip_prefix.rstrip("/")
             parent = inner.rsplit("/", 1)[0] + "/" if "/" in inner else ""
@@ -129,7 +131,7 @@ class SessionSource:
                 except KeyError:
                     continue
                 return (self._z().read(info).decode("utf-8", "replace"),
-                        time.mktime(info.date_time + (0, 0, -1)))
+                        zip_entry_mtime(info))
             return None
         p = self.path.parent / "refs.csv"
         return (p.read_text("utf-8", "replace"), p.stat().st_mtime) if p.is_file() else None
@@ -148,6 +150,28 @@ class SessionSource:
 
     def label(self):
         return self.path.name + (f"!{self.zip_prefix}" if self.is_zip else "")
+
+
+def zip_entry_mtime(info):
+    """Modification time of a zip entry in seconds since the epoch (UTC), or None. Uses the
+    entry's extended timestamp (extra field 0x5455, UTC) when it has one; otherwise the DOS
+    date and time, which a zip stores in the writer's local time and which is read here in
+    this machine's local time zone (the logger's zips carry only that, so a phone and a PC
+    in different zones can misorder copies by the offset). A zero or invalid DOS date
+    gives None."""
+    extra, i = info.extra or b"", 0
+    while i + 4 <= len(extra):
+        tag, size = int.from_bytes(extra[i:i + 2], "little"), int.from_bytes(extra[i + 2:i + 4], "little")
+        body = extra[i + 4:i + 4 + size]
+        if tag == 0x5455 and len(body) >= 5 and body[0] & 1:
+            return float(int.from_bytes(body[1:5], "little", signed=True))
+        i += 4 + size
+    y, mo, d, h, mi, sec = info.date_time
+    try:
+        datetime(y, mo, d, h, mi, sec)   # rejects a zero month or day
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, -1))
+    except (ValueError, OverflowError):
+        return None
 
 
 def _sessions_in_zip(path):

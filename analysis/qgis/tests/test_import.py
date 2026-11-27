@@ -9,7 +9,9 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,7 +21,7 @@ import export_labels  # noqa: E402
 import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
-from logger_session import find_sessions, load_session  # noqa: E402
+from logger_session import find_sessions, load_session, zip_entry_mtime  # noqa: E402
 
 
 def run(*argv):
@@ -213,6 +215,16 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 100.0)]), (1, 0))
         self.assertEqual(void(), [(0, None)])                 # unflagged since: newest wins
         gp.close()
+
+    def test_zip_entry_mtime_utc_and_zero_date(self):
+        """A zip entry's time for ordering refs.csv copies: the UTC extended timestamp when
+        present, the DOS local time otherwise, None for a zero DOS date."""
+        info = zipfile.ZipInfo("refs.csv", date_time=(2026, 11, 30, 14, 0, 0))
+        self.assertEqual(zip_entry_mtime(info), time.mktime((2026, 11, 30, 14, 0, 0, 0, 0, -1)))
+        info.extra = (0x5455).to_bytes(2, "little") + (5).to_bytes(2, "little") + b"\x01" + \
+            (1_800_000_000).to_bytes(4, "little")
+        self.assertEqual(zip_entry_mtime(info), 1_800_000_000.0)
+        self.assertIsNone(zip_entry_mtime(zipfile.ZipInfo("refs.csv", date_time=(1980, 0, 0, 0, 0, 0))))
 
     def test_snapshot_does_not_replace_full_import(self):
         full = synth.write_zip(self.d / "full.zip", synth.session_v05())
