@@ -45,7 +45,12 @@ listed:<reason> (config list of known-bad points), void:<reason> (a capture flag
 in the logger, 0.9.0; kept as a row with use = 0 unless `[soundings] include_voided = true`
 or --include-voided, and counted in the log; such a row never makes or joins an anchor site
 and is not compared in the suspect check), voided_included (a flagged capture used anyway
-under include_voided: a trace, not excluding), no_fix_info, imu_unstable, not_plumb,
+under include_voided: a trace, not excluding), void_stop:c<n>:<reason> (a pole stop over
+a capture voided for any reason but 'accidental' (moved, bad pole placement, other): the
+stationary period around a capture the user called bad, kept with use = 0 and counted in the
+log; under include_voided that capture makes its window again, so the stop is a dup_capture
+like any other; a capture voided as 'accidental' leaves its stop alone, since an accidental
+MARK says nothing about the pole), no_fix_info, imu_unstable, not_plumb,
 no_imu, no_plumb_ref, plumb_unverified (a stop without a passed IMU plumb check, left
 out while [soundings.stops] require_plumb = true: on the Nov 4 walk such stops read a median
 4 cm low against nearby points, a leaning pole), dup_capture (a stop that is a capture),
@@ -515,7 +520,7 @@ COLUMNS = [("sid", "TEXT"), ("source", "TEXT"), ("session", "TEXT"), ("kind", "T
            ("tilt_deg", "REAL"), ("imu_stable_deg", "REAL"), ("label", "TEXT")]
 KEYS = [c for c, _ in COLUMNS]
 EXCLUDING = {"float", "other_station", "suspect_jump", "settle", "imu_unstable", "not_plumb",
-             "dup_capture", "local_outlier", "no_position", "plumb_unverified", "void"}
+             "dup_capture", "local_outlier", "no_position", "plumb_unverified", "void", "void_stop"}
 
 
 def new_row(**kw):
@@ -537,8 +542,9 @@ def flags_of(r):
 
 
 def is_voided(r):
-    """True for a row flagged void in the logger and left out of use (flag `void:<reason>`)."""
-    return any(f.startswith("void:") for f in flags_of(r))
+    """True for a row flagged void in the logger and left out of use (flag `void:<reason>`),
+    or a pole stop over such a capture (flag `void_stop:c<n>:<reason>`)."""
+    return any(f.startswith(("void:", "void_stop:")) for f in flags_of(r))
 
 
 def finish_use(r):
@@ -725,26 +731,60 @@ def logger_source(cfg, src, con, frame, history, log):
             f"{sum(1 for s, sus in zip(ep.stretch, ep.suspect) if sus and s >= 0)} epochs in suspect stretches; "
             + ("IMU " + (f"plumb reference from {nref} refs/controls, median spread {plumb_spread:.2f} deg"
                          if plumb else "without a plumb reference") if grav else "no IMU"))
-        rows += stops_from_epochs(cfg, src, ses, ep, clist_windows(clist, include_voided), grav, cmap,
-                                  plumb, prior, cprior, by_n, by_t)
+        vwin = void_stop_windows(clist, include_voided)
+        srows = stops_from_epochs(cfg, src, ses, ep, clist_windows(clist, include_voided), grav, cmap,
+                                  plumb, prior, cprior, by_n, by_t, void_windows=vwin)
+        n_vs = sum(1 for r in srows if any(f.startswith("void_stop:") for f in flags_of(r)))
+        if vwin:
+            log(f"  {ses}: pole stops at captures voided (not as accidental): {n_vs}, "
+                "kept with flag void_stop, use 0")
+        rows += srows
     return rows
+
+
+def _capture_span(c):
+    """(t0, t1) unix s of a capture's averaging window: 30 s for a ref, 1 s otherwise."""
+    t = parse_iso(c["utc"])
+    return t - (30.0 if c["class"] == "ref" else 1.0), t
+
+
+def is_accidental(c):
+    """True for a capture voided with the reason 'accidental' (the logger's UNDO default)."""
+    return (c.get("void_reason") or "").strip().lower() == "accidental"
 
 
 def clist_windows(clist, include_voided=False):
     """Time windows (unix s) of the captures of a session, to drop stops that are captures.
     A capture flagged void in the logger (#27) makes no window unless include_voided, so an
-    accidental MARK does not hide a real pole stop as dup_capture."""
+    accidental MARK does not hide a real pole stop as dup_capture (a capture voided for any
+    other reason flags its stop through void_stop_windows instead)."""
     out = []
     for c in clist:
         if not c["utc"] or (c["void"] and not include_voided):
             continue
-        t = parse_iso(c["utc"])
-        span = 30.0 if c["class"] == "ref" else 1.0
-        out.append((t - span, t))
+        out.append(_capture_span(c))
     return out
 
 
-def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, prior, cprior, by_n, by_t):
+def void_stop_windows(clist, include_voided=False):
+    """[(t0, t1, label)] for the captures of a session voided for a reason other than
+    'accidental' (moved, bad pole placement, other, or none given): the user said the pole
+    was wrong there, so a pole stop over that window is kept flagged
+    `void_stop:<label>` (label `c<n>:<reason>`) with use 0. Empty under include_voided, where
+    the capture makes an ordinary window (clist_windows) and its stop is a dup_capture."""
+    out = []
+    if include_voided:
+        return out
+    for c in clist:
+        if not c["utc"] or not c["void"] or is_accidental(c):
+            continue
+        reason = (c.get("void_reason") or "").strip().replace(",", ";") or "flagged"
+        out.append((*_capture_span(c), f"c{c['n']}:{reason}"))
+    return out
+
+
+def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, prior, cprior, by_n, by_t,
+                      void_windows=()):
     sg, sp = cfg["sigma"], cfg["stops"]
     settle_s, max_s = cfg["settle_s"], cfg["max_pass_s"]
     ok = [ep.stretch[i] >= 0 and ep.z[i] is not None for i in range(len(ep))]
@@ -775,6 +815,9 @@ def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, pri
             add_flag(r, "settle")
         if any(a - m <= t1 and t0 <= b + m for a, b in capture_windows):
             add_flag(r, "dup_capture")
+        for a, b, label in void_windows:
+            if a - m <= t1 and t0 <= b + m:
+                add_flag(r, "void_stop:" + label)
         reason = _listed_reason(by_n, by_t, ses, None, tm)
         if reason:
             add_flag(r, "listed:" + reason)
@@ -983,7 +1026,7 @@ def verify_suspect(rows, radius=1.5, max_med=0.10, max_any=0.25, min_n=2):
     by_pass = {}
     for r in rows:
         fl = flags_of(r)
-        if "suspect_jump" in fl and not any(f.startswith(("listed", "void:")) or f in ("float", "other_station")
+        if "suspect_jump" in fl and not any(f.startswith(("listed", "void:", "void_stop:")) or f in ("float", "other_station")
                                             for f in fl):
             by_pass.setdefault(r["pass_id"], []).append(r)
     ok_n = bad_n = 0

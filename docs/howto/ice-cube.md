@@ -347,7 +347,11 @@ with flag `void:<reason>` unless `include_voided`, which uses them and marks the
 `voided_included`; a flagged ref makes no anchor site and is not compared in the suspect
 check; the importer keeps such captures with `void` = 1, it never deletes them, and the
 QGIS project draws them as a grey x or a grey dashed ring), or a stop that duplicates a
-capture.
+capture. A capture voided for any reason but `accidental` (moved, bad pole placement,
+other) also flags the pole stop around it: that stop is kept with use 0 and flag
+`void_stop:c<n>:<reason>` and counted in the log, since the user said the pole was wrong
+there; a capture voided as `accidental` flags only itself, and its stop stays usable.
+Under `include_voided` the capture is used and its stop is a plain duplicate.
 
 **Pole stops**: runs of RTK fixed epochs where a 2 s window holds within 3 cm horizontally
 and 1.2 cm height SD. For logger sessions the phone's gravity sensor must also be steady
