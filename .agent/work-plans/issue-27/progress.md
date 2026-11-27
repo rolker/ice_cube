@@ -838,3 +838,26 @@ PR B only (PR A merged as #33). Checks: `python3 -m unittest discover -s analysi
 - [x] (suggestion) Recent captures dialog callbacks use the captured `sv`: a session stopped (from the notification) while the dialog is open gets flagged in memory with its writes silently rejected; check `survey() == sv` before acting (Gemini) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:569`
 - [x] (suggestion) The changed unflag test now covers only the 26 h fallback; let `synth.write_zip` write 0x5455 and keep a +1 h end-to-end unflag case for real 0.9.0 zips (Claude) — `analysis/qgis/tests/test_import.py:157`
 - [x] (suggestion) ShareZip: skip the extended timestamp when `lastModified()` is 0 (it would claim an exact 1970 time), and soften the "bytes do not depend on the platform" comment (OpenJDK re-encodes 0x5455 from `setExtra`); confirm on the phone that a shared zip carries one 0x5455 (Gemini, Claude) — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java:91`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 21:28 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-27 at `eed240b`
+**Addressed**: Local Review (Pre-Push) at `6fc69be` (2026-11-26 21:22 -05:00)
+**Commits**: 3fd28d0, 4bafbe8, 130c01c, 2f1a766, eed240b
+
+### Actions
+- [x] (must-fix) Unknown stored copy time now goes through `_stamp_order` (both unknown: a tie, flagged wins); test `test_unknown_stored_time_ties_an_unknown_copy` — `analysis/qgis/import_sessions.py`
+- [x] (must-fix) On a tie the stored `void_copy_mtime`/`void_copy_unc` keep the later time and the larger uncertainty; test `test_tie_keeps_the_later_stored_time_and_larger_uncertainty` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) Tie report lists only refs stored from refs.csv, and drops in-run ties a surely newer stored copy overrode; test `test_tie_report_only_names_refs_a_tie_decided` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) UNDO keyed on `nt.at` (row identity, as Survey uses); an ignored tap plays the error cue. No unit test: Activity code, needs the phone — `logger/.../MainActivity.java`
+- [x] (suggestion) Recent captures checks `survey() == sv` at each step (item, un-flag confirm, flag) and toasts "That session has ended: nothing was changed" with the error cue. No unit test: Activity code — `logger/.../MainActivity.java`
+- [x] (suggestion) `synth.write_zip(refs_utc=...)` writes 0x5455; end-to-end test `test_flag_cleared_an_hour_later_with_extended_timestamps` — `analysis/qgis/tests/synth.py`, `analysis/qgis/tests/test_import.py`
+- [x] (suggestion) ShareZip skips the extended timestamp when `lastModified()` is 0 (sets the oldest DOS time instead), comment softened; tests check exactly one 0x5455 per entry and none for mtime 0. On-phone confirmation of one 0x5455 in a shared zip still to do — `logger/.../core/ShareZip.java`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 144, OK (skipped=5); the three new importer tests fail on the previous code
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 190 tests, 0 failures; APK `logger/app/build/outputs/apk/debug/app-debug.apk` (0.9.0, versionCode 13). C: had 112.8 GB free.
