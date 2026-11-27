@@ -135,8 +135,10 @@ a second line with its ground position in the map frame (see Map), e.g. `G x 12.
 A capture's own notice (a surface or object MARK, a tilt capture's end, a ref's pole-check
 notice) has an UNDO button beside it for 8 s from the capture (the row's own time, so a
 ref's notice, which comes after the pole check, can show it with less left). A tap flags
-the capture as `accidental` (see Flagged captures); taps in the first 750 ms after UNDO
-appears are ignored (a double tap, a press already under way), and a newer notice ends it.
+the capture as `accidental` (see Flagged captures). A tap pressed down in the first 750 ms
+after UNDO appears (a double tap, a press already under way) does nothing but play the error
+sound. A newer notice for the same capture (a ref's pole check after its save) keeps UNDO;
+one for another capture replaces it.
 If the screen was off past the 8 s, UNDO is gone or says `Too late to undo`. Photo notices
 (`Photo on S12`, `Photo saved`) never offer UNDO, so a stray photo cannot flag the capture
 it landed on; an accidental capture whose photo went to it (a MARK a few seconds after

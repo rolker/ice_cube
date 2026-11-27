@@ -25,6 +25,7 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -107,9 +108,14 @@ public final class MainActivity extends Activity {
     private Button modeB, markB, photoB, menuB, centerB, fitB, undoB;
     /** The notice bar and its UNDO button, side by side. */
     private LinearLayout noticeRow;
-    /** The notice UNDO is shown for, and when it first showed (elapsedRealtime ns), for the arm delay. */
-    private PointRow undoAt;   // the capture UNDO is shown for (a notice's row, by identity)
+    /**
+     * The capture UNDO is shown for (the notice's row, by identity, not the notice), when UNDO
+     * first showed for it, and when the press on UNDO went down (-1: none seen), both
+     * elapsedRealtime ns, for the arm delay.
+     */
+    private PointRow undoAt;
     private long undoShownNs;
+    private long undoDownNs = -1;
     /** PHOTO's second line as last shown ("" for none). */
     private String photoTargetShown = "";
     private FrameLayout mapFrame, drawer;
@@ -195,6 +201,12 @@ public final class MainActivity extends Activity {
         undoB.setTextSize(16);
         undoB.setTypeface(Typeface.DEFAULT_BOLD);
         undoB.setVisibility(View.GONE);
+        // the arm delay is checked against the press-down, so a press already under way when
+        // UNDO appears cannot undo however long it is held
+        undoB.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == MotionEvent.ACTION_DOWN) undoDownNs = SystemClock.elapsedRealtimeNanos();
+            return false;   // the button still handles the press and the click
+        });
         noticeRow = new LinearLayout(this);
         noticeRow.setOrientation(LinearLayout.HORIZONTAL);
         noticeRow.setBackgroundColor(STRIP_BG);
@@ -542,16 +554,18 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * A tap on UNDO: flags the notice's capture as accidental. A tap that is ignored (in the
-     * first 750 ms, or the notice no longer names the capture UNDO was shown for) plays the
-     * error cue, so it is never dropped silently.
+     * A tap on UNDO: flags the notice's capture as accidental. A tap that is ignored (pressed
+     * down in the first 750 ms, or the notice no longer names the capture UNDO was shown for)
+     * plays the error cue, so it is never dropped silently. A click without a press seen (a
+     * key or accessibility action) is timed at the click.
      */
     private void onUndo() {
+        long down = undoDownNs >= 0 ? undoDownNs : SystemClock.elapsedRealtimeNanos();
+        undoDownNs = -1;
         Survey sv = survey();
         Survey.Notice nt = sv == null ? null : sv.notice();
         PointRow at = undoAt;
-        if (nt == null || at == null || !nt.undoable || nt.at != at
-                || !VoidRule.armed(undoShownNs, SystemClock.elapsedRealtimeNanos())) {
+        if (nt == null || at == null || !nt.undoable || nt.at != at || !VoidRule.armed(undoShownNs, down)) {
             Feedback.play(this, Feedback.Cue.ERROR);
             return;
         }

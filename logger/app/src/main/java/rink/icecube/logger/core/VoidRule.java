@@ -20,7 +20,7 @@ import java.util.Map;
 public final class VoidRule {
     /** UNDO is offered for this long after a capture (its notice stays up longer). */
     public static final long UNDO_WINDOW_MS = 8000;
-    /** Taps on UNDO are ignored this long after it appears (a double tap or a press in progress). */
+    /** A tap on UNDO pressed down this soon after it appears is ignored (a double tap, a press under way). */
     public static final long UNDO_ARM_MS = 750;
 
     public static final String ACCIDENTAL = "accidental";
@@ -41,9 +41,9 @@ public final class VoidRule {
 
     /**
      * True once UNDO has been on screen long enough to take a tap: shownNs is when it first
-     * showed, nowNs the tap (same clock). A double tap or a press already in progress when
-     * it appears falls inside {@link #UNDO_ARM_MS} and is ignored; a clock going backwards
-     * is not armed.
+     * showed, nowNs when the tap's press went down (same clock), so a press already under way
+     * when it appears, or a double tap, falls inside {@link #UNDO_ARM_MS} and is ignored
+     * however long it is held; a clock going backwards is not armed.
      */
     public static boolean armed(long shownNs, long nowNs) {
         return nowNs - shownNs >= UNDO_ARM_MS * 1_000_000L;
