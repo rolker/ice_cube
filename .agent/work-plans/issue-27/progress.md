@@ -1118,3 +1118,24 @@ All five suggestions from the PR-mode round-2 Local Review were checked against 
 **Decision**: address
 
 Fix all five as the Integrated Review at 3c7b8e3 describes.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:42 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `9be3f4d`
+**Addressed**: Integrated Review at `44f0c31` (2026-11-26 22:34 -05:00)
+**Commits**: 04c534a, 5ec6292, a64b0d2, 5ec6772, d9621e4, 9be3f4d
+
+### Actions
+- [x] UNDO press lifted after sliding out past slop and back is forgotten: VoidRule.pressEndsWithoutClick (cancel, or up when not pressed or outside slop), comment fixed, prepressed noted (UNDO is in no scrolling container; a prepressed tap would be timed at the click, within the tap timeout), test undoPressForgottenWithoutClick — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`, `core/VoidRule.java`
+- [x] zip_zone_offset lower bound -(ZONE_TRUNC_S + ZONE_CLOCK_S), ZONE_CLOCK_S = 0.05; README says -2 s to +10 s; test for 1.99/2.03/2.1 s early — `analysis/qgis/logger_session.py`, `logger/README.md`
+- [x] zip_entry_stamp uncertainty ZONE_TRUNC_S for events.csv, DST_S + ZONE_TRUNC_S for other corrected entries; existing expectations updated (3600 to 3602, 0 to 2) — `analysis/qgis/logger_session.py`
+- [x] zip_dos_seconds returns None for 1980-01-01 00:00:00 (ShareZip's no-mtime stamp), ShareZip comment notes it; test_dos_epoch_is_unknown_time — `analysis/qgis/logger_session.py`
+- [x] duplicate (session, n) rows in one refs.csv copy are flagged if any is, as VoidRule.liveRefs; test in both row orders — `analysis/qgis/import_sessions.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 32 test classes, 0 failures (VoidRuleTest 14 tests); app-debug.apk 315934 bytes. C: had 112.4 GB free before the build.
