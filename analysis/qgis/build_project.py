@@ -29,14 +29,16 @@ What it sets up:
   the web.
 - Styles: captures by class (surface cyan dots, object magenta squares, ref dark slate
   rings, photo brown camera, control orange triangles), labelled S12 / O13 / R14 / P15 /
-  C3 plus your label; refs as rings, red when the pole check failed, labelled with the
-  height difference to the last visit; monuments by status (measured green, predicted
+  C3 plus your label; captures flagged void in the logger (kept, never deleted) as a grey
+  x under "Flagged (void)"; refs as rings, red when the pole check failed, grey dashed when
+  flagged void, labelled with the height difference to the last visit; monuments by status (measured green, predicted
   orange hollow) with uncertainty in the label; tax parcels (kind=parcel polygons, from
   fetch_parcels.py) thin grey with PID labels; other map layers in their GeoJSON
   stroke/fill colours; tracks thin grey by fix quality.
 - Forms: on captures, photos, refs and sessions only `note` (and `label` on captures,
   with completion from the labels already used) are editable; the photo field shows
-  the picture. Map tips (View > Show Map Tips) show the capture and its photo.
+  the picture. Map tips (View > Show Map Tips) show the capture and its photo, and the
+  void reason of a flagged capture or ref.
 
 Nothing site-specific is in this file: the CRS and paths come from the gpkg at run time.
 """
@@ -153,11 +155,22 @@ def add(project, group, layer, visible=True):
 
 # ----------------------------------------------------------------------------- layers
 
+# void_reason is typed on the phone: escape & < > so it shows as text in the HTML map tip
+VOID_TIP = ('[% CASE WHEN "void" = 1 THEN \'<br><b>flagged void</b>: \' || '
+            'replace(replace(replace(coalesce("void_reason", \'\'), \'&\', \'&amp;\'), '
+            '\'<\', \'&lt;\'), \'>\', \'&gt;\') ELSE \'\' END %]')
+
+
 def style_captures(lyr):
     cats = [QgsRendererCategory(k, marker(shape, fill, stroke, size), label)
             for k, (label, shape, fill, stroke, size) in CLASS_STYLE.items()]
     cats.append(QgsRendererCategory("photo", camera_marker(), "Photo"))
-    lyr.setRenderer(QgsCategorizedSymbolRenderer("class", cats))
+    voided = has(lyr, "void")   # a gpkg imported before 0.9.0 has no void column
+    if voided:   # flagged captures: kept, drawn as a grey x whatever their class
+        cats.append(QgsRendererCategory("void", marker("cross2", "0,0,0,0", "130,130,130,255", 2.6, 0.5),
+                                        "Flagged (void)"))
+    lyr.setRenderer(QgsCategorizedSymbolRenderer(
+        'CASE WHEN "void" = 1 THEN \'void\' ELSE "class" END' if voided else "class", cats))
     code = 'upper(left("class", 1)) || to_string("n")'
     labels(lyr, f'{code} || CASE WHEN coalesce("label", \'\') != \'\' THEN \' \' || "label" ELSE \'\' END')
     lyr.setDisplayExpression(f'{code} || \' \' || "session"')
@@ -167,7 +180,7 @@ def style_captures(lyr):
         'fix [% "fix" %], [% "n_epochs" %] epochs, sd up [% format_number("sd_u_m" * 100, 1) %] cm'
         '[% CASE WHEN "x_m" IS NOT NULL THEN \'<br>x \' || format_number("x_m", 3) || \' y \' || '
         'format_number("y_m", 3) || \' z \' || format_number("z_m", 3) || \' m\' ELSE \'\' END %]'
-        '<br>[% coalesce("note", \'\') %]' + PHOTO_TIP)
+        + (VOID_TIP if voided else '') + '<br>[% coalesce("note", \'\') %]' + PHOTO_TIP)
     form(lyr, editable=("note", "label"), photo_field="photo", suggest=("label",))
 
 
@@ -179,14 +192,20 @@ def style_photos(lyr):
 
 
 def style_refs(lyr):
+    voided = has(lyr, "void")   # flagged refs: kept, drawn as a grey dashed ring
     sym = marker("circle", "0,0,0,0", "47,79,79,255", 4.4, 0.6)
     sym.symbolLayer(0).setDataDefinedProperty(_prop("StrokeColor"), QgsProperty.fromExpression(
-        'CASE WHEN "pole_ok" = 0 THEN \'220,0,0,255\' ELSE \'47,79,79,255\' END'))
+        ('CASE WHEN "void" = 1 THEN \'130,130,130,255\' ' if voided else 'CASE ')
+        + 'WHEN "pole_ok" = 0 THEN \'220,0,0,255\' ELSE \'47,79,79,255\' END'))
+    if voided:
+        sym.symbolLayer(0).setDataDefinedProperty(_prop("StrokeStyle"), QgsProperty.fromExpression(
+            'CASE WHEN "void" = 1 THEN \'dash\' ELSE \'solid\' END'))
     lyr.setRenderer(QgsSingleSymbolRenderer(sym))
     labels(lyr, '\'R\' || to_string("n") || CASE WHEN "diff_last_m" IS NOT NULL THEN \' \' || '
                 'format_number("diff_last_m" * 100, 1) || \' cm\' ELSE \'\' END', 7.5)
     lyr.setMapTipTemplate('<b>R[% "n" %]</b> site [% "site" %] [% "session" %]<br>[% "utc" %], '
-                          '[% "n_epochs" %] epochs, pole [% "pole_m" %] m<br>[% coalesce("pole_check", \'\') %]')
+                          '[% "n_epochs" %] epochs, pole [% "pole_m" %] m<br>[% coalesce("pole_check", \'\') %]'
+                          + (VOID_TIP if voided else ''))
     form(lyr, editable=("note",))
 
 

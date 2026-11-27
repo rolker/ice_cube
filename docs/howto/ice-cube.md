@@ -342,7 +342,16 @@ issue #9); a change here means regenerating `python3 -m icecube.logger_vectors`.
 The slowly varying RTK wander is not in this sigma: it is the pass bias the crossover
 solves. Rows are left out (flags) when float, on another reference station, in a fix that
 began with a float-to-fix jump over 1 m (a false fix) unless other data agree with that
-pass (`suspect_verified`), listed as known bad, or a stop that duplicates a capture.
+pass (`suspect_verified`), listed as known bad, flagged as bad in the logger (`void`, kept
+with flag `void:<reason>` unless `include_voided`, which uses them and marks them
+`voided_included`; a flagged ref makes no anchor site and is not compared in the suspect
+check; the importer keeps such captures with `void` = 1, it never deletes them, and the
+QGIS project draws them as a grey x or a grey dashed ring), or a stop that duplicates a
+capture. A capture voided for any reason but `accidental` (moved, bad pole placement,
+other) also flags the pole stop around it: that stop is kept with use 0 and flag
+`void_stop:c<n>:<reason>` and counted in the log, since the user said the pole was wrong
+there; a capture voided as `accidental` flags only itself, and its stop stays usable.
+Under `include_voided` the capture is used and its stop is a plain duplicate.
 
 **Pole stops**: runs of RTK fixed epochs where a 2 s window holds within 3 cm horizontally
 and 1.2 cm height SD. For logger sessions the phone's gravity sensor must also be steady

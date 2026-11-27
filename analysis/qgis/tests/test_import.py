@@ -9,7 +9,9 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,7 +21,7 @@ import export_labels  # noqa: E402
 import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
-from logger_session import _i, find_sessions, load_session  # noqa: E402
+from logger_session import _i, find_sessions, load_session, zip_entry_mtime  # noqa: E402
 
 
 def run(*argv):
@@ -129,6 +131,187 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.counts()["captures"], 5)
         self.assertEqual(self.q("SELECT label FROM captures WHERE n=2"), [("spigot",)])
         self.assertEqual(self.q("SELECT count(*) FROM tracks")[0][0], first["tracks"])
+
+    # -- flagged (void) captures: kept, never deleted; the flag follows re-import both ways (#27)
+    def test_voided_captures_kept_and_flag_updates(self):
+        name = "IceCubeLogger_2026-12-01_10-00-00.zip"
+        files = synth.with_void(synth.session_v05(), {1: "accidental", 3: "bad pole placement"})
+        z = synth.write_zip(self.d / name, files, refs=synth.refs_csv_void(True))
+        out = run(z, "--gpkg", self.gpkg)
+        self.assertIn("4 captures (2 flagged void)", out)
+        self.assertIn("refs.csv rows seen: 2 (1 flagged void)", out)
+        self.assertEqual(self.counts()["captures"], 4)            # nothing dropped
+        self.assertEqual(self.q("SELECT n, void, void_reason FROM captures ORDER BY n"),
+                         [(1, 1, "accidental"), (2, 0, None), (3, 1, "bad pole placement"), (4, 0, None)])
+        self.assertEqual(self.q("SELECT session, n, void, void_reason FROM refs ORDER BY session"),
+                         [("2026-11-30_09-00-00", 5, 1, "moved"),
+                          ("2026-12-01_10-00-00", 3, 1, "bad pole placement")])
+        self.assertEqual(self.q("SELECT n_voided FROM sessions"), [(2,)])
+        self.assertEqual(self.q("SELECT site FROM refs"), [(None,), (None,)])   # flagged refs: no site
+        self.assertIn("2 flagged capture(s), kept with void=1: n=1, 3", self.q("SELECT remarks FROM sessions")[0][0])
+
+        # unflagged on the phone since: a re-import clears the flags, rows and fids unchanged
+        fids = self.q("SELECT n, fid FROM captures ORDER BY n")
+        z.unlink()
+        later = time.localtime(time.time() + 3600)[:6]     # zip times have 2 s steps: newer, not tied
+        z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False),
+                            refs_date=later)
+        summary = imp.run([str(z), "--gpkg", str(self.gpkg)], log=lambda *a: None)
+        self.assertEqual((summary["added"][0]["voided"], summary["refs_csv_voided"]), (0, 0))
+        self.assertEqual(self.q("SELECT n, void, void_reason FROM captures ORDER BY n"),
+                         [(1, 0, None), (2, 0, None), (3, 0, None), (4, 0, None)])
+        self.assertEqual(self.q("SELECT void FROM refs ORDER BY session"), [(0,), (0,)])
+        sites = self.q("SELECT site FROM refs ORDER BY session")
+        self.assertIsNotNone(sites[0][0])
+        self.assertEqual(sites[0], sites[1])                       # unflagged: one site again
+        self.assertEqual(self.q("SELECT n, fid FROM captures ORDER BY n"), fids)
+
+        # export_labels leaves voided captures out by default and counts them
+        z.unlink()
+        z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {2: "moved"}))
+        run(z, "--gpkg", self.gpkg)
+        stats = {}
+        self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", stats=stats), 2)
+        self.assertEqual(stats["voided"], 1)
+        self.assertEqual(export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True, stats=stats), 3)
+        self.assertEqual((stats["voided"], stats["voided_included"]), (1, True))
+        rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
+        self.assertEqual((rows["2"]["void"], rows["2"]["void_reason"]), ("1", "moved"))
+        # a row whose void is NULL (imported before the column was added) exports void 0
+        gp = gw.GeoPackage(self.gpkg)
+        gp.con.execute("UPDATE captures SET void = NULL WHERE n = 1")
+        gp.close()
+        export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True)
+        rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
+        self.assertEqual(rows["1"]["void"], "0")
+
+    def test_void_reason_stored_only_when_flagged(self):
+        """A row with void=0 but a reason left over stores no void_reason, in captures and in
+        refs, the same rule as import_refs_csv (#27)."""
+        name = "IceCubeLogger_2026-12-01_10-00-00.zip"
+        files = synth.with_void(synth.session_v05(), {})
+        key = "2026-12-01_10-00-00/points.csv"
+        lines = files[key].decode().splitlines()
+        lines = [l[:-len(",0,")] + ",0,moved" if l.startswith(("1,", "3,")) else l for l in lines]
+        files[key] = ("\n".join(lines) + "\n").encode()
+        run(synth.write_zip(self.d / name, files), "--gpkg", self.gpkg)
+        self.assertEqual(self.q("SELECT n, void, void_reason FROM captures WHERE n IN (1, 3) ORDER BY n"),
+                         [(1, 0, None), (3, 0, None)])
+        self.assertEqual(self.q("SELECT void, void_reason FROM refs WHERE n = 3"), [(0, None)])
+
+    def test_read_refs_csv_keeps_void_past_a_short_header(self):
+        """Headerless, or under a header the logger did not upgrade, a 0.9.0 row keeps its
+        void column (read by the logger's column order); a pre-0.9.0 row is not voided."""
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        base = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+                "4,30,0.002,0.002,0.004,1.0,,")
+        v09 = base + ",,,,ref,,,,,,," + "1,moved"          # 30 columns
+        old = base                                          # 18 columns, before 0.6
+        for text in (v09 + "\n", "session," + synth.POINTS_HDR + "\n" + v09 + "\n"):
+            r = imp.read_refs_csv(text)
+            self.assertEqual(len(r), 1)
+            self.assertEqual((r[0]["void"], r[0]["void_reason"], r[0]["void_known"]), (True, "moved", True))
+        r = imp.read_refs_csv(old + "\n")
+        self.assertEqual((r[0]["void"], r[0]["void_known"]), (False, False))
+
+    def test_refs_csv_copies_newest_decides_void(self):
+        """Copies of refs.csv that disagree: the newest decides, and an older-format copy
+        (no void column) never clears a flag, whatever the input order, nor in a later run;
+        nor does an older 0.9.0 copy met in a later run (void_copy_mtime)."""
+        gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(gp)
+        hdr = "session," + synth.POINTS_HDR
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        flagged = hdr + ",void,void_reason\n" + row + ",1,moved\n"
+        cleared = hdr + ",void,void_reason\n" + row + ",0,\n"
+        pre09 = hdr + "\n" + row + "\n"
+        void = lambda: gp.con.execute("SELECT void, void_reason FROM refs").fetchall()  # noqa: E731
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 200.0), (pre09, 100.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0), (pre09, 200.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])              # the newer copy has no void column
+        # a later run with only the old copy: the summary count still comes from the table
+        self.assertEqual(imp.import_refs_csv(gp, [(pre09, 400.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])              # keeps the stored flag
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 100.0)]), (1, 0))
+        self.assertEqual(void(), [(0, None)])                 # unflagged since: newest wins
+        # a later run whose only copy is an older 0.9.0 one: the stored, newer flag stays
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 250.0)]), (1, 0))
+        self.assertEqual(void(), [(0, None)])
+        self.assertEqual(imp.import_refs_csv(gp, [flagged]), (1, 0))   # unknown time: no change
+        self.assertEqual(void(), [(0, None)])
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 500.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])              # a newer copy still changes it
+        self.assertEqual(gp.con.execute("SELECT void_copy_mtime FROM refs").fetchall(), [(500.0,)])
+        gp.close()
+
+    def test_refs_csv_of_every_export_of_a_session_counts(self):
+        """Two exports of the same session: one is imported, but the refs.csv of the other
+        (here newer and flagging an earlier session's ref) still reaches the newest-copy
+        rule (#27)."""
+        src = self.d / "in"
+        older = time.localtime(time.time() - 7200)[:6]
+        synth.write_zip(src / "a.zip", synth.session_v05(), refs=synth.refs_csv_void(False), refs_date=older)
+        synth.write_zip(src / "b.zip", synth.session_v05(), refs=synth.refs_csv_void(True))
+        sources = find_sessions([src])
+        self.assertEqual([(s.path.name, [o.path.name for o in s.others]) for s in sources], [("a.zip", ["b.zip"])])
+        self.assertEqual(len(sources[0].refs_csv_copies()), 2)
+        run(src, "--gpkg", self.gpkg)
+        self.assertEqual(self.q("SELECT void, void_reason FROM refs WHERE session='2026-11-30_09-00-00'"),
+                         [(1, "moved")])
+
+    def test_refs_csv_copies_of_the_same_time_flagged_wins(self):
+        """Copies of the same time (or of unknown time) that disagree on a ref's flag give
+        flagged, in either input order, within a run and against a stored flag of that time:
+        the logger's rule (VoidRule.liveRefs) (#27)."""
+        gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(gp)
+        hdr = "session," + synth.POINTS_HDR + ",void,void_reason\n"
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        flagged, cleared = hdr + row + ",1,moved\n", hdr + row + ",0,\n"
+        void = lambda: gp.con.execute("SELECT void, void_reason FROM refs").fetchall()  # noqa: E731
+        for copies in ([(flagged, 100.0), (cleared, 100.0)], [(cleared, 100.0), (flagged, 100.0)],
+                       [flagged, cleared], [cleared, flagged]):
+            gp.con.execute("DELETE FROM refs")
+            self.assertEqual(imp.import_refs_csv(gp, copies), (1, 1))
+            self.assertEqual(void(), [(1, "moved")])
+        # a later run: a copy of the stored flag's time does not clear it; a newer one does
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 300.0)]), (1, 1))
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 301.0)]), (1, 0))
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 301.0)]), (1, 1))   # same time, flags
+        gp.close()
+
+    def test_refs_csv_flagged_count_only_rows_it_stores(self):
+        """import_refs_csv counts every refs.csv row as seen, but as flagged only rows stored
+        from refs.csv: a ref of an imported session follows its points.csv and is counted with
+        that session's captures, so a flagged refs.csv row of such a session counts (1, 0)."""
+        gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(gp)
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        flagged = "session," + synth.POINTS_HDR + ",void,void_reason\n" + row + ",1,moved\n"
+        gp.upsert("refs", [{"session": "s1", "n": 5, "source": "points.csv", "void": 1, "void_reason": "moved"}],
+                  key=("session", "n"))
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0)]), (1, 0))
+        self.assertEqual(gp.con.execute("SELECT source, void FROM refs").fetchall(), [("points.csv", 1)])
+        gp.close()
+
+    def test_zip_entry_mtime_utc_and_zero_date(self):
+        """A zip entry's time for ordering refs.csv copies: the UTC extended timestamp when
+        present, the DOS local time otherwise, None for a zero DOS date."""
+        info = zipfile.ZipInfo("refs.csv", date_time=(2026, 11, 30, 14, 0, 0))
+        self.assertEqual(zip_entry_mtime(info), time.mktime((2026, 11, 30, 14, 0, 0, 0, 0, -1)))
+        info.extra = (0x5455).to_bytes(2, "little") + (5).to_bytes(2, "little") + b"\x01" + \
+            (1_800_000_000).to_bytes(4, "little")
+        self.assertEqual(zip_entry_mtime(info), 1_800_000_000.0)
+        self.assertIsNone(zip_entry_mtime(zipfile.ZipInfo("refs.csv", date_time=(1980, 0, 0, 0, 0, 0))))
 
     def test_snapshot_does_not_replace_full_import(self):
         full = synth.write_zip(self.d / "full.zip", synth.session_v05())
@@ -327,6 +510,62 @@ class ImportTest(unittest.TestCase):
                 self.assertNotIn("still at an older schema", out)
                 self.assertEqual(self.q("SELECT schema_version FROM sessions "
                                         "WHERE session='2026-12-02_10-00-00'"), [(imp.SCHEMA_VERSION,)])
+
+    def test_schema3_reread_fills_void_only_for_09_sessions(self):
+        """Schema 4 adds the 0.9.0 void columns: a 0.9 session imported under schema 3 is
+        re-read to fill them; a 0.6 session at schema 3 is marked current without a re-read,
+        and a session at schema 2 still needs its 0.6 columns from a 0.6 app."""
+        self.assertEqual(imp.schema_min_app(3), (0, 9))
+        self.assertEqual(imp.schema_min_app(None), (0, 6))
+        s9 = synth.with_void(synth.session_v06(), {5: "accidental"})
+        s9["2026-12-01_10-00-00/events.csv"] = s9["2026-12-01_10-00-00/events.csv"].replace(
+            b"app=0.6", b"app=0.9.0")
+        z9 = synth.write_zip(self.d / "s9.zip", s9)
+        z6 = synth.write_zip(self.d / "s6.zip", synth.session_v06("2026-12-02_10-00-00"))
+        run(z9, z6, "--gpkg", self.gpkg, "--base", *self.base)
+        con = gw.connect(self.gpkg)    # as if imported under schema 3: no void read yet
+        con.execute("UPDATE captures SET void=NULL, void_reason=NULL")
+        con.execute("UPDATE sessions SET schema_version=3, n_voided=NULL")
+        con.execute("UPDATE icecube_meta SET value='3' WHERE key='schema_version'")
+        con.commit()
+        con.close()
+        out = run(z9, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertNotIn("still at an older schema", out)          # the 0.6 session is current
+        self.assertNotIn("unchanged, skipped", out)                # the 0.9 session is re-read
+        self.assertEqual(self.q("SELECT n, void_reason FROM captures WHERE void=1"), [(5, "accidental")])
+        self.assertEqual(self.q("SELECT count(*) FROM sessions WHERE schema_version < ?",
+                                imp.SCHEMA_VERSION), [(0,)])
+        # marked current without a re-read: none flagged (0), not unknown (NULL)
+        self.assertEqual(self.q("SELECT session, n_voided FROM sessions ORDER BY session"),
+                         [("2026-12-01_10-00-00", 1), ("2026-12-02_10-00-00", 0)])
+
+    def test_schema3_gpkg_without_void_columns_upgrades(self):
+        """A gpkg written under schema 3 has no void, void_reason, void_copy_mtime or n_voided
+        columns: the next import adds them, re-reads the 0.9 session (n_voided, captures void),
+        marks the 0.6 one current with n_voided 0, and fills a refs.csv ref's flag (#27)."""
+        s9 = synth.with_void(synth.session_v06(), {5: "accidental"})
+        s9["2026-12-01_10-00-00/events.csv"] = s9["2026-12-01_10-00-00/events.csv"].replace(
+            b"app=0.6", b"app=0.9.0")
+        z9 = synth.write_zip(self.d / "s9.zip", s9, refs=synth.refs_csv_void(True))
+        z6 = synth.write_zip(self.d / "s6.zip", synth.session_v06("2026-12-02_10-00-00"))
+        run(z9, z6, "--gpkg", self.gpkg, "--base", *self.base)
+        con = gw.connect(self.gpkg)
+        for table, cols in (("captures", ("void", "void_reason")),
+                            ("refs", ("void", "void_reason", "void_copy_mtime")),
+                            ("sessions", ("n_voided",))):
+            for c in cols:
+                con.execute(f"ALTER TABLE {table} DROP COLUMN {c}")
+        con.execute("UPDATE sessions SET schema_version=3")
+        con.execute("UPDATE icecube_meta SET value='3' WHERE key='schema_version'")
+        con.commit()
+        con.close()
+        self.assertNotIn("n_voided", [r[1] for r in self.q("PRAGMA table_info(sessions)")])
+        run(z9, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertEqual(self.q("SELECT session, n_voided FROM sessions ORDER BY session"),
+                         [("2026-12-01_10-00-00", 1), ("2026-12-02_10-00-00", 0)])
+        self.assertEqual(self.q("SELECT n, void_reason FROM captures WHERE void=1"), [(5, "accidental")])
+        self.assertEqual(self.q("SELECT void, void_reason FROM refs WHERE session='2026-11-30_09-00-00'"),
+                         [(1, "moved")])
 
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())

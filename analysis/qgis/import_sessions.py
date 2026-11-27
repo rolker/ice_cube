@@ -43,13 +43,28 @@ the origin changes, x_m/y_m/z_m of every existing row are recomputed (user colum
 untouched). The display CRS (orthographic at the origin) is stored in
 gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta.
 
+Flagged captures (logger 0.9.0, `void` = 1 in points.csv or refs.csv) are kept, never
+deleted, like flagged soundings in multibeam processing: captures and refs carry `void`
+(0/1) and `void_reason`, rewritten on every import, so a capture flagged after an earlier
+import gets void=1 and one unflagged since gets void=0 again. Readers that build surfaces
+or checks (soundings.py, export_labels.py) leave void=1 rows out by default and say how
+many; the report and the sessions table (`n_voided`, `remarks`) count them. A file
+without the `void` column has none. A flagged ref gets no `site` and plays no part in
+grouping the others. When several refs.csv copies hold a row, the newest copy (zip entry
+or file time) gives it, and the newest copy with a `void` column gives its flag, flagged
+when copies of that same time disagree (the logger reads its copies by the same rule,
+VoidRule.liveRefs); refs keep that copy's time (`void_copy_mtime`), so a later import of
+an older copy cannot change it.
+
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it). Each sessions row records the schema_version it was
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
-session imported in full; a session from an app older than SCHEMA_MIN_APP has nothing to
-fill and is marked current without a re-read (one whose app version is unknown is re-read). Sessions still at an older schema after a run (not among the
-inputs, or seen only as a snapshot) are named in the log and re-read on a later run. Rows are matched by their keys and updated in place, so
+session imported in full. A session from an app older than every schema step it missed
+needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4) has nothing to fill and is marked current without
+a re-read (one whose app version is unknown is re-read). Sessions still at an older schema
+after a run (not among the inputs, or seen only as a snapshot) are named in the log and
+re-read on a later run. Rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
 importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
 `run()` is the same import as a function (the plugin calls it in a background task).
@@ -73,10 +88,21 @@ from logger_session import app_version, find_sessions, load_session, read_refs_c
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 3     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
-SCHEMA_MIN_APP = (0, 6)  # sessions from an older app gain nothing from the SCHEMA_VERSION
-                         # re-read (3 only adds 0.6 columns): they are marked current as they
-                         # are. Revisit when SCHEMA_VERSION changes.
+SCHEMA_VERSION = 4     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+                       # 4: captures and refs carry the logger 0.9.0 void flag (void, void_reason)
+SCHEMA_TILT = 3        # the schema that brought the logger 0.6 columns: a session re-read at
+                       # it or later holds whatever tilt values its source has
+SCHEMA_APP = {3: (0, 6), 4: (0, 9)}   # the oldest app whose sessions have data for each schema
+                                      # step; add an entry with every SCHEMA_VERSION change
+
+
+def schema_min_app(schema):
+    """The oldest app version whose sessions gain anything from a re-read of a session
+    imported at `schema` (None or 0: before 3): sessions from an older app are marked current
+    as they are."""
+    return min(v for k, v in SCHEMA_APP.items() if k > (schema or 0))
+
+
 USER_COLUMNS = {"captures": ("note", "label"), "photos": ("note",), "refs": ("note",),
                 "sessions": ("note",)}
 TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line
@@ -89,19 +115,20 @@ ENU = [("x_m", R), ("y_m", R), ("z_m", R)]
 LOGGER_06 = [("fix_age_s", R), ("fix_jump_m", R), ("fix_suspect", I), ("method", T), ("tilt_n", I),
              ("tilt_rms_m", R), ("tilt_cover_deg", R), ("tilt_sd_e_m", R), ("tilt_sd_n_m", R),
              ("tilt_sd_u_m", R)]   # points.csv 0.6 columns, NULL for older sessions
+VOID = [("void", I), ("void_reason", T)]   # logger 0.9.0: flagged as bad, kept (see below)
 LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
 POINT_TABLES = ("captures", "photos", "refs", "track_points")
 NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
-                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06,
+                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06 + VOID,
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
                ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
-            [("source", T), ("note", T)],
+            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -111,7 +138,7 @@ SCHEMA = {
                  ("caster_mount", T), ("frame", T), ("base_station", T), ("base_type", T),
                  ("base_ecef", T), ("layer_base_check", T), ("pole_heights", T),
                  ("n_captures", I), ("n_surface", I), ("n_object", I), ("n_ref", I),
-                 ("n_photo", I), ("n_control", I), ("n_photos", I), ("n_track_points", I),
+                 ("n_photo", I), ("n_control", I), ("n_voided", I), ("n_photos", I), ("n_track_points", I),
                  ("pct_fixed", R), ("gga", I), ("gga_lost", I), ("gga_parsed", I), ("rawx", I),
                  ("rawx_lost", I), ("gps_lost", I), ("caster_lost", I), ("rtcm_crc_errors", I),
                  ("remarks", T), ("source", T), ("source_sig", T), ("imported_utc", T),
@@ -258,6 +285,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "sd_u_m": c.get("sd_u_m"), "age_s": c.get("age_s"),
             "photo": rel(files[0]) if files else None, "photo_count": len(files),
             "source": c.get("source"), "elapsed_ns": c.get("elapsed_ns"), "note": c.get("note"),
+            "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
             **{k: c.get(k) for k, _ in LOGGER_06},
         })
@@ -279,6 +307,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             continue
         r = {k: c.get(k) for k, _ in MEAS}
         r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
+                  "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
         for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok"):
             r[k] = s.refs.get(c["n"], {}).get(k)
@@ -331,20 +360,62 @@ def track_lines(session, track):
 
 
 def import_refs_csv(gp, texts):
-    """refs.csv rows of sessions not otherwise imported (rows already there are kept)."""
-    rows = {}
-    for text in texts:
+    """refs.csv rows of sessions not otherwise imported (rows already there are kept, except
+    that the void flag of a row taken from a refs.csv follows the refs.csv copies, both ways).
+    `texts` holds refs.csv texts, or (text, mtime) pairs. When copies disagree, the newest
+    copy (by mtime; equal or unknown times keep input order) gives the row, and its void
+    flag comes from the newest copy that has a void column, so a copy from before 0.9.0
+    never clears a flag, not even one stored by an earlier import. Copies of the same time
+    (or all of unknown time) that disagree on the flag give flagged, the safe side. This is
+    the logger's rule too (VoidRule.liveRefs), so the gpkg and the phone agree on a ref
+    after a partial write. The mtime of the copy a stored flag came from is kept in
+    `void_copy_mtime`; a later run changes the flag only with a newer copy, or one of the
+    same time that flags it (one of unknown time changes only a flag of unknown time), so
+    an older 0.9.0 copy met in a later run cannot clear (or set) a newer stored flag.
+
+    Returns (refs.csv rows seen, of which flagged): every row of every copy counts as seen,
+    but only rows stored from refs.csv (source 'refs.csv', sessions not imported) count as
+    flagged, read from the refs table so a stored flag counts even when this run's copies
+    predate 0.9.0. A ref of an imported session follows its points.csv, whatever refs.csv
+    says, and is counted with that session's flagged captures, not here."""
+    dated = [(t, None) if isinstance(t, str) else tuple(t) for t in texts]
+    dated = sorted(enumerate(dated), key=lambda it: (it[1][1] if it[1][1] is not None else float("-inf"), it[0]))
+    rows, flags = {}, {}
+    for _, (text, _mtime) in dated:   # oldest first: later copies win
         for r in read_refs_csv(text):
-            rows[(r["session"], r["n"])] = r
+            key = (r["session"], r["n"])
+            rows[key] = r
+            if r.get("void_known"):
+                was = flags.get(key)
+                if was and was[0] and was[2] == _mtime and not r.get("void"):
+                    continue          # same time, disagreeing: flagged wins
+                flags[key] = (bool(r.get("void")), r.get("void_reason"), _mtime)
     out = []
     for (sess, n), r in sorted(rows.items()):
+        void, reason, stamp = flags.get((sess, n), (False, None, None))
         d = {k: r.get(k) for k, _ in MEAS}
         d.update({"session": sess, "n": n, "source": "refs.csv",
+                  "void": int(void), "void_reason": reason if void else None, "void_copy_mtime": stamp,
                   "geom": _geom(r.get("lat"), r.get("lon"), r.get("h_ground"))})
         out.append(d)
     if out:
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
-    return len(out)
+        # only rows a copy in this run has a void column for: copies from before 0.9.0 alone
+        # never reset a flag that an earlier import took from a newer copy; and only from a
+        # copy newer than the one the stored flag came from (void_copy_mtime), or as new and
+        # flagging it (same time, disagreeing: flagged wins)
+        gp.con.executemany(
+            "UPDATE refs SET void=:void, void_reason=:reason, void_copy_mtime=:stamp "
+            "WHERE session=:session AND n=:n AND source='refs.csv' "
+            "AND (void_copy_mtime IS NULL OR :stamp > void_copy_mtime "
+            "OR (:stamp = void_copy_mtime AND (:void = 1 OR coalesce(void, 0) = 0)))",
+            [{"void": d["void"], "reason": d["void_reason"], "stamp": d["void_copy_mtime"],
+              "session": d["session"], "n": d["n"]} for d in out if (d["session"], d["n"]) in flags])
+    # flagged count from the refs table (stored flags included), not just this run's copies
+    n_void = sum(1 for d in out if gp.con.execute(
+        "SELECT 1 FROM refs WHERE session=? AND n=? AND source='refs.csv' AND coalesce(void, 0) = 1",
+        (d["session"], d["n"])).fetchone())
+    return len(out), n_void
 
 
 def local_xyz(frame, lat, lon, h):
@@ -358,7 +429,8 @@ def local_xyz(frame, lat, lon, h):
 
 def update_local(gp, frame, recompute=False):
     """Fill x_m, y_m, z_m of the point tables about the frame (rows still empty, or all rows
-    when `recompute`), and group refs into sites. Only these columns are written."""
+    when `recompute`), and group refs that are not flagged void into sites (a flagged ref
+    gets no site). Only these columns are written."""
     for table in POINT_TABLES:
         where = "" if recompute else " WHERE x_m IS NULL"
         if table == "track_points":   # position only in the geometry: lon, lat, antenna h
@@ -370,7 +442,9 @@ def update_local(gp, frame, recompute=False):
             rows = gp.con.execute(f"SELECT fid, lat, lon, h_ground FROM {table}{where}").fetchall()
         gp.con.executemany(f"UPDATE {table} SET x_m=?, y_m=?, z_m=? WHERE fid=?",
                            [local_xyz(frame, lat, lon, h) + (fid,) for fid, lat, lon, h in rows])
-    rows = gp.con.execute("SELECT fid, lat, lon FROM refs WHERE lat IS NOT NULL "
+    # a flagged (void) ref neither seeds nor chains a site; its site is cleared
+    gp.con.execute("UPDATE refs SET site=NULL WHERE coalesce(void, 0) = 1")
+    rows = gp.con.execute("SELECT fid, lat, lon FROM refs WHERE lat IS NOT NULL AND coalesce(void, 0) = 0 "
                           "ORDER BY utc, session, n").fetchall()
     if rows:
         fr = frame or LocalFrame(rows[0][1], rows[0][2], 0.0)
@@ -500,8 +574,9 @@ def run(argv=None, log=print, progress=None):
     """The import as a function: `argv` as on the command line, `log(str)` for the report
     lines, `progress(done, total, name)` called before each session and at the end.
     Returns a summary dict: gpkg, season, found, added (one dict per session read:
-    session, captures, photos, photos_extracted, track_points, replaced), unchanged
-    (names skipped), stale (sessions still imported by an older schema), photos_extracted, refs_csv_rows, totals (rows per table), origin,
+    session, captures, voided, photos, photos_extracted, track_points, replaced), unchanged
+    (names skipped), stale (sessions still imported by an older schema), photos_extracted,
+    refs_csv_rows, refs_csv_voided, totals (rows per table), origin,
     recomputed. Bad arguments raise SystemExit (argparse)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="*", help="session zips, session folders or folders of them")
@@ -537,22 +612,23 @@ def run(argv=None, log=print, progress=None):
     try:
         ensure_schema(gp)
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
-        olds = [(r[0], r[2], r[3]) for r in
+        olds = [(r[0], r[1], r[2], r[3]) for r in
                 gp.con.execute("SELECT session, schema_version, app, format FROM sessions")
                 if (r[1] or 0) < SCHEMA_VERSION]    # imported by an older schema (NULL: before 3)
 
-        def nothing_new(app, fmt):
+        def nothing_new(schema, app, fmt):
             # () is an unknown app version (no readable session start event): a points.csv
-            # session may then hold 0.6 rows, so it is re-read rather than marked current;
-            # the other formats have no points.csv to carry 0.6 columns
+            # session may then hold newer rows, so it is re-read rather than marked current;
+            # the other formats have no points.csv to carry the newer columns
             v = app_version(app)
-            return v < SCHEMA_MIN_APP if v else fmt != "points.csv"
-        current = [ses for ses, app, fmt in olds if nothing_new(app, fmt)]
+            return v < schema_min_app(schema) if v else fmt != "points.csv"
+        current = [ses for ses, schema, app, fmt in olds if nothing_new(schema, app, fmt)]
         if current:
-            gp.con.executemany("UPDATE sessions SET schema_version=? WHERE session=?",
-                               [(SCHEMA_VERSION, ses) for ses in current])
+            # an app older than every missed step has no void column: n_voided is 0, not unknown
+            gp.con.executemany("UPDATE sessions SET schema_version=?, n_voided=coalesce(n_voided, 0) "
+                               "WHERE session=?", [(SCHEMA_VERSION, ses) for ses in current])
             gp.commit()
-        stale = {ses for ses, _, _ in olds} - set(current)
+        stale = {ses for ses, _, _, _ in olds} - set(current)
         if stale:
             log(f"{len(stale)} session(s) imported by a schema older than {SCHEMA_VERSION}: "
                 "re-reading those in the inputs to fill new columns")
@@ -563,9 +639,7 @@ def run(argv=None, log=print, progress=None):
         for k_src, src in enumerate(sources):
             if progress is not None:
                 progress(k_src, len(sources), src.name)
-            t = src.refs_csv()
-            if t:
-                refs_texts.append(t)
+            refs_texts += src.refs_csv_copies()   # every export's copy, not just this one's
             old = done.get(src.name)
             if old and not args.force:
                 if old[0] == src.signature() and src.name not in stale:
@@ -584,10 +658,12 @@ def run(argv=None, log=print, progress=None):
             gp.commit()
             parsed.append(s)
             i = s.info
-            added.append({"session": s.name, "captures": i["n_captures"], "photos": i["n_photos"],
+            added.append({"session": s.name, "captures": i["n_captures"], "voided": i["n_voided"],
+                          "photos": i["n_photos"],
                           "photos_extracted": k, "track_points": i["n_track_points"],
                           "replaced": s.name in done})
-            log(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures, "
+            log(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures"
+                  + (f" ({i['n_voided']} flagged void)" if i["n_voided"] else "") + ", "
                   f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
                   + (f"; {i['remarks']}" if i.get("remarks") else ""))
             src.close()
@@ -595,7 +671,7 @@ def run(argv=None, log=print, progress=None):
         if stale:
             log(f"{len(stale)} session(s) still at an older schema (not in the inputs, or only a "
                 f"snapshot seen), re-read on a later import: {', '.join(sorted(stale))}")
-        n_refs = import_refs_csv(gp, refs_texts)
+        n_refs, n_refs_voided = import_refs_csv(gp, refs_texts)
 
         meta = get_meta(gp)
         base = resolve_base(args, cfg, cfg_dir, layer_files, parsed)
@@ -638,7 +714,8 @@ def run(argv=None, log=print, progress=None):
         gp.con.close()      # no handle stays open (Windows locks the file)
         raise
     gp.close()
-    log(f"refs.csv rows seen: {n_refs}; photos extracted this run: {n_photos}")
+    log(f"refs.csv rows seen: {n_refs}" + (f" ({n_refs_voided} flagged void)" if n_refs_voided else "")
+        + f"; photos extracted this run: {n_photos}")
     if frame is None:
         log("local frame: none (no origin or base given; x_m/y_m/z_m left empty)")
     else:
@@ -650,7 +727,8 @@ def run(argv=None, log=print, progress=None):
     if progress is not None:
         progress(len(sources), len(sources), "done")
     return {"gpkg": str(gpkg_path), "season": name, "found": len(sources), "added": added,
-            "unchanged": unchanged, "stale": sorted(stale), "photos_extracted": n_photos, "refs_csv_rows": n_refs,
+            "unchanged": unchanged, "stale": sorted(stale), "photos_extracted": n_photos,
+            "refs_csv_rows": n_refs, "refs_csv_voided": n_refs_voided,
             "totals": summary, "origin": frame.name if frame is not None else None,
             "recomputed": bool(recompute)}
 

@@ -25,14 +25,18 @@ public final class PoleCheck {
         ok = Math.abs(diffLast) <= tolerance + 1e-9;   // float rounding at the boundary
     }
 
-    /** Earlier refs within MATCH_RADIUS_M of now that have a ground height, in the given order. */
+    /**
+     * Earlier refs within MATCH_RADIUS_M of now that have a ground height and are not voided,
+     * in the given order. A voided ref is never a visit, so never the "last visit" either.
+     * (#23: any change to reference selection must keep skipping voided rows.)
+     */
     public static List<PointRow> matches(PointRow now, List<PointRow> earlier) {
         List<PointRow> out = new ArrayList<>();
         if (!now.hasPosition()) return out;
         LocalFrame f = new LocalFrame(now.lat, now.lon, Double.isNaN(now.hAnt) ? 0 : now.hAnt);
         double[] enu = new double[3];
         for (PointRow r : earlier) {
-            if (r == now || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
+            if (r == now || r.voided || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
             f.toEnu(r.lat, r.lon, f.h0, enu);
             if (Math.hypot(enu[0], enu[1]) <= MATCH_RADIUS_M) out.add(r);
         }

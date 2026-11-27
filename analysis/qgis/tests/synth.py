@@ -132,6 +132,29 @@ def session_v05(name="2026-12-01_10-00-00", extra_rows=(), app="0.5", points=Non
             f"{name}/photos/photo_4_20261201T100030Z.jpg": JPEG}
 
 
+def with_void(files, voided, name="2026-12-01_10-00-00"):
+    """A copy of session files whose points.csv has the 0.9.0 void columns, with the rows
+    numbered in `voided` ({n: reason}) flagged void=1."""
+    out = dict(files)
+    key = f"{name}/points.csv"
+    lines = out[key].decode().splitlines()
+    body = [lines[0] + ",void,void_reason"]
+    for line in lines[1:]:
+        n = int(line.split(",")[0])
+        body.append(line + (f",1,{voided[n]}" if n in voided else ",0,"))
+    out[key] = ("\n".join(body) + "\n").encode()
+    return out
+
+
+def refs_csv_void(void_earlier=True):
+    """refs.csv with the void columns: the earlier session's ref flagged (or not)."""
+    lat, lon, h = offset(0.1, 2.0, 1.8)
+    return ("session," + POINTS_HDR + ",void,void_reason\n"
+            f"2026-11-30_09-00-00,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,"
+            f"{h - 1.8:.4f},4,30,0.002,0.002,0.004,1.0,,," + ("1,moved" if void_earlier else "0,") + "\n"
+            "2026-12-01_10-00-00," + captures_v05()[2] + ",0,\n")
+
+
 def refs_csv():
     """A refs.csv with this session's ref and one from an earlier session."""
     lat, lon, h = offset(0.1, 2.0, 1.8)
@@ -160,13 +183,15 @@ def session_v02(name="2026-12-01_09-00-00"):
             f"{name}/gps_chunks.csv": chunks.encode()}
 
 
-def write_zip(path: Path, files: dict, refs: str | None = None):
+def write_zip(path: Path, files: dict, refs: str | None = None, refs_date: tuple | None = None):
+    """A zip of files, with refs.csv at the top level when refs is given; refs_date (a zip
+    date_time tuple, local time) sets that entry's time, else it is now."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as z:
         for k, v in files.items():
             z.writestr(k, v, compress_type=zipfile.ZIP_STORED if k.endswith(".jpg") else zipfile.ZIP_DEFLATED)
         if refs is not None:
-            z.writestr("refs.csv", refs)
+            z.writestr(zipfile.ZipInfo("refs.csv", date_time=refs_date) if refs_date else "refs.csv", refs)
     return path
 
 

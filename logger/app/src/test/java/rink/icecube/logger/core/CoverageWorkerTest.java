@@ -125,6 +125,34 @@ public class CoverageWorkerTest {
         assertEquals(5, q.q.size());   // five rebuilds queued, no feeds
     }
 
+    @Test public void voidGenerationChangeRebuildsWithoutTheVoidedRow() {
+        Queue q = new Queue();
+        Ui ui = new Ui();
+        CoverageWorker w = new CoverageWorker(q, ui::take, 30, 2);
+        ui.w = w;
+        Object session = new Object();
+        PointRow[] rows = walk(8, 0.2);
+        rows[3] = surface(1.8, 0.0, 0.5);                         // an outlier on row 3's spot
+        assertTrue(w.update(session, F, P, rows, 0));
+        assertFalse(w.update(session, F, P, rows, 0));
+        q.runAll();
+        ui.drain();
+        ui.screen.assertMatches(direct(P, rows));
+        rows[3].voided = true;                                       // flagged
+        assertTrue(w.update(session, F, P, rows, 1));                // new void generation: rebuild
+        assertFalse(w.update(session, F, P, rows));                  // the 4-argument form keeps it
+        q.runAll();
+        ui.drain();
+        PointRow[] live = new PointRow[rows.length - 1];
+        for (int k = 0, j = 0; k < rows.length; k++) if (k != 3) live[j++] = rows[k];
+        ui.screen.assertMatches(direct(P, live));
+        rows[3].voided = false;                                      // unflagged: back in
+        assertTrue(w.update(session, F, P, rows, 2));
+        q.runAll();
+        ui.drain();
+        ui.screen.assertMatches(direct(P, rows));
+    }
+
     @Test public void clearDropsQueuedWorkAndTheNextUpdateRebuilds() {
         Queue q = new Queue();
         Ui ui = new Ui();

@@ -269,6 +269,173 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(con.execute("SELECT count(*) FROM soundings").fetchone()[0], len(rows))
         con.close()
 
+    def test_voided_capture_flagged_not_used_unless_included(self):
+        """A capture flagged void in the logger (#27) stays a row, flag void, use 0, and is
+        counted; include_voided uses it like any other."""
+        ses = make_session(self.d / "sessions")
+        p = ses / "points.csv"
+        lines = p.read_text().splitlines()
+        lines = [lines[0] + ",void,void_reason"] + [
+            l + (",1,accidental" if l.startswith("2,") else ",0,") for l in lines[1:]]
+        p.write_text("\n".join(lines) + "\n")
+        gpkg = self.d / "season.gpkg"
+        with contextlib.redirect_stdout(io.StringIO()):
+            imp.main([str(ses), "--gpkg", str(gpkg), "--base", *map(str, synth.BASE),
+                      "--origin", *map(str, synth.BASE), "--no-photos"])
+        cfg = {"season": {"gpkg": str(gpkg)}, "soundings": {
+            "settle_s": 5.0, "sources": [{"id": "logger", "type": "logger", "prior_m": 0.015}]}}
+        logged = []
+        rows = snd.build(cfg, self.d, log=logged.append, write=False)
+        cap = {r["n"]: r for r in rows if r["kind"] == "capture"}
+        self.assertEqual(len(cap), 2)                           # kept, not dropped
+        self.assertIn("void:accidental", snd.flags_of(cap[2]))
+        self.assertEqual(cap[2]["use"], 0)
+        self.assertEqual(cap[1]["use"], 1)
+        self.assertTrue(any("voided captures (flagged in the logger): 1, left out of use" in l for l in logged))
+        cfg["soundings"]["include_voided"] = True
+        rows = snd.build(cfg, self.d, log=lambda *a: None, write=False)
+        cap = {r["n"]: r for r in rows if r["kind"] == "capture"}
+        self.assertNotIn("void:accidental", snd.flags_of(cap[2]))
+        self.assertIn("voided_included", snd.flags_of(cap[2]))   # the trace stays
+        self.assertEqual(cap[2]["use"], 1)
+
+    def _voided_stops(self, reason, include_voided=False, photo_row=False):
+        """Build the make_session data with capture 2 (surface, on the stop at x = 9 m)
+        voided for `reason`; returns (the stop rows at x = 9 m, the capture row 2, the log).
+        photo_row adds row 3, the photo row the logger makes for a voided capture's photos
+        (VoidRule.photoRowFor: class photo, the voided row's utc and position)."""
+        ses = make_session(self.d / f"{reason.replace(' ', '_')}_{int(include_voided)}_{int(photo_row)}"
+                           / "sessions")
+        p = ses / "points.csv"
+        lines = p.read_text().splitlines()
+        if photo_row:
+            lines.append("3,photo," + [l for l in lines if l.startswith("2,")][0][len("2,surface,"):])
+        lines = [lines[0] + ",void,void_reason"] + [
+            l + (f",1,{reason}" if l.startswith("2,") else ",0,") for l in lines[1:]]
+        p.write_text("\n".join(lines) + "\n")
+        gpkg = ses.parent.parent / "season.gpkg"
+        with contextlib.redirect_stdout(io.StringIO()):
+            imp.main([str(ses), "--gpkg", str(gpkg), "--base", *map(str, synth.BASE),
+                      "--origin", *map(str, synth.BASE), "--no-photos"])
+        cfg = {"season": {"gpkg": str(gpkg)}, "soundings": {
+            "settle_s": 5.0, "include_voided": include_voided,
+            "sources": [{"id": "logger", "type": "logger", "session_paths": [str(ses)], "prior_m": 0.015}]}}
+        logged = []
+        rows = snd.build(cfg, self.d, log=logged.append, write=False)
+        stops = [r for r in rows if r["kind"] == "stop" and abs(r["x_m"] - 9.0) < 0.1]
+        cap = [r for r in rows if r["kind"] == "capture" and r["n"] == 2][0]
+        return stops, cap, logged
+
+    def test_capture_voided_as_moved_flags_its_stop(self):
+        """A capture voided as 'moved' (#27) also flags the pole stop around it: kept, use 0,
+        flag void_stop naming the capture and reason, counted in the log; include_voided
+        brings the capture back and its stop is a dup_capture as for any capture."""
+        stops, cap, logged = self._voided_stops("moved")
+        self.assertEqual(len(stops), 1)
+        fl = snd.flags_of(stops[0])
+        self.assertIn("void_stop:c2:moved", fl)
+        self.assertNotIn("dup_capture", fl)
+        self.assertEqual(stops[0]["use"], 0)
+        self.assertTrue(snd.is_voided(stops[0]))
+        self.assertIn("void:moved", snd.flags_of(cap))
+        self.assertTrue(any("pole stops at captures voided (not as accidental): 1" in l for l in logged))
+        stops, cap, _ = self._voided_stops("bad pole placement")
+        self.assertIn("void_stop:c2:bad pole placement", snd.flags_of(stops[0]))
+        self.assertEqual(stops[0]["use"], 0)
+        stops, cap, _ = self._voided_stops("moved", include_voided=True)
+        fl = snd.flags_of(stops[0])
+        self.assertIn("dup_capture", fl)
+        self.assertFalse(any(f.startswith("void_stop:") for f in fl))
+        self.assertIn("voided_included", snd.flags_of(cap))
+        self.assertEqual(cap["use"], 1)
+
+    def test_capture_voided_as_accidental_leaves_its_stop(self):
+        """A capture voided as 'accidental' (#27) flags only the capture: the pole stop at the
+        same time is neither a dup_capture nor void_stop, and is used."""
+        stops, cap, logged = self._voided_stops("accidental")
+        self.assertEqual(len(stops), 1)
+        fl = snd.flags_of(stops[0])
+        self.assertFalse(any(f.startswith("void_stop:") or f == "dup_capture" for f in fl), fl)
+        self.assertEqual(stops[0]["use"], 1, fl)
+        self.assertIn("void:accidental", snd.flags_of(cap))
+        self.assertEqual(cap["use"], 0)
+        self.assertFalse(any("pole stops at captures voided" in l for l in logged))
+
+    def test_capture_voided_as_accidental_with_photo_row_leaves_its_stop(self):
+        """An accidental capture with photos and no earlier live capture gets a photo row at
+        its time (#27); that row makes no capture window either, so the pole stop is used."""
+        stops, cap, _ = self._voided_stops("accidental", photo_row=True)
+        self.assertEqual(len(stops), 1)
+        fl = snd.flags_of(stops[0])
+        self.assertFalse(any(f.startswith("void_stop:") or f == "dup_capture" for f in fl), fl)
+        self.assertEqual(stops[0]["use"], 1, fl)
+        # with include_voided the voided capture's own window makes the stop a dup_capture
+        stops, _, _ = self._voided_stops("accidental", include_voided=True, photo_row=True)
+        self.assertIn("dup_capture", snd.flags_of(stops[0]))
+
+    def test_photo_row_window_only_when_not_of_a_voided_capture(self):
+        """A photo row makes a capture window unless a voided capture has the same utc."""
+        caps = [{"utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 1},
+                {"utc": "2026-01-01T00:00:10Z", "class": "photo", "void": 0},
+                {"utc": "2026-01-01T00:01:10Z", "class": "photo", "void": 0}]
+        t = snd.parse_iso(caps[2]["utc"])
+        self.assertEqual(snd.clist_windows(caps), [(t - 1.0, t)])
+        self.assertEqual(len(snd.clist_windows(caps, include_voided=True)), 2)   # the capture's own and the other photo row
+
+    def test_void_stop_windows(self):
+        """Only captures voided for a reason other than 'accidental' make a void-stop window,
+        and none under include_voided."""
+        caps = [{"n": 1, "utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 1, "void_reason": "accidental"},
+                {"n": 2, "utc": "2026-01-01T00:01:10Z", "class": "ref", "void": 1, "void_reason": "moved"},
+                {"n": 3, "utc": "2026-01-01T00:02:10Z", "class": "ground", "void": 1, "void_reason": None},
+                {"n": 4, "utc": "2026-01-01T00:03:10Z", "class": "ground", "void": 0, "void_reason": None}]
+        w = snd.void_stop_windows(caps)
+        self.assertEqual([x[2] for x in w], ["c2:moved", "c3:flagged"])
+        t = snd.parse_iso(caps[1]["utc"])
+        self.assertEqual(w[0][:2], (t - 30.0, t))
+        self.assertEqual(snd.void_stop_windows(caps, include_voided=True), [])
+
+    def test_voided_capture_makes_no_dup_capture_window(self):
+        """A capture flagged void (#27) makes no capture window, so a real pole stop at the
+        same time is not dropped as dup_capture; include_voided keeps its window."""
+        caps = [{"utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 0},
+                {"utc": "2026-01-01T00:01:10Z", "class": "ref", "void": 1}]
+        self.assertEqual(len(snd.clist_windows(caps)), 1)
+        self.assertEqual(len(snd.clist_windows(caps, include_voided=True)), 2)
+        t = snd.parse_iso(caps[0]["utc"])
+        self.assertEqual(snd.clist_windows(caps), [(t - 1.0, t)])
+
+    def test_voided_rows_make_no_site_and_skip_suspect_check(self):
+        """A voided ref neither makes a site nor lets ground rows join one (#27), and a voided
+        row in a suspect pass is not compared, so it cannot clear suspect_jump."""
+        r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
+        rows = [r(sid="v1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.0, pass_id="p1", flags="void:moved"),
+                r(sid="g1", **{"class": "ground"}, x_m=0.02, y_m=0.0, z_m=1.0, pass_id="p2", kind="point")]
+        for x in rows:
+            snd.finish_use(x)
+        sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        self.assertEqual((sites, joined), ([], 0))
+        self.assertEqual(rows[1]["class"], "ground")
+        # a voided ground capture near a site does not join it as an anchor
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.0, pass_id="p1", anchor="site1"),
+                r(sid="v3", **{"class": "ground"}, x_m=0.02, y_m=0.0, z_m=1.0, pass_id="p2", flags="void:moved")]
+        for x in rows:
+            snd.finish_use(x)
+        sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        self.assertEqual((len(sites), joined), (1, 0))
+        self.assertEqual((rows[1]["class"], rows[1]["anchor"]), ("ground", None))
+        # a suspect pass whose only comparable row is voided stays suspect
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.00, pass_id="p1", anchor="site1"),
+                r(sid="v2", **{"class": "anchor"}, x_m=0.05, y_m=0.0, z_m=1.00, pass_id="p4",
+                  flags="suspect_jump,void:moved"),
+                r(sid="a3", **{"class": "anchor"}, x_m=5.0, y_m=5.0, z_m=3.0, pass_id="p4", flags="suspect_jump")]
+        for x in rows:
+            snd.finish_use(x)
+        snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        ok, bad = snd.verify_suspect(rows)
+        self.assertEqual((ok, bad), (0, 1))
+        self.assertIn("suspect_jump", snd.flags_of(rows[2]))
+
     def _import(self, src):
         gpkg = self.d / "season.gpkg"
         with contextlib.redirect_stdout(io.StringIO()):
@@ -341,7 +508,8 @@ class TestBuild(unittest.TestCase):
 
     def test_unknown_app_version_counts_as_new(self):
         """No readable app version: the session may be 0.6, so it warns while not yet re-read
-        at the current schema; once re-read, empty tilt values are what its source holds."""
+        at the schema of the 0.6 columns (SCHEMA_TILT); once re-read at it or later, empty tilt
+        values are what its source holds."""
         gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
         con = gw.connect(gpkg)
         con.execute("UPDATE sessions SET app=NULL, schema_version=NULL")     # stale
@@ -352,15 +520,16 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(logged.count("warning"), 1)
         self.assertIn("no method/tilt values", logged)
         con = gw.connect(gpkg)
-        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_VERSION - 1,))   # still stale
+        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_TILT - 1,))   # still stale
         con.commit()
         con.close()
         self.assertEqual(self._build_logger(gpkg)[1].count("warning"), 1)
-        con = gw.connect(gpkg)
-        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_VERSION,))       # re-read
-        con.commit()
-        con.close()
-        self.assertNotIn("warning", self._build_logger(gpkg)[1])
+        for schema in (imp.SCHEMA_TILT, imp.SCHEMA_VERSION):   # re-read at 3: stale for 4 only
+            con = gw.connect(gpkg)
+            con.execute("UPDATE sessions SET schema_version=?", (schema,))
+            con.commit()
+            con.close()
+            self.assertNotIn("warning", self._build_logger(gpkg)[1])
         con = gw.connect(gpkg)
         for k, _ in imp.LOGGER_06:
             con.execute(f"ALTER TABLE captures DROP COLUMN {k}")

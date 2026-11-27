@@ -48,6 +48,19 @@ public class PoleCheckTest {
         assertTrue(PoleCheck.check(ref(0, 50.03), Arrays.asList(ref(0, 50.0)), 0.03).ok);   // boundary
     }
 
+    @Test public void voidedRefIsNeverAVisit() {
+        PointRow now = ref(0, 50.000);
+        PointRow good = ref(0.02, 50.001), bad = ref(0.01, 50.100);   // bad: the last one in file order
+        bad.voided = true;
+        List<PointRow> earlier = Arrays.asList(good, bad);
+        assertEquals(1, PoleCheck.matches(now, earlier).size());
+        PoleCheck c = PoleCheck.check(now, earlier, 0.03);
+        assertEquals(1, c.visits);
+        assertEquals(good, c.last);
+        assertTrue(c.ok);
+        assertNull(PoleCheck.check(now, Arrays.asList(bad), 0.03));
+    }
+
     @Test public void noMatchOrNoHeight() {
         assertNull(PoleCheck.check(ref(0, 50), Arrays.asList(ref(1, 50)), 0.03));
         PointRow noH = ref(0, 50);

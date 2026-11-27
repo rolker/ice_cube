@@ -45,7 +45,16 @@ each row carries its `pass_id` and the source's `prior_m` (the expected pass wan
 
 Flags (comma-separated; `use` = 1 for rows icecube should take): float, other_station,
 suspect_jump (the fix began with a jump over suspect_jump_m: false fixes), settle,
-listed:<reason> (config list of known-bad points), no_fix_info, imu_unstable, not_plumb,
+listed:<reason> (config list of known-bad points), void:<reason> (a capture flagged as bad
+in the logger, 0.9.0; kept as a row with use = 0 unless `[soundings] include_voided = true`
+or --include-voided, and counted in the log; such a row never makes or joins an anchor site
+and is not compared in the suspect check), voided_included (a flagged capture used anyway
+under include_voided: a trace, not excluding), void_stop:c<n>:<reason> (a pole stop over
+a capture voided for any reason but 'accidental' (moved, bad pole placement, other): the
+stationary period around a capture the user called bad, kept with use = 0 and counted in the
+log; under include_voided that capture makes its window again, so the stop is a dup_capture
+like any other; a capture voided as 'accidental' leaves its stop alone, since an accidental
+MARK says nothing about the pole), no_fix_info, imu_unstable, not_plumb,
 no_imu, no_plumb_ref, plumb_unverified (a stop without a passed IMU plumb check, left
 out while [soundings.stops] require_plumb = true: on the Nov 4 walk such stops read a median
 4 cm low against nearby points, a leaning pole), dup_capture (a stop that is a capture),
@@ -75,7 +84,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gpkg_writer as gw  # noqa: E402
 from local_frame import LocalFrame, geodetic_to_ecef  # noqa: E402
-from import_sessions import SCHEMA_VERSION  # noqa: E402
+from import_sessions import SCHEMA_TILT  # noqa: E402
 from logger_session import app_version as _version, find_sessions, read_chunks, read_events, _nmea_deg  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -90,6 +99,7 @@ DEFAULTS = {
     "anchor_radius_m": 0.30,   # refs/controls within this share an anchor (as refs.site)
     "anchor_snap_m": 0.10,     # another sounding this close to an anchor (and within anchor_dz_m) joins it
     "anchor_dz_m": 0.10,
+    "include_voided": False,   # true: captures flagged void in the logger are used like any other
     "sigma": {"floor": 0.01, "floor_h": 0.01, "age_free_s": 2.0, "age_rate": 0.001,
               "settle_extra": 0.08, "tip_sink": 0.01, "ground": 0.015,
               "tilt_bubble_deg": 1.0, "tilt_imu_deg": 2.0, "tilt_unknown_deg": 5.0},
@@ -535,7 +545,7 @@ COLUMNS = [("sid", "TEXT"), ("source", "TEXT"), ("session", "TEXT"), ("kind", "T
            ("tilt_deg", "REAL"), ("imu_stable_deg", "REAL"), ("label", "TEXT")]
 KEYS = [c for c, _ in COLUMNS]
 EXCLUDING = {"float", "other_station", "suspect_jump", "settle", "imu_unstable", "not_plumb",
-             "dup_capture", "local_outlier", "no_position", "plumb_unverified"}
+             "dup_capture", "local_outlier", "no_position", "plumb_unverified", "void", "void_stop"}
 
 
 def new_row(**kw):
@@ -556,10 +566,16 @@ def flags_of(r):
     return [x for x in (r["flags"] or "").split(",") if x]
 
 
+def is_voided(r):
+    """True for a row flagged void in the logger and left out of use (flag `void:<reason>`),
+    or a pole stop over such a capture (flag `void_stop:c<n>:<reason>`)."""
+    return any(f.startswith(("void:", "void_stop:")) for f in flags_of(r))
+
+
 def finish_use(r):
     """use = 1 for ground and anchor rows without an excluding flag."""
     fl = flags_of(r)
-    bad = any(f in EXCLUDING or f.startswith("listed") for f in fl)
+    bad = any(f.split(":")[0] in EXCLUDING or f.startswith("listed") for f in fl)
     r["use"] = 1 if r["class"] in ("ground", "anchor") and not bad else 0
 
 
@@ -607,15 +623,22 @@ def logger_source(cfg, src, con, frame, history, log):
     prior, cprior = float(src.get("prior_m", 0.015)), float(src.get("common_prior_m", 0.0))
     by_n, by_t = listed(src)
     sessions = src.get("sessions")
+    include_voided = bool(cfg.get("include_voided"))
     cols = ["session", "n", "class", "utc", "lat", "lon", "h_ground", "pole_m", "fix", "n_epochs",
             "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "elapsed_ns", "label"]
     have = {r[1] for r in con.execute("PRAGMA table_info(captures)")}
     missing = [k for k in TILT_COLUMNS if k not in have]   # a gpkg from before import schema 3
-    sel = cols + [k if k in have else f"NULL AS {k}" for k in TILT_COLUMNS]
-    caps = [dict(zip(cols + list(TILT_COLUMNS), r))
+    void_sel = ["coalesce(void, 0) AS void", "void_reason"] if "void" in have \
+        else ["0 AS void", "NULL AS void_reason"]          # a gpkg from before import schema 4
+    sel = cols + [k if k in have else f"NULL AS {k}" for k in TILT_COLUMNS] + void_sel
+    caps = [dict(zip(cols + list(TILT_COLUMNS) + ["void", "void_reason"], r))
             for r in con.execute(f"SELECT {', '.join(sel)} FROM captures")]
     if sessions:
         caps = [c for c in caps if c["session"] in sessions]
+    n_void = sum(1 for c in caps if c["void"])
+    if n_void:
+        log(f"  voided captures (flagged in the logger): {n_void}, "
+            + ("included (include_voided)" if include_voided else "left out of use (flag void)"))
     apps = {}
     try:
         apps = dict(con.execute("SELECT session, app FROM sessions"))
@@ -630,10 +653,10 @@ def logger_source(cfg, src, con, frame, history, log):
         v = _version(apps.get(ses))
         return not v or v >= (0, 6)
     def stranded_06(ses):       # as maybe_06, but an unknown version already re-read at the
-        v = _version(apps.get(ses))     # current schema holds what its source has: not stranded
-        if v:
+        v = _version(apps.get(ses))     # schema of the 0.6 columns (or later) holds what its
+        if v:                           # source has: not stranded
             return v >= (0, 6)
-        return (schemas.get(ses) or 0) < SCHEMA_VERSION
+        return (schemas.get(ses) or 0) < SCHEMA_TILT
     new_app = [c for c in caps if c["class"] != "photo" and maybe_06(c["session"])]
     if missing and new_app:
         log(f"  warning: the captures table has no {', '.join(missing)} column(s): tilt captures get "
@@ -699,6 +722,12 @@ def logger_source(cfg, src, con, frame, history, log):
                         n=c["n"], **{"class": cls}, utc=c["utc"], t_unix=t, fix=c["fix"],
                         n_epochs=c["n_epochs"], sd_u_m=c["sd_u_m"], age_s=c["age_s"], pole_m=c["pole_m"],
                         label=c["label"], prior_m=prior, common_prior_m=cprior)
+            if c["void"]:
+                if include_voided:
+                    add_flag(r, "voided_included")   # a trace only, does not exclude
+                else:
+                    reason = (c["void_reason"] or "").strip().replace(",", ";") or "flagged"
+                    add_flag(r, "void:" + reason)
             if c["lat"] is None or c["h_ground"] is None:
                 add_flag(r, "no_position"); finish_use(r); rows.append(r); continue
             r["x_m"], r["y_m"], r["z_m"] = to_local(frame, c["lat"], c["lon"], c["h_ground"],
@@ -752,7 +781,8 @@ def logger_source(cfg, src, con, frame, history, log):
         if grav:
             dirs = []
             for c in clist:
-                if c["class"] in ("ref", "control") and c["elapsed_ns"] and c["fix"] == 4:
+                if (c["class"] in ("ref", "control") and c["elapsed_ns"] and c["fix"] == 4
+                        and (include_voided or not c["void"])):
                     span = 20e9 if c["class"] == "ref" else 1e9
                     d, stab, m = gravity_window(*grav, c["elapsed_ns"] - span - 1e9, c["elapsed_ns"] - 1e9)
                     if d is not None:
@@ -766,24 +796,66 @@ def logger_source(cfg, src, con, frame, history, log):
             f"{sum(1 for s, sus in zip(ep.stretch, ep.suspect) if sus and s >= 0)} epochs in suspect stretches; "
             + ("IMU " + (f"plumb reference from {nref} refs/controls, median spread {plumb_spread:.2f} deg"
                          if plumb else "without a plumb reference") if grav else "no IMU"))
-        rows += stops_from_epochs(cfg, src, ses, ep, clist_windows(clist, ep), grav, cmap, plumb,
-                                  prior, cprior, by_n, by_t)
+        vwin = void_stop_windows(clist, include_voided)
+        srows = stops_from_epochs(cfg, src, ses, ep, clist_windows(clist, include_voided), grav, cmap,
+                                  plumb, prior, cprior, by_n, by_t, void_windows=vwin)
+        n_vs = sum(1 for r in srows if any(f.startswith("void_stop:") for f in flags_of(r)))
+        if vwin:
+            log(f"  {ses}: pole stops at captures voided (not as accidental): {n_vs}, "
+                "kept with flag void_stop, use 0")
+        rows += srows
     return rows
 
 
-def clist_windows(clist, ep):
-    """Time windows (unix s) of the captures of a session, to drop stops that are captures."""
+def _capture_span(c):
+    """(t0, t1) unix s of a capture's averaging window: 30 s for a ref, 1 s otherwise."""
+    t = parse_iso(c["utc"])
+    return t - (30.0 if c["class"] == "ref" else 1.0), t
+
+
+def is_accidental(c):
+    """True for a capture voided with the reason 'accidental' (the logger's UNDO default)."""
+    return (c.get("void_reason") or "").strip().lower() == "accidental"
+
+
+def clist_windows(clist, include_voided=False):
+    """Time windows (unix s) of the captures of a session, to drop stops that are captures.
+    A capture flagged void in the logger (#27) makes no window unless include_voided, so an
+    accidental MARK does not hide a real pole stop as dup_capture (a capture voided for any
+    other reason flags its stop through void_stop_windows instead). Nor does a photo row at
+    a voided capture's time: the logger moves a voided capture's photos to such a row
+    (VoidRule.photoRowFor, same utc) when no earlier live capture can take them, and it is
+    part of the voided capture, not a capture of its own."""
+    voided_utc = {c["utc"] for c in clist if c["utc"] and c["void"]}
     out = []
     for c in clist:
-        if not c["utc"]:
+        if not c["utc"] or (c["void"] and not include_voided):
             continue
-        t = parse_iso(c["utc"])
-        span = 30.0 if c["class"] == "ref" else 1.0
-        out.append((t - span, t))
+        if c["class"] == "photo" and not c["void"] and c["utc"] in voided_utc:
+            continue
+        out.append(_capture_span(c))
     return out
 
 
-def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, prior, cprior, by_n, by_t):
+def void_stop_windows(clist, include_voided=False):
+    """[(t0, t1, label)] for the captures of a session voided for a reason other than
+    'accidental' (moved, bad pole placement, other, or none given): the user said the pole
+    was wrong there, so a pole stop over that window is kept flagged
+    `void_stop:<label>` (label `c<n>:<reason>`) with use 0. Empty under include_voided, where
+    the capture makes an ordinary window (clist_windows) and its stop is a dup_capture."""
+    out = []
+    if include_voided:
+        return out
+    for c in clist:
+        if not c["utc"] or not c["void"] or is_accidental(c):
+            continue
+        reason = (c.get("void_reason") or "").strip().replace(",", ";") or "flagged"
+        out.append((*_capture_span(c), f"c{c['n']}:{reason}"))
+    return out
+
+
+def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, prior, cprior, by_n, by_t,
+                      void_windows=()):
     sg, sp = cfg["sigma"], cfg["stops"]
     settle_s, max_s = cfg["settle_s"], cfg["max_pass_s"]
     ok = [ep.stretch[i] >= 0 and ep.z[i] is not None for i in range(len(ep))]
@@ -814,6 +886,9 @@ def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, pri
             add_flag(r, "settle")
         if any(a - m <= t1 and t0 <= b + m for a, b in capture_windows):
             add_flag(r, "dup_capture")
+        for a, b, label in void_windows:
+            if a - m <= t1 and t0 <= b + m:
+                add_flag(r, "void_stop:" + label)
         reason = _listed_reason(by_n, by_t, ses, None, tm)
         if reason:
             add_flag(r, "listed:" + reason)
@@ -960,7 +1035,8 @@ def assign_anchors(rows, radius, snap, dz, *, ground_sigma):
     and `dz` m of a site's median join it as anchors (a repeat spot shot as a plain point).
     A joined ground row loses its ground term: `ground_sigma` is the configured
     [soundings.sigma].ground that sigma_terms added to it."""
-    an = [r for r in rows if r["class"] == "anchor" and r["x_m"] is not None]
+    # a voided ref (flag void:, i.e. not include_voided) neither makes a site nor joins one
+    an = [r for r in rows if r["class"] == "anchor" and r["x_m"] is not None and not is_voided(r)]
     parent = list(range(len(an)))
 
     def find(a):
@@ -981,12 +1057,13 @@ def assign_anchors(rows, radius, snap, dz, *, ground_sigma):
         name = names[0] if names else f"site_{len(sites) + 1}"
         for r in g:
             r["anchor"] = name
-        good = [r for r in g if not any(f in EXCLUDING or f.startswith("listed") for f in flags_of(r))] or g
+        good = [r for r in g if not any(f.split(":")[0] in EXCLUDING or f.startswith("listed")
+                                        for f in flags_of(r))] or g
         sites.append((name, st.median(r["x_m"] for r in good), st.median(r["y_m"] for r in good),
                       st.median(r["z_m"] for r in good)))
     joined = 0
     for r in rows:
-        if r["class"] != "ground" or r["x_m"] is None:
+        if r["class"] != "ground" or r["x_m"] is None or is_voided(r):   # a voided capture never joins
             continue
         for name, x, y, z in sites:
             if math.hypot(r["x_m"] - x, r["y_m"] - y) <= snap and abs(r["z_m"] - z) <= dz:
@@ -1020,7 +1097,8 @@ def verify_suspect(rows, radius=1.5, max_med=0.10, max_any=0.25, min_n=2):
     by_pass = {}
     for r in rows:
         fl = flags_of(r)
-        if "suspect_jump" in fl and not any(f.startswith("listed") or f in ("float", "other_station") for f in fl):
+        if "suspect_jump" in fl and not any(f.startswith(("listed", "void:", "void_stop:")) or f in ("float", "other_station")
+                                            for f in fl):
             by_pass.setdefault(r["pass_id"], []).append(r)
     ok_n = bad_n = 0
     for pid, members in by_pass.items():
@@ -1275,9 +1353,13 @@ def main(argv=None):
     ap.add_argument("--gpkg", help="season GeoPackage (default [soundings].gpkg or [season].gpkg)")
     ap.add_argument("--csv", help="also write the rows to this CSV")
     ap.add_argument("--dry-run", action="store_true", help="do not write the gpkg")
+    ap.add_argument("--include-voided", action="store_true",
+                    help="use captures flagged void in the logger (default: kept with flag void, use 0)")
     a = ap.parse_args(argv)
     p = Path(a.config) if a.config else REPO / "config.toml"
     cfg = tomllib.loads(p.read_text())
+    if a.include_voided:
+        cfg.setdefault("soundings", {})["include_voided"] = True
     build(cfg, p.resolve().parent, gpkg=a.gpkg, csv_out=a.csv, write=not a.dry_run)
     return 0
 

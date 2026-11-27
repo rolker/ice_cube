@@ -1,6 +1,7 @@
 package rink.icecube.logger.core;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -17,11 +18,44 @@ public class PointRowTest {
         assertEquals(PointRow.COLUMNS, PointRow.split(PointRow.HEADER).size());
         assertEquals("session", PointRow.split(PointRow.REFS_HEADER).get(0));
         List<String> h = PointRow.split(PointRow.HEADER);
-        assertEquals(27, h.size());
+        assertEquals(29, h.size());
         // 0.6 columns appended after note, so readers of the first 17 keep working
         assertEquals("note", h.get(PointRow.BASE_COLUMNS - 1));
         assertEquals(Arrays.asList("fix_age_s", "fix_jump_m", "fix_suspect", "method", "tilt_n", "tilt_rms_m",
                 "tilt_cover_deg", "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m"), h.subList(17, 27));
+        assertEquals(Arrays.asList("void", "void_reason"), h.subList(27, 29));   // 0.9.0
+    }
+
+    @Test public void voidColumnsRoundTrip() {
+        PointRow r = PointRow.of(4, PointRow.SURFACE, 1, null, 1.8, MIDNIGHT);
+        assertTrue(r.isLive());
+        assertTrue(r.toCsv().endsWith(",0,"));
+        r.voided = true;
+        r.voidReason = "bad pole placement";
+        assertFalse(r.isLive());
+        assertTrue(r.isCapture());   // still a capture row: it keeps its number
+        String csv = r.toCsv();
+        assertTrue(csv, csv.endsWith(",1,bad pole placement"));
+        PointRow b = PointRow.parse(PointRow.split(csv), 0);
+        assertTrue(b.voided);
+        assertEquals("bad pole placement", b.voidReason);
+        r.session = "s";
+        PointRow c = PointRow.parse(PointRow.split(r.toRefsCsv()), 1);
+        assertTrue(c.voided);
+        PointRow photo = PointRow.of(5, PointRow.PHOTO, 1, null, 1.8, MIDNIGHT);
+        assertFalse(photo.isLive());
+    }
+
+    @Test public void rowsWithoutVoidColumnsAreNotVoided() {
+        PointRow r = PointRow.of(4, PointRow.SURFACE, 1, null, 1.8, MIDNIGHT);
+        r.method = PointRow.SINGLE;
+        r.voided = true;
+        List<String> f = PointRow.split(r.toCsv());
+        PointRow v06 = PointRow.parse(f.subList(0, PointRow.V06_COLUMNS), 0);   // 0.6 to 0.8: 27 columns
+        assertFalse(v06.voided);
+        assertEquals("single", v06.method);
+        PointRow v05 = PointRow.parse(f.subList(0, PointRow.BASE_COLUMNS), 0);  // before 0.6: 17 columns
+        assertFalse(v05.voided);
     }
 
     @Test public void newColumnsWriteAndParse() {
@@ -38,7 +72,7 @@ public class PointRowTest {
         r.tiltSdN = 0.091;
         r.tiltSdU = 0.019;
         String csv = r.toCsv();
-        assertTrue(csv, csv.endsWith(",,42.3,1.823,1,tilt,5,0.0090,145,0.0480,0.0910,0.0190"));
+        assertTrue(csv, csv.endsWith(",,42.3,1.823,1,tilt,5,0.0090,145,0.0480,0.0910,0.0190,0,"));
         assertEquals(PointRow.COLUMNS, PointRow.split(csv).size());
         PointRow b = PointRow.parse(PointRow.split(csv), 0);
         assertEquals("tilt", b.method);
@@ -50,7 +84,7 @@ public class PointRowTest {
         single.method = PointRow.SINGLE;
         single.fixAge = 3;
         single.fixJump = 0.2;
-        assertTrue(single.toCsv().endsWith(",3.0,0.200,0,single,,,,,,"));
+        assertTrue(single.toCsv().endsWith(",3.0,0.200,0,single,,,,,,,0,"));
     }
 
     @Test public void parsesRowsFromBefore06() {
@@ -68,14 +102,14 @@ public class PointRowTest {
                 new Epoch(5, 50_000.25, 12.3456789012, -45.6789012345, 101.23456, 1.2, 4)));
         PointRow r = PointRow.of(7, PointRow.SURFACE, 123456789L, a, 1.8, MIDNIGHT + 50_000_000L);
         assertEquals("7,surface,123456789,2026-11-11T13:53:20.25Z,12.345678901,-45.678901235,101.2346,1.800,99.4346,4,1,"
-                + "0.0000,0.0000,0.0000,1.2,,,,,0,,,,,,,", r.toCsv());
+                + "0.0000,0.0000,0.0000,1.2,,,,,0,,,,,,,,0,", r.toCsv());
         assertEquals(PointRow.COLUMNS, PointRow.split(r.toCsv()).size());
     }
 
     @Test public void noFixRowLeavesPositionEmpty() {
         PointRow r = PointRow.of(3, PointRow.PHOTO, 9, null, 1.7, MIDNIGHT);
         r.photo = "photo_3_x.jpg";
-        assertEquals("3,photo,9,,,,,1.700,,0,0,,,,,photo_3_x.jpg,,,,0,,,,,,,", r.toCsv());
+        assertEquals("3,photo,9,,,,,1.700,,0,0,,,,,photo_3_x.jpg,,,,0,,,,,,,,0,", r.toCsv());
     }
 
     @Test public void quotingAndRoundTrip() {
@@ -92,6 +126,17 @@ public class PointRowTest {
         assertEquals(2, back.n);
         assertEquals(1.5, back.pole, 0);
         assertTrue(Double.isNaN(back.lat));
+    }
+
+    @Test public void lineBreaksBecomeSpaces() {
+        assertEquals("a b c d", PointRow.text("a\nb\r\nc\rd"));
+        assertEquals("\"x, y z\"", PointRow.text("x, y\nz"));
+        PointRow r = PointRow.of(2, PointRow.REF, 1, null, 1.5, MIDNIGHT);
+        r.note = "two\nlines";
+        r.session = "s";
+        String line = r.toRefsCsv();
+        assertFalse(line.contains("\n") || line.contains("\r"));
+        assertEquals("two lines", PointRow.parse(PointRow.split(line), 1).note);
     }
 
     @Test public void utcDatesNearPhoneClock() {

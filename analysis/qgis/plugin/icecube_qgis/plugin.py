@@ -7,7 +7,8 @@
   the project file is opened again, or rebuilt when the gpkg's table set changed, and the
   map extent is restored.
 - Build / refresh project: build_project.build() on the configured gpkg.
-- Export labels: export_labels.export() to a CSV chosen in a dialog.
+- Export labels: export_labels.export() to a CSV chosen in a dialog; the message says how
+  many captures flagged void were left out.
 - Open photos folder, Settings.
 Errors go to the message bar and the "Ice Cube" tab of the log panel.
 """
@@ -314,9 +315,11 @@ class IceCubePlugin:
                                              r["labels_csv"], "CSV (*.csv)")
         if not out:
             return
-        n = pipeline()["export_labels"].export(r["gpkg"], out)
-        log(f"{out}: {n} captures", "Success")
-        self.bar(f"{n} captures written to {out}", "Success", 10)
+        stats = {}
+        n = pipeline()["export_labels"].export(r["gpkg"], out, stats=stats)
+        msg = core.export_text(n, out, stats)
+        log(msg, "Success")
+        self.bar(msg, "Success", 10)
 
     # ------------------------------------------------------------------ photos, settings
     def open_photos(self):

@@ -1,7 +1,9 @@
 """Read Ice Cube Logger sessions (see logger/README.md) from share zips or folders.
 
 Standard library only. Formats handled:
-- 0.5 and later: `points.csv` holds the captures (surface, object, ref, photo).
+- 0.5 and later: `points.csv` holds the captures (surface, object, ref, photo). From
+  0.9.0 a row can be flagged as bad (`void` = 1, `void_reason`); it is kept, with `void`
+  True in its dict, and counted (`n_voided`). No `void` column means not voided.
 - 0.3 / 0.4: no points.csv; `control n=<k> pole_height=<m> ...` events mark control
   points. Their positions are rebuilt from the GGA sentences in `gps.ubx` at the mark's
   phone time (gps_chunks.csv maps byte offsets to phone time) with the 0.5 Surface rule:
@@ -23,6 +25,7 @@ import io
 import math
 import os
 import re
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -48,6 +51,7 @@ class SessionSource:
         self.name = name
         self.zip_prefix = zip_prefix          # "<session>/" inside a zip, None for a folder
         self._zip = None
+        self.others = []    # the other copies of this session find_sessions found and set aside
 
     @property
     def is_zip(self):
@@ -111,17 +115,47 @@ class SessionSource:
     def refs_csv(self):
         """Text of the refs.csv shipped with this session (zip top level, or the folder's
         parent), or None."""
+        got = self.refs_csv_dated()
+        return got[0] if got else None
+
+    def refs_csv_copies(self):
+        """[(text, mtime)] of the refs.csv shipped with this session and with each other copy
+        of it that find_sessions set aside (another export of the same session may carry a
+        newer refs.csv), so the newest-copy rule sees them all. Each copy once (same file)."""
+        out, seen = [], set()
+        for s in [self, *self.others]:
+            where = (str(s.path), s.zip_prefix is not None)
+            if where in seen and s is not self:
+                continue
+            seen.add(where)
+            try:
+                got = s.refs_csv_dated()
+            finally:
+                if s is not self:
+                    s.close()
+            if got:
+                out.append(got)
+        return out
+
+    def refs_csv_dated(self):
+        """(text, mtime) of the refs.csv shipped with this session, or None. mtime is in
+        seconds since the epoch (UTC), so zip and folder copies compare: the file's
+        modification time, or the zip entry's time (see zip_entry_mtime; None when the zip
+        has no usable date). It orders refs.csv copies, so the newest one decides a row's
+        void flag."""
         if self.is_zip:
             inner = self.zip_prefix.rstrip("/")
             parent = inner.rsplit("/", 1)[0] + "/" if "/" in inner else ""
             for cand in (parent + "refs.csv", "refs.csv"):
                 try:
-                    return self._z().read(cand).decode("utf-8", "replace")
+                    info = self._z().getinfo(cand)
                 except KeyError:
-                    pass
+                    continue
+                return (self._z().read(info).decode("utf-8", "replace"),
+                        zip_entry_mtime(info))
             return None
         p = self.path.parent / "refs.csv"
-        return p.read_text("utf-8", "replace") if p.is_file() else None
+        return (p.read_text("utf-8", "replace"), p.stat().st_mtime) if p.is_file() else None
 
     @property
     def snapshot(self):
@@ -137,6 +171,28 @@ class SessionSource:
 
     def label(self):
         return self.path.name + (f"!{self.zip_prefix}" if self.is_zip else "")
+
+
+def zip_entry_mtime(info):
+    """Modification time of a zip entry in seconds since the epoch (UTC), or None. Uses the
+    entry's extended timestamp (extra field 0x5455, UTC) when it has one; otherwise the DOS
+    date and time, which a zip stores in the writer's local time and which is read here in
+    this machine's local time zone (the logger's zips carry only that, so a phone and a PC
+    in different zones can misorder copies by the offset). A zero or invalid DOS date
+    gives None."""
+    extra, i = info.extra or b"", 0
+    while i + 4 <= len(extra):
+        tag, size = int.from_bytes(extra[i:i + 2], "little"), int.from_bytes(extra[i + 2:i + 4], "little")
+        body = extra[i + 4:i + 4 + size]
+        if tag == 0x5455 and len(body) >= 5 and body[0] & 1:
+            return float(int.from_bytes(body[1:5], "little", signed=True))
+        i += 4 + size
+    y, mo, d, h, mi, sec = info.date_time
+    try:
+        datetime(y, mo, d, h, mi, sec)   # rejects a zero month or day
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, -1))
+    except (ValueError, OverflowError):
+        return None
 
 
 def _sessions_in_zip(path):
@@ -157,7 +213,8 @@ def _sessions_in_zip(path):
 def find_sessions(paths):
     """Session sources under the given zips and folders (recursively). A session found
     more than once (a zip and its extracted folder, a snapshot and the final zip) is
-    returned once: the non-snapshot copy, then the one with the larger events.csv."""
+    returned once: the non-snapshot copy, then the one with the larger events.csv; the
+    others are kept in its `others` (their refs.csv still counts, refs_csv_copies)."""
     found = []
     for p in map(Path, paths):
         if p.is_file():
@@ -178,12 +235,20 @@ def find_sessions(paths):
                         found += _sessions_in_zip(fp)
         else:
             raise FileNotFoundError(p)
-    best = {}
+    best, every = {}, {}
     for s in found:
+        every.setdefault(s.name, []).append(s)
         k = (not s.snapshot, s.size("events.csv") or 0)
         if s.name not in best or k > best[s.name][0]:
             best[s.name] = (k, s)
-    return [best[n][1] for n in sorted(best)]
+    out = []
+    for n in sorted(best):
+        s = best[n][1]
+        s.others = [o for o in every[n] if o is not s]
+        for o in s.others:
+            o.close()
+        out.append(s)
+    return out
 
 
 # ----------------------------------------------------------------------------- parsing
@@ -231,7 +296,8 @@ def read_points(text):
 
     The 0.6 columns keep their points.csv names: fix_age_s, fix_jump_m, fix_suspect,
     method, tilt_n, tilt_rms_m, tilt_cover_deg, tilt_sd_e_m, tilt_sd_n_m, tilt_sd_u_m.
-    They are None in older files and for empty cells."""
+    They are None in older files and for empty cells. From 0.9.0 `void` (True when
+    flagged) and `void_reason`; False and None in older files."""
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         if not r.get("n"):
@@ -245,6 +311,7 @@ def read_points(text):
             "sd_n_m": _f(r.get("sd_n_m")), "sd_u_m": _f(r.get("sd_u_m")), "age_s": _f(r.get("age_s")),
             "photo_files": [p for p in (r.get("photo") or "").split(";") if p],
             "note": r.get("note") or None,
+            "void": (r.get("void") or "").strip() == "1", "void_reason": r.get("void_reason") or None,
             "method": (r.get("method") or "").strip() or None,   # PointRow.java trims too
             **{k: _f(r.get(k)) for k in POINTS_06_REAL},
             **{k: _i(r.get(k)) for k in POINTS_06_INT},
@@ -252,29 +319,43 @@ def read_points(text):
     return rows
 
 
+# refs.csv columns as the logger writes them from 0.9.0 (PointRow.REFS_HEADER): rows from
+# before 0.6 have the first 18, rows from 0.6 to 0.8 the first 28, rows from 0.9.0 all 30.
+REFS_COLUMNS = ["session", "n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
+                "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note",
+                "fix_age_s", "fix_jump_m", "fix_suspect", "method", "tilt_n", "tilt_rms_m", "tilt_cover_deg",
+                "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m", "void", "void_reason"]
+
+
 def read_refs_csv(text):
     """refs.csv rows: the session folder name, then the points.csv columns. Accepts a
-    header line (first column `session` or anything not a number) or none."""
+    header line (first column `session` or anything not a number) or none. Columns are read
+    by name; a row longer than its header (none, or one the logger did not upgrade) is read
+    by position in the logger's column order when the header is a prefix of it, so its void
+    column is kept. A row flagged void=1 (0.9.0) is returned with `void` True; `void_known`
+    says whether the row had a void value at all (False: a row from before 0.9.0, read as
+    not voided)."""
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
         return []
-    cols = ["n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
-            "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note"]
+    cols_all = REFS_COLUMNS[1:18] + ["void", "void_reason"]   # what read_points takes
     first = next(csv.reader([lines[0]]))
     if len(first) > 1 and "n" in first:
         hdr, body = first, lines[1:]
         hdr = ["session" if i == 0 and h != "n" else h for i, h in enumerate(hdr)]
     else:
-        hdr, body = ["session"] + cols, lines
+        hdr, body = REFS_COLUMNS, lines
+    prefix = hdr == REFS_COLUMNS[:len(hdr)]
     rows = []
     for r in csv.reader(body):
-        d = dict(zip(hdr, r))
+        d = dict(zip(REFS_COLUMNS if prefix and len(r) > len(hdr) else hdr, r))
         if not d.get("session") or not (d.get("n") or "").isdigit():
             continue
-        p = read_points(",".join(cols) + "\n" + ",".join(
-            '"' + (d.get(c) or "").replace('"', '""') + '"' for c in cols))
+        p = read_points(",".join(cols_all) + "\n" + ",".join(
+            '"' + (d.get(c) or "").replace('"', '""') + '"' for c in cols_all))
         if p:
             p[0]["session"] = d["session"]
+            p[0]["void_known"] = (d.get("void") or "").strip() in ("0", "1")
             rows.append(p[0])
     return rows
 
@@ -369,7 +450,7 @@ class Session:
     name: str
     fmt: str = ""
     info: dict = field(default_factory=dict)       # one sessions-table row
-    captures: list = field(default_factory=list)   # dicts, keyed by n
+    captures: list = field(default_factory=list)   # dicts, keyed by n (voided ones too, `void` True)
     photos: list = field(default_factory=list)     # dicts: n, name, utc, attached, bytes
     refs: dict = field(default_factory=dict)       # n -> pole-check / ref-event fields
     track: list = field(default_factory=list)      # 1 Hz epochs: utc, t, lat, lon, h, fix, ...
@@ -548,6 +629,10 @@ def load_session(src: SessionSource) -> Session:
         counts[c["class"]] = counts.get(c["class"], 0) + 1
     info["format"] = s.fmt
     info["n_captures"] = len(s.captures)
+    info["n_voided"] = sum(1 for c in s.captures if c.get("void"))
+    if info["n_voided"]:
+        s.remarks.append(f"{info['n_voided']} flagged capture(s), kept with void=1: n="
+                         + ", ".join(str(c["n"]) for c in s.captures if c.get("void")))
     for k in ("surface", "object", "ref", "photo", "control"):
         info[f"n_{k}"] = counts.get(k, 0)
     info["n_photos"] = len(s.photos)

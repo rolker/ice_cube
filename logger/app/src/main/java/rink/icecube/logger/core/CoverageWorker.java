@@ -17,8 +17,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * thread as immutable {@link CoverageRaster.Frame}s; the app posts them to the UI thread
  * and draws a frame only when its gen equals {@link #generation()} at that moment.
  *
- * Order. update() posts a rebuild (all the session's rows) when the session, the map frame
- * or the params changed, or the row list shrank; otherwise a feed of the rows past the last
+ * Order. update() posts a rebuild (all the session's rows) when the session, the map frame,
+ * the params or the void generation changed (a capture was flagged or unflagged, logger
+ * 0.9.0: the rebuild then skips the voided rows, see Coverage.feeds), or the row list
+ * shrank; otherwise a feed of the rows past the last
  * ones posted. Feeds queue behind their rebuild, so each frame applies to the one before it.
  *
  * Cancellation. Each rebuild, and clear() or close(), starts a new generation. A task of an
@@ -53,6 +55,7 @@ public final class CoverageWorker {
     private LocalFrame frame;
     private Coverage.Params params;
     private int rowsPosted;
+    private int voidGen;
 
     // Worker thread only.
     private Coverage coverage;
@@ -84,10 +87,21 @@ public final class CoverageWorker {
      * of date until its first frame arrives), false for a feed or nothing to do.
      */
     public boolean update(Object session, LocalFrame frame, Coverage.Params p, PointRow[] rows) {
+        return update(session, frame, p, rows, voidGen);
+    }
+
+    /**
+     * The same, with the session's void generation (Survey counts flag and unflag changes):
+     * a new value rebuilds, so a flagged capture leaves the overlay and an unflagged one
+     * comes back.
+     */
+    public boolean update(Object session, LocalFrame frame, Coverage.Params p, PointRow[] rows, int voidGeneration) {
         if (closed || failed) return false;   // the executor may be shut down; or stopped on an error
-        if (!active || session != this.session || frame != this.frame || !p.equals(params) || rows.length < rowsPosted) {
+        if (!active || session != this.session || frame != this.frame || !p.equals(params) || rows.length < rowsPosted
+                || voidGeneration != voidGen) {
             int g = gen.incrementAndGet();
             active = true;
+            voidGen = voidGeneration;
             this.session = session;
             this.frame = frame;
             params = p;

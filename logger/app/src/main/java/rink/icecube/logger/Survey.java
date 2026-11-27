@@ -26,6 +26,7 @@ import rink.icecube.logger.core.RefOccupation;
 import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TiltSet;
 import rink.icecube.logger.core.TiltSolver;
+import rink.icecube.logger.core.VoidRule;
 
 /**
  * The captures of one session: MARK in Surface, Object or Ref mode and PHOTO, written to
@@ -39,6 +40,12 @@ import rink.icecube.logger.core.TiltSolver;
  *
  * Tilt capture ({@link TiltSet}): startTilt, then lean() per lean, finishTilt (MARK) or
  * cancelTilt; every lean goes to tilt_obs.csv.
+ *
+ * Flagging ({@link #voidCapture}, {@link #unvoidCapture}, logger 0.9.0): a capture row is
+ * marked void, never removed; its photos move (see {@link VoidRule}); the flag goes to
+ * points.csv (rewritten), to events.csv (flag / unflag / photo moved, the audit trail) and,
+ * for a ref, to its row in every refs.csv. The phone never reopens a session, so refs.csv
+ * is the only void state read back (by the pole check and the earlier-refs layer).
  *
  * GGA epochs arrive on the GPS thread through {@link #onEpoch}; MARK and PHOTO come from
  * the screen. Everything that touches the rows is synchronized; files are written on a
@@ -149,6 +156,10 @@ final class Survey {
     private volatile Notice notice;
     private volatile String poleWarning;
     private volatile int refsGeneration;
+    /** Counts flag and unflag changes, so the coverage overlay rebuilds without voided rows. */
+    private volatile int voidGeneration;
+    /** The ref whose failed pole check raised poleWarning (0: none). Set under the lock. */
+    private volatile int poleWarningN;
     private final FixGuard guard;
     private double refJump = Double.NaN;
     private boolean refSuspect;
@@ -468,7 +479,7 @@ final class Survey {
     /** Adds a row already numbered (called with the lock held) and writes points.csv. */
     private PointRow addRow(PointRow r) {
         rows.add(r);
-        if (r.isCapture()) { lastCapture = r; captures++; }
+        if (r.isLive()) { lastCapture = r; captures++; }
         svc.event("capture " + r.toCsv());
         savePoints();
         return r;
@@ -487,29 +498,128 @@ final class Survey {
             svc.event("ref n=" + r.n + " not appended to refs.csv: " + e.getMessage());
         }
         refsGeneration++;
-        String text;
-        String sus = r.fixSuspect ? "  fix may be false (jumped " + jumpText(r.fixJump) + ")" : "";
-        if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
-        if (c == null) {
-            text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
-                    : "Ref R" + r.n + " saved: first visit to this mark";
-            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
-            poleWarning = null;
-            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
-            return;
-        }
-        text = c.describe();
-        svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
-                r.n, text, c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
-        if (c.ok) {
-            poleWarning = null;
-            notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
-            if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
+        if (c != null) {
+            svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
+                    r.n, c.describe(), c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
         } else {
-            poleWarning = text + " (R" + r.n + "; check the pole height)";
-            notice = new Notice(text + sus, false, false, r);
-            cue(Feedback.Cue.POLE_ALARM);
+            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
         }
+        // Check and set under the lock: a voidCapture between the check and the update
+        // would otherwise leave a notice, warning or alarm on a flagged ref.
+        synchronized (this) {
+            if (r.voided) {   // flagged while the check ran: no notice, no warning
+                svc.event("pole check n=" + r.n + ": result not shown (voided)");
+                return;
+            }
+            String sus = r.fixSuspect ? "  fix may be false (jumped " + jumpText(r.fixJump) + ")" : "";
+            if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
+            if (c == null) {
+                String text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
+                        : "Ref R" + r.n + " saved: first visit to this mark";
+                notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
+                poleWarning = null;
+                poleWarningN = 0;
+            } else if (c.ok) {
+                poleWarning = null;
+                poleWarningN = 0;
+                notice = new Notice(c.describe() + sus, !r.fixSuspect, r.fixSuspect, r);
+                if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
+            } else {
+                String text = c.describe();
+                poleWarning = text + " (R" + r.n + "; check the pole height)";
+                poleWarningN = r.n;
+                notice = new Notice(text + sus, false, false, r);
+                cue(Feedback.Cue.POLE_ALARM);
+            }
+        }
+    }
+
+    // ---- flag (void) ----
+
+    /** The row numbered n, or null (called with the lock held). */
+    private PointRow row(int n) {
+        for (PointRow r : rows) if (r.n == n) return r;
+        return null;
+    }
+
+    /**
+     * Flags capture n as bad. via is {@link VoidRule#VIA_UNDO} (refused once the undo window
+     * since the capture has passed) or {@link VoidRule#VIA_LIST}. Refused for a photo row (a
+     * photo row is not flagged), an already voided row, or while a ref occupation or a tilt
+     * set runs (their cancel is the undo). Its photos move (see {@link VoidRule}).
+     */
+    synchronized Outcome voidCapture(int n, String reason, String via) {
+        PointRow r = row(n);
+        if (r == null) return new Outcome(false, "No capture " + n);
+        if (!r.isCapture()) return new Outcome(false, "A photo row is not flagged");
+        if (r.voided) return new Outcome(false, label(r.cls) + n + " is already flagged");
+        if (ref != null || tilt != null) return new Outcome(false, "Finish or cancel the running capture first");
+        if (VoidRule.VIA_UNDO.equals(via) && !VoidRule.undoOpen(r.elapsedNs, SystemClock.elapsedRealtimeNanos())) {
+            return new Outcome(false, "Too late to undo: flag it from the recent captures");
+        }
+        String why = VoidRule.reason(reason);
+        r.voidReason = why;
+        r.voided = true;
+        svc.event("flag n=" + n + " reason=" + why.replace(' ', '_') + " via=" + via);
+        if (!r.photo.isEmpty()) movePhotos(r);
+        recount();
+        voidGeneration++;
+        Notice cur = notice;
+        if (cur != null && cur.at == r) notice = null;   // its capture notice no longer stands
+        if (poleWarningN == n) { poleWarning = null; poleWarningN = 0; }
+        if (PointRow.REF.equals(r.cls)) refsVoid(r);
+        savePoints();
+        return new Outcome(true, label(r.cls) + n + " flagged: " + why);
+    }
+
+    /** Clears the flag of capture n. Its photos stay where they were moved. */
+    synchronized Outcome unvoidCapture(int n) {
+        PointRow r = row(n);
+        if (r == null || !r.voided) return new Outcome(false, "Capture " + n + " is not flagged");
+        r.voided = false;
+        r.voidReason = "";
+        svc.event("unflag n=" + n);
+        recount();
+        voidGeneration++;
+        if (PointRow.REF.equals(r.cls)) refsVoid(r);
+        savePoints();
+        return new Outcome(true, label(r.cls) + n + " no longer flagged");
+    }
+
+    /** Moves the photos of voided row v to the nearest earlier live capture, else to a new photo row. */
+    private void movePhotos(PointRow v) {
+        PointRow to = VoidRule.photoTarget(rows, v.n);
+        String files = v.photo;
+        if (to != null) {
+            for (String f : files.split(";")) if (!f.isEmpty()) to.photo = PhotoRule.add(to.photo, f);
+            v.photo = "";
+            svc.event("photo moved n=" + v.n + " to=" + to.n + " photos=" + files);
+        } else {
+            PointRow own = VoidRule.photoRowFor(v, ++counter);
+            v.photo = "";
+            rows.add(own);
+            svc.event("photo moved n=" + v.n + " to=" + own.n + " own row photos=" + files);
+            svc.event("capture " + own.toCsv());
+        }
+    }
+
+    /** lastCapture and captures from the live rows (called with the lock held). */
+    private void recount() {
+        lastCapture = VoidRule.lastLive(rows);
+        captures = VoidRule.liveCount(rows);
+    }
+
+    /** Writes a ref's void state to its refs.csv rows, after its append (same io thread). */
+    private void refsVoid(PointRow r) {
+        boolean v = r.voided;
+        String why = r.voidReason;
+        String session = dir.getName();
+        run(() -> {
+            // a partial write (some copies not rewritten) is an error event too; readers take
+            // the flag from the newest copy (VoidRule.liveRefs), and a rewritten copy is newer
+            svc.event(RefsStore.setVoid(svc, session, r.n, v, why).event(r.n, v));
+            refsGeneration++;
+        });
     }
 
     // ---- PHOTO ----
@@ -517,8 +627,7 @@ final class Survey {
     /** Chooses the file and the capture for a photo about to be taken. Null if the folder cannot be made. */
     synchronized PhotoPlan planPhoto() {
         long now = SystemClock.elapsedRealtimeNanos();
-        PointRow last = lastCapture;
-        int attach = last == null ? -1 : PhotoRule.attachTo(last.n, last.elapsedNs, now);
+        int attach = PhotoRule.attachTo(lastCapture, now);
         Epoch e = epochs.peekLast();
         String utc = PointRow.utcCompact(e == null ? Double.NaN : e.tod, System.currentTimeMillis());
         if (!photos.isDirectory() && !photos.mkdirs()) return null;
@@ -529,8 +638,10 @@ final class Survey {
 
     synchronized void photoTaken(PhotoPlan p) {
         String name = p.file.getName();
-        PointRow target = null;
-        if (p.attachN > 0) for (PointRow r : rows) if (r.n == p.attachN) target = r;
+        // the planned capture may have been flagged while the camera was open: ask again
+        int attachN = p.attachN;
+        if (attachN > 0 && (row(attachN) == null || row(attachN).voided)) attachN = PhotoRule.attachTo(lastCapture, p.pressNs);
+        PointRow target = attachN > 0 ? row(attachN) : null;
         if (target != null) {
             target.photo = PhotoRule.add(target.photo, name);
             svc.event("photo file=photos/" + name + " bytes=" + p.file.length() + " attached to n=" + target.n);
@@ -567,6 +678,7 @@ final class Survey {
     Notice notice() { Notice n = notice; return n != null && SystemClock.uptimeMillis() < n.untilMs ? n : null; }
     String poleWarning() { return poleWarning; }
     int refsGeneration() { return refsGeneration; }
+    int voidGeneration() { return voidGeneration; }
 
     static String label(String cls) {
         switch (cls) {

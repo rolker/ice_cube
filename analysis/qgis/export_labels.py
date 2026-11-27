@@ -3,7 +3,7 @@
 
     python3 analysis/qgis/export_labels.py [--config config.toml] [--gpkg SEASON.gpkg]
             [--out FILE.csv] [--classes surface,object,ref,control] [--labelled-only]
-            [--session NAME ...]
+            [--session NAME ...] [--include-voided]
 
 Reads the `captures` table written by import_sessions.py (default gpkg: `[season].gpkg`
 of the config; output: `[season].labels_csv`, else `<gpkg stem>-captures.csv` next to the
@@ -26,6 +26,10 @@ see local_frame.py). So an icecube survey entry can use the file as is:
 The accuracy columns are left empty on purpose: a capture's scatter (sd_*) is over 1 s of
 epochs (30 s for a ref) and says nothing about the slowly varying RTK bias, so icecube
 should use its configured sigma defaults. `--accuracy-from-scatter` fills them anyway.
+
+Captures flagged as bad in the logger (0.9.0, `void` = 1 in the gpkg) are left out and
+counted; `--include-voided` exports them too (the `void` and `void_reason` columns then
+say which).
 """
 from __future__ import annotations
 
@@ -40,16 +44,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from import_sessions import _abs, load_config  # noqa: E402
 
 FIELDS = ["session", "n", "class", "label", "note", "utc", "h_ant", "pole_m", "fix", "n_epochs",
-          "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "x_m", "y_m", "z_m"]
+          "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "x_m", "y_m", "z_m", "void", "void_reason"]
 SWMAPS = ["Latitude", "Longitude", "Elevation", "Time", "Fix ID", "Remarks",
           "Horizontal Accuracy", "Vertical Accuracy"]
 
 
 def export(gpkg, out, classes=("surface", "object", "ref", "control"), labelled_only=False,
-           sessions=None, accuracy_from_scatter=False):
-    """Write the CSV; returns the number of rows."""
+           sessions=None, accuracy_from_scatter=False, include_voided=False,
+           stats=None):
+    """Write the CSV; returns the number of rows. `stats` (a dict), when given, gets
+    "voided": the number of selected captures flagged void (left out unless
+    `include_voided`), and "voided_included": whether they were exported."""
     con = sqlite3.connect(f"file:{Path(gpkg).as_posix()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
+    has_void = "void" in {r[1] for r in con.execute("PRAGMA table_info(captures)")}
     q = (f"SELECT * FROM captures WHERE lat IS NOT NULL AND class IN ({','.join('?' * len(classes))})")
     params = list(classes)
     if labelled_only:
@@ -59,6 +67,9 @@ def export(gpkg, out, classes=("surface", "object", "ref", "control"), labelled_
         params += list(sessions)
     rows = con.execute(q + " ORDER BY utc, session, n", params).fetchall()
     con.close()
+    voided = [r for r in rows if has_void and r["void"]]
+    if not include_voided:
+        rows = [r for r in rows if not (has_void and r["void"])]
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -73,8 +84,20 @@ def export(gpkg, out, classes=("surface", "object", "ref", "control"), labelled_
             w.writerow([f"{r['lat']:.9f}", f"{r['lon']:.9f}",
                         "" if r["h_ground"] is None else f"{r['h_ground']:.4f}",
                         f"{utc} UTC" if utc else "", r["fix"], remark, ha, va]
-                       + ["" if r[k] is None else r[k] for k in FIELDS])
+                       + [cell(r, k, has_void) for k in FIELDS])
+    if stats is not None:
+        stats["voided"] = len(voided)
+        stats["voided_included"] = bool(include_voided)
     return len(rows)
+
+
+def cell(r, k, has_void):
+    """The CSV value of column k: empty for None, 0 for `void` from a gpkg imported before
+    0.9.0 (no void column) or for a row with a NULL void (imported before the column was
+    added): nothing was flagged."""
+    if k == "void" and (not has_void or r[k] is None):
+        return 0
+    return "" if k not in r.keys() or r[k] is None else r[k]
 
 
 def main(argv=None):
@@ -88,6 +111,8 @@ def main(argv=None):
     ap.add_argument("--session", nargs="*", help="only these sessions")
     ap.add_argument("--accuracy-from-scatter", action="store_true",
                     help="fill the accuracy columns from the capture scatter")
+    ap.add_argument("--include-voided", action="store_true",
+                    help="also export captures flagged void in the logger (default: left out)")
     args = ap.parse_args(argv)
     cfg, cfg_dir = load_config(args.config)
     season = cfg.get("season", {})
@@ -96,9 +121,12 @@ def main(argv=None):
         ap.error("give --gpkg or [season].gpkg in the config")
     out = (Path(args.out) if args.out else _abs(season["labels_csv"], cfg_dir) if "labels_csv" in season
            else gpkg.with_name(gpkg.stem + "-captures.csv"))
+    stats = {}
     n = export(gpkg, out, tuple(c.strip() for c in args.classes.split(",") if c.strip()),
-               args.labelled_only, args.session, args.accuracy_from_scatter)
-    print(f"{out}: {n} captures")
+               args.labelled_only, args.session, args.accuracy_from_scatter, args.include_voided, stats)
+    n_void = stats["voided"]
+    print(f"{out}: {n} captures" + (f" ({n_void} flagged void, "
+                                    + ("included" if args.include_voided else "left out") + ")" if n_void else ""))
     return 0
 
 
