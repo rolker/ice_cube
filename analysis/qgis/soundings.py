@@ -949,7 +949,7 @@ def assign_anchors(rows, radius, snap, dz, *, ground_sigma):
                       st.median(r["z_m"] for r in good)))
     joined = 0
     for r in rows:
-        if r["class"] != "ground" or r["x_m"] is None:
+        if r["class"] != "ground" or r["x_m"] is None or is_voided(r):   # a voided capture never joins
             continue
         for name, x, y, z in sites:
             if math.hypot(r["x_m"] - x, r["y_m"] - y) <= snap and abs(r["z_m"] - z) <= dz:

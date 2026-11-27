@@ -294,6 +294,14 @@ class TestBuild(unittest.TestCase):
         sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
         self.assertEqual((sites, joined), ([], 0))
         self.assertEqual(rows[1]["class"], "ground")
+        # a voided ground capture near a site does not join it as an anchor
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.0, pass_id="p1", anchor="site1"),
+                r(sid="v3", **{"class": "ground"}, x_m=0.02, y_m=0.0, z_m=1.0, pass_id="p2", flags="void:moved")]
+        for x in rows:
+            snd.finish_use(x)
+        sites, joined = snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        self.assertEqual((len(sites), joined), (1, 0))
+        self.assertEqual((rows[1]["class"], rows[1]["anchor"]), ("ground", None))
         # a suspect pass whose only comparable row is voided stays suspect
         rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.00, pass_id="p1", anchor="site1"),
                 r(sid="v2", **{"class": "anchor"}, x_m=0.05, y_m=0.0, z_m=1.00, pass_id="p4",
