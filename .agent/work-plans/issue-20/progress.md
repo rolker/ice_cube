@@ -117,3 +117,11 @@ Sound direction and good reuse, but the plan names the wrong `soundings.py` entr
 **Decision**: revise
 
 Revise per the Plan Review at 9390e09: call soundings.build(..., write=False) on a scratch gpkg with a generated one-source [soundings] block (note in the howto that anchors/verify_suspect then see only this session); require an ENU [site]; base position from a survey key, else read-only from the season gpkg, else base_from_sessions, written to the scratch gpkg metadata; pass base_history through; placeholders only in icecube.example.toml. Fold in the implementation-level items 3-6 (session_paths, the points.csv-only fallback with its own test in soundings.py, pass_rule.from_file defaulted by the reader, expose kinds with captures-only default, and state that the settle re-fit changes the sigma inflation only, the pass-drop rule stays at #15's 120 s, Java mirror the same scope).
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 17:55 -05:00
+**By**: Claude Code Agent (claude-sonnet-5-5)
+**Plan**: `.agent/work-plans/issue-20/plan.md` at `a956d66`
+
+Revised per the Plan Review and checkpoint: reader now calls `soundings.build(write=False)` on a scratch gpkg with a generated one-source config; requires an ENU `[site]`; base from survey key, season gpkg meta or `base_from_sessions`, plus `base_history`; points.csv-only fallback in `logger_source` with its test; `from_file` defaulted; `kinds` captures-only default; settle re-fit changes inflation only (drop rule stays 120 s).
