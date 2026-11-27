@@ -199,7 +199,6 @@ class LiveCoverage:
         self.plane = plane
         self.nodes = {}
         self.trace = []
-        self.gtrace = []
 
     def stores(self):
         return {k: nd.store for k, nd in self.nodes.items() if nd.store is not None}
