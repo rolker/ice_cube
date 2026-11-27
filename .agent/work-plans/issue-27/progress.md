@@ -1009,3 +1009,20 @@ One open suggestion (the copy id includes an approximate time read in the import
 **Decision**: address
 
 Key the copy id of a zip with no 0x5455 and no usable events.csv on its raw DOS stamp (zone-free), not the PC-zone reading; test that importing the same zip under two TZ settings adds one copy.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:05 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `ecbdcd9`
+**Addressed**: Integrated Review at `cd73f5f` (2026-11-26 22:00 -05:00)
+**Commits**: ecbdcd9
+
+### Actions
+- [x] mtime_approx refs.csv copy (no 0x5455, no usable events.csv offset) is now identified by its raw DOS stamp: new `logger_session.zip_entry_time_key`, returned as an optional 4th element of `refs_csv_dated`, used by `_copy_id` in place of the PC-zone mtime; the decided time and interval are unchanged. New test `test_approx_copy_imported_in_two_zones_is_one_copy` imports one zip under TZ=UTC0 and TZ=JST-9 (approx times 9 h apart): one copy, flag 1 both times; it fails without the fix (2 copies) — `analysis/qgis/import_sessions.py:421`, `analysis/qgis/logger_session.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 155 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
+- Full pre-commit pass left to the host. Note: a gpkg that stored an approx copy under the old id gets one more row for it on re-import, with the same time, so the flag does not change.
