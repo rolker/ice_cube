@@ -450,3 +450,26 @@ Specialists: static (no Python linter installed: ruff/flake8/pyflakes absent, py
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110, OK (skipped=5)
 - `./gradlew testDebugUnitTest --max-workers 4`: OK (C: 114 GB free)
 - Private replays (counts only), unchanged: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:59 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: approved
+
+**PR**: #34 at `61612f4`
+**Depth**: Standard (reason: whole-PR re-review after fix round 2, ~1.5k hand-written lines in icecube/ plus a generated vector file; no security or governance-file triggers)
+**Must-fix**: 0 | **Suggestions**: 9
+
+Specialists: static (no Python linter installed; py_compile clean; 90 tests OK; coverage_vectors.json byte-identical to a fresh generate, diff since f6ca7da additive only), governance (public repo: synthetic local metres only; no PR comments or reviews), plan drift (one stale port note, below), Claude adversarial (no must-fix; agreement algebra, sign, axes, mask indexing and NaN paths confirmed; pass-seam probe with sb = 3 cm refused no correct bank node), cross-model gemini + codex (both complete). All five round-2 items verified addressed. Codex's two must-fix calls were downgraded: an infinite configured limit is the user's explicit choice (a doc/code mismatch, not a fail-open on computed values), and skipping the DEM gate on NaN is the round-1 design decision with the significance and agreement gates still applying. Dropped: vg clamp in reduce_to_plane (-1e-15 against real sz2), plane_kwargs(None) and gradient=None nits (not reachable from TOML / Surface).
+
+### Findings
+- [ ] (suggestion) Agreement cross term is not pinned: flipping its sign or deleting it passes all 90 tests (moves tol by up to ~2.5 cm on 9x7 banks); emit vagree/tol (or var_a, cov_ag) in plane_vectors or unit-test vagree against [1,d_bar]'Cov[1,d_bar] + 1/W' (Claude adversarial) — `icecube/nodes.py:598`, `icecube/logger_vectors.py`
+- [ ] (suggestion) Gates with no behavioural test: the scaled conditioning check (replace with pass: all green; reachable for unscaled sigma_g in (0.08/chi, 0.08]), the significance allowance and the n_out-strictly-drops clause (only test_committed_file_is_current catches them); the _pos_def(cov) after scaling is unreachable (Claude adversarial) — `icecube/nodes.py:475-479`, `icecube/nodes.py:569`, `icecube/nodes.py:589`
+- [ ] (suggestion) Docs say a non-finite limit fails, but plane_fit lets planarity = inf / max_sigma_g = inf pass a finite value (the test relies on it); check the limits or reword to "non-finite computed values fail" (codex, gemini) — `icecube/nodes.py:102-103`, `docs/howto/ice-cube.md:156`
+- [ ] (suggestion) Module docstring "Gates, in order" lists planarity before conditioning (code: unscaled conditioning, planarity, scaled conditioning), and step 4 says the pass bias cancels flatly where step 1 says mostly (Claude adversarial) — `icecube/nodes.py:91-94`, `icecube/nodes.py:121-122`
+- [ ] (suggestion) PLANE_NOT_PLANAR returns chi only, so the vector threshold guard never traces the unscaled conditioning gate a not-planar node passed; return sigma_g too (gemini) — `icecube/nodes.py:473`
+- [ ] (suggestion) test_outlier_table_lists_planar_nodes_first's gradient-filled check is vacuous: rstrip(" |") strips the empty last cell, so [-1] reads node sigma; use split("|")[-2] as the next line does (gemini, confirmed) — `icecube/tests/test_icecube.py:725`
+- [ ] (suggestion) plan.md PR B port notes still say the output sigma feeds the agreement test; now noise-only (1/W' + d_bar'C_g d_bar, pass bias out), conditioning runs on the unscaled covariance before planarity, an infinite DEM slope fails (plan drift) — `.agent/work-plans/issue-29/plan.md:84-90`
+- [ ] (suggestion) A NaN raw DEM slope also comes from NoData holes inside the DEM, not only outside its cover; docs say "outside the DEM's cover" — say holes skip the gate too, or treat them differently (codex) — `icecube/nodes.py:573`, `icecube/topo.py:159`
+- [ ] (suggestion) PR body Decision summary is stale (85 tests, review history ends at the pre-push round 3, agreement gate not noise-only); refresh before merge — PR #34 body
