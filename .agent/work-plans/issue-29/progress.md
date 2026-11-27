@@ -496,7 +496,7 @@ No must-fix. All nine round-2 suggestions were checked against the code at `677b
 - [x] (suggestion, Local Review @ `61612f4`) In `test_outlier_table_lists_planar_nodes_first` the gradient-filled check is vacuous: `rstrip(" |")` strips an empty last cell, so `[-1]` reads the sigma cell. Use `split("|")[-2]` as the next line does — `icecube/tests/test_icecube.py:725`
 - [x] (suggestion, Local Review @ `61612f4`) plan.md's PR B port notes still say the output sigma feeds the agreement test. Update them: the test is now noise-only (`1/W' + d_bar'C_g d_bar` plus the cross term, pass bias left out), conditioning runs on the unscaled covariance before planarity, and an infinite DEM slope fails — `.agent/work-plans/issue-29/plan.md:84-91`
 - [x] (suggestion, Local Review @ `61612f4`) A NaN raw DEM slope also comes from NoData holes inside the DEM (`dem.bilinear` returns NaN next to NaN cells), not only from outside its cover. The comment, docstring and howto say "outside the DEM's cover"; say that holes skip the gate too, or treat them differently — `icecube/nodes.py:573`, `icecube/topo.py:159`, `docs/howto/ice-cube.md:155`
-- [ ] (suggestion, Local Review @ `61612f4`) The PR body's Decision summary is stale: it says "icecube 85 OK", its review history stops at pre-push round 3, and it does not mention that the agreement gate is noise-only. Refresh it before merge — PR #34 body
+- [x] (suggestion, Local Review @ `61612f4`) The PR body's Decision summary is stale: it says "icecube 85 OK", its review history stops at pre-push round 3, and it does not mention that the agreement gate is noise-only. Refresh it before merge — PR #34 body (deferred: the host's: PR body refreshed by the host before the merge question (Checkpoint 20:30))
 
 ### False positives
 
@@ -509,3 +509,30 @@ No must-fix. All nine round-2 suggestions were checked against the code at `677b
 **Decision**: address
 
 Address all nine: pin the cross term and the untested gates with behavioural tests; make the infinite-limit wording true (or the code); fix the docstring order and the bias wording; return sigma_g on NOT_PLANAR; fix the rstrip test; update plan.md port notes; document NoData NaN. Item 9 (the PR body's Decision summary) is the host's and is updated before the merge question.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 20:35 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #34 at `4ef3b81`
+**Addressed**: Integrated Review at `677b6cb` (2026-11-26 20:29 -05:00)
+**Commits**: d0c8a53, e8c47a6, d02bb2f, 6742d67, 040ebca, e7a80fe, 4ef3b81
+
+### Actions
+- [x] Cross term pinned: a synthetic 3 x 3 `plane_pass` (fake pass-2 rebuild) checks the agreement tolerance equals k * sqrt([1, d]'Cov[1, d] + 1/W'), with the cross term a large negative part; flipping its sign or deleting it fails — `icecube/tests/test_icecube.py` test_agreement_variance_carries_the_cross_term (4ef3b81)
+- [x] Untested gates pinned: scaled conditioning (plane_fit case with 1.5 < chi < 3), significance allowance and n_out strictly-drops (synthetic plane_pass); each mutation (drop allowance, drop the n_out clause or make it <=, drop the scaled check) fails a test. Post-scaling `_pos_def` kept, commented as defensive (overflow only), and a test reaches it — `icecube/nodes.py`, `icecube/tests/test_icecube.py` (4ef3b81)
+- [x] Infinite limits: docs now say what the code does — a non-finite computed value or a NaN limit fails; an infinite `plane_planarity`/`plane_max_sigma_g` switches that gate off; an infinite DEM slope fails, NaN skips; test pins the NaN and infinite limit — `icecube/nodes.py`, `docs/howto/ice-cube.md` (d02bb2f)
+- [x] Docstring lists gates in run order (unscaled conditioning, planarity, scaled conditioning, significance, DEM); steps 1 and 4 both say the pass bias cancels in z' - a where one pass dominates — `icecube/nodes.py` (6742d67)
+- [x] PLANE_NOT_PLANAR returns sigma_g; vectors regenerated, unchanged (guard passed) — `icecube/nodes.py` (d0c8a53)
+- [x] rstrip test reads the gradient column (`split("|")[-2]`) — `icecube/tests/test_icecube.py` (e8c47a6)
+- [x] plan.md PR B port notes: noise-only agreement variance with cross term, gate order, limit rules — `.agent/work-plans/issue-29/plan.md` (e7a80fe)
+- [x] NaN DEM slope also from NoData holes, documented — `icecube/nodes.py`, `icecube/topo.py`, `docs/howto/ice-cube.md` (040ebca)
+- [x] PR body Decision summary — PR #34 body (deferred: the host's, per Checkpoint 20:30)
+
+### Checks
+- `python3 -m icecube.logger_vectors --out .../coverage_vectors.json`: no change
+- `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110 tests, OK (skipped=5)
+- `./gradlew testDebugUnitTest --max-workers 4`: pass (C: 113 GB free)
+- Private replays (counts only), unchanged: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
