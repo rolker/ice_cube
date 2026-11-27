@@ -401,8 +401,9 @@ not append-only. `events.csv` is the append-only record.
 The ten 0.6 columns come after `note`, and the two 0.9.0 columns after those, so a reader
 that takes the first 17 (or 27) columns by position keeps working; older rows simply lack
 the later columns, and a row without `void` is not flagged. The session importer
-(`analysis/qgis/logger_session.py`) reads the first 17 and `void`/`void_reason`; it does
-not yet pick up `fix_suspect`, `method`, the tilt columns or `tilt_obs.csv`.
+(`analysis/qgis/import_sessions.py`) carries the 0.6 columns and `void`/`void_reason` into
+the gpkg `captures` table (NULL for older sessions), and soundings.py gives a tilt capture
+the tilt-capture sigma. It does not read `tilt_obs.csv` yet.
 
 Example (made-up position):
 ```
@@ -564,12 +565,13 @@ overlay and set in Settings > Coverage.
   ground the Coverage setting; sh = hypot(max(1 cm, hypot(`sd_e_m`, `sd_n_m`)/√2),
   pole_m sin 1°). A single capture takes a 1° bubble tilt, as soundings.py does. A tilt
   capture takes its own `tilt_sd_u_m` and hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2 with
-  tilt 0 (the solution already places the tip), keeping tip sink and ground.
+  tilt 0 (the solution already places the tip), keeping tip sink and ground; one missing
+  any tilt sd takes the single rule. soundings.py applies the same rule
+  (`capture_sigma_inputs`).
   - Differences from soundings.py: no GST input (the logger does not parse GST, so a
     capture whose GST sigma exceeds its 1 s scatter gets a smaller sigma here); the fix
     age is the logger's own count from the GGA stream, while soundings.py recomputes it
-    from `gps.ubx`; and soundings.py does not have the tilt-capture rule yet (issue #9),
-    so until it does, tilt captures get a different sigma there.
+    from `gps.ubx`.
 - Example at the defaults: one lawn shot (sz about 2.1 cm, sh about 3.3 cm) clears nodes
   within about 0.28 m of it; a node 0.5 m away stays amber. A node needs several
   overlapping captures to clear.

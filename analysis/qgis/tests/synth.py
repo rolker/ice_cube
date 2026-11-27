@@ -17,6 +17,8 @@ SEP = 15.0                               # made-up geoid separation, m
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 60 + b"\xff\xd9"   # stand-in photo bytes
 POINTS_HDR = ("n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,"
               "sd_e_m,sd_n_m,sd_u_m,age_s,photo,note")
+POINTS_HDR_06 = POINTS_HDR + (",fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,"
+                              "tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m")
 
 
 def nmea_gga(t: datetime, lat, lon, h, fix=4, nsat=22, hdop=0.6, age=1.0):
@@ -87,8 +89,30 @@ def captures_v05():
     return rows
 
 
-def session_v05(name="2026-12-01_10-00-00", extra_rows=()):
-    """{relative path: bytes} of a 0.5 session folder."""
+def captures_v06():
+    """captures_v05 with the 0.6 columns (single, single, ref, photo) plus a tilt capture
+    (n=5, surface, scatter well above its tilt sds) and a tilt capture without tilt sds
+    (n=6)."""
+    tails = [",200.0,0.020,0,single,,,,,,", ",200.0,0.020,0,single,,,,,,", ",200.0,0.020,0,ref,,,,,,",
+             ",,,,,,,,,,"]
+    rows = [r + t for r, t in zip(captures_v05(), tails)]
+    for n, e, tail in ((5, 4.0, "6,0.0071,250,0.0060,0.0080,0.0120"), (6, 4.5, "6,0.0071,250,,,")):
+        lat, lon, h = offset(e, 2.0, 1.8)
+        t = START + timedelta(seconds=n * 10)
+        rows.append(f"{n},surface,{T0_NS + n * 10_000_000_000},{t.strftime('%Y-%m-%dT%H:%M:%S.00Z')},"
+                    f"{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},4,40,"
+                    f"0.0300,0.0300,0.0400,1.0,,,180.0,0.015,1,tilt,{tail}")
+    return rows
+
+
+def session_v06(name="2026-12-01_10-00-00"):
+    """A 0.6 session: session_v05 with the 0.6 points.csv columns and two tilt captures."""
+    return session_v05(name, app="0.6", points=[POINTS_HDR_06] + captures_v06())
+
+
+def session_v05(name="2026-12-01_10-00-00", extra_rows=(), app="0.5", points=None):
+    """{relative path: bytes} of a 0.5 session folder (`points`: other points.csv lines,
+    header first)."""
     ubx, chunks = write_ubx(walk(60, fix_at=lambda s: 5 if 20 <= s < 25 else 4))
     ev = events([(5, "gps connected bluetooth Test-Rover secure gps_offset=0"),
                  (6, "caster start mount=TEST01 log_corrections=true"),
@@ -100,8 +124,8 @@ def session_v05(name="2026-12-01_10-00-00", extra_rows=()):
                  (31, "pole check n=3: pole check OK (±0.4 cm vs last visit; -1.0 cm vs mean of 2 visits); "
                       "diff_last_m=-0.0040 diff_mean_m=-0.0100 visits=2 last=2026-11-30_09-00-00/5 ok=true"),
                  (32, "photo file=photos/photo_4_20261201T100030Z.jpg bytes=68 own row n=4"),
-                 (40, "caster lost: error: test; retry in 5 s")])
-    pts = "\n".join([POINTS_HDR] + captures_v05() + list(extra_rows)) + "\n"
+                 (40, "caster lost: error: test; retry in 5 s")], app=app)
+    pts = "\n".join((points or [POINTS_HDR] + captures_v05()) + list(extra_rows)) + "\n"
     return {f"{name}/events.csv": ev.encode(), f"{name}/points.csv": pts.encode(),
             f"{name}/gps.ubx": ubx, f"{name}/gps_chunks.csv": chunks.encode(),
             f"{name}/photos/photo_2_20261201T100010Z.jpg": JPEG,

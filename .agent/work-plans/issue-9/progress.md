@@ -1,0 +1,455 @@
+---
+issue: 9
+---
+
+# Issue #9 — soundings.py: sigma rule for tilt captures
+
+## Issue Review
+**Status**: complete
+**When**: 2026-11-26 18:26 -05:00
+**By**: Claude Code Agent (claude-sonnet-5-5)
+
+**Issue**: #9
+
+### Scope Assessment
+
+**Well-scoped?** Yes. One PR: read five `tilt_*` columns in the session reader (`soundings.py` captures query, around line 583), give the capture loop a tilt branch (around line 666). Hand-made tilt sets are out of scope (issue 26).
+**Right repo?** Yes. `analysis/qgis/soundings.py` is the post-processing reference; the logger and `icecube/logger_vectors.py` already carry the rule.
+**Serves**: the project's goal of ice growth reported from logger surveys (`docs/roadmap.md` Direction); no `docs/design.md` in this project.
+**Design picture?** No change. The rule is specified in the issue and in `logger/README.md`; this brings the reference into line.
+**Dependencies**: #6 (merged) defined the rule and the vectors. Issue 26 will follow and builds on the tilt columns being read.
+
+### Principle Alignment
+
+| Principle | Status | Notes |
+|---|---|---|
+| Public repo, no private data | OK | Only generic column names and synthetic vector values. |
+| Scripts take values from config | OK | No new constants; reuses `tip_sink` and `ground` from `[soundings.sigma]`. |
+| Keep things consistent (post-processing and live view agree) | Watch | `sigma_terms` is mirrored in `SoundingSigma.java`. If its signature changes, the mirror, the docstring pointer and the vectors must follow. Prefer the caller passing `sd_u`, `sd_h` and `tilt_deg=0` so `sigma_terms` needs no change. |
+| Missing data handled | Watch | Older (pre-0.6) logs and single captures have no `tilt_*` columns; the reader must tolerate absent columns and NULLs, falling back to the single-capture rule, as `logger_vectors.py` does. |
+
+### ADR Applicability
+
+| ADR | Triggered | Notes |
+|---|---|---|
+| none | No | The project has no ADRs; no workspace ADR is triggered. |
+
+### Consequences
+
+- `icecube/logger_vectors.py` docstring (line 14) says soundings.py has no tilt rule; update it. A tilt vector case already exists (around line 225), so "add the case" is mostly done; verify it runs through the soundings path and covers missing sd values.
+- `logger/README.md` (around lines 514-519) says soundings.py lacks the rule (issue 9); drop that caveat.
+- The `soundings.py` module docstring (line 35) and `analysis/README.md` should describe the tilt-capture rule.
+- Add a test for a tilt capture on the soundings side.
+
+### Recommendations
+
+- Keep `sigma_terms`'s signature unchanged: choose the tilt inputs in the capture loop (sd_u = `tilt_sd_u_m`, sd_h = hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2, tilt_deg 0) so it matches the Java mirror and the vectors with no regeneration needed.
+- Make the reader tolerate databases or CSVs without the tilt columns (NULL when absent) and fall back to the single-capture rule when `method` is not tilt or the tilt sds are missing.
+- Check the parity test against the existing tilt vector, including a case with missing `tilt_sd_*`, and update the docs that say the rule is absent.
+
+### Actions
+- [ ] Keep `sigma_terms`'s signature unchanged: choose the tilt inputs in the capture loop (sd_u = `tilt_sd_u_m`, sd_h = hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2, tilt_deg 0) so it matches the Java mirror and the vectors with no regeneration needed.
+- [ ] Make the reader tolerate databases or CSVs without the tilt columns (NULL when absent) and fall back to the single-capture rule when `method` is not tilt or the tilt sds are missing.
+- [ ] Check the parity test against the existing tilt vector, including a case with missing `tilt_sd_*`, and update the docs that say the rule is absent.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:26 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (actions are plan inputs within the issue's scope; orchestrator table allows proceed)
+**After**: issue-actions
+**Decision**: proceed
+
+Actions go to plan-task: tilt rule applied in the capture loop (sd_u = tilt_sd_u_m, sd_h = hypot(tilt_sd_e_m, tilt_sd_n_m)/sqrt(2), tilt 0) without changing sigma_terms' signature; tolerate missing/NULL tilt columns (fall back to the single rule); check the existing tilt parity vector against the soundings path; fix the docs that say the rule is absent. Issue 26 stays out of scope.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 18:27 -05:00
+**By**: Claude Code Agent (claude-sonnet-5-5)
+**Plan**: `.agent/work-plans/issue-9/plan.md` at `197feb7`
+
+Single PR: make `read_points` and the captures gpkg table carry method, fix_suspect and tilt_* columns (NULL for older logs), add a shared rule helper in soundings.py (tilt sds as sd_u/sd_h with tilt 0, else single rule; sigma_terms unchanged) used by the capture loop and logger_vectors, add a missing-sd vector and tests, and fix the docs saying the rule is absent.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 18:29 -0500
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #9 — soundings.py: sigma rule for tilt captures
+**Plan**: `.agent/work-plans/issue-9/plan.md` at `197feb7`
+**Branch**: `feature/issue-9`
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | One PR: reader, captures schema, one helper, capture loop, vectors, tests, docs. Adding the Java fix (finding 1) keeps it one PR. |
+| Issue alignment | Good | Covers the issue and the review-issue recommendations: `sigma_terms` unchanged, the reader tolerates missing columns, a missing-sd vector, docs updated. |
+| File targeting | Needs work | `logger/app/src/main/java/rink/icecube/logger/core/SoundingSigma.java` is missing (finding 1). The vectors file is `logger/app/src/test/resources/coverage_vectors.json`. |
+| Consequences | Needs work | The row "Java untouched; sigma_terms unchanged" is wrong once the fallback is added (finding 1). The row "re-import fills them" is wrong for a plain re-run (finding 2). |
+| Principle alignment | Needs work | "Post-processing and live view agree" breaks for a tilt capture with a missing sd unless Java changes too. "Missing data handled" is silent for gpkgs imported before this change (finding 2). Serves: "Ice growth reported from logger surveys (`docs/roadmap.md` Direction); project has no design document." This is correct. |
+| ADR compliance | Good | The project has no ADRs and no workspace ADR is triggered. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Consequences / open question 1]** Java does not fall back. `SoundingSigma.of` picks the tilt rule whenever `method` is `tilt`, and NaN sds become 0. A tilt capture with a missing sd therefore gets sd_u at the floor, sd_h at the floor, tilt 0 and only the tip sink, which is an optimistic sigma. The current `logger_vectors.logger_sigma` does the same, because `sigma_terms` treats None as 0. So Java and the vectors agree today, but neither matches the plan's fallback.
+
+   With the plan as written, the new missing-sd vector would make `SoundingSigmaTest` fail on the regenerated `coverage_vectors.json` (it builds a PointRow with NaN tilt sds from the vector). Align Java in this PR rather than in a follow-up:
+   - In `of`, require `TILT.equals(r.method)` and all three of tiltSdE/N/U to be non-NaN.
+   - Rewrite the class comment's "soundings.py does not have that rule yet (issue #9)" and state the fallback there.
+   - Add the file to the Files table.
+   - Run the logger unit tests (`cd logger && ./gradlew testDebugUnitTest --max-workers 4`, or the project's usual test task) after regenerating.
+
+   Put the case in `SIGMA_CASES` (a `tilt_missing_sd` row), which the Java test reads. The coverage chain is not where it is read.
+2. **[Consequences / open question 2]** "Re-import" does not happen on its own. `import_sessions` skips a session whose source signature is unchanged unless `--force` is given. `ensure` will ALTER the new columns into an old gpkg, but they stay NULL. After that the plan's `PRAGMA table_info` check finds the columns present, and tilt captures silently keep the single rule.
+
+   A silent fallback is not acceptable here. Make the importer re-read sessions when the captures schema gains columns, for example by bumping `SCHEMA_VERSION` and treating a stored version older than it as `--force` for sessions. Add a test for that. Also have `logger_source` log one warning when tilt columns are absent, or are NULL for captures of sessions whose `sessions.app` is 0.6 or later, naming the re-import. Update the Consequences row to match.
+3. **[Approach, minor]** The plan does not say whether `gst_u`/`gst_h` still floor a tilt capture's rtk/h in `sigma_terms`. Keeping them is reasonable and matches Java's documented "no GST" difference, but state it. The end-to-end test asserting "sigma_rtk uses tilt_sd_u" must then use rows with no raw GST epochs, or allow max(tilt_sd_u, gst_u).
+
+### Summary
+
+The approach is sound: one shared selection helper, `sigma_terms` unchanged, and tolerant reads. Two consequences are wrong as written. The Java mirror does not fall back on missing tilt sds, so the new vector would break its test unless Java changes in this PR. A plain re-run of the importer leaves old gpkgs with NULL tilt columns and a silent single rule. Both fixes are small.
+
+### Recommended Actions
+
+- [ ] Add `SoundingSigma.java` to the plan: fall back to the single rule when any tilt sd is NaN, fix its class comment, and run the logger unit tests after regenerating the vectors.
+- [ ] Put `tilt_missing_sd` in `SIGMA_CASES`.
+- [ ] Make the importer refill the new columns on old gpkgs without `--force` (schema version bump forces a re-read), with a test. Have `logger_source` warn when the tilt columns are absent or NULL for 0.6+ sessions.
+- [ ] State whether GST still floors tilt captures and shape the end-to-end test to match.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:29 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Address the review's must-fix 1-3 (Java SoundingSigma falls back to the single rule when any tilt sd is missing, in this PR, with its comment fixed and the logger unit tests run on regenerated vectors; tilt_missing_sd in SIGMA_CASES; importer refills the new columns on old gpkgs without --force via a SCHEMA_VERSION bump + test, and logger_source warns once when tilt columns are absent/empty for >=0.6 sessions). Host decision on the minor: GST stays a floor for tilt captures (sigma = the larger of the GST term and the tilt sd), and the end-to-end test uses rows without GST or asserts the larger.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 18:30 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-9/plan.md` at `4eff77d`
+
+Revision after plan review: Java SoundingSigma falls back to the single rule when any tilt sd is missing (in this PR, comment fixed, vectors regenerated, logger unit tests run); tilt_missing_sd goes in SIGMA_CASES; SCHEMA_VERSION bump makes the importer re-read old sessions without --force (with a test) and logger_source warns once when tilt columns are absent or empty for 0.6+ sessions; GST stays a floor for tilt captures and the end-to-end test is shaped to match.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 18:33 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: ready
+
+**Issue**: #9 — soundings.py: sigma rule for tilt captures
+**Plan**: `.agent/work-plans/issue-9/plan.md` at `4eff77d`
+**Branch**: `feature/issue-9`
+
+Second review, after the revision that answered the first review's needs-work.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Still one PR. The Java change is small: a guard in `SoundingSigma.of` and a rewritten comment. |
+| Issue alignment | Good | Covers the issue and all review-issue actions. All three earlier findings are addressed: Java falls back (step 5), `tilt_missing_sd` is in `SIGMA_CASES` (step 6), and `SCHEMA_VERSION` 3 with a re-read test plus a `logger_source` warning (steps 2, 4, 7). The host's GST-floor decision is stated, and the end-to-end test is shaped to match. |
+| File targeting | Good | `SoundingSigma.java` and `coverage_vectors.json` are now listed. `SoundingSigmaTest` needs no edit because it reads `SIGMA_CASES`. |
+| Consequences | Good | The table now matches the approach: Java changed, `sigma_terms` unchanged, old gpkgs refilled by the version bump. Two edge cases are in Findings. |
+| Principle alignment | Good | Post-processing and the live view agree through one helper and the same vectors. Missing data falls back to the single rule with a warning. Public repo: only synthetic values. Serves: "Ice growth reported from logger surveys (`docs/roadmap.md` Direction); project has no design document." Checked and correct. |
+| ADR compliance | Good | The project has no ADRs, and no workspace ADR is triggered. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Consequences, fix during implementation]** The schema-upgrade re-read must not bypass the snapshot guard. Step 2 says to treat an older stored `schema_version` "as `--force` for sessions (skip test at line ~536)". The `if old and not args.force` block holds two guards: the signature check, and "snapshot of a session already imported in full, skipped" (lines 542-546).
+
+   If both guards are skipped, a plain re-run of an upgrade can replace a full import with a snapshot. This happens when the input folder now holds only a snapshot of a session that was earlier imported in full. With an explicit `--force`, the user chose that. On an implicit upgrade, they did not.
+
+   Bypass only the signature check when upgrading, and keep the snapshot guard. Cover it in the step 7 schema-2 test, or in a second small case.
+2. **[Approach, minor]** In step 4, the "`sessions.app` is 0.6 or later" check needs a numeric version comparison, not a string compare. Parse `app` as a tuple of ints. A NULL or unparseable value means "not 0.6+", because 0.2 to 0.5 files exist and have no app string in the tests' sense. Example: "0.10" sorts before "0.6" as a string.
+3. **[Approach, note]** Keep the helper's sd_h None-as-0 behaviour. The existing `missing_sd` vector (single rule, all sds None) depends on `_sd_h` treating None as 0. The current `logger_source` handles the single rule the same way, so this is a regression check, not a change.
+
+### Summary
+
+The revision fixes all three findings from the first review, and the plan is ready for implementation. One new edge case needs care: the implicit schema-upgrade re-read must keep the snapshot guard. Two small implementation notes are also listed. None of them needs another plan revision.
+
+### Recommended Actions
+
+- [ ] On a schema-version upgrade, skip only the unchanged-signature check, keep the "snapshot of a session already imported in full" guard, and test it.
+- [ ] Compare `sessions.app` versions numerically for the 0.6+ warning. NULL or unparseable means older.
+- [ ] Keep None-as-0 in the helper's sd_h so the `missing_sd` vector is unchanged.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:31 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready, no must-fix; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+The review's three implementation notes go into the implement handoff: keep the snapshot guard on the schema-upgrade re-read (skip only the unchanged-signature check), with a test; compare app versions numerically (missing/unreadable = older); the helper treats a missing sd as 0 like today so the existing missing_sd vector is unchanged.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:37 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Branch**: feature/issue-9 at `4f95ee2`
+
+- `116f7f3` import: `logger_session.read_points` returns the 0.6 columns (method, fix_suspect, fix_age_s, fix_jump_m, tilt_n/rms/cover, tilt_sd_e/n/u; None for older files). `import_sessions.py`: captures gain them (`LOGGER_06`), `SCHEMA_VERSION` 3; a gpkg with an older stored schema has every session re-read once without `--force`, skipping only the unchanged-signature check, so the snapshot guard still holds. Tests: v0.6 columns / v0.5 NULLs, schema-2 re-read without `--force` (user label kept, once only), schema-2 upgrade still refuses a snapshot over a full import. `synth.py` gains `POINTS_HDR_06`, `captures_v06`, `session_v06`.
+- `70d0f76` soundings: `capture_sigma_inputs(sg, method, sd_u, sd_e, sd_n, tilt_sd_u, tilt_sd_e, tilt_sd_n)` -> (sd_u, sd_h, tilt); tilt rule only with method tilt and all three tilt sds, else the single rule; sd_h treats a missing sd as 0 (existing `missing_sd` vector unchanged). `sigma_terms` unchanged, so GST still floors. `logger_source` selects the tilt columns via `PRAGMA table_info` (NULL when absent) and logs one warning naming `--force` when they are absent or all NULL for non-photo captures of sessions whose app version is >= 0.6 (numeric compare; missing/unreadable app = older). `logger_vectors.logger_sigma` calls the helper; new `tilt_missing_sd` in `SIGMA_CASES` (sd_u above the floor so it distinguishes the rules); vectors regenerated. `SoundingSigma.java`: tilt rule only when tiltSdU/E/N are all non-NaN; class comment rewritten. Tests: helper and version unit tests, end-to-end tilt capture (no GST: sigma_pole = tip_sink, sigma_rtk = tilt_sd_u, tilt_deg 0; tilt without sds and single take the bubble rule), GST floor case (rtk = max(tilt_sd_u, GST)), old gpkg without columns builds and warns once, NULL columns of a 0.6 session warn and of a 0.5 session do not; `test_logger_vectors` missing-sd case.
+- `4f95ee2` docs: `logger/README.md` (importer note, sigma caveat), `analysis/README.md` soundings row, `docs/log.md` 11-26 line.
+
+Suites (all hooks ran on every commit, none skipped):
+- `python3 -m unittest discover icecube/tests`: Ran 67 tests, OK
+- `python3 -m unittest discover -s analysis/qgis/tests` (test_import, test_soundings and the rest): Ran 103 tests, OK (skipped=5)
+- `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL, all suites 0 failures (SoundingSigmaTest 3/3). C: free 115 GB before and after.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 18:40 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-9 at `a44f484`
+**Base**: main
+**Depth**: Deep (reason: 15 files, +652/-47 lines, Python and Java layers)
+**Must-fix**: 2 | **Suggestions**: 6
+**Round**: 1 | **Ship**: continue — round 1: 2 must-fix; first round always re-reviews after fixes
+
+Cross-model: gemini complete, codex complete. Claude adversarial complete. Tests: analysis/qgis test_import + test_soundings, icecube test_logger_vectors pass (unittest); regenerated vectors match the committed JSON; gradle not run in review. Public-repo check: no coordinates or private data in the diff.
+
+### Findings
+- [x] (must-fix) Schema upgrade bumps `schema_version` to 3 for the whole gpkg even when only some existing sessions were in this run's inputs (or a session was skipped by the snapshot guard); the rest keep NULL 0.6 columns and are then skipped as unchanged forever without --force. Keep the upgrade pending until every session in `done` is re-read, or track it per session; docstring "every session re-read once" is wrong otherwise (gemini, codex, claude-adversarial) — `analysis/qgis/import_sessions.py:541,605`
+- [x] (must-fix) The soundings safety-net warning fires only when all 0.6+ captures across all sessions lack `method`; a mix of upgraded and stranded 0.6+ sessions gives no warning. Check per session and name the sessions (gemini, codex, claude-adversarial) — `analysis/qgis/soundings.py:631-633`
+- [x] (suggestion) `read_points` does not strip `method`; Java `PointRow` trims before `TILT.equals`, so " tilt" diverges — `analysis/qgis/logger_session.py:239`
+- [x] (suggestion) Non-finite tilt sds: `_f("nan")` gives float NaN and `capture_sigma_inputs` checks only `None`; Java checks NaN. Map non-finite to None in `_f` or guard with `math.isfinite` — `analysis/qgis/soundings.py:517`
+- [x] (suggestion) Add a partially missing tilt-sd vector (one of three null) so the Java `&&` chain is pinned by the shared vectors — `icecube/logger_vectors.py:77`
+- [x] (suggestion) `make_session(tilt_sd=...)` writes 0.6 points.csv but events app stays "0.5"; pass app="0.6" for the tilt variant — `analysis/qgis/tests/test_soundings.py:190`
+- [x] (suggestion) Docstring table row `photos       PointZ` lost a space and no longer aligns — `analysis/qgis/import_sessions.py:23`
+- [x] (suggestion) Run `./gradlew testDebugUnitTest --max-workers 4` before push to confirm SoundingSigmaTest passes the new `tilt_missing_sd` vector (plan step 5) — `logger/app/src/test/java/rink/icecube/logger/core/SoundingSigmaTest.java`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:45 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-9 at `219e868`
+**Addressed**: Local Review (Pre-Push) at `a44f484` (2026-11-26 18:40 -05:00)
+**Commits**: d269361, 9bdad4e, 9fb589b, 7f5150d, 219e868
+
+### Actions
+- [x] (must-fix) Schema upgrade tracked per session: `sessions.schema_version` column; a session below SCHEMA_VERSION is re-read whenever its source is in the inputs; sessions still behind after a run are logged by name and returned as `stale`; docstring rewritten; `_schema_of` removed; new test `test_schema2_partial_run_strands_nothing` — `analysis/qgis/import_sessions.py`
+- [x] (must-fix) Soundings warning checks each 0.6+ session and names the stranded ones; new test `test_mixed_sessions_warn_naming_the_stranded_one` — `analysis/qgis/soundings.py`
+- [x] (suggestion) `read_points` strips `method` like PointRow.java — `analysis/qgis/logger_session.py`
+- [x] (suggestion) Non-finite tilt sds take the single rule in both `capture_sigma_inputs` (math.isfinite) and SoundingSigma.java (Double.isFinite); NaN/inf test cases — `analysis/qgis/soundings.py`, `SoundingSigma.java`
+- [x] (suggestion) New shared vector `tilt_one_sd_missing`, coverage_vectors.json regenerated — `icecube/logger_vectors.py`
+- [x] (suggestion) `make_session(tilt_sd=...)` writes app "0.6" events — `analysis/qgis/tests/test_soundings.py`
+- [x] (suggestion) Docstring `photos` row realigned (in d269361) — `analysis/qgis/import_sessions.py:22`
+- [x] (suggestion) `./gradlew testDebugUnitTest --max-workers 4` run: pass, 164 tests, 0 failures (SoundingSigmaTest incl. the new vector)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 105, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 68, OK
+- `./gradlew testDebugUnitTest --max-workers 4` (ANDROID_HOME set; the worktree has no local.properties): BUILD SUCCESSFUL, 164 tests, 0 failures
+- Commits made with every pre-commit hook; nothing pushed.
+
+Next: `/review-code --branch`
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 18:52 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-9 at `43dc72e`
+**Base**: main
+**Depth**: Deep (reason: 15 files, +784/-50 lines, Python and Java layers; fix round classified on the whole diff)
+**Must-fix**: 1 | **Suggestions**: 6
+**Round**: 2 | **Ship**: recommended — round 2: 1 mechanical must-fix (prev 2), not rising; fix and ship rather than another full round
+
+Both round-1 must-fixes verified fixed (per-session `sessions.schema_version`; per-session stranded warning). Cross-model: gemini complete, codex complete. Claude adversarial complete (no must-fix). Static analysis: no Python linter installed (ruff/flake8/pyflakes absent); py_compile clean. Tests: analysis/qgis 105 OK (5 skipped), icecube 68 OK; regenerated vectors match the committed JSON; gradle not re-run in review (implementation reports 164 pass). Public-repo check: no coordinates or private data in the diff.
+
+### Findings
+- [x] (must-fix) Both soundings warnings tell the user to re-import with `import_sessions.py --force`, but `--force` skips the importer's snapshot guard, so following the advice with a snapshot among the inputs can replace a fully imported session with incomplete data; and a plain re-import now re-reads older-schema sessions anyway. Say "re-import the full session source (import_sessions.py re-reads sessions from an older schema)" and update the assertion in test_soundings.py:325 (codex; also gemini, claude-adversarial) — `analysis/qgis/soundings.py:633,642`
+- [x] (suggestion) Pre-0.6 sessions imported under schema 2 stay "stale" and are logged on every later import unless their sources are passed again, although schema 3 adds nothing for them; consider marking a session current when its app is below 0.6, or wording the log so it does not look like a fault (gemini) — `analysis/qgis/import_sessions.py:536,577`
+- [x] (suggestion) For a tilt capture the soundings row keeps `sd_u_m` = the 1 s antenna scatter while `sigma_rtk` comes from `tilt_sd_u_m`; with no `method` column in the output, readers cannot tell which rule made the sigma. Add `method` (or write the sd actually used) (claude-adversarial) — `analysis/qgis/soundings.py:689` (deferred: deferred by the owner's round-2 plan: a method column in the soundings output is a follow-up)
+- [x] (suggestion) A negative `tilt_sd_*` passes the finite check in both Python and Java and takes the tilt rule (floored to an optimistic sigma); require `>= 0` in both and add a vector (gemini) — `analysis/qgis/soundings.py:517`, `SoundingSigma.java:69`
+- [x] (suggestion) `_i("nan")` / `_i("inf")` raise ValueError/OverflowError and abort the whole points.csv parse; return None for non-finite like `_f` (claude-adversarial) — `analysis/qgis/logger_session.py:197`
+- [x] (suggestion) End-to-end tests: no case with tilt sd_h above floor_h, nor tilt_sd_u above a present GST term (gemini) — `analysis/qgis/tests/test_soundings.py:295` (deferred: deferred by the owner's round-2 plan: an above-floor end-to-end case is a follow-up)
+- [x] (suggestion) docs/log.md entry does not mention the per-session schema_version re-read that changes importer behaviour on existing gpkgs — `docs/log.md:115`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 18:58 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-9 at `e45d7d8`
+**Addressed**: Local Review (Pre-Push) at `43dc72e` (2026-11-26 18:52 -05:00)
+**Commits**: 73ea93e, 9797413, dd1be57, c77bddb, e45d7d8
+
+### Actions
+- [x] (must-fix) Soundings warnings no longer advise `--force`; they say to re-import the full session sources (import_sessions.py re-reads older-schema sessions); test asserts the new text and no `--force` — `analysis/qgis/soundings.py:633,642`, `analysis/qgis/tests/test_soundings.py:325`
+- [x] (suggestion) Sessions from an app below 0.6 with an older schema_version are marked current (SCHEMA_MIN_APP = (0, 6)) instead of logged stale every run; `app_version` moved to logger_session and shared; new test `test_schema2_pre06_session_is_current_without_reread` — `analysis/qgis/import_sessions.py`
+- [x] (suggestion) `method` column in the soundings output — `analysis/qgis/soundings.py:689` (deferred: owner's round-2 plan, follow-up)
+- [x] (suggestion) Tilt rule requires every tilt sd finite and >= 0 in Python and Java; new `tilt_negative_sd` vector, vectors regenerated — `analysis/qgis/soundings.py:517`, `SoundingSigma.java:69`
+- [x] (suggestion) `_i` returns None for nan/inf; new `test_int_cells` — `analysis/qgis/logger_session.py:197`
+- [x] (suggestion) Above-floor end-to-end tilt case — `analysis/qgis/tests/test_soundings.py:295` (deferred: owner's round-2 plan, follow-up)
+- [x] (suggestion) docs/log.md entry mentions the per-session schema re-read — `docs/log.md:115`
+
+### Tests
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 107 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
+- `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL, no failures (SoundingSigmaTest 3/3). C: free 114 GB before.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 19:00 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-9 at `9985923`
+**Base**: main
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+**Round**: 3 | **Ship**: recommended — no must-fix findings; round-2 must-fix verified fixed
+
+Scope: the round-2 findings and the fix diff `28f4f8f..9985923`. Cross-model: skipped (round-3 convergence check, per handoff). Round-2 must-fix verified: both soundings warnings now say to re-import the full session sources, no `--force`; test asserts the new text and the absence of `--force`. Round-2 suggestions verified as applied (pre-0.6 sessions marked current via shared `logger_session.app_version` and `SCHEMA_MIN_APP`, with test; negative tilt sd takes the single rule in Python and Java plus `tilt_negative_sd` vector; `_i` non-finite gives None, with test; docs/log.md line) or deferred by the owner's round-2 plan (method column in soundings output; above-floor end-to-end case). No new issues in the fix diff. Tests run in review: analysis/qgis 107 OK (5 skipped), icecube 68 OK; regenerated vectors equal the committed coverage_vectors.json; gradle not re-run (implementation reports BUILD SUCCESSFUL). Public-repo check: no coordinates or private data in the fix diff.
+
+### Findings
+- [ ] No issues found. LGTM.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 18:59 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved at round 3, no must-fix; orchestrator table allows publish; project pass, every hook ran on each commit)
+**After**: publish
+**Decision**: publish
+
+Round 3 convergence check approved (0 must-fix, 0 suggestions). Two suggestions deferred at round 2 (method column in soundings output; above-floor end-to-end tilt case).
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:00 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #32 at `fc81b37`
+**Sources**: 2 (Local Review (Pre-Push) rounds 1-3, last @ `9985923` (covers `fc81b37` via bookkeeping), approved; CI rollup: no checks)
+**Cross-source confirmations**: 0
+**CI**: none (fetch_pr_reviews.sh found 0 check-runs on `fc81b37`; the repo has no CI)
+
+No hosted reviews or conversation comments on the PR; no Copilot review was requested. The local timeline has no open findings: round 1 (2 must-fix, 6 suggestions) and round 2 (1 must-fix, 6 suggestions) were all fixed or deferred, and round 3 approved with 0 must-fix and 0 suggestions. Two round-2 suggestions stay deferred by the owner's plan as follow-ups: a `method` column in the soundings output (`analysis/qgis/soundings.py`) and an above-floor end-to-end tilt test (`analysis/qgis/tests/test_soundings.py`).
+
+### Findings
+None open.
+
+### False positives
+None.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:03 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #32 at `fc81b37`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 1 | **Suggestions**: 0
+
+### Findings
+- [x] (must-fix) A session whose app version is unknown (`app_version` returns `()`: no readable `session start` event) counts as pre-0.6, so it is marked schema 3 without a re-read. If its points.csv has 0.6 rows, the tilt columns stay NULL for good and soundings uses the single-capture sigma, and the soundings warning (`_version(...) >= (0, 6)`) misses it too. Every logger since 0.2 writes `app=`, so an unknown version should mean re-read (stale), not nothing new. `analysis/qgis/import_sessions.py:542` (also `analysis/qgis/soundings.py:623`)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:05 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #32 at `4f656e1`
+**Addressed**: Local Review at `fc81b37` (2026-11-26 19:03 -05:00)
+**Commits**: 4f656e1
+
+### Actions
+- [x] (must-fix) Unknown app version (`app_version() == ()`) now counts as needing the re-read, not pre-0.6; the soundings tilt-column warning treats it as possibly 0.6. Tests `test_schema2_unknown_app_version_is_reread` and `test_unknown_app_version_counts_as_new`, both seen failing without the fix. — `analysis/qgis/import_sessions.py:542`, `analysis/qgis/soundings.py:623`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 109 tests, OK (skipped=5)
+- Commits ran every pre-commit hook (project pass).
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:13 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #32 at `1d85ba8`
+**Depth**: Deep (reason: fix-round re-review classified on the whole diff, 15 files, +1011/-54, Python and Java; PR-mode round 2, so not a round-3 convergence check: cross-model dispatched)
+**Must-fix**: 1 | **Suggestions**: 1
+
+Scope: the cold read's must-fix and its fix commit 4f656e1. The importer half of the fix is right: an unknown-version session is re-read once, `import_session` stamps it schema 3, so it cannot loop; both new tests fail without the fix (checked by the Claude adversarial pass). The soundings half overreaches (finding 1). Cross-model: gemini complete (its must-fix matches finding 1; its other three points are out of scope or already deferred: the above-floor end-to-end test, a NaN in `_sd_h` reachable only from direct Python callers, and SCHEMA_MIN_APP needing a revisit on the next schema bump, which its comment already says), codex complete (one suggestion on partially NULL methods within a session, outside this fix and not reachable from a 0.6 points.csv; dropped). Tests run in review: analysis/qgis 109 OK (5 skipped), icecube OK. Public-repo check: no coordinates or private data in the fix diff.
+
+### Findings
+- [x] (must-fix) `maybe_06` counts every unknown-version session as 0.6+, including ones already re-read at schema 3. A genuinely pre-0.6 session with no readable app version (track only, control events, or a points.csv without a session start line) then warns "logger 0.6+ session(s) X have no method/tilt values ... re-import" on every soundings build, and a re-import cannot clear it. Count an unknown-version session as stranded only while its `sessions.schema_version` is NULL or below SCHEMA_VERSION (not yet re-read); keep the missing-column warning as is. The new test asserts the wrong state (schema 3, app NULL, method NULL warns): make it cover both, stale warns and current does not (claude-adversarial, gemini) — `analysis/qgis/soundings.py:623-640`, `analysis/qgis/tests/test_soundings.py:342`
+- [x] (suggestion) The importer now treats every unknown-version session as stale, including "control events" and "track only" sessions, which have no points.csv and cannot hold 0.6 columns; when their source is not among the inputs they are named as "still at an older schema" on every run. Select `format` in `olds` and re-read an unknown-version session only when its format is points.csv (claude-adversarial) — `analysis/qgis/import_sessions.py:540-544`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:16 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #32 at `3827f8d`
+**Addressed**: Local Review at `1d85ba8` (2026-11-26 19:13 -05:00)
+**Commits**: bb1ecc3, 3827f8d
+
+### Actions
+- [x] (must-fix) Unknown-version session counts as stranded only while `sessions.schema_version` is NULL or below SCHEMA_VERSION; missing-column warning unchanged; test covers stale (NULL and SCHEMA_VERSION-1) warns and current does not — `analysis/qgis/soundings.py:630-650`, `analysis/qgis/tests/test_soundings.py:342`
+- [x] (suggestion) Importer selects `format` and re-reads an unknown-version session only when its format is points.csv; new test `test_schema2_unknown_app_version_without_points_is_current` — `analysis/qgis/import_sessions.py:540-555`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110 tests, OK (skipped=5)
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:17 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #32 at `f702cb9`
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the round-2 entry's must-fix and suggestion, and the fix commits bb1ecc3 and 3827f8d. Both are resolved. Soundings: `stranded_06` counts an unknown-version session only while `sessions.schema_version` is NULL or below SCHEMA_VERSION, the missing-column warning still uses `maybe_06`, and a gpkg without the schema_version column falls back to stranded (a re-import clears it). Importer: an unknown-version session is re-read only when its format is "points.csv" (the exact string logger_session sets); the `format` column is in the sessions table on main, so older rows are not NULL there. The new `from import_sessions import SCHEMA_VERSION` in soundings.py makes no cycle (import_sessions does not import soundings), and soundings is not part of the plugin's vendored pipeline. Cross-model: skipped (round-3 convergence check, per handoff). Tests run in review: analysis/qgis 110 OK (5 skipped); both changed tests fail against the pre-fix code. Static analysis: no Python linter installed here (ruff, flake8, pyflakes absent), so not checked. Public-repo check: no coordinates or private data in the fix diff.
+
+### Findings
+- [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:19 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: 6081816008
+
+**PR**: #32 at `f702cb9`
+**Sources**: 3 (Local Review PR-mode rounds 1-3: cold read by Codex @ `fc81b37` → fixed in 4f656e1, round 2 @ `1d85ba8` → fixed in bb1ecc3/3827f8d, round 3 @ `f702cb9` approved; Copilot notice @ `fc81b37`; CI rollup: no checks)
+**Cross-source confirmations**: 0
+**CI**: none (fetch_pr_reviews.sh found 0 check-runs on `f702cb9`; the repo has no CI)
+
+The Copilot review 6081816008 (COMMENTED, @ `fc81b37`) says Copilot was unable to review because the requesting user has insufficient remaining quota: no findings, by its own words. No human reviews, inline comments or conversation comments. The local timeline has no open findings: the cold read's must-fix (unknown app version treated as pre-0.6) and round 2's must-fix and suggestion (stranded only while schema_version is below current; re-read only points.csv sessions) are fixed, and round 3 approved at `f702cb9` with 0 must-fix and 0 suggestions. The local head `b5c2a81` adds only progress.md (bookkeeping). The two owner-deferred follow-ups from the pre-push round 2 stand: a `method` column in the soundings output and an above-floor end-to-end tilt test.
+
+### Findings
+None open.
+
+### False positives
+None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:23 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #32 (closes issue 9)?": "Merge (Recommended)". Outside reviewers: Copilot not available (out of quota); Codex cold read ran (1 must-fix, fixed); Gemini and Codex ran in pre-push rounds 1-2.

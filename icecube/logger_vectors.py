@@ -9,10 +9,11 @@ check the Java ports against. Without --out it prints the JSON.
 Part `sigma`: capture rows run through `sigma_terms` of `analysis/qgis/soundings.py`
 with `soundings.DEFAULTS` (and a ground sigma per case, the logger setting). That module
 is imported through `sys.path` (an icecube -> analysis/qgis dependency; it uses the
-standard library only). The logger's rule is applied here before the call: a single
-capture takes the bubble tilt (`tilt_bubble_deg`); a tilt capture takes its own
-`tilt_sd_*` as sd_u and sd_h and tilt 0 (soundings.py has no tilt-capture rule yet,
-issue #9). The budget constants used are pinned in `sigma_defaults`.
+standard library only). The inputs are picked by `soundings.capture_sigma_inputs`, the
+rule soundings.py applies to logger captures: a single capture takes the bubble tilt
+(`tilt_bubble_deg`); a tilt capture takes its own `tilt_sd_*` as sd_u and sd_h and tilt
+0, or the single rule when any tilt sd is missing. The budget constants used are pinned
+in `sigma_defaults`.
 
 Part `nodes`: synthetic soundings (x, y, z, sz, sh, id) fed in order through
 `LiveCoverage` (below, the Python twin of core/Coverage.java: node (i, j) at
@@ -73,6 +74,9 @@ SIGMA_CASES = [
     ("tilt_capture", "tilt", 0.03, 0.02, 0.02, 1.4, 150.0, 1.8, 0.006, 0.009, 0.012, 0.015),
     ("tilt_capture_settling", "tilt", 0.03, 0.02, 0.02, 3.0, 30.0, 2.0, 0.004, 0.003, 0.005, 0.0),
     ("missing_sd", "single", None, None, None, None, 200.0, 1.8, None, None, None, 0.015),
+    ("tilt_missing_sd", "tilt", 0.023, 0.012, 0.018, 1.0, 200.0, 1.8, None, None, None, 0.015),
+    ("tilt_one_sd_missing", "tilt", 0.023, 0.012, 0.018, 1.0, 200.0, 1.8, 0.006, None, 0.012, 0.015),
+    ("tilt_negative_sd", "tilt", 0.023, 0.012, 0.018, 1.0, 200.0, 1.8, 0.006, 0.009, -0.012, 0.015),
     ("missing_pole", "single", 0.008, 0.005, 0.005, 1.0, 200.0, None, None, None, None, 0.015),
 ]
 SIGMA_KEYS = ("method", "sd_u", "sd_e", "sd_n", "age_s", "fix_age_s", "pole_m",
@@ -80,19 +84,13 @@ SIGMA_KEYS = ("method", "sd_u", "sd_e", "sd_n", "age_s", "fix_age_s", "pole_m",
 TERM_KEYS = ("sigma_rtk", "sigma_age", "sigma_settle", "sigma_pole", "sigma_ground", "sigma_z", "sigma_xy")
 
 
-def _sd_h(e, n):
-    return math.hypot(e or 0.0, n or 0.0) / math.sqrt(2)
-
-
 def logger_sigma(inp, sm=None):
     """The logger's per-capture budget for one input dict (keys SIGMA_KEYS), through
     soundings.sigma_terms. Returns the dict of terms."""
     sm = sm or _soundings()
     sg = dict(sm.DEFAULTS["sigma"], ground=inp["ground"])
-    if inp["method"] == "tilt":
-        sd_u, sd_h, tilt = inp["tilt_sd_u"], _sd_h(inp["tilt_sd_e"], inp["tilt_sd_n"]), 0.0
-    else:
-        sd_u, sd_h, tilt = inp["sd_u"], _sd_h(inp["sd_e"], inp["sd_n"]), sg["tilt_bubble_deg"]
+    sd_u, sd_h, tilt = sm.capture_sigma_inputs(sg, inp["method"], inp["sd_u"], inp["sd_e"], inp["sd_n"],
+                                               inp["tilt_sd_u"], inp["tilt_sd_e"], inp["tilt_sd_n"])
     t = sm.sigma_terms(sg, sd_u=sd_u, sd_h=sd_h, age=inp["age_s"], fix_age=inp["fix_age_s"],
                        settle_s=sm.DEFAULTS["settle_s"], pole_m=inp["pole_m"], tilt_deg=tilt)
     return {k: t[k] for k in TERM_KEYS}
