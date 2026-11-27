@@ -13,10 +13,12 @@ estimator) with these additions:
 - A DEM survey (`reader = "dem"`, see dem.py) fills the rest at low weight; with
   `check_rtk = true` its samples that disagree with nearby RTK get `sigma_bad`. A survey's
   `capture_radius` is a floor on every grid's (a 2 m DEM must reach 1.5 m on a 0.5 m grid).
-- `[[grids]]`: name, cell, capture_radius, k_sigma, robust and eeg_quotient_limit (nodes.py), the extent (`extent = [xmin, xmax, ymin,
+- `[[grids]]`: name, cell, capture_radius, k_sigma, robust, eeg_quotient_limit and the plane pass
+  (`plane`, `plane_min_neighbours`, `plane_min_nin`, `plane_min_clear`, `plane_red_weight`,
+  `plane_planarity`, `plane_max_sigma_g`, `plane_dem_cap`, `plane_dem_floor`; nodes.py), the extent (`extent = [xmin, xmax, ymin,
   ymax]`, or `extent_polygon = {path, name}` plus `margin`), the slope allowance (`slope`, or
-  `slope_from_dem = {survey, factor, floor, cap}`: per node max(floor, factor * DEM slope)),
-  and `contour_interval`. Every surface is gridded on every grid.
+  `slope_from_dem = {survey, factor, floor, cap}`: per node max(floor, factor * DEM slope);
+  the raw DEM slope also feeds the plane pass's DEM gate), and `contour_interval`. Every surface is gridded on every grid.
 - Outputs per surface and grid (`<surface>_<grid>`): surface npz, ESRI ASCII z / sigma /
   count / flags (the outlier count n_out per node, -1 masked; the name is kept for QGIS) with a .prj (`[output] prj_from_gpkg` or `prj`), contours GeoJSON, figures.
   Per surface: passes, crossover (with the common biases), and points_<surface>.csv (every
@@ -153,9 +155,12 @@ def make_grid(ctx, gcfg, all_points):
 
 
 def slope_array(ctx, gcfg, grid):
+    """(allowance, raw): the slope allowance (one value, or one per node from
+    `slope_from_dem`: min(cap, max(floor, factor * s))) and the raw DEM slope s per node
+    (NaN outside the DEM or next to a NoData hole in it) for the plane pass's DEM gate, None without `slope_from_dem`."""
     sd = gcfg.get("slope_from_dem")
     if not sd:
-        return float(gcfg.get("slope", ctx.defaults["slope"]))
+        return float(gcfg.get("slope", ctx.defaults["slope"])), None
     scfg = next(s for s in ctx.cfg["surveys"] if s["id"] == sd["survey"])
     xs, ys, Z = dem.read_grid(_path(ctx.base, scfg["path"]))
     f = dem.slope_field(xs, ys, Z)
@@ -163,11 +168,24 @@ def slope_array(ctx, gcfg, grid):
     s = f(X, Y)
     floor = float(sd.get("floor", ctx.defaults["slope"]))
     out = np.maximum(floor, float(sd.get("factor", 0.5)) * np.nan_to_num(s, nan=0.0))
-    return np.minimum(out, float(sd.get("cap", 0.5)))
+    return np.minimum(out, float(sd.get("cap", 0.5))), s
 
 
-def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slope):
-    """Grid the non-anchor corrected points; masked nodes get no value."""
+#: [[grids]] keys passed to nodes.grid_surface (the plane pass's thresholds), with their types.
+PLANE_KEYS = {"plane_min_neighbours": int, "plane_min_nin": int, "plane_min_clear": int,
+              "plane_red_weight": float, "plane_planarity": float, "plane_max_sigma_g": float,
+              "plane_dem_cap": float, "plane_dem_floor": float}
+
+
+def plane_kwargs(gcfg):
+    """The PLANE_KEYS present in a [grid] / [[grids]] table, cast to their types."""
+    return {k: cast(gcfg[k]) for k, cast in PLANE_KEYS.items() if k in gcfg}
+
+
+def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slopes):
+    """Grid the non-anchor corrected points; masked nodes get no value and are not plane
+    neighbours. `slopes` is slope_array's (allowance, raw)."""
+    slope, raw = slopes
     pts = [c.subset(c.anchor == "") for c in corrected]
     sbl = [sb[c.anchor == ""] for c, sb in zip(corrected, sbs)]
     keep = [k for k, p in enumerate(pts) if len(p)]
@@ -175,15 +193,20 @@ def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slope):
     default = float(gcfg.get("capture_radius", 1.5 * grid.cell))
     # a survey's own capture_radius (e.g. a 2 m DEM) is a floor for every grid
     capture = [max(default, float(ctx.surveys[p.survey][2].get("capture_radius", 0.0))) for p in pts]
-    surf = nodes.grid_surface(pts, sbl, grid, capture_radius=capture, slope=slope,
-                              k_sigma=float(gcfg.get("k_sigma", 3.0)), robust=bool(gcfg.get("robust", True)),
-                              eeg_quotient_limit=float(gcfg.get("eeg_quotient_limit", 30.0)), name=sname,
-                              date=max(p.date for p in pts), frame=pts[0].frame)
     X, Y = np.meshgrid(grid.xs, grid.ys)
     nmask = mask_points(ctx.masks, X, Y) if ctx.masks else np.zeros(X.shape, bool)
+    surf = nodes.grid_surface(pts, sbl, grid, capture_radius=capture, slope=slope,
+                              k_sigma=float(gcfg.get("k_sigma", 3.0)), robust=bool(gcfg.get("robust", True)),
+                              eeg_quotient_limit=float(gcfg.get("eeg_quotient_limit", 30.0)),
+                              plane=bool(gcfg.get("plane", True)), raw_slope=raw,
+                              **plane_kwargs(gcfg), name=sname,
+                              date=max(p.date for p in pts), frame=pts[0].frame, node_mask=nmask)
     surf.z = np.where(nmask, np.nan, surf.z)
     surf.sigma = np.where(nmask, np.nan, surf.sigma)
     surf.n = np.where(nmask, 0, surf.n)
+    surf.planar = np.where(nmask, False, surf.planar)
+    surf.gradient = np.where(nmask, np.nan, surf.gradient)
+    surf.plane_code = np.where(nmask, nodes.PLANE_NOT_TRIED, surf.plane_code)
     return surf, nmask
 
 
@@ -359,13 +382,14 @@ def run(cfg, out_dir=None, log=print):
             grid, ring = make_grid(ctx, gcfg, corrected)
             if gcfg.get("lot"):
                 lot = ring
-            slope = slope_array(ctx, gcfg, grid)
-            surf, nmask = grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slope)
+            slope, raw = slope_array(ctx, gcfg, grid)
+            surf, nmask = grid_surface(ctx, gcfg, grid, sname, corrected, sbs, (slope, raw))
             tag = f"{sname}_{gname}"
             flags = np.where(nmask, -1, surf.n_out)   # the raster keeps its name flags_*.asc: outliers per node
             np.savez(out / f"surface_{tag}.npz", z=surf.z, sigma=surf.sigma, n=surf.n, n_out=surf.n_out, n_alt=surf.n_alt,
                      z_alt=surf.z_alt, strength=surf.strength, n_eeg=surf.n_eeg, mask=nmask,
-                     maxnr=surf.maxnr, npass=surf.npass, slope=np.broadcast_to(slope, surf.z.shape), **grid.as_dict())
+                     maxnr=surf.maxnr, npass=surf.npass, slope=np.broadcast_to(slope, surf.z.shape),
+                     planar=surf.planar, gradient=surf.gradient, plane_code=surf.plane_code, **grid.as_dict())
             for what, arr, fmt in (("z", surf.z, "%.4f"), ("sigma", surf.sigma, "%.4f"),
                                    ("count", np.where(surf.n > 0, surf.n, np.nan), "%d"),
                                    ("flags", np.where(nmask | (surf.n > 0), flags, np.nan), "%d")):

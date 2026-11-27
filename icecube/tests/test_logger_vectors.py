@@ -69,6 +69,43 @@ class TestLoggerVectors(unittest.TestCase):
         self.assertGreater(last.count("no_data"), 0)
         self.assertGreater(last.count("fringe"), 0)
 
+    def test_plane_cases_do_what_they_are_named_for(self):
+        from icecube import nodes
+        doc = json.loads(logger_vectors.render())
+        self.assertEqual(doc["plane_params"]["plane_min_clear"], nodes.PLANE_DEFAULTS["min_clear"])
+
+        def centre(name):
+            return self._node(self._case("plane_vectors", name), 2, 2)
+        for name, g in (("bank_0.3_clears", 0.3), ("bank_0.2_clears", 0.2)):
+            n = centre(name)
+            self.assertEqual(n["code"], nodes.PLANE_ACCEPTED, name)
+            self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]), name)
+            self.assertFalse(nodes.is_red(n["n_in"], n["n_out"]), name)
+            self.assertAlmostEqual(n["gradient"], g, delta=0.06)
+        n = self._node(self._case("plane_vectors", "bank_diag_clears"), 3, 2)
+        self.assertEqual(n["code"], nodes.PLANE_ACCEPTED)
+        self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+        self.assertFalse(nodes.is_red(n["n_in"], n["n_out"]))
+        self.assertAlmostEqual(n["gradient"], 0.2 * 2 ** 0.5, delta=0.06)
+        self.assertAlmostEqual(n["z"], 0.2 * 1.5 - 0.2 * 1.0, delta=0.03)
+        self.assertFalse(any(n["planar"] for n in self._case("plane_vectors", "flat_edge_outlier")["nodes"]))
+        n = centre("wrong_cluster_keeps_pass1")
+        self.assertEqual(n["code"], nodes.PLANE_OFF_PLANE)
+        self.assertEqual((n["z"], n["n_out"]), (n["z1"], n["n_out1"]))
+        # its fringe node (2, -2) has bunched neighbour centroids: not accepted
+        self.assertEqual(self._node(self._case("plane_vectors", "wrong_cluster_keeps_pass1"), 2, -2)["code"],
+                         nodes.PLANE_ILL_CONDITIONED)
+        n = self._node(self._case("plane_vectors", "fringe_ill_conditioned"), 2, 0)
+        self.assertEqual(n["code"], nodes.PLANE_ILL_CONDITIONED)
+        self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+        self.assertEqual(centre("ridge_not_planar")["code"], nodes.PLANE_NOT_PLANAR)
+        n = centre("flat_cluster_not_steep")
+        self.assertEqual(n["code"], nodes.PLANE_NOT_STEEP)
+        self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+        n = centre("collinear_ill_conditioned")
+        self.assertEqual(n["code"], nodes.PLANE_ILL_CONDITIONED)
+        self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,6 +72,71 @@ or all identical, give a finite q and are kept. All members with q_k >= limit ar
 at once, counted in n_out and n_eeg, and z, sigma and max_nr are recomputed. Noise
 only, no pass-bias terms.
 
+Plane pass (issue #29, robust mode only; `plane`, on by default). A node on a steep bank
+holds 10-16 cm of relief inside its capture disc, beyond the slope allowance, so pass 1
+splits its up- and down-slope soundings into bins and the node stays red. A plane fitted
+to the node's own entries cannot fix that (pass 1 already split them, and fitted to all of
+them it absorbs an edge outlier on flat ground), so the gradient comes from outside: the
+neighbours. Each entry carries its offset from the node (dx, dy), sz^2 and sh. For every
+node red after pass 1 (clear and amber nodes are never touched):
+1. A weighted least-squares plane z = a + gx*X + gy*Y through the pass-1 mains of the 8
+   neighbours, each placed at its grid offset plus its main's weighted centroid (the
+   w-weighted mean (dx, dy) over the main's members only, not over all its entries: where
+   its z actually sits; on a bank the members of a disc are not centred), weight its main's W,
+   red neighbours times `plane_red_weight`; usable: main n_in >= `plane_min_nin`. The node
+   itself is excluded. W leaves out the pass-bias part of sigma on purpose: a pass bias
+   offsets a whole pass, and the neighbours share the node's passes, so where one pass
+   dominates it shifts the plane and the node's own pass-2 z together (it cancels in
+   z' - a, step 4) rather than tilting the plane; across a pass seam it can tilt it and
+   does not fully cancel, and chi, sigma_g and the agreement test are noise-only there. The covariance is (A'WA)^-1 scaled by max(1, chi^2).
+2. Gates, in order (Surface.plane_code says which failed): at least
+   `plane_min_neighbours` usable; at least `plane_min_clear` of them not red;
+   conditioning on the unscaled (A'WA)^-1; planarity, chi = sqrt(sum w r^2 / (m - 3)) <=
+   `plane_planarity` (default k_sigma); conditioning again on the covariance scaled by
+   max(1, chi^2); then significance and the DEM gate below. Conditioning is
+   the square root of C_g's larger eigenvalue <= `plane_max_sigma_g` (0.08 m/m: the
+   centroids, not the grid offsets, must pin the gradient; at a survey fringe the
+   neighbours' members sit on the survey side, their centroids bunch, C_g grows and
+   would otherwise loosen both pass 2's variances and the agreement test; accepted fits
+   on the test blocks and replays stayed under 0.06, bunched fringe fits were 0.1-0.35);
+   significance, |g| - allowance > k_sigma * sigma_g along g (the node's slope allowance,
+   as raised by slope_from_dem); and with a raw DEM slope s (`raw_slope`, batch
+   slope_from_dem only) |g| <= `plane_dem_cap` * s + `plane_dem_floor`, skipped where s
+   is NaN (outside the DEM's cover, or next to a NoData hole in it). Every continuous gate fails closed on its value: a
+   NaN or infinite computed value fails it, and so does a NaN limit. An infinite
+   `plane_planarity` or `plane_max_sigma_g` switches that gate off (every finite value
+   passes); the DEM gate's limit comes from data, so an infinite DEM slope fails it. Conditioning also
+   fails unless A'WA passes a Cholesky factorisation and the covariance has var_a > 0
+   and C_g positive definite (exactly collinear centroids), and a directional variance
+   u'C_g u that is not positive fails it rather than clamping to 0. Checking the
+   unscaled covariance before planarity makes ill-conditioned centroids stop at
+   conditioning whatever the roundoff.
+3. Pass 2: every entry reduced to the node centre, z' = z - (gx*dx + gy*dy), with
+   v' = sz^2 + (|g| * sh)^2 + d' C_g d (C_g the gradient covariance; the slope-allowance
+   term dropped), then the same rebuild as pass 1 (Eeg included). The rebuild treats the
+   d' C_g d terms as independent, but the gradient error is common to all entries, so
+   d_bar' C_g d_bar (d_bar the pass-2 main's weighted centroid) is added to sigma'^2: in
+   the node's output sigma and in the agreement test's noise variance below. The per-entry d' C_g d terms
+   stay in v' as well, so the gradient error is counted twice over and sigma'^2 is a
+   conservative upper bound, not an exact variance.
+4. Accepted only if the node leaves red or n_out strictly drops, and
+   |z' - a| <= k_sigma * sqrt(var_a + 1/W' + d_bar' C_g d_bar + 2 d_bar' cov(a, g)) (a the
+   neighbour plane's prediction at the node, W' the pass-2 main's weight; the cross term
+   because the error of z' - a is -dg.d_bar + entry noise - da, and a and g come from the
+   same fit). The pass-bias part of sigma'^2 is left out, as it is from the fit's
+   weights: the node and its neighbours share passes, so the bias cancels in z' - a
+   where one pass dominates (step 1; not fully across a pass seam), and it stays in the
+   output sigma. Otherwise pass 1 stands. One sweep: fits read pass-1 results only.
+   The test is looser than k_sigma reads: a is not an independent prediction. The
+   neighbours' discs overlap the node's, so their mains share many of the node's
+   soundings and a and z' are positively correlated through that noise too (the
+   variance of the difference also loses 2 cov(noise), which the test leaves out); chi
+   and sigma_g likewise treat the neighbours as independent although adjacent ones share
+   soundings.
+Outputs: planar (accepted), gradient |g| (set from the significance gate on: on
+PLANE_NOT_STEEP, PLANE_DEM, PLANE_NO_GAIN, PLANE_OFF_PLANE and PLANE_ACCEPTED; NaN
+otherwise), plane_code.
+
 Datum. The surface as a whole has a level uncertainty from the pass biases,
 datum_sigma = sqrt(sum_p (n_p / n)^2 * sb_p^2), the same formula at survey level;
 growth.difference adds it to the uncertainty of the mean growth.
@@ -153,7 +218,7 @@ class Hyp:
         self.members = []
 
     def join(self, k, e):
-        z, v, w, _id, cnt, pk, sb2 = e
+        z, v, w, _id, cnt, pk, sb2 = e[:7]
         self.w += w
         self.wz += w * z
         self.cnt += cnt
@@ -166,7 +231,7 @@ class Hyp:
 
     def nr(self, e):
         """Normalised difference of entry e from this hypothesis (the k-sigma test statistic)."""
-        z, v, w, _id, cnt, pk, sb2 = e
+        z, v, w, _id, cnt, pk, sb2 = e[:7]
         wp_same = self.pw[pk][0] if pk in self.pw else 0.0
         # bias part of the difference, written so it cannot go negative (0.0 without pass biases)
         vbd = (1.0 - wp_same / self.w) ** 2 * sb2 + sum(
@@ -178,9 +243,12 @@ class Hyp:
         return 1.0 / self.w + sum((wp / self.w) ** 2 * s2 for wp, s2 in self.pw.values())
 
 
-def entry(z, v, id, pk=0, sb2=0.0, w=None, cnt=1):
-    """An entry tuple (z, v, w, id, cnt, pass key, sb^2); w defaults to 1.0 / v."""
-    return (z, v, 1.0 / v if w is None else w, id, cnt, pk, sb2)
+def entry(z, v, id, pk=0, sb2=0.0, w=None, cnt=1, dx=0.0, dy=0.0, sz2=None, sh=0.0):
+    """An entry tuple (z, v, w, id, cnt, pass key, sb^2, dx, dy, sz^2, sh); w defaults to
+    1.0 / v. dx, dy: sounding minus node centre (m); sz2: the slope-free variance (defaults
+    to v); sh: the sounding's horizontal sigma. The last four are read only by the plane
+    pass (`plane_pass`); the rebuild reads the first seven."""
+    return (z, v, 1.0 / v if w is None else w, id, cnt, pk, sb2, dx, dy, v if sz2 is None else sz2, sh)
 
 
 class Rebuilt:
@@ -339,6 +407,214 @@ class NodeStore:
                     n_alt=n_alt, z_alt=z_alt, strength=strength(n_in, n_out), max_nr=r.max_nr(self._all()))
 
 
+#: `plane_pass` outcome per node (Surface.plane_code).
+PLANE_NOT_TRIED = 0    # plane off, robust off, or the node not red after pass 1
+PLANE_ACCEPTED = 1     # pass 2 replaced pass 1
+PLANE_FEW = 2          # fewer than min_neighbours usable neighbours
+PLANE_FEW_CLEAR = 3    # fewer than min_clear non-red usable neighbours
+PLANE_NOT_PLANAR = 4   # weighted RMS residual over the planarity bound
+PLANE_NOT_STEEP = 5    # |g| within the node's slope allowance
+PLANE_DEM = 6          # |g| over dem_cap * DEM slope + dem_floor
+PLANE_NO_GAIN = 7      # pass 2 neither leaves red nor lowers n_out
+PLANE_OFF_PLANE = 8    # pass 2's z disagrees with the neighbour plane at the node
+PLANE_ILL_CONDITIONED = 9  # the neighbour centroids do not pin the gradient (sigma_g over max_sigma_g)
+
+#: Plane-pass thresholds (grid_surface's plane_* arguments without the prefix). planarity
+#: None means k_sigma.
+PLANE_DEFAULTS = dict(min_neighbours=5, min_nin=2, min_clear=2, red_weight=0.25, planarity=None,
+                      max_sigma_g=0.08, dem_cap=2.0, dem_floor=0.05)
+
+
+def is_red(n_in, n_out):
+    """The colour rule: outliers not outvoted OUTVOTE:1."""
+    return n_out > 0 and n_in < OUTVOTE * n_out
+
+
+def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_g):
+    """Weighted least-squares plane z = a + gx*X + gy*Y through neighbour mains.
+    `nbrs`: (X, Y, z, W, red) per usable neighbour: (X, Y) where its z sits relative to the
+    node (its grid offset plus its main's weighted centroid, m), W the main's weight. Red
+    ones are weighted by `red_weight`. Returns (code, fit) with code a PLANE_* gate code
+    (0 when the fit passes the count, conditioning and planarity gates) and fit a dict a,
+    var_a, gx, gy, cov_g (2x2), cov_ag (the 2-vector cov(a, (gx, gy)) = cov[0, 1:]), chi
+    (the weighted RMS residual per degree of freedom, in neighbour sigmas) and sigma_g
+    (the square root of cov_g's larger eigenvalue, m/m); on PLANE_NOT_PLANAR the dict
+    holds chi and the unscaled sigma_g (the conditioning gate it passed), on PLANE_ILL_CONDITIONED sigma_g (and chi when the scaled check
+    failed; sigma_g infinite when the covariance is not positive definite).
+    Conditioning is checked twice. First on the unscaled (A'WA)^-1, before beta is
+    solved: it must pass a Cholesky factorisation of A'WA, be finite with var_a > 0 and
+    C_g positive definite, and have sigma_g <= max_sigma_g; so a fit whose centroids do
+    not pin the gradient (collinear ones: A'WA singular up to roundoff) stops here
+    whatever its roundoff, never at planarity. Then planarity, and the covariance scaled
+    by max(1, chi^2) must again be positive definite with sigma_g <= max_sigma_g. Every
+    continuous gate fails closed: a NaN or infinite chi or sigma_g fails it, whatever
+    the limit, and so does a NaN limit; an infinite limit passes every finite value
+    (the gate off)."""
+    use = [(X, Y, z, W * (red_weight if red else 1.0), red) for X, Y, z, W, red in nbrs]
+    use = [u for u in use if u[3] > 0]
+    if len(use) < max(min_neighbours, 4):
+        return PLANE_FEW, None
+    if sum(1 for u in use if not u[4]) < min_clear:
+        return PLANE_FEW_CLEAR, None
+    A = np.array([[1.0, u[0], u[1]] for u in use])
+    z = np.array([u[2] for u in use])
+    w = np.array([u[3] for u in use])
+    N = A.T @ (w[:, None] * A)
+    try:
+        if not np.all(np.isfinite(N)):
+            raise np.linalg.LinAlgError("N not finite")
+        L = np.linalg.cholesky(N)      # raises unless N is positive definite
+        Linv = np.linalg.inv(L)
+        Ninv = Linv.T @ Linv
+    except np.linalg.LinAlgError:
+        return PLANE_ILL_CONDITIONED, dict(sigma_g=float("inf"))
+    if not _pos_def(Ninv):             # near-singular N: roundoff can leave (L L')^-1 indefinite
+        return PLANE_ILL_CONDITIONED, dict(sigma_g=float("inf"))
+    sigma_g = _sigma_g_max(Ninv[1, 1], Ninv[1, 2], Ninv[2, 2])
+    if not (math.isfinite(sigma_g) and sigma_g <= max_sigma_g):
+        return PLANE_ILL_CONDITIONED, dict(sigma_g=sigma_g)
+    beta = Ninv @ (A.T @ (w * z))
+    r = z - A @ beta
+    chi = math.sqrt(max(float(np.sum(w * r * r)), 0.0) / (len(use) - 3))
+    if not (math.isfinite(chi) and chi <= planarity):
+        return PLANE_NOT_PLANAR, dict(chi=chi, sigma_g=sigma_g)
+    cov = Ninv * max(1.0, chi * chi)
+    # defensive: scaling a positive definite Ninv by chi^2 >= 1 keeps it so, unless the
+    # product overflows (a huge chi under a huge or infinite planarity limit)
+    if not _pos_def(cov):
+        return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=float("inf"))
+    sigma_g = _sigma_g_max(cov[1, 1], cov[1, 2], cov[2, 2])
+    if not (math.isfinite(sigma_g) and sigma_g <= max_sigma_g):
+        return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=sigma_g)
+    return 0, dict(a=float(beta[0]), gx=float(beta[1]), gy=float(beta[2]), var_a=float(cov[0, 0]),
+                   cov_g=cov[1:, 1:], cov_ag=cov[0, 1:], chi=chi, sigma_g=sigma_g)
+
+
+def _pos_def(cov):
+    """True when the 3x3 plane covariance is finite, var_a > 0 and C_g (its lower 2x2) is
+    positive definite (cxx > 0, cyy > 0, cxx*cyy - cxy^2 > 0)."""
+    if not np.all(np.isfinite(cov)):
+        return False
+    cxx, cxy, cyy = float(cov[1, 1]), float(cov[1, 2]), float(cov[2, 2])
+    return float(cov[0, 0]) > 0.0 and cxx > 0.0 and cyy > 0.0 and cxx * cyy - cxy * cxy > 0.0
+
+
+def _sigma_g_max(cxx, cxy, cyy):
+    """sqrt of the larger eigenvalue of the symmetric 2x2 [[cxx, cxy], [cxy, cyy]] (closed
+    form, so the logger's port computes the same number); NaN when not finite."""
+    cxx, cxy, cyy = float(cxx), float(cxy), float(cyy)
+    lam = 0.5 * (cxx + cyy) + math.hypot(0.5 * (cxx - cyy), cxy)
+    return math.sqrt(lam) if math.isfinite(lam) and lam >= 0.0 else float("nan")
+
+
+def reduce_to_plane(es, gx, gy, cov_g):
+    """Pass-2 entries: each reduced to the node centre along the gradient,
+    z' = z - (gx*dx + gy*dy), with variance v' = sz2 + (|g|*sh)^2 + d^T C_g d (C_g the
+    gradient covariance, d = (dx, dy)); the slope-allowance term is dropped."""
+    g = math.hypot(gx, gy)
+    out = []
+    for e in es:
+        z, v, w, id, cnt, pk, sb2, dx, dy, sz2, sh = e
+        vg = dx * dx * cov_g[0, 0] + 2.0 * dx * dy * cov_g[0, 1] + dy * dy * cov_g[1, 1]
+        out.append(entry(z - gx * dx - gy * dy, sz2 + (g * sh) ** 2 + float(vg), id, pk, sb2, cnt=cnt,
+                         dx=dx, dy=dy, sz2=sz2, sh=sh))
+    return out
+
+
+def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, trace=None, skip=(), **prm):
+    """The neighbourhood-gradient pass (issue #29) over pass-1 results.
+
+    `stores`: node index (a*nx + b) -> entries; `out1`: node index -> pass-1 output dict
+    (z, sigma, w, n_out, ...) as returned by `run`; `run(entries)` rebuilds one node;
+    `allowance(a, b)` the node's slope allowance; `raw_slope(a, b)` the raw DEM slope or
+    None (no DEM gate). `prm`: PLANE_DEFAULTS keys. Only nodes red after pass 1 are tried;
+    each fit uses the pass-1 mains of the 8 neighbours (one sweep, nothing cleared here
+    feeds a later fit). Returns node index -> (code, pass-2 output or None, |g| or NaN)
+    for every tried node. `trace`, when a list, receives (name, value, threshold) for each
+    continuous gate comparison (the vector generator's threshold guard). `skip`: node
+    indices neither tried nor used as neighbours (masked nodes)."""
+    p = dict(PLANE_DEFAULTS, **{k: v for k, v in prm.items() if v is not None})
+    planarity = k_sigma if p["planarity"] is None else float(p["planarity"])
+    # n_in as len(entries) - n_out: right for unfolded entries (batch); a folded aggregate
+    # (NodeStore, the logger) counts cnt members, so a port on aggregates sums cnt instead
+    red = {i: is_red(len(stores[i]) - o["n_out"], o["n_out"]) for i, o in out1.items()}
+    res = {}
+    for idx, o in out1.items():
+        if not red[idx] or idx in skip:
+            continue
+        a, b = divmod(idx, nx)
+        nbrs = []
+        for da in (-1, 0, 1):
+            for db in (-1, 0, 1):
+                aa, bb = a + da, b + db
+                if (da == 0 and db == 0) or not (0 <= aa < ny and 0 <= bb < nx):
+                    continue
+                j = aa * nx + bb
+                if j not in out1 or j in skip or len(stores[j]) - out1[j]["n_out"] < p["min_nin"]:
+                    continue
+                o_j = out1[j]    # weight w, not 1/sigma^2: pass bias left out on purpose (docstring)
+                nbrs.append((db * cell + o_j.get("cx", 0.0), da * cell + o_j.get("cy", 0.0), o_j["z"], o_j["w"],
+                             red[j]))
+        code, fit = plane_fit(nbrs, p["min_neighbours"], p["min_clear"], p["red_weight"], planarity,
+                              float(p["max_sigma_g"]))
+        if trace is not None and fit is not None:
+            if "chi" in fit:
+                trace.append(("planarity", fit["chi"], planarity))
+            if "sigma_g" in fit:
+                trace.append(("conditioning", fit["sigma_g"], float(p["max_sigma_g"])))
+        if code:
+            res[idx] = (code, None, float("nan"))
+            continue
+        g = math.hypot(fit["gx"], fit["gy"])
+        ux, uy = (fit["gx"] / g, fit["gy"] / g) if g > 0 else (1.0, 0.0)
+        cg = fit["cov_g"]
+        sg2 = ux * ux * cg[0, 0] + 2.0 * ux * uy * cg[0, 1] + uy * uy * cg[1, 1]
+        if not sg2 > 0.0:                  # fail closed (plane_fit's PD check makes this unreachable)
+            res[idx] = (PLANE_ILL_CONDITIONED, None, float("nan"))
+            continue
+        sg = math.sqrt(sg2)
+        if trace is not None:
+            trace.append(("significance", g - allowance(a, b), k_sigma * sg))
+        if not g - allowance(a, b) > k_sigma * sg:
+            res[idx] = (PLANE_NOT_STEEP, None, g)
+            continue
+        s = raw_slope(a, b) if raw_slope is not None else None
+        if s is not None and not math.isnan(s):    # NaN: no DEM slope here (outside its cover or by a NoData hole), gate skipped
+            lim = p["dem_cap"] * float(s) + p["dem_floor"]
+            if trace is not None:
+                trace.append(("dem", g, lim))
+            if not (math.isfinite(lim) and g <= lim):     # an infinite slope fails, as any gate
+                res[idx] = (PLANE_DEM, None, g)
+                continue
+        es2 = reduce_to_plane(stores[idx], fit["gx"], fit["gy"], fit["cov_g"])
+        o2 = run(es2)
+        # the gradient error dg is common to every reduced entry (error -dg.d_i), so the
+        # per-entry d_i'C_g d_i averages down as if independent; the main's mean carries
+        # -dg.d_bar in full (d_bar its weighted centroid): add d_bar'C_g d_bar to sigma'^2.
+        # The per-entry terms stay in v', so sigma'^2 is a conservative upper bound
+        bx, by = o2["cx"], o2["cy"]
+        vbar = bx * bx * cg[0, 0] + 2.0 * bx * by * cg[0, 1] + by * by * cg[1, 1]
+        o2 = dict(o2, sigma=math.sqrt(o2["sigma"] ** 2 + max(float(vbar), 0.0)))
+        if is_red(len(es2) - o2["n_out"], o2["n_out"]) and not o2["n_out"] < o["n_out"]:
+            res[idx] = (PLANE_NO_GAIN, None, g)
+            continue
+        # z' - a has error -dg.d_bar + (entry noise) - da, so its variance carries the
+        # cross term 2 d_bar'cov(a, g) besides var_a and the noise part of sigma'^2,
+        # 1/W' + d_bar'C_g d_bar. The pass bias is left out: it is shared by the node's
+        # entries and its neighbours' mains, so it cancels in z' - a where one pass
+        # dominates (module docstring; var_bias stays in the output sigma)
+        cag = fit["cov_ag"]
+        vagree = fit["var_a"] + 1.0 / o2["w"] + max(float(vbar), 0.0) + 2.0 * (bx * float(cag[0]) + by * float(cag[1]))
+        tol = k_sigma * math.sqrt(max(vagree, 0.0)) if math.isfinite(vagree) else float("nan")
+        if trace is not None:
+            trace.append(("agreement", abs(o2["z"] - fit["a"]), tol))
+        if not (math.isfinite(tol) and abs(o2["z"] - fit["a"]) <= tol):
+            res[idx] = (PLANE_OFF_PLANE, None, g)
+            continue
+        res[idx] = (PLANE_ACCEPTED, o2, g)
+    return res
+
+
 def eeg_cull(entries, members, limit):
     """Eeg's leave-one-out test (module docstring) on `members` (indices into entries).
     Returns the culled indices."""
@@ -373,6 +649,9 @@ class Surface:
     z_alt: np.ndarray = None   # mean of that bin (NaN when none)
     strength: np.ndarray = None  # max(0, 5 - n_in / n_out), 0 with no outliers
     n_eeg: np.ndarray = None   # soundings culled by Eeg's test
+    planar: np.ndarray = None  # True where the plane pass replaced pass 1 (issue #29)
+    gradient: np.ndarray = None  # |g| of the neighbour plane from the significance gate on (m/m), NaN elsewhere
+    plane_code: np.ndarray = None  # PLANE_* outcome per node (0: not tried)
     datum_sigma: float = 0.0   # survey-level bias sigma, sqrt(sum_p (n_p/n)^2 sb_p^2)
     n_outside: int = 0         # soundings that fed no node (outside the grid)
     nodes_per_sounding: float = 1.0   # mean nodes fed per sounding (neighbouring nodes share soundings)
@@ -393,14 +672,27 @@ class Surface:
 
 def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
                  capture_radius=0.75, slope=0.05, k_sigma=3.0, name="", date="", frame="",
-                 robust=True, eeg_quotient_limit=30.0) -> Surface:
+                 robust=True, eeg_quotient_limit=30.0, plane=True, raw_slope=None,
+                 plane_min_neighbours=PLANE_DEFAULTS["min_neighbours"], plane_min_nin=PLANE_DEFAULTS["min_nin"],
+                 plane_min_clear=PLANE_DEFAULTS["min_clear"], plane_red_weight=PLANE_DEFAULTS["red_weight"],
+                 plane_planarity=PLANE_DEFAULTS["planarity"], plane_max_sigma_g=PLANE_DEFAULTS["max_sigma_g"],
+                 plane_dem_cap=PLANE_DEFAULTS["dem_cap"], plane_dem_floor=PLANE_DEFAULTS["dem_floor"],
+                 node_mask=None) -> Surface:
     """Fuse the (bias-corrected) points of one or more surveys into node estimates.
     `sb_list[k]` is the per-point bias sigma of `surveys[k]` (from crossover.apply).
     `slope` is one allowance (m/m) or an array of the grid's shape (ny, nx), one per node
     (e.g. from a DEM's local slope, so steep ground gets a larger allowance).
     `capture_radius` is one value or one per survey (a sparse DEM can reach further than
     the RTK soundings). `robust` selects the median-first rebuild (default) or the 0.7-era
-    running mean; `eeg_quotient_limit` (0 = off) applies Eeg's test in the robust mode."""
+    running mean; `eeg_quotient_limit` (0 = off) applies Eeg's test in the robust mode.
+
+    `plane` (robust mode only; ignored with robust=False) runs the neighbourhood-gradient
+    pass on nodes red after pass 1 (module docstring, Plane pass); the `plane_*` arguments
+    are its thresholds (`plane_planarity` None: k_sigma). `raw_slope`, an array of the
+    grid's shape with the raw DEM slope (m/m) per node, turns on its DEM gate; None skips it.
+    `node_mask`, a bool array of the grid's shape, marks nodes the plane pass neither tries
+    nor uses as neighbours (masked ground: its heights are not the surface); their pass-1
+    values are still returned, for the caller to blank."""
     frames = {s.frame for s in surveys}
     if len(frames) > 1:
         raise ValueError(f"gridding across frames refused: {sorted(frames)}")
@@ -409,6 +701,14 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
         slope_grid = np.asarray(slope, float)
         if slope_grid.shape != (grid.ny, grid.nx):
             raise ValueError("slope array must have the grid's shape (ny, nx)")
+    if raw_slope is not None:
+        raw_slope = np.asarray(raw_slope, float)
+        if raw_slope.shape != (grid.ny, grid.nx):
+            raise ValueError("raw_slope must have the grid's shape (ny, nx)")
+    if node_mask is not None:
+        node_mask = np.asarray(node_mask, bool)
+        if node_mask.shape != (grid.ny, grid.nx):
+            raise ValueError("node_mask must have the grid's shape (ny, nx)")
     xs, ys, zs, vs, sbs, ts, pks, rrs = [], [], [], [], [], [], [], []
     pass_offset = 0
     radii = capture_radius if np.ndim(capture_radius) else [capture_radius] * len(surveys)
@@ -460,10 +760,15 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
         v = sz**2 + (sl * (d + sh))**2
         sb2 = float(sb[k]) ** 2
         zk, pkk, tk = float(z[k]), int(pk[k]), float(t[k])
-        for a, b, vk in zip(jj, ii, v):
-            store.setdefault(int(a) * nx + int(b), []).append((entry(zk, float(vk), rank, pkk, sb2), tk))
+        ddx = x[k] - (grid.x0 + ii * grid.cell)
+        ddy = y[k] - (grid.y0 + jj * grid.cell)
+        sz2, shf = float(sz) ** 2, float(sh)
+        for a, b, vk, ex, ey in zip(jj, ii, v, ddx, ddy):
+            store.setdefault(int(a) * nx + int(b), []).append(
+                (entry(zk, float(vk), rank, pkk, sb2, dx=float(ex), dy=float(ey), sz2=sz2, sh=shf), tk))
         rank += 1
-    run = _robust if robust else _running
+    base = _robust if robust else _running
+    run = lambda es: base(es, k_sigma, eeg_quotient_limit)  # noqa: E731
     Z = np.full((ny, nx), np.nan)
     S = np.full((ny, nx), np.nan)
     N = np.zeros((ny, nx), int)
@@ -475,10 +780,30 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
     MR = np.zeros((ny, nx))
     LT = np.full((ny, nx), np.nan)
     NP = np.zeros((ny, nx), int)
+    PL = np.zeros((ny, nx), bool)
+    GR = np.full((ny, nx), np.nan)
+    PC = np.zeros((ny, nx), int)
+    stores = {idx: [e for e, _ in lst] for idx, lst in store.items()}
+    out1 = {idx: run(es) for idx, es in stores.items()}
+    if plane and robust:
+        allow = (lambda a, b: float(slope_grid[a, b])) if slope_grid is not None else (lambda a, b: float(slope))
+        raw = (lambda a, b: float(raw_slope[a, b])) if raw_slope is not None else None
+        skip = set(np.flatnonzero(node_mask).tolist()) if node_mask is not None else ()
+        tried = plane_pass(stores, out1, nx, ny, grid.cell, k_sigma, run, allow, raw, skip=skip,
+                           min_neighbours=plane_min_neighbours, min_nin=plane_min_nin,
+                           min_clear=plane_min_clear, red_weight=plane_red_weight,
+                           planarity=plane_planarity, max_sigma_g=plane_max_sigma_g,
+                           dem_cap=plane_dem_cap, dem_floor=plane_dem_floor)
+        for idx, (code, o2, g) in tried.items():
+            a, b = divmod(idx, nx)
+            PC[a, b], GR[a, b] = code, g
+            if code == PLANE_ACCEPTED:
+                PL[a, b] = True
+                out1[idx] = o2
     for idx, lst in store.items():
         a, b = divmod(idx, nx)
-        es = [e for e, _ in lst]
-        o = run(es, k_sigma, eeg_quotient_limit)
+        es = stores[idx]
+        o = out1[idx]
         Z[a, b], S[a, b], MR[a, b] = o["z"], o["sigma"], o["max_nr"]
         N[a, b], OUT[a, b], ALT[a, b], ZALT[a, b], EEG[a, b] = len(es), o["n_out"], o["n_alt"], o["z_alt"], o["n_eeg"]
         ST[a, b] = strength(len(es) - o["n_out"], o["n_out"])
@@ -493,14 +818,14 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
             m = pk == pkey
             ds += (m.sum() / npts) ** 2 * float(sb[m][0]) ** 2
     return Surface(grid=grid, z=Z, sigma=S, n=N, n_out=OUT, last_t=LT, npass=NP, maxnr=MR, n_alt=ALT, z_alt=ZALT,
-                   strength=ST, n_eeg=EEG, datum_sigma=float(np.sqrt(ds)), n_outside=n_outside,
+                   strength=ST, n_eeg=EEG, planar=PL, gradient=GR, plane_code=PC, datum_sigma=float(np.sqrt(ds)), n_outside=n_outside,
                    nodes_per_sounding=float(n_contrib / max(npts - n_outside, 1)),
                    name=name, date=date, frame=frame)
 
 
-def _robust(es, k_sigma, eeg_limit):
+def _robust(es, k_sigma, eeg_limit, promote="weight"):
     """One node, batch: rebuild once (weight promotion), then Eeg on the main."""
-    r = rebuild(es, k_sigma, "weight")
+    r = rebuild(es, k_sigma, promote)
     main = r.hyps[r.main]
     culled = eeg_cull(es, main.members, eeg_limit)
     if culled:
@@ -516,8 +841,19 @@ def _robust(es, k_sigma, eeg_limit):
         q = main.nr(e)
         if q > mr:
             mr = q
-    return dict(z=main.z(), sigma=math.sqrt(main.var()), max_nr=mr, n_out=len(es) - main.cnt,
+    cx, cy = _centroid(es, main)
+    return dict(z=main.z(), sigma=math.sqrt(main.var()), w=main.w, cx=cx, cy=cy, max_nr=mr, n_out=len(es) - main.cnt,
                 n_alt=n_alt, z_alt=z_alt, n_eeg=len(culled))
+
+
+def _centroid(es, h):
+    """Weighted mean (dx, dy) of hypothesis h's members: where its z sits relative to the node."""
+    sx = sy = 0.0
+    for i in h.members:
+        e = es[i]
+        sx += e[2] * e[7]
+        sy += e[2] * e[8]
+    return sx / h.w, sy / h.w
 
 
 def _running(es, k_sigma, eeg_limit):
@@ -533,4 +869,5 @@ def _running(es, k_sigma, eeg_limit):
             if q > mr:
                 mr = q
         h.join(i, e)
-    return dict(z=h.z(), sigma=math.sqrt(h.var()), max_nr=mr, n_out=flags, n_alt=0, z_alt=float("nan"), n_eeg=0)
+    cx, cy = _centroid(es, h)
+    return dict(z=h.z(), sigma=math.sqrt(h.var()), w=h.w, cx=cx, cy=cy, max_nr=mr, n_out=flags, n_alt=0, z_alt=float("nan"), n_eeg=0)

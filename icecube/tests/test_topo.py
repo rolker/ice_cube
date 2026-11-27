@@ -21,6 +21,16 @@ def with_passes(p, ids):
     return p.replace(pass_id=np.asarray(ids, int))
 
 
+class TestPlaneKeys(unittest.TestCase):
+    def test_plane_keys_are_cast(self):
+        from icecube import topo
+        kw = topo.plane_kwargs({"plane_min_neighbours": 6.0, "plane_max_sigma_g": 1, "plane_dem_cap": "2.5",
+                                "cell": 0.5})
+        self.assertEqual(kw, {"plane_min_neighbours": 6, "plane_max_sigma_g": 1.0, "plane_dem_cap": 2.5})
+        self.assertIsInstance(kw["plane_min_neighbours"], int)
+        self.assertIsInstance(kw["plane_max_sigma_g"], float)
+
+
 class TestPriorsAndAnchors(unittest.TestCase):
     def test_common_bias_recovered(self):
         ref = make_crossing_survey("ref", [0.0] * 6, seed=1)
@@ -304,8 +314,9 @@ class TestTopoRun(unittest.TestCase):
             self.assertGreater(np.mean(np.abs(err) < 3 * s["sigma"][ok]), 0.95)
             lot = np.load(out / "surface_ground_lot.npz")
             self.assertTrue(lot["mask"].any())
-            for k in ("n_out", "n_alt", "z_alt", "strength", "n_eeg"):
+            for k in ("n_out", "n_alt", "z_alt", "strength", "n_eeg", "planar", "gradient"):
                 self.assertEqual(lot[k].shape, lot["z"].shape, k)
+            self.assertEqual(lot["planar"].dtype, bool)
             # the flags raster keeps its name and holds the outlier count (-1 masked)
             fl = (out / "flags_ground_lot.asc").read_text()
             self.assertIn("-1", fl)

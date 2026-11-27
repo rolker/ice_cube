@@ -30,11 +30,18 @@ included), as "i j status" with status one of no_data (an enclosed gap), fringe,
 disagree, thin, ok. Applied in turn they give every in-area node's status after every
 capture; an in-area node never goes back to none. This pins clearing and flicker.
 
+Part `plane_vectors` (issue #29, PR A; the logger port is PR B): synthetic blocks of
+soundings on PLANE_PARAMS, every node fed unfolded entries (no node reaches CAP, so no
+aggregate), rebuilt with the logger's rule (count promotion, no Eeg, no pass bias), then
+`nodes.plane_pass` with the same rule and `nodes.PLANE_DEFAULTS` (`plane_params` pins
+both). Expected per node: pass-1 z and n_out, the plane code, planar, gradient and the
+final z, sigma, n_in, n_out. The fold aggregate's moments are PR B's.
+
 Guard: the generator refuses a vector where Java and Python could round to different
 decisions: a sounding within 1e-6 m of a node's capture circle or reach, a test statistic
 within 1e-6 of k_sigma, a weighted-median sum within 1e-9 (relative) of W/2 but not on it
 (an exact half comes from equal weights and is the pinned lower-median rule), a status
-sigma within 1e-9 of the target.
+sigma within 1e-9 of the target, a plane gate value within 1e-6 (relative) of its threshold.
 
 Regenerate whenever `soundings.sigma_terms` or its defaults change;
 `icecube/tests/test_logger_vectors.py` fails until the committed file matches.
@@ -329,6 +336,138 @@ def sequences_part():
     return [_sequence(*c) for c in _sequence_cases()]
 
 
+PLANE_PARAMS = {"cell": 0.5, "capture_radius": 0.75, "slope": 0.05, "k_sigma": 3.0}
+
+
+def _plane_params():
+    from . import nodes
+    return PLANE_PARAMS | {"plane_" + k: v for k, v in nodes.PLANE_DEFAULTS.items()}
+
+
+def _plane_block(g, seed, n=5, per_disc=8, sz=0.02, sh=0.01, surface=None, ymin=None, ny=None):
+    """Soundings at random (stdlib random, seeded) over an n x n block of nodes from (0, 0)
+    (n columns along x by `ny` rows along y when given), `per_disc` per capture disc on
+    average, z = g*x (or `surface(x, y)`) plus N(0, sz), rounded to 0.1 mm; `ymin` drops
+    the soundings below it (a survey edge)."""
+    import random
+    rnd = random.Random(seed)
+    ny = n if ny is None else ny
+    lo, hi, hiy = -0.75, (n - 1) * 0.5 + 0.75, (ny - 1) * 0.5 + 0.75
+    m = int(round(per_disc / (math.pi * 0.75 ** 2) * (hi - lo) * (hiy - lo)))
+    out = []
+    for _ in range(m):
+        x, y = round(rnd.uniform(lo, hi), 4), round(rnd.uniform(lo, hiy), 4)
+        z0 = g * x if surface is None else surface(x, y)
+        out.append([x, y, round(z0 + rnd.gauss(0.0, sz), 4), sz, sh])
+    return [r for r in out if ymin is None or r[1] >= ymin]
+
+
+def _plane_cases():
+    """(name, soundings) on PLANE_PARAMS; seeds picked so each case is what it is named for
+    (test_logger_vectors checks)."""
+    import random
+    out = [("bank_0.3_clears", _plane_block(0.3, 3)), ("bank_0.2_clears", _plane_block(0.2, 3))]
+    # a bank along (+x, -y), z = 0.2 x - 0.2 y, on 7 columns by 5 rows: node (3, 2) clears,
+    # which needs the y part of the gradient (its sign, cy on the y axis) right
+    out.append(("bank_diag_clears", _plane_block(0.0, 14, n=7, ny=5, surface=lambda x, y: 0.2 * x - 0.2 * y)))
+    # flat ground, one +15 cm capture 0.7 m from node (2, 2): no node planar
+    flat = _plane_block(0.0, 7)
+    flat.append([round(1.0 + 0.7 * math.cos(0.9), 4), round(1.0 + 0.7 * math.sin(0.9), 4), 0.15, 0.02, 0.01])
+    out.append(("flat_edge_outlier", flat))
+    # a 0.3 m/m bank plus 8 captures 15 cm above it around node (2, 2): pass 2 would make
+    # them the main, but they disagree with the neighbour plane (code 8), so pass 1 stands
+    rnd = random.Random(5027)
+    wc = _plane_block(0.3, 27)
+    for _ in range(8):
+        x, y = round(rnd.uniform(0.75, 1.25), 4), round(rnd.uniform(0.75, 1.25), 4)
+        wc.append([x, y, round(0.3 * x + 0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
+    out.append(("wrong_cluster_keeps_pass1", wc))
+    # a 0.3 m/m bank cut at y = 0 (a survey edge): node (2, 0)'s neighbour centroids bunch
+    # in y, the gradient is not pinned (code 9; without the gate pass 2 would be accepted)
+    out.append(("fringe_ill_conditioned", _plane_block(0.3, 22, ymin=0.0)))
+    # a ridge z = 0.4 |x - 1|: node (2, 2) sits on the ridge line, its neighbours fit no plane (code 4)
+    out.append(("ridge_not_planar", _plane_block(0.0, 1, surface=lambda x, y: 0.4 * abs(x - 1.0))))
+    # flat ground plus 4 captures 15 cm up near node (2, 2): red, but its neighbours' plane is
+    # flat, within the slope allowance (code 5)
+    rnd = random.Random(1)
+    fc = _plane_block(0.0, 1, per_disc=6)
+    for _ in range(4):
+        x, y = round(rnd.uniform(0.85, 1.15), 4), round(rnd.uniform(0.85, 1.15), 4)
+        fc.append([x, y, round(0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
+    out.append(("flat_cluster_not_steep", fc))
+    # a 0.3 m/m bank surveyed along the one line y = 1 (node row 2) plus 6 captures 15 cm
+    # up near node (2, 2): every neighbour centroid sits on Y = 0 (up to roundoff), so the
+    # normal matrix is singular and the gradient's y part is not pinned (code 9, from the
+    # conditioning check on the unscaled covariance, whatever the neighbours' summation order)
+    rnd = random.Random(3)
+    ln = []
+    for _ in range(30):
+        x = round(rnd.uniform(-0.75, 2.75), 4)
+        ln.append([x, 1.0, round(0.3 * x + rnd.gauss(0.0, 0.02), 4), 0.02, 0.01])
+    for _ in range(6):
+        x = round(rnd.uniform(0.85, 1.15), 4)
+        ln.append([x, 1.0, round(0.3 * x + 0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
+    out.append(("collinear_ill_conditioned", ln))
+    return out
+
+
+def _plane_case(name, soundings):
+    """Every sounding feeds the nodes (i*cell, j*cell) within the capture radius as an
+    unfolded entry (z, v = sz^2 + (slope*(d + sh))^2, id, dx, dy, sz^2, sh); each node is
+    rebuilt with the logger's rule (count promotion, no Eeg, no pass bias); then
+    nodes.plane_pass with the same rule. Expected per node with soundings: pass-1 z and
+    n_out, the plane code, planar, gradient (null when none) and the final z, sigma, n_in,
+    n_out."""
+    from . import nodes
+    p = _plane_params()
+    cell, rad, slope, k = p["cell"], p["capture_radius"], p["slope"], p["k_sigma"]
+    rows = _rows(soundings)
+    feed = {}
+    for r in rows:
+        x, y = r["x"], r["y"]
+        for j in range(math.ceil((y - rad) / cell), math.floor((y + rad) / cell) + 1):
+            for i in range(math.ceil((x - rad) / cell), math.floor((x + rad) / cell) + 1):
+                d = math.hypot(i * cell - x, j * cell - y)
+                assert abs(d - rad) > 1e-6, ("on a circle", name, x, y, i, j)
+                if d <= rad:
+                    s = slope * (d + r["sh"])
+                    feed.setdefault((i, j), []).append(nodes.entry(
+                        r["z"], r["sz"] ** 2 + s * s, r["id"], dx=x - i * cell, dy=y - j * cell,
+                        sz2=r["sz"] ** 2, sh=r["sh"]))
+    assert all(len(es) <= nodes.CAP for es in feed.values()), (name, "over the cap: no fold here")
+    i0 = min(i for i, _ in feed); j0 = min(j for _, j in feed)
+    nx = max(i for i, _ in feed) - i0 + 1; ny = max(j for _, j in feed) - j0 + 1
+    stores = {(j - j0) * nx + (i - i0): es for (i, j), es in feed.items()}
+    trace = []
+
+    def run(es):
+        nodes.rebuild(es, k, "count", trace)
+        return nodes._robust(es, k, 0.0, "count")
+
+    out1 = {idx: run(es) for idx, es in stores.items()}
+    gtrace = []
+    tried = nodes.plane_pass(stores, out1, nx, ny, cell, k, run, lambda a, b: slope, None, gtrace,
+                             **{kk[6:]: v for kk, v in p.items() if kk.startswith("plane_")})
+    _check_trace(name, trace, k)
+    for g in gtrace:
+        assert abs(g[1] - g[2]) > 1e-6 * max(1.0, abs(g[2])), (name, "plane gate on its threshold", g)
+    out = []
+    for idx in sorted(stores, key=lambda q: (q // nx, q % nx)):
+        a, b = divmod(idx, nx)
+        es, o1 = stores[idx], out1[idx]
+        code, o2, gr = tried.get(idx, (nodes.PLANE_NOT_TRIED, None, float("nan")))
+        o = o2 if o2 is not None else o1
+        out.append({"i": b + i0, "j": a + j0, "z1": o1["z"], "n_out1": o1["n_out"], "code": code,
+                    "planar": code == nodes.PLANE_ACCEPTED, "gradient": None if math.isnan(gr) else gr,
+                    "z": o["z"], "sigma": o["sigma"], "n": len(es), "n_in": len(es) - o["n_out"],
+                    "n_out": o["n_out"]})
+    return {"name": name, "soundings": rows, "nodes": out}
+
+
+def plane_part():
+    return [_plane_case(*c) for c in _plane_cases()]
+
+
 def build():
     """The whole vectors document (a dict)."""
     sm = _soundings()
@@ -341,6 +480,8 @@ def build():
         "nodes_defaults": _nodes_defaults(),
         "nodes": nodes_part(sm),
         "sequences": sequences_part(),
+        "plane_params": _plane_params(),
+        "plane_vectors": plane_part(),
     }
 
 

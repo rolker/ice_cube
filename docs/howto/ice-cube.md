@@ -133,6 +133,47 @@ and worst difference in sigmas. The test has a floor: with a pass bias sigma of 
 cannot see a second surface closer than about `k * sqrt(2) * sb` = 13 cm, with 1 cm about
 4 cm; "no outliers" is a statement at that level.
 
+Plane pass (`plane = true`, the default; issue #29; robust mode only, ignored with
+`robust = false`). On a steep bank a node holds 10-16 cm of relief inside its 0.75 m
+disc, beyond the slope allowance, so its up- and down-slope soundings land in outlier
+bins and it stays red. For each node red after the rebuild (clear and amber nodes are
+never touched), a weighted plane is fitted through the rebuilt heights of its 8
+neighbours (each placed where its height sits: grid offset plus the weighted centroid of
+its main's members, weighted, not of all its soundings; red neighbours at
+`plane_red_weight`, 0.25; usable ones need
+`plane_min_nin`, 2, members). The node's own soundings are not used: they are what the
+first pass already split. The fit must pass, in order: at least `plane_min_neighbours`
+(5) usable, at least `plane_min_clear` (2) of them not red, a gradient pinned by where
+the neighbours' heights actually sit (the gradient's largest one-sigma uncertainty at most
+`plane_max_sigma_g`, 0.08 m/m: at a survey fringe the neighbours' members all lie on the
+survey side, their centroids bunch and the plane is not determined across them; checked
+before and again after the uncertainty is scaled by the residual), a weighted RMS
+residual of at most `plane_planarity` neighbour sigmas (default `k_sigma`), and a
+gradient that exceeds the node's slope allowance by more than `k_sigma` of its own sigma.
+With `slope_from_dem` the gradient must also stay under
+`plane_dem_cap * DEM slope + plane_dem_floor` (2.0, 0.05 m/m); with a single `slope` that
+gate is skipped, and so it is at a node outside the DEM's cover or next to a NoData hole
+in it (no DEM slope there).
+A gate whose computed value is not a finite number fails, as does a NaN limit; an
+infinite `plane_planarity` or `plane_max_sigma_g` switches that gate off (every finite
+value passes), but an infinite DEM slope fails the DEM gate. A gradient whose
+uncertainty is not a proper (positive definite) covariance fails too, as when every
+neighbour's height sits on one line through the node. The node's soundings are then moved to the node along the gradient
+(variance `sz^2 + (|g| sh)^2` plus the gradient's own uncertainty, no slope allowance) and
+rebuilt again, Eeg included; the gradient's error is common to all of them, so its
+part at the rebuilt height's centroid is added to the node's sigma in full. The result is kept only if the node leaves red (or loses
+outliers) and its height agrees with the neighbour plane at the node within `k_sigma` (noise
+only: the pass bias is shared with the neighbours and cancels, though it stays in the
+node's sigma); otherwise the first result stands. The neighbours' discs overlap the node's and share its
+soundings, so that agreement test is looser than `k_sigma` suggests. One sweep: the fits
+read first-pass heights only. Masked nodes (`[[masks]]`) are neither tried nor used as
+neighbours. The surface npz gains `planar` (the node was rebuilt this
+way), `gradient` (|g| of every fit that reached the slope test, kept or not) and
+`plane_code` (which gate stopped it, `nodes.PLANE_*`; 0 not tried), and the outlier table
+counts planar nodes and lists them first (a cut list says so). On the 11-26
+logger session (batch replay, slope 0.05) this cleared the 5 bank nodes and left the one
+bad capture red; nodes off the banks are unchanged by construction.
+
 `robust = false` keeps the 0.7-era rule for comparing old runs: every sounding fused in
 time order, and a k-sigma test before each fusion that only counts (the count is then in
 `n_out`, and `maxnr` is the running maximum). The worked example below ran with it.
@@ -140,7 +181,9 @@ time order, and a k-sigma test before each fusion that only counts (the count is
 The Ice Cube Logger (0.8) runs a one-pass copy of this rebuild live on the phone for its
 coverage overlay (`logger/README.md`, Coverage): no pass bias (a fixed pass-wander term
 instead), promotion by count, and at most 32 stored soundings a node (past that the
-oldest agreeing ones are merged into one running sum). When this update changes, regenerate its test vectors
+oldest agreeing ones are merged into one running sum). The plane pass is batch only for
+now; its vectors (`plane_vectors`) are generated for the logger port (issue #29, second
+PR). When this update changes, regenerate its test vectors
 (`python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json`)
 and port the change to `core/Coverage.java`.
 
@@ -199,7 +242,8 @@ growth. Readers:
   rover-test script writes one). The logger app's format will be added when it exists.
 
 Outputs per run: `summary.md`, `run.json`, `surface_<name>.npz` (z, sigma, n, n_out,
-n_alt, z_alt, strength, n_eeg, maxnr, last update, passes per node, grid),
+n_alt, z_alt, strength, n_eeg, maxnr, last update, passes per node, planar, gradient,
+plane_code, grid),
 `growth_<a>_<b>.npz`, pass / crossover / outlier node tables (`outliers_<name>.md`), and
 PNG maps in local metres from the origin (height, sigma, count, outliers,
 points by pass, biases with error bars, crossover residuals, growth). The code never
@@ -406,8 +450,8 @@ outline.
   (`max_s`) when there is time, and overlap them.
 - The slope allowance is one number for the whole surface. It is right for ice and
   rough for a lawn with steps; the outlier table shows where. On a steep bank the
-  up- and down-slope soundings can land in outlier bins (a per-node gradient is a
-  follow-up to issue #24).
+  plane pass (above) takes the gradient from the neighbours; a single line of soundings
+  down a bank has no neighbours across it and stays red.
 - The frame check is by label. Two surveys labelled the same frame but on different
   base coordinates will be differenced; store the frame with every survey.
 - On streamed 4 Hz input every epoch is an independent sounding to the gridder, so a

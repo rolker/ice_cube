@@ -614,6 +614,463 @@ class TestRobustNodes(unittest.TestCase):
         self.assertEqual(nodes.eeg_cull(e, list(range(len(z))), q_cube * 1.001), [])
 
 
+def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None, ny=None, gy=0.0):
+    """Soundings at random on a block of n x n nodes (n x `ny` when given: n columns along x,
+    ny rows along y; cell 0.5 m, node (0, 0) at the origin), `per_disc` per 0.75 m capture
+    disc on average, z = g*x + gy*y plus N(0, sz) noise; `extra` (x, y, z) arrays appended;
+    `ymin` drops soundings below it (a survey edge)."""
+    ny = n if ny is None else ny
+    rng = np.random.default_rng(seed)
+    lo, hi, hiy = -0.75, (n - 1) * 0.5 + 0.75, (ny - 1) * 0.5 + 0.75
+    m = int(round(per_disc / (np.pi * 0.75 ** 2) * (hi - lo) * (hiy - lo)))
+    x = rng.uniform(lo, hi, m)
+    y = rng.uniform(lo, hiy, m)
+    z = g * x + gy * y + rng.normal(0, sz, m)
+    if extra is not None:
+        x, y, z = np.r_[x, extra[0]], np.r_[y, extra[1]], np.r_[z, extra[2]]
+    if ymin is not None:
+        k = y >= ymin
+        x, y, z = x[k], y[k], z[k]
+    p = local_points("b", x, y, z, t=np.arange(len(z), dtype=float), sz=np.full(len(z), sz), sh=np.full(len(z), sh))
+    p.pass_id = np.zeros(len(z), int)
+    return p, nodes.Grid(0.0, 0.0, 0.5, n, ny)
+
+
+def bank_run(p, grid, sb=0.0, **kw):
+    kw.setdefault("slope", 0.05)
+    return nodes.grid_surface([p], [np.full(len(p), float(sb))], grid, capture_radius=0.75, k_sigma=3.0, **kw)
+
+
+def red_of(s):
+    return (s.n_out > 0) & (s.n - s.n_out < nodes.OUTVOTE * s.n_out)
+
+
+def red_neighbours(s, a, b):
+    r = red_of(s)
+    return sum(int(r[a + da, b + db]) for da in (-1, 0, 1) for db in (-1, 0, 1)
+               if (da or db) and 0 <= a + da < r.shape[0] and 0 <= b + db < r.shape[1])
+
+
+SAME = ("z", "sigma", "n", "n_out", "n_alt", "strength", "n_eeg", "maxnr")
+
+
+class TestPlanePass(unittest.TestCase):
+    """Issue #29: a gradient from the neighbours' pass-1 mains, pass 2 on red nodes only.
+    Every block is built from soundings (shared between neighbouring nodes as in production);
+    the seeds were picked so each case is what it is named for, and the asserts say so."""
+
+    C = (3, 3)   # the centre node of the 7 x 7 block
+
+    def assert_pass1(self, s, s0, at):
+        for k in SAME:
+            self.assertTrue(np.array_equal(getattr(s, k)[at], getattr(s0, k)[at]), k)
+        self.assertFalse(s.planar[at])
+
+    def test_entries_carry_geometry_and_pass2_variance(self):
+        e = nodes.entry(0.5, 0.01, 3, dx=0.2, dy=-0.1, sz2=0.0004, sh=0.02)
+        self.assertEqual(e[7:], (0.2, -0.1, 0.0004, 0.02))
+        self.assertEqual(nodes.entry(0.5, 0.01, 3)[7:], (0.0, 0.0, 0.01, 0.0))
+        cov = np.array([[1e-4, 2e-5], [2e-5, 4e-4]])
+        (r,) = nodes.reduce_to_plane([e], 0.3, -0.4, cov)
+        self.assertAlmostEqual(r[0], 0.5 - (0.3 * 0.2 + 0.4 * 0.1), places=12)
+        vg = 0.04 * 1e-4 - 2 * 0.02 * 2e-5 + 0.01 * 4e-4
+        self.assertAlmostEqual(r[1], 0.0004 + (0.5 * 0.02) ** 2 + vg, places=15)   # sz2 + (|g| sh)^2 + d'C d
+        self.assertEqual(r[7:], e[7:])
+
+    def test_bank_clears(self):
+        for g, seed, clears in ((0.2, 0, (2,)), (0.3, 0, (1, 2, 3))):
+            p, grid = bank_block(g, seed)
+            s0 = bank_run(p, grid, plane=False)
+            self.assertTrue(red_of(s0)[self.C], g)
+            for mc in clears:
+                s = bank_run(p, grid, plane_min_clear=mc)
+                self.assertFalse(red_of(s)[self.C], (g, mc))
+                self.assertTrue(s.planar[self.C])
+                self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+                self.assertAlmostEqual(s.gradient[self.C], g, delta=0.05)
+                self.assertAlmostEqual(s.z[self.C], g * 1.5, delta=0.03)   # the bank's height at the node
+            # only nodes red after pass 1 are touched; none turns red
+            self.assertFalse(np.any(red_of(s) & ~red_of(s0)))
+            for k in SAME:
+                np.testing.assert_array_equal(getattr(s, k)[~red_of(s0)], getattr(s0, k)[~red_of(s0)])
+        self.assertEqual(red_neighbours(s0, *self.C), 3)   # the 0.3 case has red neighbours
+
+    def test_bank_along_y_and_diagonal_on_a_non_square_grid(self):
+        # 9 columns by 7 rows, a bank along +y and one along (+x, -y): a regression in the
+        # y part (gy's sign, cy on the wrong axis) would reduce the entries the wrong way,
+        # so accepted heights would miss the bank or the agreement gate would refuse them
+        for gx, gy, seed in ((0.0, 0.3, 0), (0.2, -0.2, 4)):
+            p, grid = bank_block(gx, seed, n=9, ny=7, gy=gy)
+            s0, s = bank_run(p, grid, plane=False), bank_run(p, grid)
+            acc = s.plane_code == nodes.PLANE_ACCEPTED
+            self.assertGreaterEqual(acc.sum(), 0.7 * red_of(s0).sum(), (gx, gy))
+            Y, X = np.mgrid[0:grid.ny, 0:grid.nx] * grid.cell
+            np.testing.assert_allclose(s.z[acc], (gx * X + gy * Y)[acc], atol=0.03)
+            np.testing.assert_allclose(s.gradient[acc], np.hypot(gx, gy), atol=0.06)
+            self.assertFalse(np.any(red_of(s) & ~red_of(s0)))
+
+    def test_outlier_table_lists_planar_nodes_first(self):
+        # a large bank: many outlier nodes, the cleared (planar) ones with a low worst
+        # difference; cut to 5 rows, the planar nodes still come first and the cut is said
+        from icecube import report
+        p, grid = bank_block(0.3, 0, n=9, ny=7)
+        s = bank_run(p, grid)
+        npl = int(s.planar.sum())
+        self.assertGreaterEqual(npl, 3)
+        rows = report.table_outliers(s, limit=npl + 2).splitlines()
+        self.assertEqual(rows[0], f"Planar nodes (rebuilt on a neighbour plane): {npl}")
+        self.assertTrue(rows[1].startswith(f"Showing {npl + 2} of "))
+        body = [r for r in rows if r.startswith("| ") and not r.startswith("| east")]
+        self.assertEqual(len(body), npl + 2)
+        self.assertTrue(all(r.split("|")[-2].strip() for r in body[:npl]))   # gradient filled
+        self.assertFalse(any(r.split("|")[-2].strip() for r in body[npl:]))
+        self.assertNotIn("Showing", report.table_outliers(s, limit=1000))
+
+    def test_accepted_sigma_carries_the_common_gradient_error(self):
+        # the gradient error is common to every reduced entry: the output sigma'^2 is the
+        # pass-2 rebuild's plus d_bar'C_g d_bar (d_bar the pass-2 main's centroid)
+        from unittest import mock
+        seen = []
+        real_reduce, real_robust = nodes.reduce_to_plane, nodes._robust
+
+        def reduce(es, gx, gy, cov_g):
+            seen.append(["cov", cov_g])
+            return real_reduce(es, gx, gy, cov_g)
+
+        def robust(*a, **k):
+            o = real_robust(*a, **k)
+            if seen and len(seen[-1]) == 2:
+                seen[-1].append(o)
+            return o
+        p, grid = bank_block(0.3, 0)
+        with mock.patch.object(nodes, "reduce_to_plane", reduce), mock.patch.object(nodes, "_robust", robust):
+            s = bank_run(p, grid)
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        z_c = float(s.z[self.C])
+        (_, cg, o2), = [q for q in seen if q[2]["z"] == z_c]
+        d = np.array([o2["cx"], o2["cy"]])
+        vbar = float(d @ cg @ d)
+        self.assertGreater(vbar, 0.0)
+        self.assertAlmostEqual(s.sigma[self.C] ** 2, o2["sigma"] ** 2 + vbar, places=12)
+
+    def test_masked_nodes_are_not_tried_or_neighbours(self):
+        p, grid = bank_block(0.3, 0)
+        self.assertEqual(bank_run(p, grid).plane_code[self.C], nodes.PLANE_ACCEPTED)
+        m = np.zeros((grid.ny, grid.nx), bool)
+        m[self.C] = True
+        self.assertEqual(bank_run(p, grid, node_mask=m).plane_code[self.C], nodes.PLANE_NOT_TRIED)
+        m[:] = False
+        m[2, 2:5] = m[3, 2] = True    # 4 of the 8 neighbours masked: 4 usable, under 5
+        self.assertEqual(bank_run(p, grid, node_mask=m).plane_code[self.C], nodes.PLANE_FEW)
+        with self.assertRaises(ValueError):
+            bank_run(p, grid, node_mask=np.zeros((2, 2), bool))
+
+    def test_topo_mask_orientation_on_a_non_square_grid(self):
+        # 9 columns (x) by 5 rows (y), masks drawn as polygons through topo.grid_surface. The
+        # target node (row 2, col 3) at (1.5, 1.0) passes unmasked; masking 4 of its 8
+        # neighbours (row 1, cols 2-4, and row 2, col 2) leaves 4 usable, PLANE_FEW. The
+        # transpose of that (5, 9) mask is (9, 5): a transposed mask anywhere fails the
+        # shape check, and the masked nodes must be exactly these (row, col).
+        from icecube import topo
+        p, grid = bank_block(0.3, 0, n=9, ny=5)
+        T = (2, 3)
+        sq = lambda x0, x1, y0, y1: np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
+
+        def run(masks):
+            ctx = topo.Context(cfg={}, base=None, site=None, surveys={"b": (p, [], {})}, masks=masks)
+            return topo.grid_surface(ctx, {}, grid, "s", [p], [np.zeros(len(p))], (0.05, None))
+        s, m = run([])
+        self.assertEqual(s.z.shape, (5, 9))
+        self.assertFalse(m.any())
+        self.assertEqual(s.plane_code[T], nodes.PLANE_ACCEPTED)
+        s, m = run([("row1", sq(0.75, 2.25, 0.25, 0.75)), ("left", sq(0.75, 1.25, 0.75, 1.25))])
+        self.assertEqual(sorted(map(tuple, np.argwhere(m))), [(1, 2), (1, 3), (1, 4), (2, 2)])
+        self.assertTrue(np.all(np.isnan(s.z[m])))
+        self.assertTrue(np.all(s.plane_code[m] == nodes.PLANE_NOT_TRIED))
+        self.assertEqual(s.plane_code[T], nodes.PLANE_FEW)
+        with self.assertRaises(ValueError):
+            bank_run(p, grid, node_mask=m.T)
+
+    def test_bank_clears_with_one_red_neighbour(self):
+        p, grid = bank_block(0.2, 33)
+        s0 = bank_run(p, grid, plane=False)
+        self.assertTrue(red_of(s0)[self.C])
+        self.assertEqual(red_neighbours(s0, *self.C), 1)
+        self.assertTrue(bank_run(p, grid).planar[self.C])
+
+    def test_bank_clears_at_a_survey_edge(self):
+        E = (0, 3)   # bottom row: 5 neighbours, no soundings below y = -0.25
+        for g, seed in ((0.2, 14), (0.3, 2)):
+            p, grid = bank_block(g, seed, ymin=-0.25)
+            s0 = bank_run(p, grid, plane=False)
+            self.assertTrue(red_of(s0)[E], g)
+            s = bank_run(p, grid)
+            self.assertTrue(s.planar[E], g)
+            self.assertFalse(red_of(s)[E], g)
+
+    def test_fringe_bunched_centroids_are_ill_conditioned(self):
+        # a survey cut at y = 0: the bottom-row node's neighbours hold members only inside the
+        # survey, so their centroids bunch in y and the gradient is not pinned. Without the
+        # conditioning gate pass 2 is accepted 6 cm off the bank with a 5 cm sigma.
+        E = (0, 3)
+        p, grid = bank_block(0.3, 29, ymin=0.0)
+        s0 = bank_run(p, grid, plane=False)
+        self.assertTrue(red_of(s0)[E])
+        loose = bank_run(p, grid, plane_max_sigma_g=1e9)
+        self.assertEqual(loose.plane_code[E], nodes.PLANE_ACCEPTED)
+        self.assertGreater(abs(loose.z[E] - 0.45), 0.05)
+        s = bank_run(p, grid)
+        self.assertEqual(s.plane_code[E], nodes.PLANE_ILL_CONDITIONED)
+        self.assert_pass1(s, s0, E)
+
+    def test_conditioning_fails_closed(self):
+        nbrs = [(0.5 * k, 0.0, 0.1 * k, 1e4, False) for k in range(6)]   # collinear: singular
+        self.assertEqual(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0], nodes.PLANE_ILL_CONDITIONED)
+        nbrs = [(x, y, 0.3 * x, 1e4, False) for x in (-0.5, 0.0, 0.5) for y in (-0.5, 0.5)]
+        self.assertEqual(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0], 0)
+        self.assertEqual(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, float("nan"))[0], nodes.PLANE_ILL_CONDITIONED)
+        bad = nbrs[:-1] + [(0.5, 0.5, float("nan"), 1e4, False)]
+        self.assertNotEqual(nodes.plane_fit(bad, 5, 2, 0.25, 3.0, 0.08)[0], 0)
+        self.assertTrue(np.isnan(nodes._sigma_g_max(float("nan"), 0.0, 1.0)))
+        self.assertAlmostEqual(nodes._sigma_g_max(4.0, 0.0, 1.0), 2.0)
+        self.assertAlmostEqual(nodes._sigma_g_max(2.0, 1.0, 2.0), np.sqrt(3.0))
+        # an infinite limit still fails a non-finite value: collinear centroids (no proper
+        # covariance) and an overflowing chi stop at their gates
+        inf = float("inf")
+        coll = [(0.5 * k, 0.0, 0.1 * k, 1e4, False) for k in range(6)]
+        self.assertEqual(nodes.plane_fit(coll, 5, 2, 0.25, inf, inf)[0], nodes.PLANE_ILL_CONDITIONED)
+        huge = nbrs[:-1] + [(0.5, 0.5, 1e300, 1e4, False)]
+        with np.errstate(over="ignore"):
+            code, fit = nodes.plane_fit(huge, 5, 2, 0.25, inf, inf)
+        self.assertEqual(code, nodes.PLANE_NOT_PLANAR)
+        self.assertEqual(fit["chi"], inf)
+        # a NaN limit fails a finite value; an infinite one passes it (the gate off)
+        rough = [(x, y, 0.3 * x + (0.2 if (x, y) == (0.0, 0.5) else 0.0), 1e4, False) for x, y, *_ in nbrs]
+        code, fit = nodes.plane_fit(rough, 5, 2, 0.25, 3.0, 0.08)
+        self.assertEqual(code, nodes.PLANE_NOT_PLANAR)
+        self.assertTrue(np.isfinite(fit["chi"]) and np.isfinite(fit["sigma_g"]))
+        self.assertEqual(nodes.plane_fit(rough, 5, 2, 0.25, float("nan"), 0.08)[0], nodes.PLANE_NOT_PLANAR)
+        self.assertEqual(nodes.plane_fit(rough, 5, 2, 0.25, inf, inf)[0], 0)
+        self.assertFalse(nodes._pos_def(np.diag([1e-4, 1.0, -1e-9])))
+        self.assertFalse(nodes._pos_def(np.diag([0.0, 1e-4, 1e-4])))
+        self.assertTrue(nodes._pos_def(np.diag([1e-4, 1e-4, 1e-4])))
+
+    def test_scaled_conditioning_gate(self):
+        # a fit that passes conditioning unscaled but not once the covariance is scaled by
+        # chi^2 (1 < chi < planarity) stops at the second check, with chi in the dict
+        rng = np.random.default_rng(4)
+        nbrs = [(x, y, 0.3 * x + rng.normal(0, 0.02), 1e4, False)
+                for x in (-0.5, 0.0, 0.5) for y in (-0.5, 0.0, 0.5) if (x, y) != (0.0, 0.0)]
+        code, fit = nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, float("inf"))
+        self.assertEqual(code, 0)
+        chi, scaled = fit["chi"], fit["sigma_g"]
+        self.assertTrue(1.5 < chi < 3.0, chi)
+        unscaled = scaled / chi
+        code, fit = nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.5 * (unscaled + scaled))
+        self.assertEqual(code, nodes.PLANE_ILL_CONDITIONED)
+        self.assertAlmostEqual(fit["chi"], chi, places=12)
+        self.assertAlmostEqual(fit["sigma_g"], scaled, places=12)
+        # the post-scaling positive-definite check is reached only when chi^2 * Ninv
+        # overflows (tiny weights, a huge residual, no planarity limit)
+        inf = float("inf")
+        huge = [(x, y, 0.3 * x + (1e155 if (x, y) == (0.5, 0.5) else 0.0), 1e-10, False) for x, y, *_ in nbrs]
+        with np.errstate(over="ignore"):
+            code, fit = nodes.plane_fit(huge, 5, 2, 0.25, inf, inf)
+        self.assertEqual(code, nodes.PLANE_ILL_CONDITIONED)
+        self.assertTrue(np.isfinite(fit["chi"]))
+        self.assertEqual(fit["sigma_g"], inf)
+
+    def test_collinear_centroids_never_pass(self):
+        # centroids on one random line through the node: N is singular up to roundoff, and a
+        # plain inverse returned code 0 on 121 of these 500 (an indefinite C_g whose larger
+        # eigenvalue passed the conditioning gate). Conditioning is checked on the unscaled
+        # covariance before beta is solved, so every one stops there, never at planarity
+        # (when planarity came first, 67 of the 500 stopped at PLANE_NOT_PLANAR on roundoff)
+        rng = np.random.default_rng(0)
+        codes = []
+        for _ in range(500):
+            th, t = rng.uniform(0, np.pi), rng.uniform(-0.6, 0.6, 8)
+            nbrs = [(float(u * np.cos(th)), float(u * np.sin(th)),
+                     float(0.3 * u * np.cos(th) + rng.normal(0, 0.01)), float(rng.uniform(1e3, 1e4)), False)
+                    for u in t]
+            codes.append(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0])
+        self.assertEqual(set(codes), {nodes.PLANE_ILL_CONDITIONED})
+
+    def test_collinear_code_does_not_depend_on_summation_order(self):
+        # the collinear plane vector's centre node, its neighbours in 200 random orders:
+        # always PLANE_ILL_CONDITIONED (the Java port sums in its own order)
+        from unittest import mock
+        from icecube import logger_vectors as lv
+        (name, snd), = [c for c in lv._plane_cases() if c[0] == "collinear_ill_conditioned"]
+        real, rng, codes = nodes.plane_fit, np.random.default_rng(5), []
+
+        def shuffled(nbrs, *a):
+            for _ in range(200):
+                order = rng.permutation(len(nbrs))
+                codes.append(real([nbrs[i] for i in order], *a)[0])
+            return real(nbrs, *a)
+        with mock.patch.object(nodes, "plane_fit", shuffled):
+            lv._plane_case(name, snd)
+        self.assertTrue(codes)
+        self.assertEqual(set(codes), {nodes.PLANE_ILL_CONDITIONED})
+
+    def _synthetic_pass(self, o2, allowance=0.0, k=3.0):
+        """plane_pass on a 3 x 3 grid, cell 0.5: neighbours on z = 0.3 X, clear, their
+        mains' centroids pushed to (+0.2, +0.1) so a and g are correlated; the centre red
+        (6 of 10 out) and `run` returning `o2` for its pass 2. Returns (code, fit, trace)."""
+        cell, nb, stores, out1 = 0.5, [], {}, {}
+        for a in range(3):
+            for b in range(3):
+                idx = a * 3 + b
+                stores[idx] = [nodes.entry(0.0, 1e-4, 10 * idx + i, dx=0.01 * i, dy=-0.01 * i) for i in range(10)]
+                if idx == 4:
+                    out1[idx] = dict(z=0.0, w=1e4, n_out=6, cx=0.0, cy=0.0)
+                    continue
+                X, Y = (b - 1) * cell + 0.2, (a - 1) * cell + 0.1
+                out1[idx] = dict(z=0.3 * X, w=1e4 * (1 + idx), n_out=0, cx=0.2, cy=0.1)
+                nb.append((X, Y, 0.3 * X, 1e4 * (1 + idx), False))
+        trace = []
+        res = nodes.plane_pass(stores, out1, 3, 3, cell, k, lambda es: dict(o2), lambda a, b: allowance,
+                               trace=trace)
+        code, fit = nodes.plane_fit(nb, 5, 2, 0.25, k, 0.08)
+        self.assertEqual(code, 0)
+        return res[4][0], fit, dict((t[0], t[1:]) for t in trace)
+
+    def test_agreement_variance_carries_the_cross_term(self):
+        # the agreement tolerance is k * sqrt(var_a + 1/W' + d'C_g d + 2 d'cov(a, g)), d the
+        # pass-2 main's centroid: equal to the variance of the plane's prediction at d plus
+        # 1/W'. The cross term is a large negative part here, so a flipped sign or a
+        # dropped term moves the tolerance well past the tolerance asserted
+        d = np.array([0.15, 0.08])
+        o2 = dict(z=0.0, sigma=0.01, w=1e6, n_out=0, cx=float(d[0]), cy=float(d[1]))
+        code, fit, tr = self._synthetic_pass(o2)
+        self.assertEqual(code, nodes.PLANE_ACCEPTED)
+        cov = np.block([[np.array([[fit["var_a"]]]), fit["cov_ag"][None, :]],
+                        [fit["cov_ag"][:, None], fit["cov_g"]]])
+        u = np.r_[1.0, d]
+        want = 3.0 * np.sqrt(float(u @ cov @ u) + 1e-6)
+        cross = 2.0 * float(d @ fit["cov_ag"])
+        self.assertLess(cross, -0.2 * (fit["var_a"] + float(d @ fit["cov_g"] @ d)))
+        self.assertAlmostEqual(tr["agreement"][1], want, delta=1e-12 * want)
+
+    def test_significance_gate_subtracts_the_allowance(self):
+        o2 = dict(z=0.0, sigma=0.01, w=1e6, n_out=0, cx=0.0, cy=0.0)
+        code, _, tr = self._synthetic_pass(o2)
+        self.assertEqual(code, nodes.PLANE_ACCEPTED)
+        g, ksg = tr["significance"]
+        self.assertAlmostEqual(g, 0.3, places=9)
+        self.assertGreater(g, 4 * ksg)
+        # |g| clears k sigma_g alone, but not once the allowance is taken off
+        self.assertEqual(self._synthetic_pass(o2, allowance=g - 0.5 * ksg)[0], nodes.PLANE_NOT_STEEP)
+        self.assertEqual(self._synthetic_pass(o2, allowance=g - 2.0 * ksg)[0], nodes.PLANE_ACCEPTED)
+
+    def test_no_gain_needs_n_out_to_strictly_drop(self):
+        # pass 1 had 6 of 10 out (red). Pass 2 still red: accepted only if n_out drops
+        base = dict(z=0.0, sigma=0.01, w=1e6, cx=0.0, cy=0.0)
+        for n_out, want in ((6, nodes.PLANE_NO_GAIN), (7, nodes.PLANE_NO_GAIN),
+                            (5, nodes.PLANE_ACCEPTED), (1, nodes.PLANE_ACCEPTED)):
+            self.assertEqual(self._synthetic_pass(dict(base, n_out=n_out))[0], want, n_out)
+
+    def test_wrong_cluster_keeps_pass1(self):
+        # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes
+        # the cluster the main with fewer outliers (rule i holds), but its height disagrees
+        # with the neighbour plane at the node (rule ii), so pass 1 stands
+        rng = np.random.default_rng(1011)
+        cx, cy = rng.uniform(1.25, 1.75, 10), rng.uniform(1.25, 1.75, 10)
+        p, grid = bank_block(0.3, 11, extra=(cx, cy, 0.3 * cx + 0.15 + rng.normal(0, 0.005, 10)))
+        s0 = bank_run(p, grid, plane=False)
+        s = bank_run(p, grid)
+        self.assertTrue(red_of(s0)[self.C])
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_OFF_PLANE)
+        self.assert_pass1(s, s0, self.C)
+        # a pass bias is shared by the node and its neighbours, so it cancels in the
+        # agreement test: with sb > 0 the cluster still disagrees with the plane
+        for sb in (0.01, 0.02, 0.03):
+            s0, s = bank_run(p, grid, sb=sb, plane=False), bank_run(p, grid, sb=sb)
+            self.assertTrue(red_of(s0)[self.C], sb)
+            self.assertEqual(s.plane_code[self.C], nodes.PLANE_OFF_PLANE, sb)
+            self.assert_pass1(s, s0, self.C)
+
+    def test_flat_edge_outlier_is_not_absorbed(self):
+        # 400 trials: a flat 5 x 5 block, one +15 cm capture on the edge of the centre
+        # node's disc (feeding its neighbours too). The plane pass changes nothing.
+        rng = np.random.default_rng(29)
+        absorbed = [0, 0]
+        for k in range(400):
+            th = rng.uniform(0, 2 * np.pi)
+            p, grid = bank_block(0.0, 10000 + k, n=5,
+                                 extra=([1.0 + 0.7 * np.cos(th)], [1.0 + 0.7 * np.sin(th)], [0.15]))
+            for j, pl in enumerate((False, True)):
+                s = bank_run(p, grid, plane=pl)
+                absorbed[j] += int(s.n_out[2, 2] == 0)
+                if pl:
+                    self.assertFalse(s.planar.any(), k)
+        self.assertEqual(absorbed[1], absorbed[0])
+        self.assertEqual(absorbed[0], 5)   # recorded on the first run (grid level), so drift shows
+
+    def test_gate_too_few_neighbours(self):
+        p, grid = bank_block(0.3, 0)
+        s0, s = bank_run(p, grid, plane=False), bank_run(p, grid)
+        self.assertTrue(red_of(s0)[0, 0])   # a corner: 3 neighbours
+        self.assertEqual(s.plane_code[0, 0], nodes.PLANE_FEW)
+        self.assert_pass1(s, s0, (0, 0))
+
+    def test_gate_all_red_neighbours(self):
+        # flat ground, every sounding doubled 20 cm up: every node red, no clear neighbour
+        p, grid = bank_block(0.0, 0)
+        n = len(p)
+        q = local_points("b", np.r_[p.x, p.x + 0.01], np.r_[p.y, p.y], np.r_[p.z, p.z + 0.2],
+                         t=np.arange(2 * n, dtype=float), sz=np.r_[p.sz, p.sz], sh=np.r_[p.sh, p.sh])
+        q.pass_id = np.zeros(2 * n, int)
+        s0, s = bank_run(q, grid, plane=False), bank_run(q, grid)
+        self.assertTrue(red_of(s0).all())
+        self.assertTrue((s.plane_code == nodes.PLANE_FEW_CLEAR)[1:-1, 1:-1].all())
+        self.assert_pass1(s, s0, self.C)
+
+    def test_gate_ridge_is_not_planar(self):
+        # z = 0.4 |x - 1.5|: the centre column is the ridge line
+        rng = np.random.default_rng(503)
+        p, grid = bank_block(0.0, 3)
+        p.z = 0.4 * np.abs(p.x - 1.5) + rng.normal(0, 0.02, len(p))
+        s0, s = bank_run(p, grid, plane=False), bank_run(p, grid)
+        self.assertTrue(red_of(s0)[self.C])
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_NOT_PLANAR)
+        self.assert_pass1(s, s0, self.C)
+
+    def test_dem_gate(self):
+        p, grid = bank_block(0.3, 0)
+        shape = (grid.ny, grid.nx)
+        # slope as an array, no raw DEM slope (no slope_from_dem): the DEM gate is skipped
+        s = bank_run(p, grid, slope=np.full(shape, 0.05))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        # a DEM that says flat: |g| over dem_cap * 0 + dem_floor
+        s0 = bank_run(p, grid, plane=False)
+        s = bank_run(p, grid, raw_slope=np.zeros(shape))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_DEM)
+        self.assert_pass1(s, s0, self.C)
+        # a DEM that agrees: accepted
+        s = bank_run(p, grid, raw_slope=np.full(shape, 0.3))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        # no DEM slope at the node (outside the DEM, NaN): the DEM gate is skipped, the others apply
+        s = bank_run(p, grid, raw_slope=np.full(shape, np.nan))
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        rs = np.zeros(shape)
+        rs[self.C] = np.nan      # elsewhere flat: only the node's own slope is read
+        s = bank_run(p, grid, raw_slope=rs)
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        # only NaN skips the gate: an infinite DEM slope fails it, as any non-finite limit
+        rs[self.C] = np.inf
+        s = bank_run(p, grid, raw_slope=rs)
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_DEM)
+        self.assert_pass1(s, s0, self.C)
+
+    def test_running_mode_ignores_plane(self):
+        p, grid = bank_block(0.3, 0)
+        s = bank_run(p, grid, robust=False)
+        self.assertFalse(s.planar.any())
+        self.assertFalse(s.plane_code.any())
+
+
 class TestNodeStore(unittest.TestCase):
     """The logger's capped store (Coverage.java's twin)."""
 
@@ -790,6 +1247,7 @@ surface = "a"
             self.assertIn("| a | 5 |", (out / "passes_a.md").read_text())
             # node heights are within sigma of the planted surface (biases removed by the crossover)
             sa = np.load(out / "surface_a.npz")
+            self.assertEqual(sa["planar"].shape, sa["z"].shape)
             X, Y = np.meshgrid(sa["x0"] + np.arange(sa["nx"]) * sa["cell"], sa["y0"] + np.arange(sa["ny"]) * sa["cell"])
             m = sa["n"] > 0
             err = np.abs(sa["z"] - surface_fn(X, Y))[m]
