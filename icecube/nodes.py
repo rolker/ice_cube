@@ -638,9 +638,11 @@ class Surface:
 def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
                  capture_radius=0.75, slope=0.05, k_sigma=3.0, name="", date="", frame="",
                  robust=True, eeg_quotient_limit=30.0, plane=True, raw_slope=None,
-                 plane_min_neighbours=5, plane_min_nin=2, plane_min_clear=2, plane_red_weight=0.25,
-                 plane_planarity=None, plane_max_sigma_g=PLANE_DEFAULTS["max_sigma_g"], plane_dem_cap=2.0,
-                 plane_dem_floor=0.05, node_mask=None) -> Surface:
+                 plane_min_neighbours=PLANE_DEFAULTS["min_neighbours"], plane_min_nin=PLANE_DEFAULTS["min_nin"],
+                 plane_min_clear=PLANE_DEFAULTS["min_clear"], plane_red_weight=PLANE_DEFAULTS["red_weight"],
+                 plane_planarity=PLANE_DEFAULTS["planarity"], plane_max_sigma_g=PLANE_DEFAULTS["max_sigma_g"],
+                 plane_dem_cap=PLANE_DEFAULTS["dem_cap"], plane_dem_floor=PLANE_DEFAULTS["dem_floor"],
+                 node_mask=None) -> Surface:
     """Fuse the (bias-corrected) points of one or more surveys into node estimates.
     `sb_list[k]` is the per-point bias sigma of `surveys[k]` (from crossover.apply).
     `slope` is one allowance (m/m) or an array of the grid's shape (ny, nx), one per node
