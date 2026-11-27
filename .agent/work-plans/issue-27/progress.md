@@ -1195,3 +1195,19 @@ Earlier entries at `d87686b` and `f73949d` are stale (code changed since) and we
 **Decision**: address
 
 Write 0x5455 only when the seconds fit a signed 32-bit int, else the DOS time alone; boundary tests at Integer.MAX_VALUE and one past.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:50 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `96a9446`
+**Addressed**: Integrated Review at `3c1fe51` (2026-11-26 22:48 -05:00)
+**Commits**: 96a9446
+
+### Actions
+- [x] ShareZip 2038 wrap: `extendedTimestamp` now throws outside the signed 32-bit range; `addFile` writes 0x5455 only when `fitsExtendedTimestamp` (0 < s <= Integer.MAX_VALUE), else the DOS time alone; boundary tests at Integer.MAX_VALUE and one past — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 194 tests, 0 failures, 0 errors (ShareZipTest 10/10); app-debug.apk 315934 bytes
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
