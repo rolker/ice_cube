@@ -78,7 +78,7 @@ skipped (--force re-reads it). Each sessions row records the schema_version it w
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
 session imported in full. A session from an app older than every schema step it missed
-needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4) has nothing to fill and is marked current without
+needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4, 0.11 for 5) has nothing to fill and is marked current without
 a re-read (one whose app version is unknown is re-read). Sessions still at an older schema
 after a run (not among the inputs, or seen only as a snapshot) are named in the log and
 re-read on a later run. Rows are matched by their keys and updated in place, so
