@@ -247,6 +247,21 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(gp.con.execute("SELECT void_copy_mtime FROM refs").fetchall(), [(500.0,)])
         gp.close()
 
+    def test_refs_csv_of_every_export_of_a_session_counts(self):
+        """Two exports of the same session: one is imported, but the refs.csv of the other
+        (here newer and flagging an earlier session's ref) still reaches the newest-copy
+        rule (#27)."""
+        src = self.d / "in"
+        older = time.localtime(time.time() - 7200)[:6]
+        synth.write_zip(src / "a.zip", synth.session_v05(), refs=synth.refs_csv_void(False), refs_date=older)
+        synth.write_zip(src / "b.zip", synth.session_v05(), refs=synth.refs_csv_void(True))
+        sources = find_sessions([src])
+        self.assertEqual([(s.path.name, [o.path.name for o in s.others]) for s in sources], [("a.zip", ["b.zip"])])
+        self.assertEqual(len(sources[0].refs_csv_copies()), 2)
+        run(src, "--gpkg", self.gpkg)
+        self.assertEqual(self.q("SELECT void, void_reason FROM refs WHERE session='2026-11-30_09-00-00'"),
+                         [(1, "moved")])
+
     def test_refs_csv_copies_of_the_same_time_flagged_wins(self):
         """Copies of the same time (or of unknown time) that disagree on a ref's flag give
         flagged, in either input order, within a run and against a stored flag of that time:

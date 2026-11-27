@@ -638,9 +638,7 @@ def run(argv=None, log=print, progress=None):
         for k_src, src in enumerate(sources):
             if progress is not None:
                 progress(k_src, len(sources), src.name)
-            t = src.refs_csv_dated()
-            if t:
-                refs_texts.append(t)
+            refs_texts += src.refs_csv_copies()   # every export's copy, not just this one's
             old = done.get(src.name)
             if old and not args.force:
                 if old[0] == src.signature() and src.name not in stale:

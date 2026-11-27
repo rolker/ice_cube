@@ -51,6 +51,7 @@ class SessionSource:
         self.name = name
         self.zip_prefix = zip_prefix          # "<session>/" inside a zip, None for a folder
         self._zip = None
+        self.others = []    # the other copies of this session find_sessions found and set aside
 
     @property
     def is_zip(self):
@@ -116,6 +117,25 @@ class SessionSource:
         parent), or None."""
         got = self.refs_csv_dated()
         return got[0] if got else None
+
+    def refs_csv_copies(self):
+        """[(text, mtime)] of the refs.csv shipped with this session and with each other copy
+        of it that find_sessions set aside (another export of the same session may carry a
+        newer refs.csv), so the newest-copy rule sees them all. Each copy once (same file)."""
+        out, seen = [], set()
+        for s in [self, *self.others]:
+            where = (str(s.path), s.zip_prefix is not None)
+            if where in seen and s is not self:
+                continue
+            seen.add(where)
+            try:
+                got = s.refs_csv_dated()
+            finally:
+                if s is not self:
+                    s.close()
+            if got:
+                out.append(got)
+        return out
 
     def refs_csv_dated(self):
         """(text, mtime) of the refs.csv shipped with this session, or None. mtime is in
@@ -193,7 +213,8 @@ def _sessions_in_zip(path):
 def find_sessions(paths):
     """Session sources under the given zips and folders (recursively). A session found
     more than once (a zip and its extracted folder, a snapshot and the final zip) is
-    returned once: the non-snapshot copy, then the one with the larger events.csv."""
+    returned once: the non-snapshot copy, then the one with the larger events.csv; the
+    others are kept in its `others` (their refs.csv still counts, refs_csv_copies)."""
     found = []
     for p in map(Path, paths):
         if p.is_file():
@@ -214,12 +235,20 @@ def find_sessions(paths):
                         found += _sessions_in_zip(fp)
         else:
             raise FileNotFoundError(p)
-    best = {}
+    best, every = {}, {}
     for s in found:
+        every.setdefault(s.name, []).append(s)
         k = (not s.snapshot, s.size("events.csv") or 0)
         if s.name not in best or k > best[s.name][0]:
             best[s.name] = (k, s)
-    return [best[n][1] for n in sorted(best)]
+    out = []
+    for n in sorted(best):
+        s = best[n][1]
+        s.others = [o for o in every[n] if o is not s]
+        for o in s.others:
+            o.close()
+        out.append(s)
+    return out
 
 
 # ----------------------------------------------------------------------------- parsing
