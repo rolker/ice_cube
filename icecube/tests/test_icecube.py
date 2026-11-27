@@ -855,6 +855,31 @@ class TestPlanePass(unittest.TestCase):
         self.assertFalse(nodes._pos_def(np.diag([0.0, 1e-4, 1e-4])))
         self.assertTrue(nodes._pos_def(np.diag([1e-4, 1e-4, 1e-4])))
 
+    def test_scaled_conditioning_gate(self):
+        # a fit that passes conditioning unscaled but not once the covariance is scaled by
+        # chi^2 (1 < chi < planarity) stops at the second check, with chi in the dict
+        rng = np.random.default_rng(4)
+        nbrs = [(x, y, 0.3 * x + rng.normal(0, 0.02), 1e4, False)
+                for x in (-0.5, 0.0, 0.5) for y in (-0.5, 0.0, 0.5) if (x, y) != (0.0, 0.0)]
+        code, fit = nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, float("inf"))
+        self.assertEqual(code, 0)
+        chi, scaled = fit["chi"], fit["sigma_g"]
+        self.assertTrue(1.5 < chi < 3.0, chi)
+        unscaled = scaled / chi
+        code, fit = nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.5 * (unscaled + scaled))
+        self.assertEqual(code, nodes.PLANE_ILL_CONDITIONED)
+        self.assertAlmostEqual(fit["chi"], chi, places=12)
+        self.assertAlmostEqual(fit["sigma_g"], scaled, places=12)
+        # the post-scaling positive-definite check is reached only when chi^2 * Ninv
+        # overflows (tiny weights, a huge residual, no planarity limit)
+        inf = float("inf")
+        huge = [(x, y, 0.3 * x + (1e155 if (x, y) == (0.5, 0.5) else 0.0), 1e-10, False) for x, y, *_ in nbrs]
+        with np.errstate(over="ignore"):
+            code, fit = nodes.plane_fit(huge, 5, 2, 0.25, inf, inf)
+        self.assertEqual(code, nodes.PLANE_ILL_CONDITIONED)
+        self.assertTrue(np.isfinite(fit["chi"]))
+        self.assertEqual(fit["sigma_g"], inf)
+
     def test_collinear_centroids_never_pass(self):
         # centroids on one random line through the node: N is singular up to roundoff, and a
         # plain inverse returned code 0 on 121 of these 500 (an indefinite C_g whose larger
@@ -888,6 +913,63 @@ class TestPlanePass(unittest.TestCase):
             lv._plane_case(name, snd)
         self.assertTrue(codes)
         self.assertEqual(set(codes), {nodes.PLANE_ILL_CONDITIONED})
+
+    def _synthetic_pass(self, o2, allowance=0.0, k=3.0):
+        """plane_pass on a 3 x 3 grid, cell 0.5: neighbours on z = 0.3 X, clear, their
+        mains' centroids pushed to (+0.2, +0.1) so a and g are correlated; the centre red
+        (6 of 10 out) and `run` returning `o2` for its pass 2. Returns (code, fit, trace)."""
+        cell, nb, stores, out1 = 0.5, [], {}, {}
+        for a in range(3):
+            for b in range(3):
+                idx = a * 3 + b
+                stores[idx] = [nodes.entry(0.0, 1e-4, 10 * idx + i, dx=0.01 * i, dy=-0.01 * i) for i in range(10)]
+                if idx == 4:
+                    out1[idx] = dict(z=0.0, w=1e4, n_out=6, cx=0.0, cy=0.0)
+                    continue
+                X, Y = (b - 1) * cell + 0.2, (a - 1) * cell + 0.1
+                out1[idx] = dict(z=0.3 * X, w=1e4 * (1 + idx), n_out=0, cx=0.2, cy=0.1)
+                nb.append((X, Y, 0.3 * X, 1e4 * (1 + idx), False))
+        trace = []
+        res = nodes.plane_pass(stores, out1, 3, 3, cell, k, lambda es: dict(o2), lambda a, b: allowance,
+                               trace=trace)
+        code, fit = nodes.plane_fit(nb, 5, 2, 0.25, k, 0.08)
+        self.assertEqual(code, 0)
+        return res[4][0], fit, dict((t[0], t[1:]) for t in trace)
+
+    def test_agreement_variance_carries_the_cross_term(self):
+        # the agreement tolerance is k * sqrt(var_a + 1/W' + d'C_g d + 2 d'cov(a, g)), d the
+        # pass-2 main's centroid: equal to the variance of the plane's prediction at d plus
+        # 1/W'. The cross term is a large negative part here, so a flipped sign or a
+        # dropped term moves the tolerance well past the tolerance asserted
+        d = np.array([0.15, 0.08])
+        o2 = dict(z=0.0, sigma=0.01, w=1e6, n_out=0, cx=float(d[0]), cy=float(d[1]))
+        code, fit, tr = self._synthetic_pass(o2)
+        self.assertEqual(code, nodes.PLANE_ACCEPTED)
+        cov = np.block([[np.array([[fit["var_a"]]]), fit["cov_ag"][None, :]],
+                        [fit["cov_ag"][:, None], fit["cov_g"]]])
+        u = np.r_[1.0, d]
+        want = 3.0 * np.sqrt(float(u @ cov @ u) + 1e-6)
+        cross = 2.0 * float(d @ fit["cov_ag"])
+        self.assertLess(cross, -0.2 * (fit["var_a"] + float(d @ fit["cov_g"] @ d)))
+        self.assertAlmostEqual(tr["agreement"][1], want, delta=1e-12 * want)
+
+    def test_significance_gate_subtracts_the_allowance(self):
+        o2 = dict(z=0.0, sigma=0.01, w=1e6, n_out=0, cx=0.0, cy=0.0)
+        code, _, tr = self._synthetic_pass(o2)
+        self.assertEqual(code, nodes.PLANE_ACCEPTED)
+        g, ksg = tr["significance"]
+        self.assertAlmostEqual(g, 0.3, places=9)
+        self.assertGreater(g, 4 * ksg)
+        # |g| clears k sigma_g alone, but not once the allowance is taken off
+        self.assertEqual(self._synthetic_pass(o2, allowance=g - 0.5 * ksg)[0], nodes.PLANE_NOT_STEEP)
+        self.assertEqual(self._synthetic_pass(o2, allowance=g - 2.0 * ksg)[0], nodes.PLANE_ACCEPTED)
+
+    def test_no_gain_needs_n_out_to_strictly_drop(self):
+        # pass 1 had 6 of 10 out (red). Pass 2 still red: accepted only if n_out drops
+        base = dict(z=0.0, sigma=0.01, w=1e6, cx=0.0, cy=0.0)
+        for n_out, want in ((6, nodes.PLANE_NO_GAIN), (7, nodes.PLANE_NO_GAIN),
+                            (5, nodes.PLANE_ACCEPTED), (1, nodes.PLANE_ACCEPTED)):
+            self.assertEqual(self._synthetic_pass(dict(base, n_out=n_out))[0], want, n_out)
 
     def test_wrong_cluster_keeps_pass1(self):
         # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes

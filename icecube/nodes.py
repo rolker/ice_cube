@@ -479,6 +479,8 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     if not (math.isfinite(chi) and chi <= planarity):
         return PLANE_NOT_PLANAR, dict(chi=chi, sigma_g=sigma_g)
     cov = Ninv * max(1.0, chi * chi)
+    # defensive: scaling a positive definite Ninv by chi^2 >= 1 keeps it so, unless the
+    # product overflows (a huge chi under a huge or infinite planarity limit)
     if not _pos_def(cov):
         return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=float("inf"))
     sigma_g = _sigma_g_max(cov[1, 1], cov[1, 2], cov[2, 2])
