@@ -27,6 +27,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -202,9 +203,19 @@ public final class MainActivity extends Activity {
         undoB.setTypeface(Typeface.DEFAULT_BOLD);
         undoB.setVisibility(View.GONE);
         // the arm delay is checked against the press-down, so a press already under way when
-        // UNDO appears cannot undo however long it is held
+        // UNDO appears cannot undo however long it is held. A press that ends with no click
+        // (cancelled, or lifted outside the button and its touch slop, as View decides) is
+        // forgotten, so a later key or accessibility click is timed at that click instead.
+        int slop = ViewConfiguration.get(this).getScaledTouchSlop();
         undoB.setOnTouchListener((v, e) -> {
-            if (e.getActionMasked() == MotionEvent.ACTION_DOWN) undoDownNs = SystemClock.elapsedRealtimeNanos();
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_DOWN) {
+                undoDownNs = SystemClock.elapsedRealtimeNanos();
+            } else if (a == MotionEvent.ACTION_CANCEL || (a == MotionEvent.ACTION_UP
+                    && (e.getX() < -slop || e.getY() < -slop
+                        || e.getX() >= v.getWidth() + slop || e.getY() >= v.getHeight() + slop))) {
+                undoDownNs = -1;
+            }
             return false;   // the button still handles the press and the click
         });
         noticeRow = new LinearLayout(this);
@@ -547,6 +558,9 @@ public final class MainActivity extends Activity {
         if (show && nt.at != undoAt) {
             undoAt = nt.at;
             undoShownNs = now;
+            // a press left from an earlier UNDO is forgotten; one still held keeps its
+            // press-down, which predates this UNDO, so it cannot undo (the safe side)
+            if (!undoB.isPressed()) undoDownNs = -1;
         } else if (!show) {
             undoAt = null;
         }
