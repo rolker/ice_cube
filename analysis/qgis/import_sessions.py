@@ -18,6 +18,8 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
 
   captures      PointZ  one row per capture, key (session, n). Z = ground height.
                         `note` and `label` are yours: edited in QGIS, never overwritten.
+                        Logger 0.6 columns (method, fix_suspect, tilt_*, ...) are NULL
+                        for older sessions.
   photos        PointZ  one row per photo file, key (session, name); `note` is yours.
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
@@ -42,7 +44,12 @@ untouched). The display CRS (orthographic at the origin) is stored in
 gpkg_spatial_ref_sys (WKT 1 and, in definition_12_063, WKT2) and in icecube_meta.
 
 Idempotent and incremental: a session already imported from an unchanged source is
-skipped (--force re-reads it); rows are matched by their keys and updated in place, so
+skipped (--force re-reads it). Each sessions row records the schema_version it was
+imported with; a session imported by an older schema is re-read the next time its source
+is among the inputs, to fill the new columns, except that a snapshot never replaces a
+session imported in full; a session from an app older than SCHEMA_MIN_APP has nothing to
+fill and is marked current without a re-read (one whose app version is unknown is re-read). Sessions still at an older schema after a run (not among the
+inputs, or seen only as a snapshot) are named in the log and re-read on a later run. Rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
 importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
 `run()` is the same import as a function (the plugin calls it in a background task).
@@ -62,11 +69,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gpkg_writer import GeoPackage, gpkg_geometry, point, point_xyz  # noqa: E402
 from local_frame import LocalFrame, ecef_to_geodetic  # noqa: E402
-from logger_session import find_sessions, load_session, read_refs_csv  # noqa: E402
+from logger_session import app_version, find_sessions, load_session, read_refs_csv  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+SCHEMA_MIN_APP = (0, 6)  # sessions from an older app gain nothing from the SCHEMA_VERSION
+                         # re-read (3 only adds 0.6 columns): they are marked current as they
+                         # are. Revisit when SCHEMA_VERSION changes.
 USER_COLUMNS = {"captures": ("note", "label"), "photos": ("note",), "refs": ("note",),
                 "sessions": ("note",)}
 TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line
@@ -76,13 +86,16 @@ R, I, T = "REAL", "INTEGER", "TEXT"
 MEAS = [("utc", T), ("lat", R), ("lon", R), ("h_ant", R), ("pole_m", R), ("h_ground", R),
         ("fix", I), ("n_epochs", I), ("sd_e_m", R), ("sd_n_m", R), ("sd_u_m", R), ("age_s", R)]
 ENU = [("x_m", R), ("y_m", R), ("z_m", R)]
+LOGGER_06 = [("fix_age_s", R), ("fix_jump_m", R), ("fix_suspect", I), ("method", T), ("tilt_n", I),
+             ("tilt_rms_m", R), ("tilt_cover_deg", R), ("tilt_sd_e_m", R), ("tilt_sd_n_m", R),
+             ("tilt_sd_u_m", R)]   # points.csv 0.6 columns, NULL for older sessions
 LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
 POINT_TABLES = ("captures", "photos", "refs", "track_points")
 NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
-                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)],
+                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06,
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
                ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
@@ -102,7 +115,7 @@ SCHEMA = {
                  ("pct_fixed", R), ("gga", I), ("gga_lost", I), ("gga_parsed", I), ("rawx", I),
                  ("rawx_lost", I), ("gps_lost", I), ("caster_lost", I), ("rtcm_crc_errors", I),
                  ("remarks", T), ("source", T), ("source_sig", T), ("imported_utc", T),
-                 ("note", T)],
+                 ("note", T), ("schema_version", I)],
 }
 
 
@@ -246,6 +259,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "photo": rel(files[0]) if files else None, "photo_count": len(files),
             "source": c.get("source"), "elapsed_ns": c.get("elapsed_ns"), "note": c.get("note"),
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
+            **{k: c.get(k) for k, _ in LOGGER_06},
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
 
@@ -281,6 +295,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
 
     info = dict(s.info)
     info["imported_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    info["schema_version"] = SCHEMA_VERSION   # per session: an older value means re-read it
     gp.upsert("sessions", [info], key=("session",), preserve=USER_COLUMNS["sessions"])
 
     n_new = 0
@@ -486,7 +501,7 @@ def run(argv=None, log=print, progress=None):
     lines, `progress(done, total, name)` called before each session and at the end.
     Returns a summary dict: gpkg, season, found, added (one dict per session read:
     session, captures, photos, photos_extracted, track_points, replaced), unchanged
-    (names skipped), photos_extracted, refs_csv_rows, totals (rows per table), origin,
+    (names skipped), stale (sessions still imported by an older schema), photos_extracted, refs_csv_rows, totals (rows per table), origin,
     recomputed. Bad arguments raise SystemExit (argparse)."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="*", help="session zips, session folders or folders of them")
@@ -522,6 +537,25 @@ def run(argv=None, log=print, progress=None):
     try:
         ensure_schema(gp)
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
+        olds = [(r[0], r[2], r[3]) for r in
+                gp.con.execute("SELECT session, schema_version, app, format FROM sessions")
+                if (r[1] or 0) < SCHEMA_VERSION]    # imported by an older schema (NULL: before 3)
+
+        def nothing_new(app, fmt):
+            # () is an unknown app version (no readable session start event): a points.csv
+            # session may then hold 0.6 rows, so it is re-read rather than marked current;
+            # the other formats have no points.csv to carry 0.6 columns
+            v = app_version(app)
+            return v < SCHEMA_MIN_APP if v else fmt != "points.csv"
+        current = [ses for ses, app, fmt in olds if nothing_new(app, fmt)]
+        if current:
+            gp.con.executemany("UPDATE sessions SET schema_version=? WHERE session=?",
+                               [(SCHEMA_VERSION, ses) for ses in current])
+            gp.commit()
+        stale = {ses for ses, _, _ in olds} - set(current)
+        if stale:
+            log(f"{len(stale)} session(s) imported by a schema older than {SCHEMA_VERSION}: "
+                "re-reading those in the inputs to fill new columns")
 
         sources = find_sessions(inputs)
         log(f"{len(sources)} session(s) found")
@@ -534,7 +568,7 @@ def run(argv=None, log=print, progress=None):
                 refs_texts.append(t)
             old = done.get(src.name)
             if old and not args.force:
-                if old[0] == src.signature():
+                if old[0] == src.signature() and src.name not in stale:
                     log(f"  {src.name}: unchanged, skipped")
                     unchanged.append(src.name)
                     src.close()
@@ -557,6 +591,10 @@ def run(argv=None, log=print, progress=None):
                   f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
                   + (f"; {i['remarks']}" if i.get("remarks") else ""))
             src.close()
+            stale.discard(s.name)
+        if stale:
+            log(f"{len(stale)} session(s) still at an older schema (not in the inputs, or only a "
+                f"snapshot seen), re-read on a later import: {', '.join(sorted(stale))}")
         n_refs = import_refs_csv(gp, refs_texts)
 
         meta = get_meta(gp)
@@ -612,7 +650,7 @@ def run(argv=None, log=print, progress=None):
     if progress is not None:
         progress(len(sources), len(sources), "done")
     return {"gpkg": str(gpkg_path), "season": name, "found": len(sources), "added": added,
-            "unchanged": unchanged, "photos_extracted": n_photos, "refs_csv_rows": n_refs,
+            "unchanged": unchanged, "stale": sorted(stale), "photos_extracted": n_photos, "refs_csv_rows": n_refs,
             "totals": summary, "origin": frame.name if frame is not None else None,
             "recomputed": bool(recompute)}
 

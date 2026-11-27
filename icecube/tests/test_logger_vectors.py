@@ -21,6 +21,14 @@ class TestLoggerVectors(unittest.TestCase):
         self.assertAlmostEqual(case["expected"]["sigma_pole"], sg["tip_sink"], places=12)
         self.assertAlmostEqual(case["expected"]["sigma_rtk"], case["input"]["tilt_sd_u"], places=12)
 
+    def test_tilt_capture_without_sds_takes_the_single_rule(self):
+        doc = json.loads(logger_vectors.render())
+        for name in ("tilt_missing_sd", "tilt_one_sd_missing", "tilt_negative_sd"):
+            case = next(c for c in doc["sigma"] if c["name"] == name)
+            single = logger_vectors.logger_sigma(dict(case["input"], method="single"))
+            self.assertEqual(case["expected"], single)
+            self.assertAlmostEqual(case["expected"]["sigma_rtk"], case["input"]["sd_u"], places=12)
+
     def _case(self, part, name):
         return next(c for c in json.loads(logger_vectors.render())[part] if c["name"] == name)
 

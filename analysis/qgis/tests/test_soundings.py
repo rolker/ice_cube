@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import soundings as snd  # noqa: E402
 import synth  # noqa: E402
@@ -117,6 +118,25 @@ class TestFrameAndSigma(unittest.TestCase):
         self.assertAlmostEqual(z0 - z1, -0.03, places=4)                 # rover heights read 3 cm high then
         self.assertAlmostEqual(x0 - x1, 0.0, places=4)
 
+    def test_capture_sigma_inputs(self):
+        sg = snd.DEFAULTS["sigma"]
+        h = math.hypot(0.006, 0.008) / math.sqrt(2)
+        self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, 0.006, 0.008),
+                         (0.012, h, 0.0))
+        single = (0.03, math.hypot(0.02, 0.02) / math.sqrt(2), sg["tilt_bubble_deg"])
+        self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, None, 0.008), single)
+        for bad in (float("nan"), float("inf"), -0.006):   # non-finite or negative as missing, like SoundingSigma.java
+            self.assertEqual(snd.capture_sigma_inputs(sg, "tilt", 0.03, 0.02, 0.02, 0.012, bad, 0.008), single)
+        self.assertEqual(snd.capture_sigma_inputs(sg, "single", 0.03, 0.02, 0.02, 0.012, 0.006, 0.008), single)
+        self.assertEqual(snd.capture_sigma_inputs(sg, None, 0.03, 0.02, 0.02), single)
+        self.assertEqual(snd.capture_sigma_inputs(sg, "single", None, None, None), (None, 0.0, sg["tilt_bubble_deg"]))
+
+    def test_app_version(self):
+        self.assertGreater(snd._version("0.10"), snd._version("0.6"))
+        self.assertGreaterEqual(snd._version("0.6.1-debug"), (0, 6))
+        self.assertLess(snd._version(None), (0, 6))
+        self.assertLess(snd._version("dev"), (0, 6))
+
     def test_sigma_terms(self):
         sg = snd.DEFAULTS["sigma"]
         a = snd.sigma_terms(sg, sd_u=0.002, age=1.0, fix_age=200, pole_m=1.6, tilt_deg=1.0)
@@ -131,9 +151,11 @@ class TestFrameAndSigma(unittest.TestCase):
         self.assertAlmostEqual(b["sigma_xy"], math.hypot(0.01, 1.6 * math.sin(math.radians(1))), places=6)
 
 
-def make_session(root, name="2026-12-01_10-00-00"):
+def make_session(root, name="2026-12-01_10-00-00", tilt_sd=None):
     """A 0.5 session with a ref (still 0-25 s), a plumb stop, a leaning stop, and a surface
-    capture on a third stop; GGA + GST at 4 Hz, gravity at 100 Hz."""
+    capture on a third stop; GGA + GST at 4 Hz (GST height sigma 1.5 cm), gravity at 100 Hz.
+    With tilt_sd (e, n, u) the points.csv has the 0.6 columns and the surface capture is a
+    tilt capture with those sds."""
     plan = [(0, 25, 0.0), (30, 36, 3.0), (40, 46, 6.0), (50, 56, 9.0)]
     track = []
     for k in range(240):
@@ -164,15 +186,19 @@ def make_session(root, name="2026-12-01_10-00-00"):
         t = synth.START + timedelta(seconds=s)
         rows.append(f"{n},{cls},{synth.T0_NS + int(s * 1e9)},{t.strftime('%Y-%m-%dT%H:%M:%S.')}{t.microsecond // 10000:02d}Z,"
                     f"{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},4,{100 if cls == 'ref' else 5},"
-                    f"0.0020,0.0020,0.0030,1.0,,")
-    ev = synth.events([(1, "gps connected bluetooth Test-Rover"), (2, "pole_height=1.800 changed")])
+                    f"0.0020,0.0020,0.0030,1.0,,"
+                    + ("" if tilt_sd is None else ",200.0,0.01,0," + (
+                        "ref,,,,,," if cls == "ref" else "tilt,5,0.005,200," + ",".join(f"{v:.4f}" for v in tilt_sd))))
+    ev = synth.events([(1, "gps connected bluetooth Test-Rover"), (2, "pole_height=1.800 changed")],
+                      app="0.5" if tilt_sd is None else "0.6")   # the 0.6 points.csv comes from app 0.6
     d = root / name
     d.mkdir(parents=True)
     (d / "events.csv").write_text(ev)
     (d / "gps.ubx").write_bytes(bytes(ubx))
     (d / "gps_chunks.csv").write_text("\n".join(chunks) + "\n")
     (d / "imu.csv").write_text("\n".join(imu) + "\n")
-    (d / "points.csv").write_text("\n".join([synth.POINTS_HDR] + rows) + "\n")
+    hdr = synth.POINTS_HDR if tilt_sd is None else synth.POINTS_HDR_06
+    (d / "points.csv").write_text("\n".join([hdr] + rows) + "\n")
     return d
 
 
@@ -242,6 +268,123 @@ class TestBuild(unittest.TestCase):
         con = sqlite3.connect(gpkg)
         self.assertEqual(con.execute("SELECT count(*) FROM soundings").fetchone()[0], len(rows))
         con.close()
+
+    def _import(self, src):
+        gpkg = self.d / "season.gpkg"
+        with contextlib.redirect_stdout(io.StringIO()):
+            imp.main([str(src), "--gpkg", str(gpkg), "--base", *map(str, synth.BASE),
+                      "--origin", *map(str, synth.BASE), "--no-photos"])
+        return gpkg
+
+    def _build_logger(self, gpkg, **src):
+        logged = []
+        cfg = {"season": {"gpkg": str(gpkg)},
+               "soundings": {"sources": [{"id": "logger", "type": "logger", **src}]}}
+        rows = snd.build(cfg, self.d, log=lambda *a: logged.append(" ".join(map(str, a))), write=False)
+        return {r["n"]: r for r in rows if r["kind"] == "capture"}, "\n".join(logged)
+
+    def test_tilt_capture_sigma(self):
+        """No GST (no session_paths): the tilt capture takes its own sds and tilt 0; one
+        missing its tilt sds and a single capture take the single rule."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        caps, logged = self._build_logger(gpkg)
+        sg = snd.DEFAULTS["sigma"]
+        t = caps[5]
+        self.assertEqual(t["tilt_deg"], 0.0)
+        self.assertAlmostEqual(t["sigma_pole"], sg["tip_sink"], places=12)
+        self.assertAlmostEqual(t["sigma_rtk"], 0.012, places=12)       # tilt_sd_u, not the 4 cm scatter
+        self.assertAlmostEqual(t["sigma_xy"], sg["floor_h"], places=12)  # hypot(6, 8 mm)/sqrt 2 < floor
+        m = caps[6]                                                    # tilt without sds: single rule
+        self.assertEqual(m["tilt_deg"], sg["tilt_bubble_deg"])
+        self.assertAlmostEqual(m["sigma_rtk"], 0.04, places=12)
+        self.assertGreater(m["sigma_pole"], sg["tip_sink"])
+        self.assertEqual(caps[1]["tilt_deg"], sg["tilt_bubble_deg"])
+        self.assertNotIn("warning", logged)
+
+    def test_tilt_capture_gst_floors(self):
+        """With GST (1.5 cm height sigma) above the tilt sd_u the GST term wins."""
+        ses = make_session(self.d / "sessions", tilt_sd=(0.004, 0.004, 0.005))
+        gpkg = self._import(ses)
+        caps, _ = self._build_logger(gpkg, session_paths=[str(ses)])
+        t = caps[2]
+        self.assertEqual(t["tilt_deg"], 0.0)
+        self.assertAlmostEqual(t["gst_u_m"], 0.015, places=6)
+        self.assertAlmostEqual(t["sigma_rtk"], max(0.005, t["gst_u_m"]), places=12)
+        self.assertAlmostEqual(t["sigma_pole"], snd.DEFAULTS["sigma"]["tip_sink"], places=12)
+
+    def test_old_gpkg_without_tilt_columns(self):
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        for k, _ in imp.LOGGER_06:
+            con.execute(f"ALTER TABLE captures DROP COLUMN {k}")
+        con.commit()
+        con.close()
+        caps, logged = self._build_logger(gpkg)
+        self.assertEqual(caps[5]["tilt_deg"], snd.DEFAULTS["sigma"]["tilt_bubble_deg"])   # single rule
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("re-import the full session sources", logged)
+        self.assertNotIn("--force", logged)
+
+    def test_empty_tilt_columns_of_new_app_warn(self):
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET method=NULL, tilt_sd_e_m=NULL, tilt_sd_n_m=NULL, tilt_sd_u_m=NULL")
+        con.commit()
+        con.close()
+        _, logged = self._build_logger(gpkg)
+        self.assertEqual(logged.count("warning"), 1)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET app='0.5'")       # older app: NULLs are expected
+        con.commit()
+        con.close()
+        self.assertNotIn("warning", self._build_logger(gpkg)[1])
+
+    def test_unknown_app_version_counts_as_new(self):
+        """No readable app version: the session may be 0.6, so it warns while not yet re-read
+        at the current schema; once re-read, empty tilt values are what its source holds."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET app=NULL, schema_version=NULL")     # stale
+        con.execute("UPDATE captures SET method=NULL, tilt_sd_e_m=NULL, tilt_sd_n_m=NULL, tilt_sd_u_m=NULL")
+        con.commit()
+        con.close()
+        logged = self._build_logger(gpkg)[1]
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("no method/tilt values", logged)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_VERSION - 1,))   # still stale
+        con.commit()
+        con.close()
+        self.assertEqual(self._build_logger(gpkg)[1].count("warning"), 1)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET schema_version=?", (imp.SCHEMA_VERSION,))       # re-read
+        con.commit()
+        con.close()
+        self.assertNotIn("warning", self._build_logger(gpkg)[1])
+        con = gw.connect(gpkg)
+        for k, _ in imp.LOGGER_06:
+            con.execute(f"ALTER TABLE captures DROP COLUMN {k}")
+        con.commit()
+        con.close()
+        logged = self._build_logger(gpkg)[1]
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("has no", logged)
+
+    def test_mixed_sessions_warn_naming_the_stranded_one(self):
+        """One 0.6 session with its tilt columns and one without: warn, naming only that one."""
+        src = self.d / "in"
+        synth.write_zip(src / "a.zip", synth.session_v06())
+        synth.write_zip(src / "b.zip", synth.session_v06("2026-12-02_10-00-00"))
+        gpkg = self._import(src)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET method=NULL, tilt_sd_e_m=NULL, tilt_sd_n_m=NULL, tilt_sd_u_m=NULL "
+                    "WHERE session='2026-12-02_10-00-00'")
+        con.commit()
+        con.close()
+        logged = self._build_logger(gpkg)[1]
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("2026-12-02_10-00-00", logged)
+        self.assertNotIn("2026-12-01_10-00-00", logged.split("warning")[1])
 
     def test_anchor_sites_and_verification(self):
         r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
