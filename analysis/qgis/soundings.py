@@ -44,7 +44,9 @@ The slowly varying RTK wander is not in sigma_z: it is the pass bias icecube sol
 each row carries its `pass_id` and the source's `prior_m` (the expected pass wander).
 
 Flags (comma-separated; `use` = 1 for rows icecube should take): float, other_station,
-suspect_jump (the fix began with a jump over suspect_jump_m: false fixes), settle,
+suspect_jump (the fix began with a jump over suspect_jump_m: false fixes), float_spell (the
+fix began right after a float spell of at least float_spell_s: logger 0.11.0, #15; a false
+fix on 2026-11-21 jumped only 0.48 m), settle,
 listed:<reason> (config list of known-bad points), void:<reason> (a capture flagged as bad
 in the logger, 0.9.0; kept as a row with use = 0 unless `[soundings] include_voided = true`
 or --include-voided, and counted in the log; such a row never makes or joins an anchor site
@@ -91,8 +93,10 @@ REPO = Path(__file__).resolve().parents[2]
 
 DEFAULTS = {
     "table": "soundings",
-    "settle_s": 90.0,          # fix age below which a point is not trusted (Nov 3/4: 10-30 cm for 25-75 s)
+    "settle_s": 120.0,         # fix age below which a point is not trusted (Nov 3/4: 10-30 cm for 25-75 s;
+                               # Nov 26: 6-9 cm at 95-113 s; logger 0.11.0 young limit, #15)
     "suspect_jump_m": 1.0,     # float-to-fix jump that marks a false fix (field: 1.3-2.9 m)
+    "float_spell_s": 20.0,     # a fix right after a float spell this long is suspect (0: off; logger FixGuard)
     "max_pass_s": 600.0,       # a pass (one RTK bias) is cut after this long
     "gap_s": 120.0,            # points-only sources: a new pass after this gap
     "jump_m": 3.0,             # ... or this horizontal jump
@@ -179,7 +183,8 @@ class Epochs:
     station: reference station id (-1 unknown); gst_h, gst_u: GST sigmas (m, None if absent);
     off: byte offset in the log; ns: phone elapsed ns (None without chunks).
     Filled later: x, y, za (antenna, local frame), pole, z (ground), stretch, fix_age, jump,
-    suspect."""
+    suspect, suspect_why ("jump", "float_spell", "jump;float_spell" or ""), float_spell (s of
+    float right before the stretch, None unless it began after float)."""
     t: list = field(default_factory=list)
     fix: list = field(default_factory=list)
     lat: list = field(default_factory=list)
@@ -200,6 +205,8 @@ class Epochs:
     fix_age: list = field(default_factory=list)
     jump: list = field(default_factory=list)
     suspect: list = field(default_factory=list)
+    suspect_why: list = field(default_factory=list)
+    float_spell: list = field(default_factory=list)
 
     def __len__(self):
         return len(self.t)
@@ -348,14 +355,19 @@ def localise(ep: Epochs, frame, history: BaseHistory, pole_at):
 # ----------------------------------------------------------------------------- fix stretches
 
 def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_speed=2.0, gap_s=2.0,
-                  station=None):
+                  station=None, float_spell_s=DEFAULTS["float_spell_s"]):
     """The logger's false-fix guard (logger FixGuard) over a log: a stretch of RTK fixed
     epochs starts when the previous epoch was not fixed, is over gap_s older, or is further
     than max(in_fix_jump_m, in_fix_speed * dt) away, or the reference station changed. The
-    stretch's jump is the 3D step from the previous epoch with a position (if <= gap_s
-    older), suspect when over suspect_jump_m. Fills stretch (-1 when not fixed), fix_age
-    (s since the stretch start), jump (m or None), suspect."""
+    stretch's jump is the 3D step from the previous epoch with a position, if that was float
+    or fixed and <= gap_s older (else None). Suspect when the jump is over suspect_jump_m or
+    (logger 0.11.0, #15) the stretch starts right after a run of float epochs (no gap over
+    gap_s) of at least float_spell_s, measured from the run's first epoch to the fix (0:
+    rule off). Fills stretch (-1 when not fixed), fix_age (s since the stretch start), jump
+    (m or None), suspect, suspect_why, float_spell."""
     idx, start, jump, prev, prev_fixed = -1, None, None, None, False
+    why, spell = "", None
+    float_since, last_t, last_float = None, None, False
     for i in range(len(ep)):
         has = ep.x[i] is not None
         fixed = ep.fix[i] == 4 and has and (station is None or ep.station[i] in (station, -1))
@@ -373,10 +385,25 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
                 jump = (math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[prev], ep.y[prev], ep.za[prev]))
                         if prev is not None and ep.t[i] - ep.t[prev] <= gap_s and ep.fix[prev] in (4, 5)
                         else None)
+                spell = (ep.t[i] - float_since if last_float and float_since is not None
+                         and ep.t[i] - last_t <= gap_s else None)
+                reasons = []
+                if jump is not None and jump > suspect_jump_m:
+                    reasons.append("jump")
+                if float_spell_s and spell is not None and spell >= float_spell_s:
+                    reasons.append("float_spell")
+                why = ";".join(reasons)
             ep.stretch.append(idx); ep.fix_age.append(ep.t[i] - start); ep.jump.append(jump)
-            ep.suspect.append(jump is not None and jump > suspect_jump_m)
+            ep.suspect.append(bool(why)); ep.suspect_why.append(why); ep.float_spell.append(spell)
         else:
             ep.stretch.append(-1); ep.fix_age.append(None); ep.jump.append(None); ep.suspect.append(False)
+            ep.suspect_why.append(""); ep.float_spell.append(None)
+        is_float = ep.fix[i] == 5 and has
+        if not is_float:
+            float_since = None
+        elif float_since is None or not last_float or ep.t[i] - last_t > gap_s:
+            float_since = ep.t[i]
+        last_float, last_t = is_float, ep.t[i]
         if has:
             prev, prev_fixed = i, fixed
 
@@ -490,7 +517,7 @@ def median_direction(dirs):
 # ----------------------------------------------------------------------------- sigma model
 
 def sigma_terms(sg, *, sd_u=None, gst_u=None, sd_h=None, gst_h=None, age=None, fix_age=None,
-                settle_s=90.0, pole_m=1.8, tilt_deg=1.0, on_mark=False, inflate_settle=True):
+                settle_s=120.0, pole_m=1.8, tilt_deg=1.0, on_mark=False, inflate_settle=True):
     """The error budget of one sounding (module docstring). Returns a dict of terms (m).
 
     The Ice Cube Logger mirrors this (and DEFAULTS["sigma"], settle_s) in
@@ -544,7 +571,7 @@ COLUMNS = [("sid", "TEXT"), ("source", "TEXT"), ("session", "TEXT"), ("kind", "T
            ("n_epochs", "INTEGER"), ("sd_u_m", "REAL"), ("gst_u_m", "REAL"), ("pole_m", "REAL"),
            ("tilt_deg", "REAL"), ("imu_stable_deg", "REAL"), ("label", "TEXT")]
 KEYS = [c for c, _ in COLUMNS]
-EXCLUDING = {"float", "other_station", "suspect_jump", "settle", "imu_unstable", "not_plumb",
+EXCLUDING = {"float", "other_station", "suspect_jump", "float_spell", "settle", "imu_unstable", "not_plumb",
              "dup_capture", "local_outlier", "no_position", "plumb_unverified", "void", "void_stop"}
 
 
@@ -570,6 +597,18 @@ def is_voided(r):
     """True for a row flagged void in the logger and left out of use (flag `void:<reason>`),
     or a pole stop over such a capture (flag `void_stop:c<n>:<reason>`)."""
     return any(f.startswith(("void:", "void_stop:")) for f in flags_of(r))
+
+
+def add_suspect_flags(r, ep, k):
+    """The suspect flags of epoch k's stretch: suspect_jump and/or float_spell."""
+    why = ep.suspect_why[k] if k < len(ep.suspect_why) else ("jump" if ep.suspect[k] else "")
+    if "jump" in why:
+        add_flag(r, "suspect_jump")
+    if "float_spell" in why:
+        add_flag(r, "float_spell")
+
+
+SUSPECT_FLAGS = ("suspect_jump", "float_spell")
 
 
 def finish_use(r):
@@ -711,7 +750,7 @@ def logger_source(cfg, src, con, frame, history, log):
                 k = bisect.bisect_right([p[0] for p in poles], ns) - 1
                 return poles[max(k, 0)][1]
             localise(ep, frame, history, pole_at)
-            fix_stretches(ep, cfg["suspect_jump_m"], station=src.get("station"))
+            fix_stretches(ep, cfg["suspect_jump_m"], station=src.get("station"), float_spell_s=cfg["float_spell_s"])
         # captures
         for c in clist:
             if c["class"] not in ("surface", "ref", "control", "object"):
@@ -740,8 +779,7 @@ def logger_source(cfg, src, con, frame, history, log):
                 if ep.stretch[k] >= 0:
                     r["fix_age_s"], r["jump_m"] = ep.fix_age[k], ep.jump[k]
                     r["pass_id"] = pass_name(ses, ep.stretch[k], ep.fix_age[k], max_s)
-                    if ep.suspect[k]:
-                        add_flag(r, "suspect_jump")
+                    add_suspect_flags(r, ep, k)
                 win = [j for j in ep.window(t - 1.0, t) if ep.gst_u[j] is not None]
                 if win:
                     gst_u = st.median(ep.gst_u[j] for j in win)
@@ -887,8 +925,7 @@ def stops_from_epochs(cfg, src, ses, ep, capture_windows, grav, cmap, plumb, pri
                     n_epochs=len(rng), sd_u_m=sd_u, gst_u_m=st.median(gu) if gu else None, pole_m=pole,
                     pass_id=pass_name(ses, ep.stretch[i0], ep.fix_age[i0], max_s), prior_m=prior,
                     common_prior_m=cprior)
-        if ep.suspect[i0]:
-            add_flag(r, "suspect_jump")
+        add_suspect_flags(r, ep, i0)
         if ep.fix_age[i0] < settle_s:
             add_flag(r, "settle")
         if any(a - m <= t1 and t0 <= b + m for a, b in capture_windows):
@@ -957,7 +994,7 @@ def swmaps_source(cfg, src, frame, history, log, with_log=True):
         ep = read_nmea(Path(src["nmea_log"]).read_bytes(), day)
         localise(ep, frame, history if use_history else BaseHistory((0, 0, 0)),
                  lambda t, ns: pole_m)
-        fix_stretches(ep, cfg["suspect_jump_m"], station=src.get("station"))
+        fix_stretches(ep, cfg["suspect_jump_m"], station=src.get("station"), float_spell_s=cfg["float_spell_s"])
         log(f"  {ses}: log {len(ep)} epochs, {sum(1 for f in ep.fix if f == 4)} fixed, "
             f"{len({s for s in ep.stretch if s >= 0})} fix stretches")
     rows, windows, pts = [], [], []
@@ -1000,8 +1037,7 @@ def swmaps_source(cfg, src, frame, history, log, with_log=True):
             r["fix_age_s"], r["jump_m"], r["age_s"] = ep.fix_age[kk], ep.jump[kk], ep.age[kk]
             r["gst_u_m"] = ep.gst_u[kk]
             r["pass_id"] = pass_name(ses, ep.stretch[kk], ep.fix_age[kk], max_s)
-            if ep.suspect[kk]:
-                add_flag(r, "suspect_jump")
+            add_suspect_flags(r, ep, kk)
             fa = r["fix_age_s"] - (r["duration_s"] or 0.0)   # age when the averaging began
             if fa < settle_s:
                 add_flag(r, "settle")
@@ -1090,7 +1126,8 @@ def verify_suspect(rows, radius=1.5, max_med=0.10, max_any=0.25, min_n=2):
     ground rows within `radius` m (at least 3; else the nearest within radius / 2). If at
     least `min_n` rows compare (1 for anchors) with |median dz| <= max_med and at least
     80 % of |dz| <= max_any, the pass is verified: its rows get `suspect_verified` instead of
-    `suspect_jump`. Returns (verified passes, passes left suspect)."""
+    `suspect_jump` and `float_spell` (logger 0.11.0, #15: a fix after a long float spell is
+    cleared the same way). Returns (verified passes, passes left suspect)."""
     def usable(r):
         return r["use"] and r["x_m"] is not None
     ref = [r for r in rows if usable(r) and r["class"] == "ground"]
@@ -1104,7 +1141,7 @@ def verify_suspect(rows, radius=1.5, max_med=0.10, max_any=0.25, min_n=2):
     by_pass = {}
     for r in rows:
         fl = flags_of(r)
-        if "suspect_jump" in fl and not any(f.startswith(("listed", "void:", "void_stop:")) or f in ("float", "other_station")
+        if any(f in SUSPECT_FLAGS for f in fl) and not any(f.startswith(("listed", "void:", "void_stop:")) or f in ("float", "other_station")
                                             for f in fl):
             by_pass.setdefault(r["pass_id"], []).append(r)
     ok_n = bad_n = 0
@@ -1133,7 +1170,12 @@ def verify_suspect(rows, radius=1.5, max_med=0.10, max_any=0.25, min_n=2):
         if (len(vals) >= need and abs(st.median(vals)) <= max_med
                 and sum(abs(v) <= max_any for v in vals) >= 0.8 * len(vals)):
             for r in members:
-                r["flags"] = ",".join("suspect_verified" if f == "suspect_jump" else f for f in flags_of(r))
+                out = []
+                for f in flags_of(r):
+                    f = "suspect_verified" if f in SUSPECT_FLAGS else f
+                    if f not in out:
+                        out.append(f)
+                r["flags"] = ",".join(out)
             ok_n += 1
         else:
             bad_n += 1
@@ -1198,7 +1240,7 @@ def apply_corrections(rows, path, log):
     """Hook for post-processed (PPK) results per capture: a CSV with session, n (capture
     number), action, x_m, y_m, z_m (ground, local frame), sigma_z and note.
     - action `replace`: the capture takes the given position; sigma_rtk becomes sigma_z, the
-      settle and age terms are dropped, and the fix flags (suspect_jump, float, settle,
+      settle and age terms are dropped, and the fix flags (suspect_jump, float_spell, float, settle,
       settle_inflated, listed:*) are cleared; flag `ppk`.
     - action `flag`: live and PPK disagree at a level neither can settle (10-30 cm): the
       position is kept, sigma_rtk is raised to sigma_z (the disagreement) and the row gets
@@ -1218,7 +1260,7 @@ def apply_corrections(rows, path, log):
             if sz is not None:
                 r["sigma_rtk"], r["sigma_settle"], r["sigma_age"] = sz, 0.0, 0.0
             r["flags"] = ",".join(f for f in flags_of(r) if f not in (
-                "suspect_jump", "float", "settle", "settle_inflated") and not f.startswith("listed"))
+                "suspect_jump", "float_spell", "float", "settle", "settle_inflated") and not f.startswith("listed"))
             add_flag(r, "ppk")
         elif act == "flag":
             if sz is not None:
@@ -1337,7 +1379,7 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
     v_ok, v_bad = verify_suspect(rows)
     for r in rows:
         finish_use(r)
-    log(f"suspect fix stretches (jump > {cfg['suspect_jump_m']} m): {v_ok} passes verified by other data, "
+    log(f"suspect fix stretches (jump > {cfg['suspect_jump_m']} m or float spell >= {cfg['float_spell_s']} s): {v_ok} passes verified by other data, "
         f"{v_bad} left out")
     n_out = flag_local_outliers(rows, cfg["stops"]["outlier_radius_m"], cfg["stops"]["outlier_min_dz_m"],
                                 cfg["stops"]["outlier_k"])

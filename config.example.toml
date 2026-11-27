@@ -123,8 +123,9 @@ base_from_sessions = false
 # Post-processed (PPK) results per capture: session, n, action (replace | flag), x_m, y_m,
 # z_m, sigma_z, note. Missing file: nothing applied.
 # corrections_csv = "data/ppk_corrections.csv"
-settle_s = 90.0          # points within this many seconds of an RTK fix start are not trusted
+settle_s = 120.0         # points within this many seconds of an RTK fix start are not trusted
 suspect_jump_m = 1.0     # a fix that began with a bigger float-to-fix jump is suspect (false fix)
+float_spell_s = 20.0     # a fix right after a float spell this long is suspect (0: off)
 max_pass_s = 600.0       # a pass (one RTK bias for icecube) is cut after this long
 # include_voided = false # true: use captures flagged void in the logger (default: kept, flag void, use 0)
 # [soundings.sigma]      # the error budget (m): floor, floor_h, age_free_s, age_rate,

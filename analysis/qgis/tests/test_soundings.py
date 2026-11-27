@@ -74,6 +74,37 @@ class TestStretchesAndStops(unittest.TestCase):
         self.assertAlmostEqual(ep.fix_age[second + 8], 2.0, places=2)
         self.assertEqual(ep.stretch[ep.t.index(min(t for t in ep.t if t - ep.t[0] >= 12.5))], -1)
 
+    def test_float_spell_parity_with_logger_fixguard(self):
+        """#15, the logger FixGuardTest cases in local metres: a fix after 60 s of float with a
+        0.48 m step is suspect by float spell (case A); after 5 s of float it is not; after
+        single epochs the 2.2 m step has no jump (case C); a step inside a fix is a jump."""
+        def run(track, **kw):
+            ep = epochs_from(track)
+            snd.fix_stretches(ep, suspect_jump_m=1.0, **kw)
+            return ep, ep.stretch.index(0)
+        flt = lambda t0, s, e=0.0, n=0.0, u=1.8: [(t0 + k / 4, e, n, u, 5) for k in range(int(s * 4))]  # noqa: E731
+        fix = lambda t0, s, e=0.0, n=0.0, u=1.8: [(t0 + k / 4, e, n, u, 4) for k in range(int(s * 4))]  # noqa: E731
+        ep, i = run(flt(0, 60) + fix(60, 5, n=0.48))
+        self.assertAlmostEqual(ep.jump[i], 0.48, delta=0.01)
+        self.assertTrue(ep.suspect[i])
+        self.assertEqual(ep.suspect_why[i], "float_spell")
+        self.assertAlmostEqual(ep.float_spell[i], 60.0, delta=0.01)
+        ep, i = run(flt(0, 60) + fix(60, 5, n=0.48), float_spell_s=0)      # rule off
+        self.assertFalse(ep.suspect[i])
+        ep, i = run(flt(0, 5) + fix(5, 5, n=0.48))
+        self.assertFalse(ep.suspect[i])
+        self.assertAlmostEqual(ep.float_spell[i], 5.0, delta=0.01)
+        ep, i = run(flt(0, 60) + fix(60, 5, n=1.5))
+        self.assertEqual(ep.suspect_why[i], "jump;float_spell")
+        ep, i = run([(k / 4, 0.0, 0.0, 1.8, 1) for k in range(12)] + fix(3, 5, e=1.2, n=1.5, u=0.8))
+        self.assertIsNone(ep.jump[i])
+        self.assertFalse(ep.suspect[i])
+        self.assertIsNone(ep.float_spell[i])
+        ep, _ = run(flt(0, 2) + fix(2, 5) + fix(7, 5, n=1.2))              # 1.2 m step between fixed epochs
+        j = ep.stretch.index(1)
+        self.assertAlmostEqual(ep.jump[j], 1.2, delta=0.01)
+        self.assertEqual(ep.suspect_why[j], "jump")
+
     def test_stops(self):
         tr, s = [], 0.0
         for k in range(20):                      # still 5 s, 3 mm wobble
@@ -589,6 +620,22 @@ class TestBuild(unittest.TestCase):
         ok, bad = snd.verify_suspect(rows)
         self.assertEqual((ok, bad), (1, 0))
         self.assertIn("suspect_verified", rows[3]["flags"])
+
+    def test_float_spell_pass_can_be_verified(self):
+        """#15: verify_suspect clears float_spell like suspect_jump; both become suspect_verified."""
+        r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.00, pass_id="p1", anchor="site1"),
+                r(sid="a3", **{"class": "anchor"}, x_m=0.05, y_m=0.05, z_m=1.01, pass_id="p4",
+                  flags="suspect_jump,float_spell")]
+        for x in rows:
+            snd.finish_use(x)
+        self.assertEqual(rows[1]["use"], 0)
+        snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        ok, bad = snd.verify_suspect(rows)
+        self.assertEqual((ok, bad), (1, 0))
+        self.assertEqual(rows[1]["flags"], "suspect_verified")
+        snd.finish_use(rows[1])
+        self.assertEqual(rows[1]["use"], 1)
 
     def test_anchor_join_removes_configured_ground_sigma(self):
         sg = snd._merge(snd.DEFAULTS["sigma"], {"ground": 0.05})        # not the default 0.015
