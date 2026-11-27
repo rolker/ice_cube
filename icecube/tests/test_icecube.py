@@ -722,7 +722,7 @@ class TestPlanePass(unittest.TestCase):
         self.assertTrue(rows[1].startswith(f"Showing {npl + 2} of "))
         body = [r for r in rows if r.startswith("| ") and not r.startswith("| east")]
         self.assertEqual(len(body), npl + 2)
-        self.assertTrue(all(r.rstrip(" |").split("|")[-1].strip() for r in body[:npl]))   # gradient filled
+        self.assertTrue(all(r.split("|")[-2].strip() for r in body[:npl]))   # gradient filled
         self.assertFalse(any(r.split("|")[-2].strip() for r in body[npl:]))
         self.assertNotIn("Showing", report.table_outliers(s, limit=1000))
 
