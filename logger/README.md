@@ -590,7 +590,7 @@ overlay and set in Settings > Coverage.
   the constant 0.05 m/m everywhere. A node's result depends only on its own captures and
   its 8 neighbours', so after each capture the pass is redone for the nodes the capture
   fed and every node within one grid step of them (about 25 nodes at the defaults, up to
-  30), a few times the work of the rebuild alone (a 5000-capture bank rebuilds about 2x
+  26), a few times the work of the rebuild alone (a 5000-capture bank rebuilds about 2x
   slower with it on the desktop JVM, about 44 µs a capture). The overlay draws a node by
   its final values: one cleared by the plane is clear or amber like any other (nothing
   new to capture there); its sigma includes the plane's gradient uncertainty.

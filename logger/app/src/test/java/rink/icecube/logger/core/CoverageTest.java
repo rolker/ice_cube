@@ -339,7 +339,8 @@ public class CoverageTest {
 
     /**
      * A capture on a node column, 0.25 m off a node row, feeds 4 nodes in that column
-     * (d = 0.75, 0.25, 0.25, 0.75) and 2 on each side: the ring is 5 by 6 = 30 nodes.
+     * (d = 0.75, 0.25, 0.25, 0.75) and 2 on each side (j = 0, 1): the ring is 5 by 6 less its 4 corners (i = +-2, j = -2
+     * and 3) = 26 nodes.
      */
     @Test public void tieCaptureFeedsFourInALine() {
         Coverage c = new Coverage(Coverage.Params.defaults());

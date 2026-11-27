@@ -53,7 +53,7 @@ import java.util.Map;
  * the plane at the node; then the final values (zFinal, sigmaFinal, nInFinal, nOutFinal) are
  * pass 2's, else pass 1's. A node's outcome depends only on its own pass-1 state and its 8
  * neighbours', so after each capture the pass is redone for the fed nodes and every node
- * within one cell of them (the ring, about 25 nodes at the defaults, up to 30), each from its
+ * within one cell of them (the ring, about 25 nodes at the defaults, up to 26), each from its
  * neighbours' pass-1 state (one sweep: a neighbour cleared by its plane stays red for the
  * others' fits). That equals a recompute over the whole grid (CoverageTest, and the vectors'
  * plane_sequences come from one).
