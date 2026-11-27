@@ -276,3 +276,26 @@ Flagged deviations:
 - `./gradlew testDebugUnitTest --max-workers 4`: pass (C: 114 GB free)
 - coverage_vectors.json regenerated; only plane_params and plane_vectors changed
 - Private replays (counts only): 11-21 red 19 -> 17, 11-26 red 6 -> 1 (unchanged); with DEM 14 -> 14, 1 -> 1
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 19:08 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-29 at `28bcf3f`
+**Base**: main
+**Depth**: Standard (reason: ~1000 non-generated lines across 12 files, numerical core of the estimator; fix round classified on the whole diff)
+**Must-fix**: 2 | **Suggestions**: 5
+**Round**: 2 | **Ship**: recommended — round 2: 2 mechanical must-fix (prev 2), not rising; fix and ship rather than another full round
+
+Specialists: static analysis (no linter installed: py_compile only; 82 tests OK), governance (public repo: nothing private in the diff; vectors synthetic), plan drift (none new; round-1 fixes match their Implementation entry), Claude adversarial (no must-fix, 3 suggestions; regenerated vectors byte-identical), cross-model gemini (complete) and codex (complete). Round-1 must-fixes (fringe conditioning gate, NaN DEM slope) verified fixed.
+
+### Findings
+- [ ] (must-fix) Conditioning gate fails open on exactly collinear neighbour centroids: `np.linalg.inv` returns a non-PD Ninv (one huge negative eigenvalue), `_sigma_g_max` takes only the larger eigenvalue (passes), `sg` clamps a negative u'C_g u to 0, and reduce_to_plane can get negative v' (ValueError in Hyp.nr) or accept a garbage gradient. Lead reproduced: 30 of 500 collinear fits return code 0, all with a negative eigenvalue. Require C_g positive definite (cxx>0, cyy>0, cxx*cyy-cxy^2>0, finite) and var_a>0 before code 0 (else PLANE_ILL_CONDITIONED, e.g. via Cholesky of N), fail closed on negative u'C_g u, add a collinear case to tests/plane_vectors (gemini, confirmed by lead) — `icecube/nodes.py:429-452,512`
+- [ ] (must-fix) Pass 2 adds the gradient error d_i'C_g d_i to each entry as independent variance, so it averages down by 1/n, but it is common to all entries (error -dg.d_bar); sigma' understated (adversarial measured up to ~40% at edge nodes; codex: 4 cm vs 0.4 cm for one-sided soundings), making the output sigma and the agreement test too tight. Add d_bar'C_g d_bar (d_bar = pass-2 main's weighted centroid) to the accepted node's sigma^2 and to the agreement variance; port note for PR B (codex, gemini, Claude adversarial) — `icecube/nodes.py:455-466,527-535`
+- [ ] (suggestion) Neighbour fit weights by main's w, which excludes the pass-bias part of sigma; across a pass seam chi and sigma_g are noise-only. Weight by 1/sigma^2 or document the assumption next to the correlation caveat (codex, gemini) — `icecube/nodes.py:498`
+- [ ] (suggestion) topo masks after nodes.grid_surface, so masked nodes serve as plane neighbours (with masked=false their non-ground heights feed the fit). Consider passing the node mask into plane_pass to exclude them, or state it (gemini, Claude adversarial) — `icecube/topo.py:196-210`
+- [ ] (suggestion) Docs npz contents list omits plane_code (gemini, Claude adversarial) — `docs/howto/ice-cube.md:236`
+- [ ] (suggestion) grid_surface duplicates PLANE_DEFAULTS as literals for 7 of 8 plane_* args; take all from PLANE_DEFAULTS (gemini) — `icecube/nodes.py:596-600`
+- [ ] (suggestion) PR B note: plane_pass counts n_in as len(entries) - n_out, which undercounts folded entries (cnt > 1) if reused on aggregates (gemini) — `icecube/nodes.py:482`
