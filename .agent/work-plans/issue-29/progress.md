@@ -844,3 +844,18 @@ Fix all four as the Integrated Review at a9b1fb0 describes.
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 102 tests, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 214 tests, 0 failures (C: 111 GB free); APK unchanged (Java changes are comments only)
 - Full pre-commit pass left to the host
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 09:41 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #37 at `ba45104`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Cold read: Codex alone, given the PR title, URL, diff (work-plans excluded) and the plan's Approach; no earlier review entries or findings. Prompt about 270 KB, coverage_vectors.json kept in (it fit). Codex EXIT=0, review complete: no issues found. Its review was terse (two lines), so the lead spot-read PlanePass.java, the Coverage.java diff and the nodes.py diff and found nothing to add.
+
+### Findings
+- [ ] No issues found. LGTM.
