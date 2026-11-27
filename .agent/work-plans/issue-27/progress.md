@@ -927,3 +927,13 @@ Scope: round 2's seven findings and the fix diff 2998717..48ea20e only. Cross-mo
 
 ### Findings
 - [ ] (must-fix) Tie rule differs in one run and across runs, and across runs with import order: in a run a copy surely older than another top copy is dropped before ties are looked at, while across runs its flag is already folded into the stored union and cannot be dropped (X flagged T exact, Z cleared T+1 h exact, Y cleared T+10 h +-26 h: one run cleared; runs X,Y,Z flagged; runs X,Z,Y cleared). It always errs to flagged. Decide: keep each copy's interval and flag per ref (e.g. a refs_copies table) and apply the in-run rule over all copies seen in every run, or accept run-by-run flagged as the safe side and say so in the docstring and README, with a test of the case above — `analysis/qgis/import_sessions.py:445`, `:478`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 21:51 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (one must-fix on a mechanism the host decided; the permanent fix is in reach; first host address at rounds)
+**After**: rounds
+**Decision**: address
+
+Host decision on the round-3 must-fix (owner may veto): take option 1. Keep every refs.csv copy's (ref, copy time, uncertainty, void, reason) in a new table (refs_copies, deduped by copy identity), and on every import recompute each ref's flag from all copies seen with the one-run rule, so one run and any sequence of runs give the same result. The stored void_copy_mtime/void_copy_unc become derived. A gpkg without the table seeds it from the stored values (treated as one copy). Tests: the reproduced X/Y/Z case in all 6 orders as separate runs equals one run; a random permutation test over 3-4 copies, one run vs. runs.
