@@ -188,6 +188,21 @@ class ImportTest(unittest.TestCase):
         rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
         self.assertEqual(rows["1"]["void"], "0")
 
+    def test_flag_cleared_an_hour_later_with_extended_timestamps(self):
+        """Real 0.9.0 zips carry a 0x5455 UTC time on refs.csv: a copy unflagged 1 h after the
+        flagged one is surely newer and clears the stored flag, end to end (#27)."""
+        name = "IceCubeLogger_2026-12-01_10-00-00.zip"
+        now = time.time()
+        z = synth.write_zip(self.d / name, synth.session_v05(), refs=synth.refs_csv_void(True), refs_utc=now)
+        run(z, "--gpkg", self.gpkg)
+        sql = "SELECT void, void_copy_mtime, void_copy_unc FROM refs WHERE session='2026-11-30_09-00-00'"
+        self.assertEqual(self.q(sql), [(1, float(int(now)), 0.0)])
+        z.unlink()
+        z = synth.write_zip(self.d / name, synth.session_v05(), refs=synth.refs_csv_void(False),
+                            refs_utc=now + 3600)
+        run(z, "--gpkg", self.gpkg)
+        self.assertEqual(self.q(sql), [(0, float(int(now + 3600)), 0.0)])
+
     def test_void_reason_stored_only_when_flagged(self):
         """A row with void=0 but a reason left over stores no void_reason, in captures and in
         refs, the same rule as import_refs_csv (#27)."""

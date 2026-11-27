@@ -183,15 +183,31 @@ def session_v02(name="2026-12-01_09-00-00"):
             f"{name}/gps_chunks.csv": chunks.encode()}
 
 
-def write_zip(path: Path, files: dict, refs: str | None = None, refs_date: tuple | None = None):
+def extended_timestamp(utc: float) -> bytes:
+    """A 0x5455 extended timestamp extra field holding the modification time `utc`, as the
+    logger's ShareZip writes it (0.9.0)."""
+    return (0x5455).to_bytes(2, "little") + (5).to_bytes(2, "little") + b"\x01" + \
+        int(utc).to_bytes(4, "little", signed=True)
+
+
+def write_zip(path: Path, files: dict, refs: str | None = None, refs_date: tuple | None = None,
+              refs_utc: float | None = None):
     """A zip of files, with refs.csv at the top level when refs is given; refs_date (a zip
-    date_time tuple, local time) sets that entry's time, else it is now."""
+    date_time tuple, local time) sets that entry's time, else it is now. refs_utc (UTC
+    seconds) instead dates refs.csv as a 0.9.0 phone does: its DOS time in this PC's zone and
+    a 0x5455 extended timestamp, so the importer reads an exact time."""
+    import time as _time
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as z:
         for k, v in files.items():
             z.writestr(k, v, compress_type=zipfile.ZIP_STORED if k.endswith(".jpg") else zipfile.ZIP_DEFLATED)
         if refs is not None:
-            z.writestr(zipfile.ZipInfo("refs.csv", date_time=refs_date) if refs_date else "refs.csv", refs)
+            if refs_utc is not None:
+                zi = zipfile.ZipInfo("refs.csv", date_time=_time.localtime(refs_utc)[:6])
+                zi.extra = extended_timestamp(refs_utc)
+            else:
+                zi = zipfile.ZipInfo("refs.csv", date_time=refs_date) if refs_date else "refs.csv"
+            z.writestr(zi, refs)
     return path
 
 
@@ -208,8 +224,7 @@ def phone_zip(path: Path, refs: str, utc: float, zone_s: int, refs_utc: float | 
     def info(n, t):
         zi = zipfile.ZipInfo(n, date_time=_time.gmtime(t + zone_s)[:6])
         if extended:
-            zi.extra = (0x5455).to_bytes(2, "little") + (5).to_bytes(2, "little") + b"\x01" + \
-                int(t).to_bytes(4, "little", signed=True)
+            zi.extra = extended_timestamp(t)
         return zi
     with zipfile.ZipFile(path, "w") as z:
         if with_events:
