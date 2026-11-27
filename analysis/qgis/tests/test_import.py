@@ -306,6 +306,30 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(gp.con.execute("SELECT source, void FROM refs").fetchall(), [("points.csv", 1)])
         gp.close()
 
+    def test_moved_photo_takes_n_and_attached_from_the_photo_column(self):
+        """A flag moved a photo to a photo row of its own (0.9.0): the file name and the
+        original event still say capture n=2, the photo column says the photo row n=5. The
+        column decides n and attached; the file keeps its name (#27 step 15)."""
+        rows = synth.captures_v05()
+        rows[1] = rows[1].replace("photo_2_20261201T100010Z.jpg", "")
+        lat, lon, h = synth.offset(3.0, 2.0, 1.9)
+        rows.append(f"5,photo,{synth.T0_NS + 20_000_000_000},2026-12-01T10:00:20.00Z,{lat:.9f},{lon:.9f},"
+                    f"{h:.4f},1.800,{h - 1.8:.4f},4,5,0.0020,0.0020,0.0040,1.0,"
+                    "photo_2_20261201T100010Z.jpg,photos of voided n=2")
+        files = synth.with_void(synth.session_v05(points=[synth.POINTS_HDR] + rows), {2: "accidental"})
+        z = synth.write_zip(self.d / "moved.zip", files)
+        src = find_sessions([z])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: x for x in s.photos}
+        self.assertEqual((p["photo_2_20261201T100010Z.jpg"]["n"], p["photo_2_20261201T100010Z.jpg"]["attached"]),
+                         (5, "own row"))
+        self.assertEqual((p["photo_4_20261201T100030Z.jpg"]["n"], p["photo_4_20261201T100030Z.jpg"]["attached"]),
+                         (4, "own row"))
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual(caps[2]["photo_files"], [])            # the event's capture does not take it back
+        self.assertEqual(caps[5]["photo_files"], ["photo_2_20261201T100010Z.jpg"])
+
     def test_zip_entry_mtime_utc_and_zero_date(self):
         """A zip entry's time for ordering refs.csv copies: the UTC extended timestamp when
         present, the DOS local time otherwise, None for a zero DOS date."""

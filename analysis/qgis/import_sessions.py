@@ -54,7 +54,9 @@ grouping the others. When several refs.csv copies hold a row, the newest copy (z
 or file time) gives it, and the newest copy with a `void` column gives its flag, flagged
 when copies of that same time disagree (the logger reads its copies by the same rule,
 VoidRule.liveRefs); refs keep that copy's time (`void_copy_mtime`, and how far off it may
-be, `void_copy_unc`), so a later import of an older copy cannot change it. A zip entry's
+be, `void_copy_unc`), so a later import of an older copy cannot change it. A flag moves a capture's photos to another row (the files
+keep their names): a photo's `n` and `attached` come from the points.csv row whose photo
+column lists it, not from the number in its file name or its original event. A zip entry's
 time is its UTC extended timestamp (logger 0.9.0), else its DOS time corrected by the zone
 offset found from the zip's events.csv, else (mtime_approx) the DOS time read in this
 PC's zone; copies whose times are within the larger uncertainty (26 h for mtime_approx,

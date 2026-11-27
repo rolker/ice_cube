@@ -695,17 +695,25 @@ def load_session(src: SessionSource) -> Session:
         m = re.match(r"photo file=photos/(\S+) .*?(attached to|own row) n=(\d+)", text)
         if m:
             attach[m.group(1)] = (int(m.group(3)), "capture" if m.group(2) == "attached to" else "own row")
+    # A photo's row: the points.csv row whose photo column lists the file is the only source
+    # of its n and whether it is attached (a flag in 0.9.0 moves photos to another row, so
+    # the number in the file name and the original "photo file=..." event can be stale; the
+    # file is never renamed). The event, then the name, only for an orphan file.
     by_file = {}
     for c in s.captures:
         for p in c["photo_files"]:
-            by_file[p] = c["n"]
+            by_file[p] = c
     for name in src.photo_names():
         m = PHOTO_RE.match(name)
-        n = by_file.get(name) or (attach.get(name) or (None,))[0] or (int(m.group(1)) if m else None)
         utc = None
         if m:
             utc = datetime.strptime(m.group(2), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
-        kind = (attach.get(name) or (None, None))[1]
+        row = by_file.get(name)
+        if row is not None:
+            n, kind = row["n"], "own row" if row["class"] == "photo" else "capture"
+        else:
+            n = (attach.get(name) or (None,))[0] or (int(m.group(1)) if m else None)
+            kind = (attach.get(name) or (None, None))[1]
         s.photos.append({"n": n, "name": name, "utc": utc, "attached": kind,
                          "bytes": src.size("photos/" + name)})
     caps = {c["n"]: c for c in s.captures}
