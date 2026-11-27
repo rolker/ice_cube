@@ -174,3 +174,13 @@ All seven earlier findings are resolved in the plan and the main-branch claims c
 ### Recommended Actions
 
 - [ ] After #15 merges: step 1 re-check, then implement, folding in findings 1-4.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:57 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implementation held until #15 merges (soundings.py overlap), then rebase on main. Settle during implementation the Plan Review at ce6621a's items: base from the session's base_ecef or resolve_base via a stub, clear error if none; import_session(extract_photos=False) into a temporary directory removed afterwards (disk budget); pass_rule.from_file via setdefault; scratch origin from site.origin_geodetic.
