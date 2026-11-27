@@ -219,8 +219,12 @@ def zip_extended_mtime(info):
 
 def zip_dos_seconds(info):
     """A zip entry's DOS date and time read as if UTC (calendar.timegm, no PC zone), or
-    None for a zero or invalid date. Minus the writer's zone offset it is UTC."""
+    None for a zero or invalid date, or for 1980-01-01 00:00:00, the DOS epoch the logger's
+    ShareZip writes for a file with no modification time (lastModified() 0). Minus the
+    writer's zone offset it is UTC."""
     y, mo, d, h, mi, sec = info.date_time
+    if (y, mo, d, h, mi, sec) == (1980, 1, 1, 0, 0, 0):
+        return None
     try:
         datetime(y, mo, d, h, mi, sec)   # rejects a zero month or day
     except (ValueError, OverflowError):

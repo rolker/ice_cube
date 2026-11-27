@@ -957,6 +957,14 @@ class RefsCopyTimeTest(unittest.TestCase):
             body = f"elapsed_ns,wall_ms,event\n{synth.T0_NS},{wall},stop\n".encode()
             self.assertEqual(zip_zone_offset(info, body), want, early_s)
 
+    def test_dos_epoch_is_unknown_time(self):
+        """The logger writes 1980-01-01 00:00 for a file with no mtime: an unknown time, not
+        a real one that would rank newer than another unknown-time copy."""
+        info = zipfile.ZipInfo("refs.csv", date_time=(1980, 1, 1, 0, 0, 0))
+        self.assertEqual(zip_entry_stamp(info), (None, 0.0))
+        self.assertIsNone(zip_entry_mtime(info))
+        self.assertIsNotNone(zip_entry_stamp(zipfile.ZipInfo("refs.csv", date_time=(1980, 1, 1, 0, 0, 2)))[0])
+
     def test_unknown_stored_time_ties_an_unknown_copy(self):
         """A stored flag of unknown time goes through _stamp_order too: an unknown-time copy
         that clears it ties, so it stays flagged and the tie is reported; a known time is

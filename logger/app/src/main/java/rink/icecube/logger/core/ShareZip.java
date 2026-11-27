@@ -88,7 +88,8 @@ public final class ShareZip {
      * entry carries the file's UTC mtime as an extended timestamp ({@link #extendedTimestamp})
      * besides the DOS time. A file whose mtime is unknown ({@code lastModified()} 0) gets no
      * extended timestamp, which would claim an exact 1970 time, and the oldest DOS time
-     * ({@link #DOS_EPOCH_MS}), so a reader takes its copy as old, never as the newest.
+     * ({@link #DOS_EPOCH_MS}), so a reader takes its copy as old, never as the newest (the
+     * desktop importer reads that exact DOS time as unknown).
      */
     public static void addFile(ZipOutputStream z, String entryName, File f, long length, byte[] buf,
                                Progress progress) throws IOException {
