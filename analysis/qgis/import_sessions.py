@@ -537,16 +537,22 @@ def run(argv=None, log=print, progress=None):
     try:
         ensure_schema(gp)
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
-        olds = [(r[0], r[2]) for r in gp.con.execute("SELECT session, schema_version, app FROM sessions")
+        olds = [(r[0], r[2], r[3]) for r in
+                gp.con.execute("SELECT session, schema_version, app, format FROM sessions")
                 if (r[1] or 0) < SCHEMA_VERSION]    # imported by an older schema (NULL: before 3)
-        # () is an unknown app version (no readable session start event): it may hold 0.6
-        # rows, so it is re-read rather than marked current
-        nothing_new = [ses for ses, app in olds if () < app_version(app) < SCHEMA_MIN_APP]
-        if nothing_new:
+
+        def nothing_new(app, fmt):
+            # () is an unknown app version (no readable session start event): a points.csv
+            # session may then hold 0.6 rows, so it is re-read rather than marked current;
+            # the other formats have no points.csv to carry 0.6 columns
+            v = app_version(app)
+            return v < SCHEMA_MIN_APP if v else fmt != "points.csv"
+        current = [ses for ses, app, fmt in olds if nothing_new(app, fmt)]
+        if current:
             gp.con.executemany("UPDATE sessions SET schema_version=? WHERE session=?",
-                               [(SCHEMA_VERSION, ses) for ses in nothing_new])
+                               [(SCHEMA_VERSION, ses) for ses in current])
             gp.commit()
-        stale = {ses for ses, _ in olds} - set(nothing_new)
+        stale = {ses for ses, _, _ in olds} - set(current)
         if stale:
             log(f"{len(stale)} session(s) imported by a schema older than {SCHEMA_VERSION}: "
                 "re-reading those in the inputs to fill new columns")

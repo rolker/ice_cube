@@ -306,6 +306,28 @@ class ImportTest(unittest.TestCase):
         self.assertNotIn("unchanged, skipped", out)
         self.assertEqual(self.q("SELECT method, tilt_sd_u_m FROM captures WHERE n=5"), [("tilt", 0.012)])
 
+    def test_schema2_unknown_app_version_without_points_is_current(self):
+        """Unknown app version but no points.csv (control events, track only): it cannot hold
+        0.6 columns, so it is marked current when its source is absent, not named stale."""
+        za = synth.write_zip(self.d / "a.zip", synth.session_v06())
+        zb = synth.write_zip(self.d / "b.zip", synth.session_v06("2026-12-02_10-00-00"))
+        run(za, zb, "--gpkg", self.gpkg, "--base", *self.base)
+        for fmt in ("control events", "points.csv"):
+            con = gw.connect(self.gpkg)
+            con.execute("UPDATE sessions SET app=NULL, format=? WHERE session='2026-12-02_10-00-00'",
+                        (fmt,))
+            con.commit()
+            con.close()
+            self._as_schema2()
+            out = run(za, "--gpkg", self.gpkg, "--base", *self.base)
+            if fmt == "points.csv":
+                self.assertIn("still at an older schema", out)
+                self.assertIn("2026-12-02_10-00-00", out)
+            else:
+                self.assertNotIn("still at an older schema", out)
+                self.assertEqual(self.q("SELECT schema_version FROM sessions "
+                                        "WHERE session='2026-12-02_10-00-00'"), [(imp.SCHEMA_VERSION,)])
+
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())
         run(z, "--gpkg", self.gpkg, "--base", *self.base)
