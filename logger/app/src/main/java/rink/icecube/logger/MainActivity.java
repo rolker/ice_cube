@@ -564,7 +564,9 @@ public final class MainActivity extends Activity {
     /**
      * MENU > Recent captures: the last 10 capture rows, newest first. A live one can be
      * flagged with a reason (kept, never deleted); a flagged one can be un-flagged. Not while
-     * a ref or tilt set runs (their cancel is the undo for those).
+     * a ref or tilt set runs (their cancel is the undo for those). Each step checks that the
+     * session is still the current one (it can be stopped from the notification while the
+     * dialog is open) and says so instead of acting on a closed session.
      */
     private void recentCaptures() {
         Survey sv = survey();
@@ -576,11 +578,12 @@ public final class MainActivity extends Activity {
         String[] lines = new String[rows.size()];
         for (int i = 0; i < lines.length; i++) lines[i] = VoidRule.recentLine(rows.get(i), now);
         new AlertDialog.Builder(this).setTitle("Recent captures").setItems(lines, (d, which) -> {
+            if (!stillCurrent(sv)) return;
             PointRow r = rows.get(which);
             String name = Survey.label(r.cls) + r.n;
             if (r.voided) {
                 confirm("Un-flag " + name + "?", "Flagged: " + r.voidReason + ". Its photos stay where they were moved.",
-                        "Un-flag", () -> handle(sv.unvoidCapture(r.n)));
+                        "Un-flag", () -> { if (stillCurrent(sv)) handle(sv.unvoidCapture(r.n)); });
             } else {
                 pickReason(sv, r.n, name);
             }
@@ -602,7 +605,16 @@ public final class MainActivity extends Activity {
         }).setNegativeButton("Cancel", null).show();
     }
 
+    /** True if sv is still the running session; else plays the error cue and says it ended. */
+    private boolean stillCurrent(Survey sv) {
+        if (survey() == sv) return true;
+        Feedback.play(this, Feedback.Cue.ERROR);
+        toast("That session has ended: nothing was changed");
+        return false;
+    }
+
     private void flag(Survey sv, int n, String reason) {
+        if (!stillCurrent(sv)) return;
         Survey.Outcome o = sv.voidCapture(n, reason, VoidRule.VIA_LIST);
         Feedback.play(this, o.ok ? Feedback.Cue.REF_CANCEL : Feedback.Cue.ERROR);
         handle(o);
