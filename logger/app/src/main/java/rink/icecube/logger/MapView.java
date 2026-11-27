@@ -26,6 +26,7 @@ import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TrackPoint;
+import rink.icecube.logger.core.VoidRule;
 
 /**
  * North-up map in local metres (east/north on the ENU plane of {@link LocalFrame}), drawn
@@ -69,7 +70,7 @@ final class MapView extends View {
     private Survey.RefView ref;
     private Survey.TiltView tilt;
     private boolean labels = true;
-    static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E;
+    static final int PHOTO_COLOR = 0xFF6D4C41, EARLIER_REF_COLOR = 0xFF9E9E9E, FLAGGED_COLOR = 0xFF757575;
     static final int COVER_RED = CoverageRaster.RED, COVER_AMBER = CoverageRaster.AMBER, COVER_EDGE = CoverageRaster.FRINGE;
 
     private boolean covOn, covAreaLimit, covFailed;
@@ -471,13 +472,34 @@ final class MapView extends View {
         }
     }
 
-    /** This session's captures by class; a camera icon for photo rows and next to captures with a photo. */
+    /**
+     * This session's captures by class; a camera icon for photo rows and next to captures with a
+     * photo; a flagged capture as a grey cross (see VoidRule.glyph).
+     */
     private void drawCaptures(Canvas c) {
         for (PointRow p : captures) {
             if (!local(p)) continue;
             float[] s = screen(enu[0], enu[1]);
             float x = s[0], y = s[1];
             float r;
+            if (VoidRule.glyph(p) == VoidRule.Glyph.FLAGGED) {
+                // flagged (kept, out of use): a small grey cross, no class symbol, no camera
+                r = 4 * dp;
+                stroke.setColor(Color.WHITE);
+                stroke.setStrokeWidth(3.5f * dp);
+                c.drawLine(x - r, y - r, x + r, y + r, stroke);
+                c.drawLine(x - r, y + r, x + r, y - r, stroke);
+                stroke.setColor(FLAGGED_COLOR);
+                stroke.setStrokeWidth(1.5f * dp);
+                c.drawLine(x - r, y - r, x + r, y + r, stroke);
+                c.drawLine(x - r, y + r, x + r, y - r, stroke);
+                if (labels) {
+                    text.setColor(FLAGGED_COLOR);
+                    label(c, Survey.label(p.cls) + p.n + " ✕", x + r + 2 * dp, y - r, true);
+                    text.setColor(0xFF212121);
+                }
+                continue;
+            }
             switch (p.cls) {
                 case PointRow.SURFACE:
                     r = 4 * dp;

@@ -54,12 +54,25 @@ public class VoidRuleTest {
         assertEquals(13, r.get(1).n);                       // a flagged one stays in the list
         for (PointRow x : r) assertTrue(x.isCapture());    // photo rows left out
         assertEquals(2, r.get(r.size() - 1).n);
-        assertEquals(2, VoidRule.recent(rows.subList(0, 3), 10).size());
+        assertEquals(3, VoidRule.recent(rows.subList(0, 4), 10).size());   // fewer than k; n=4 is a photo row
         assertEquals(1, VoidRule.flaggedCount(rows));
         assertEquals("S13  surface  14 s ago  FLAGGED: moved", VoidRule.recentLine(rows.get(12), 14_500 * MS));
         assertEquals("S14  surface  2 min ago", VoidRule.recentLine(rows.get(13), 150_000 * MS));
         assertEquals("1 h", VoidRule.ageText(3_700_000 * MS));
         assertEquals("?", VoidRule.ageText(-1));
+    }
+
+    @Test public void mapGlyphs() {
+        PointRow s = row(1, PointRow.SURFACE), r = row(2, PointRow.REF), p = row(3, PointRow.PHOTO);
+        assertEquals(VoidRule.Glyph.LIVE, VoidRule.glyph(s));
+        assertEquals(VoidRule.Glyph.LIVE, VoidRule.glyph(r));
+        assertEquals(VoidRule.Glyph.PHOTO, VoidRule.glyph(p));
+        s.voided = true;
+        r.voided = true;
+        assertEquals(VoidRule.Glyph.FLAGGED, VoidRule.glyph(s));
+        assertEquals(VoidRule.Glyph.FLAGGED, VoidRule.glyph(r));
+        PointRow moved = VoidRule.photoRowFor(s, 4);   // a photo row made by a flag keeps its camera
+        assertEquals(VoidRule.Glyph.PHOTO, VoidRule.glyph(moved));
     }
 
     @Test public void reasonsAreSafeInCsvAndEvents() {

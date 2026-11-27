@@ -111,6 +111,19 @@ public final class VoidRule {
         return r.voided ? t + "  FLAGGED: " + (r.voidReason.isEmpty() ? "other" : r.voidReason) : t;
     }
 
+    /** How the map draws a row: its class symbol, a flagged cross, or a photo row's camera. */
+    public enum Glyph { LIVE, FLAGGED, PHOTO }
+
+    /**
+     * The map glyph of a row: PHOTO for any photo row (a row a flag moved photos to keeps its
+     * camera), FLAGGED for a voided capture (a grey cross, never its class symbol or camera),
+     * LIVE otherwise.
+     */
+    public static Glyph glyph(PointRow r) {
+        if (!r.isCapture()) return Glyph.PHOTO;
+        return r.voided ? Glyph.FLAGGED : Glyph.LIVE;
+    }
+
     /** Live captures (photo rows and voided rows not counted). */
     public static int liveCount(List<PointRow> rows) {
         int k = 0;
