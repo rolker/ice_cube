@@ -85,12 +85,15 @@ node red after pass 1 (clear and amber nodes are never touched):
    its z actually sits; on a bank the members of a disc are not centred), weight its main's W,
    red neighbours times `plane_red_weight`; usable: main n_in >= `plane_min_nin`. The node
    itself is excluded. W leaves out the pass-bias part of sigma on purpose: a pass bias
-   offsets a whole pass, and the neighbours share the node's passes, so it mostly shifts
-   the plane (and the node's own pass-2 z with it) rather than tilting it; across a pass
-   seam it can tilt it, and chi and sigma_g are noise-only there. The covariance is (A'WA)^-1 scaled by max(1, chi^2).
+   offsets a whole pass, and the neighbours share the node's passes, so where one pass
+   dominates it shifts the plane and the node's own pass-2 z together (it cancels in
+   z' - a, step 4) rather than tilting the plane; across a pass seam it can tilt it and
+   does not fully cancel, and chi, sigma_g and the agreement test are noise-only there. The covariance is (A'WA)^-1 scaled by max(1, chi^2).
 2. Gates, in order (Surface.plane_code says which failed): at least
-   `plane_min_neighbours` usable; at least `plane_min_clear` of them not red; planarity,
-   chi = sqrt(sum w r^2 / (m - 3)) <= `plane_planarity` (default k_sigma); conditioning,
+   `plane_min_neighbours` usable; at least `plane_min_clear` of them not red;
+   conditioning on the unscaled (A'WA)^-1; planarity, chi = sqrt(sum w r^2 / (m - 3)) <=
+   `plane_planarity` (default k_sigma); conditioning again on the covariance scaled by
+   max(1, chi^2); then significance and the DEM gate below. Conditioning is
    the square root of C_g's larger eigenvalue <= `plane_max_sigma_g` (0.08 m/m: the
    centroids, not the grid offsets, must pin the gradient; at a survey fringe the
    neighbours' members sit on the survey side, their centroids bunch, C_g grows and
@@ -105,9 +108,9 @@ node red after pass 1 (clear and amber nodes are never touched):
    passes); the DEM gate's limit comes from data, so an infinite DEM slope fails it. Conditioning also
    fails unless A'WA passes a Cholesky factorisation and the covariance has var_a > 0
    and C_g positive definite (exactly collinear centroids), and a directional variance
-   u'C_g u that is not positive fails it rather than clamping to 0. Conditioning is
-   checked on the unscaled covariance before planarity, and again after the chi^2
-   scaling, so ill-conditioned centroids stop at conditioning whatever the roundoff.
+   u'C_g u that is not positive fails it rather than clamping to 0. Checking the
+   unscaled covariance before planarity makes ill-conditioned centroids stop at
+   conditioning whatever the roundoff.
 3. Pass 2: every entry reduced to the node centre, z' = z - (gx*dx + gy*dy), with
    v' = sz^2 + (|g| * sh)^2 + d' C_g d (C_g the gradient covariance; the slope-allowance
    term dropped), then the same rebuild as pass 1 (Eeg included). The rebuild treats the
@@ -121,8 +124,9 @@ node red after pass 1 (clear and amber nodes are never touched):
    neighbour plane's prediction at the node, W' the pass-2 main's weight; the cross term
    because the error of z' - a is -dg.d_bar + entry noise - da, and a and g come from the
    same fit). The pass-bias part of sigma'^2 is left out, as it is from the fit's
-   weights: the node and its neighbours share passes, so the bias cancels in z' - a (it
-   stays in the output sigma). Otherwise pass 1 stands. One sweep: fits read pass-1 results only.
+   weights: the node and its neighbours share passes, so the bias cancels in z' - a
+   where one pass dominates (step 1; not fully across a pass seam), and it stays in the
+   output sigma. Otherwise pass 1 stands. One sweep: fits read pass-1 results only.
    The test is looser than k_sigma reads: a is not an independent prediction. The
    neighbours' discs overlap the node's, so their mains share many of the node's
    soundings and a and z' are positively correlated through that noise too (the
@@ -595,8 +599,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         # z' - a has error -dg.d_bar + (entry noise) - da, so its variance carries the
         # cross term 2 d_bar'cov(a, g) besides var_a and the noise part of sigma'^2,
         # 1/W' + d_bar'C_g d_bar. The pass bias is left out: it is shared by the node's
-        # entries and its neighbours' mains, so it cancels in z' - a (var_bias stays in
-        # the output sigma)
+        # entries and its neighbours' mains, so it cancels in z' - a where one pass
+        # dominates (module docstring; var_bias stays in the output sigma)
         cag = fit["cov_ag"]
         vagree = fit["var_a"] + 1.0 / o2["w"] + max(float(vbar), 0.0) + 2.0 * (bx * float(cag[0]) + by * float(cag[1]))
         tol = k_sigma * math.sqrt(max(vagree, 0.0)) if math.isfinite(vagree) else float("nan")
