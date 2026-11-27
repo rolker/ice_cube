@@ -74,3 +74,59 @@ Host decisions (owner may veto): auto capture arms only on an RTK-fixed fix that
 **Plan**: `.agent/work-plans/issue-35/plan.md` at `c2ab992`
 
 Pure-logic arming state machine (AutoCapture) and a per-session pole-axis calibration (PoleCalibration) that reuses TiltSolver.fitAxis; arms only on a fixed, not-young, not-suspect fix (#15), Surface only, off during tilt sets and refs, with an AUTO status line stating the unmet condition. Implementation after #15 merges.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 17:55 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: ready
+
+**Issue**: #35 — Logger: auto capture when the pole is held plumb and still
+**Plan**: `.agent/work-plans/issue-35/plan.md` at `c2ab992`
+**Branch**: `feature/issue-35`
+
+Repository: rolker/ice_cube. Reviewed against main, the owner's answers (2026-11-27), the calibration-routine comment, the Issue Review, the host Checkpoint, the host's answers to the planner's open questions (below), and the #15 plan (read-only, issue-15 worktree).
+
+Host answers to the plan's open questions (owner may veto), now binding on implementation:
+1. Re-arm after the antenna moves more than 3x the scatter limit (6 cm at defaults) horizontally from the last auto capture, OR the pole tilts past the plumb limit.
+2. Auto capture on by default, inert until calibrated; the screen says "calibrate to enable".
+3. Calibration gates as proposed (>= 4 leans, coverage like the tilt gate, fit residual about 1 deg), retuned after the first field run.
+4. Plumb-angle sign/axis convention: a JVM test plus a phone check before merge.
+5. Version after #15's: 0.12.0 if #15 lands as 0.11.0 (versionCode +1 from #15's).
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | One PR, ~10 files, two new pure `core/` classes. The plan's own split point (calibration overlay vs arming line) is sensible if the UI grows. |
+| Issue alignment | Good | Surface only; 2 deg / 2 s / 2 cm as settings; calibration once per session, off until done with the reason shown; off during tilt sets; one capture per stop; MARK tone. Calibration follows the owner's still / lean / twist routine with a #38 extension point and nothing of #38 built. Issue Review actions all addressed (arm only on fixed, not young, not suspect; pure state machine; gloved cues; tilt hook exists as `Survey.tiltRunning()`). Serves: "None stated: the project keeps no goals or design document. Practically: gloved winter ice surveys and fewer accidental captures (#27)." Accepted (project keeps no goals). |
+| File targeting | Needs work | Missing `core/Coverage.java` (see finding 1). Otherwise right: `Survey`, `ImuLogger`, `Feedback`, `Limit`/`Settings`/`SettingsActivity`, `MainActivity`/`MapView`, `PointRow`, tests, `build.gradle`, README, `docs/log.md`. |
+| Consequences | Needs work | The new `method` value is consumed by the logger's own coverage filter, not only by Python readers (finding 1). Python readers checked: no filter breaks. |
+| Principle alignment | Good | Logic in `core/` with JVM tests; fail visibly via the AUTO line; no pre-building of #38; public-repo rule respected (synthetic relative fixtures, owner's lever-arm numbers kept out). Design picture: none (no project design doc), stated. Prior art: reuses `TiltSolver.solve/fitAxis/angleDeg/coverage`, `TiltSet` lean pattern, `EpochAverage`, `FixGuard`. |
+| ADR compliance | Good | No project ADRs; workspace ADRs not triggered. |
+| ROS conventions | N/A | Android app, no ROS. |
+
+### Findings
+
+1. **[Consequences / File targeting] `Coverage.feeds` drops `method=auto` rows.** `logger/.../core/Coverage.java:583-587` feeds only `SINGLE` or `TILT` surface rows. An auto capture with a new `method` value would never feed the live coverage map, so auto-captured points would leave nodes red. Fix during implementation: add the new constant (e.g. `PointRow.AUTO = "auto"`) to `feeds`, add a `CoverageTest` case, and update the `PointRow` method comment (line 29) and the README `points.csv` `method` row (README line ~423). This is the only code consumer that filters on `method`.
+2. **[Consequences] Python readers checked, no filter breaks.** `analysis/qgis/soundings.py` `capture_sigma_inputs` (line ~519) special-cases only `method == "tilt"`; anything else gets the single-capture sigma, which is right for an auto row (same 1 s average path as MARK). `import_sessions.py` stores `method` as text; the "stranded 0.6 session" check (soundings.py ~670) only tests for NULL. `icecube/logger_vectors.py` and the Java `SoundingSigma` mirror the same tilt-only rule. Settle during implementation: mention `auto` in the `soundings.py` docstring (line ~522) and the `import_sessions.py` column note if they list method values; optionally one `test_soundings` case that an `auto` row gets the single sigma. No change to `config.example.toml`.
+3. **[Issue alignment] Re-arm rule: use host answer 1 exactly.** Replace the open question with: re-arm when horizontal distance from the last auto capture position > 3 x `AUTO_SCATTER_CM`, or the plumb angle exceeds `AUTO_PLUMB_DEG`; then the full still window must hold again. Tests in `AutoCaptureTest` already planned for both paths; add the boundary (5.9 vs 6.1 cm at defaults). A MARK press while latched should probably also count as "this stop is taken" (no auto capture right after a manual MARK at the same spot) — settle during implementation.
+4. **[Issue alignment] "Calibrate to enable" text.** Host answer 2: the `NO_CALIBRATION` reason renders as `AUTO: calibrate to enable`. Small, settle during implementation.
+5. **[Approach] Cue chatter (settle during implementation).** `AUTO_ARMED` / `AUTO_OFF` as described fire on "armed or turns off after being armed"; if NOT_PLUMB / MOVING count as off, every walk between points would beep. Suggest cueing only gate changes (calibration done, fix lost/young/suspect, tilt or ref start/end, setting toggled), not the per-stop plumb/still state, which the capture tone already covers.
+6. **[Approach] Stillness window at 1 Hz (settle during implementation).** A 2 s window holds 2-3 epochs; an sd from so few samples is noisy and may never fall under 2 cm or fall under it by luck. Consider max horizontal deviation from the window mean (or the range) as the test, and define the window as epochs within the last `AUTO_HOLD_S` with at least hold/epoch-interval + 1 epochs. Check the rover's epoch rate on the branch and pin it in tests.
+7. **[Approach] Calibration needs RTK fixed epochs.** `TiltSolver.solve` uses antenna positions, so calibration leans should require fixed epochs (as `TiltSet` leans do) and refuse with a reason otherwise; a young fix is acceptable for a relative solve (state which). Also start a calibration only when no tilt set or ref is running, and disable MARK-as-finish semantics during it. Settle during implementation.
+8. **[Dependencies] Rebase on #15.** #15 renames `settling` to `young`, removes MARK's settling refusal (Survey.java ~290) and appends columns `fix_start, float_spell_s, suspect_reason, fix_young`. The shared capture method extracted from `mark()` must carry those columns, so auto rows get them for free; branch from main after #15 merges as planned. Version per host answer 5.
+9. **[Tests] Plumb sign.** Host answer 4: keep the planned `angleDeg(gravity, fitAxis(...))` test that a plumb pole reads ~0 deg and a 5 deg lean reads ~5 deg (not ~175), plus a phone check listed in the PR.
+
+### Summary
+
+A sound, well-reused plan that matches the owner's decisions and the host's answers. One real consequence is missing (the logger's own `Coverage.feeds` filters on `method`); it is a one-line change with a test and does not block starting. The rest are implementation-level details.
+
+### Recommended Actions
+
+- [ ] Add the new `auto` method to `Coverage.feeds` with a `CoverageTest` case; update the `PointRow` method comment and README `method` row.
+- [ ] Implement re-arm per host answer 1 (6 cm horizontal at defaults, or tilt past the plumb limit) with boundary tests.
+- [ ] Show `AUTO: calibrate to enable` when uncalibrated; auto capture on by default.
+- [ ] Settle during implementation: cue only gate changes; stillness test robust at 1 Hz; calibration requires fixed epochs and no running tilt/ref; MARK while latched counts as taken; Python docstrings mention `auto`.
+- [ ] Branch after #15 merges; version 0.12.0 (or one minor past #15's); carry #15's columns through the shared capture path.
+- [ ] Plumb sign test plus phone check before merge.
