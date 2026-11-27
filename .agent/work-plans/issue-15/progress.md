@@ -73,3 +73,11 @@ No project principles document exists, so the checks are the project's CLAUDE.md
 **Decision**: proceed
 
 Owner's answers (2026-11-27): young fix: "Amber warning, capture (Recommended)" (capture, warning cue, record the fix age; processing flags it); settle time: "120 s (Recommended)" (a setting); scope: "Narrow first PR, open follow-ups (Recommended)". First PR: float-spell rule (a fix starting inside or after a float spell is suspect whatever the jump; start jump measured from float epochs only, unknown without one), young-fix amber warning + recorded age with settle 120 s, new columns appended after fix_age_s/fix_jump_m/fix_suspect, synthetic epoch-sequence tests for the three field cases, README. Follow-ups opened: #39 height test, #40 extra cues (sats, ratio/GST, correction age), #41 retune on past sessions; the "validated by a known point" mark goes to #23 (comment posted). Context: the owner is preparing to survey ice accumulation this winter (cm-level differences between sessions).
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 17:46 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-15/plan.md` at `c5af79b`
+
+First PR only, as the owner scoped it: float-only start jump plus a float-spell suspect rule in FixGuard, the 120 s settle becomes a young-fix amber warning (capture allowed, `fix_young` recorded), four columns appended after `void_reason`, synthetic tests for the three field cases, python/importer/soundings port, README and version 0.11.0. Six open questions are listed in the plan.
