@@ -524,4 +524,29 @@ Merge resolution checked: both features intact (0.6 method/tilt columns and per-
 - [x] (suggestion) find_sessions keeps one source per session name before refs_csv_dated runs, so a refs.csv copy in a second export of the same session never reaches the newest-copy rule; collect refs.csv from every found source or document it (codex) — `analysis/qgis/import_sessions.py:623`
 - [x] (suggestion) Sessions marked current at schema 4 without a re-read keep n_voided NULL; set 0 when marking them current (codex) — `analysis/qgis/import_sessions.py:615`
 - [x] (suggestion) test_schema3_reread_fills_void_only_for_09_sessions fakes schema 3 by NULLing columns; add a case with a gpkg lacking the void/void_copy_mtime/n_voided columns and assert n_voided and a refs.csv ref's void are filled (Claude) — `analysis/qgis/tests/test_import.py:472`
-- [ ] (suggestion) When the planned photo target is flagged while the camera is open, the fallback checks only lastCapture; an earlier live capture within 60 s is missed if a newer capture was made meanwhile (PR B scope possible) (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:643`
+- [x] (suggestion) When the planned photo target is flagged while the camera is open, the fallback checks only lastCapture; an earlier live capture within 60 s is missed if a newer capture was made meanwhile (PR B scope possible) (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:643` (deferred: host decision: the camera-target fallback goes to PR B)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:49 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #33 at `183133c`
+**Addressed**: Local Review at `9b5a108` (2026-11-26 19:39 -05:00)
+**Commits**: 58fe15b, 70fc8b5, bb48aa6, ee35d62, 603c8b1, d9a83c8, 183133c
+
+### Actions
+- [x] (must-fix) A voided capture's photo row (same utc, VoidRule.photoRowFor) makes no capture window, so an accidental capture with photos no longer marks the real pole stop dup_capture; tests for accidental-with-photo-row (full build, include_voided too) and the window rule — `analysis/qgis/soundings.py:clist_windows`
+- [x] stranded_06 compares with SCHEMA_TILT = 3 (the schema of the 0.6 columns), not SCHEMA_VERSION; test covers schema 3 and 4 — `analysis/qgis/soundings.py:659`
+- [x] Host decision applied: the phone (VoidRule.liveRefs, now taking copies with file times; PointRow.voidKnown) and the importer (import_refs_csv, within a run and against a stored flag) both take a ref's flag from the newest copy with a void value, ties resolve to flagged, a pre-0.9.0 row never decides; tests both sides; documented in import_sessions docstrings and logger/README.md; partial-write event text updated — `analysis/qgis/import_sessions.py:381`, `logger/.../core/VoidRule.java`
+- [x] logger/README.md documents the partial-write event form (k of m copies, unreadable count) and its effect — `logger/README.md:209`
+- [x] find_sessions keeps set-aside copies in SessionSource.others; the importer reads refs.csv from every export (refs_csv_copies); test with two exports — `analysis/qgis/logger_session.py:find_sessions`, `analysis/qgis/import_sessions.py:623`
+- [x] Sessions marked current without a re-read get n_voided coalesce(n_voided, 0) — `analysis/qgis/import_sessions.py:615`
+- [x] New test: schema-3 gpkg lacking void/void_reason/void_copy_mtime/n_voided upgrades (n_voided 1 and 0, captures void, refs.csv ref void filled) — `analysis/qgis/tests/test_import.py`
+- [x] Camera-target fallback misses an earlier live capture — `logger/.../Survey.java:643` (deferred: host decision, PR B scope)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 131 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
+- `./gradlew testDebugUnitTest --max-workers 4`: 182 tests, 0 failures, 0 errors (C: 114 GB free)
+- Not pushed; the host owns the push.
