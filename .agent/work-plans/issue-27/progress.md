@@ -403,3 +403,26 @@ Fix the open suggestion: import_refs_csv's flagged count comes from the refs tab
 - [x] import_refs_csv flagged count now read from the refs table (source refs.csv, void=1) for the imported keys; test extended for a later pre-0.9.0-only run — `analysis/qgis/import_sessions.py:362`
 
 Tests: `python3 -m unittest discover -s analysis/qgis/tests` OK (103, 5 skipped).
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:16 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: approved
+
+**PR**: #33 at `eae8b68`
+**Depth**: Deep (reason: 31 files, about 1,900 lines across the logger app and the QGIS readers; PR-mode round 1, so the round-3 convergence exception does not apply)
+**Must-fix**: 0 | **Suggestions**: 7
+
+PR-mode round 1 (no earlier PR-mode Local Review entry); full whole-diff review, cross-model included. The fix in 8619946 is correct: the per-row parameterised SELECT runs after the upsert and void UPDATE on the same connection, `coalesce` covers NULL void in older gpkgs, and the test pins the pre-0.9.0-only run at (1, 1). Static: no linter installed in this environment (ruff/flake8/pyflakes missing; no project lint config); py_compile on the changed Python is clean; Java not linted. Tests: `python3 -m unittest discover -s analysis/qgis/tests` Ran 103, OK (skipped=5). Public-repo check: fixtures use synthetic coordinates (10/20 degrees). No PR comments, reviews or CI checks. Codex rated items 2 and 5 below must-fix; downgraded because nothing calls voidCapture/setVoid yet (the UI is PR B), the zip/dir signature predates this PR, and setVoid keeps lines it cannot parse. Dropped: gemini's concurrent toCsv read (no caller yet), parse() of a 28-column row (speculative), and unsplit EXCLUDING checks (every site already splits on ':').
+
+Cross-model: gemini completed (7 findings), codex completed (3 findings).
+
+### Findings
+- [ ] (suggestion) import_refs_csv: rows seen counts every refs.csv row, but the flagged count covers only rows stored with source='refs.csv', so a voided ref of a session imported from points.csv counts as seen but not as flagged (reproduced: returns (1, 0)); document the choice or drop the source filter, and pin it with a test (Claude adversarial + gemini) — `analysis/qgis/import_sessions.py:367`
+- [ ] (suggestion) The re-import signature is name+size only, so a points.csv whose void flag flips 0->1 with an empty reason keeps its size and the re-import is skipped; add mtime or a hash before PR B wires voidCapture (codex) — `analysis/qgis/logger_session.py:147`
+- [ ] (suggestion) The newest-copy rule holds only within a run: a later run whose only copy is an older 0.9.0 refs.csv (void column, void=0) clears a flag stored from a newer copy, because the stored row keeps no mtime (gemini) — `analysis/qgis/import_sessions.py:360`
+- [ ] (suggestion) Owner call: a voided capture makes no capture window, so stops_from_epochs can find the same stationary period and emit a use=1 pole-stop sounding at a capture voided as 'moved' or a bad ref (gemini) — `analysis/qgis/soundings.py:739`
+- [ ] (suggestion) RefsStore.setVoid rewrites line by line, but PointRow.text() quotes fields holding line breaks, so a multi-line record would be handled as fragments; forbid line breaks in text() or read whole records (codex) — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:95`
+- [ ] (suggestion) setVoid reports success when one refs.csv copy was updated and another could not be written, and readAll can still serve the stale unvoided copy (codex) — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:86`
+- [ ] (suggestion) import_session stores void_reason even when void=0, unlike import_refs_csv's `reason if void else None` (gemini) — `analysis/qgis/import_sessions.py:259`
