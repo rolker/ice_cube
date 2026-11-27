@@ -155,3 +155,56 @@ Host answers to the planner's six open questions (owner may veto; the review fou
 **Plan**: `.agent/work-plans/issue-15/plan.md` at `1886544`
 
 Revision after the Plan Review (needs-work): added the PoleCheck young-ref skip, a distinct YOUNG cue, a one-time settle migration (pure core function plus test), the 150 s vector case, worst-case young refs with ref jump gathered on every fixed epoch, a Python port trimmed to the float-spell rule, and the per-lean tilt header choice. Open Questions replaced by the host's six answers.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 17:49 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: ready
+
+**Issue**: #15 — Logger: retune the false-fix guard (start-of-session false alarms, a missed false fix)
+**Plan**: `.agent/work-plans/issue-15/plan.md` at `1886544`
+**Branch**: `feature/issue-15`
+
+Re-review after the revision for the Plan Review at 7b8f635. All six earlier findings are resolved against main's code. The revision adds one wording problem in step 1 (finding 1) and a few small items; none needs another plan round. Each is listed below to settle during implementation.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Narrow first PR as the owner chose; #39, #40, #41, #23 hold the rest. The python port is still named as the part to split off. |
+| Issue alignment | Good | Cases A, B, C and the owner's three answers covered; Decisions record the host's six answers. Serves: "Survey-readiness for cm-level ice accumulation between sessions (false fixes are the largest error term); project has no goals or design document: none." |
+| File targeting | Good | PoleCheck, SettleMigration, Feedback, logger_vectors.py now listed. Small gaps (findings 3, 4) are in files already listed. |
+| Consequences | Good | Young-ref row added; the "ShareZip check" in the points.csv row does not exist on main (ShareZip does not read PointRow's header); `RefsStore` (line 140) rewrites the refs.csv header to the new `REFS_HEADER` itself. Minor (finding 5). |
+| Principle alignment | Good | Unknown is neither suspect nor clean; appended columns; synthetic tests; relative numbers only. |
+| ADR compliance | Good | The project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Earlier findings checked
+
+1. PoleCheck young-ref skip with test, voided-row skip and #23 note kept: resolved (step 3, Refs/Pole check).
+2. Distinct `Feedback.Cue.YOUNG`, README cue list: resolved (step 3a).
+3. One-time settle migration with marker pref; pure `core/SettleMigration` with JVM test since `Settings` has no JVM seam (tests are only under `core/`): resolved (step 4).
+4. `fix_age_past_settle` (logger_vectors.py:91, age 90.0) moved to 150 s before regenerating; `fix_age_45` and `tilt_capture_settling` (30 s) stay inside the window: resolved.
+5. Ref young if the age at its first counted epoch is under the limit; `refJump`/`refSuspect` gathered on every fixed epoch: resolved.
+6. Python port trimmed to the float-spell rule; per-lean `OBS_HEADER` keeps its three columns, new ones only on the combined tilt row: resolved.
+
+### Findings (all to settle during implementation, none blocking)
+
+1. **[Approach]** Step 1 says the jump is measured "only from the last float epoch" and that after anything else it is unknown, yet it keeps a `fixed-jump` prior. On main, `FixGuard.onEpoch` also starts a stretch on a step > 0.5 m between fixed epochs and measures its jump from that fixed epoch (`withinFix`); a 2 m in-fix jump is suspect today. Read literally, step 1 would make it unknown and not suspect, which is a regression, and it would break parity with `fix_stretches`, which measures from `ep.fix[prev] in (4, 5)`. Implement it as: the jump comes from the previous float **or fixed** epoch (<= 2 s); it is unknown after single/DGPS, no position, the first epoch or a gap. Keep a FixGuardTest case for a suspect in-fix jump.
+2. **[Approach]** The plan says `verify_suspect` "can still clear a float-spell stretch", but on main it selects only rows flagged `suspect_jump` (soundings.py:1107) and renames only that flag (line 1136). Extend both to `float_spell` (or decide it stays uncleared and say so in the docs).
+3. **[File targeting]** Smaller UI and setting work in files already listed: `MapView.java:574` ref banner "PAUSED: fix settling" and `Survey.RefView.settling` (line 125-127, which sets `paused`) go along with the tilt banner text; `Limit.FLOAT_SPELL_S` needs a pref key in `Settings.LIMIT_KEYS`/`LIMITS` and a FixGuard constructor/`setLimits` parameter; the python float-spell threshold needs a `DEFAULTS` entry (e.g. `float_spell_s`), and an `icecube.example.toml`/config note if it is user-facing.
+4. **[Approach]** Run the settle migration wherever the setting is first read, not only at service start: `SettingsActivity` can be opened before the service ever runs and would show 10. Calling it from `Settings.prefs()` (or both entry points) is enough.
+5. **[Consequences]** Drop "ShareZip check" from the points.csv row (no such check on main) and add `RefsStore` (header rewrite, older rows parsed short) so the row is right.
+
+### Summary
+
+The revision took in every earlier finding correctly. The one point to get right in code is finding 1 (keep fixed epochs as a jump source for in-fix jumps); the rest is bookkeeping. Ready for implementation.
+
+### Recommended Actions
+
+- [ ] Measure the start jump from the previous float or fixed epoch; unknown only after single/DGPS/none/gap; keep an in-fix suspect test (finding 1).
+- [ ] Extend `verify_suspect` to `float_spell` or document that it is not cleared (finding 2).
+- [ ] Ref banner/RefView, FLOAT_SPELL_S wiring, python `float_spell_s` default (finding 3).
+- [ ] Run the migration on first read of the setting (finding 4).
+- [ ] Fix the consequences row wording (finding 5).
