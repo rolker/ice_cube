@@ -356,37 +356,46 @@ def localise(ep: Epochs, frame, history: BaseHistory, pole_at):
 
 def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_speed=2.0, gap_s=2.0,
                   station=None, float_spell_s=DEFAULTS["float_spell_s"]):
-    """The logger's false-fix guard (logger FixGuard) over a log: a stretch of RTK fixed
-    epochs starts when the previous epoch was not fixed, is over gap_s older, or is further
-    than max(in_fix_jump_m, in_fix_speed * dt) away, or the reference station changed. The
-    stretch's jump is the 3D step from the previous epoch with a position, if that was float
-    or fixed and <= gap_s older (else None). Suspect when the jump is over suspect_jump_m or
-    (logger 0.11.0, #15) the stretch starts right after a run of float epochs (no gap over
-    gap_s) of at least float_spell_s, measured from the run's first epoch to the fix (0:
-    rule off). Fills stretch (-1 when not fixed), fix_age (s since the stretch start), jump
-    (m or None), suspect, suspect_why, float_spell."""
-    idx, start, jump, prev, prev_fixed = -1, None, None, None, False
+    """The logger's false-fix guard (logger FixGuard) over a log. A fixed epoch continues the
+    last stretch when the last fixed epoch is at most gap_s older, no float epoch came
+    between, the reference station is the same and the step from it is at most
+    max(in_fix_jump_m, in_fix_speed * dt); so a dropout of gap_s or less inside a fix (no
+    position, single or DGPS epochs) does not end the stretch (#15). Otherwise a stretch
+    starts. Its jump is the step from that last fixed epoch for a step inside a fix, else
+    the 3D step from the previous epoch with a position, if that was float or fixed and
+    <= gap_s older (else None). Suspect when the jump is over suspect_jump_m or (logger
+    0.11.0, #15) the stretch starts right after a float spell of at least float_spell_s,
+    measured from the spell's first float epoch to the fix (0: rule off). A spell
+    carries over a dropout of gap_s or less (non-float epochs, or none), so a one-epoch
+    dropout before the fix cannot hide it. Fills stretch (-1 when not fixed), fix_age (s
+    since the stretch start), jump (m or None), suspect, suspect_why, float_spell."""
+    idx, start, jump, prev, last_fix = -1, None, None, None, None
     why, spell = "", None
-    float_since, last_t, last_float = None, None, False
+    float_since, last_float_t = None, None
     for i in range(len(ep)):
         has = ep.x[i] is not None
         fixed = ep.fix[i] == 4 and has and (station is None or ep.station[i] in (station, -1))
+        is_float = ep.fix[i] == 5 and has
+        spell_on = float_since is not None and ep.t[i] - last_float_t <= gap_s
         if fixed:
-            new = prev is None or not prev_fixed or ep.t[i] - ep.t[prev] > gap_s
-            if not new:
-                d = math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[prev], ep.y[prev], ep.za[prev]))
-                dt = ep.t[i] - ep.t[prev]
-                new = d > max(in_fix_jump_m, in_fix_speed * dt) or ep.station[i] != ep.station[prev]
+            new, within = True, False
+            if last_fix is not None and ep.t[i] - ep.t[last_fix] <= gap_s \
+                    and ep.station[i] == ep.station[last_fix]:
+                d = math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[last_fix], ep.y[last_fix], ep.za[last_fix]))
+                within = d > max(in_fix_jump_m, in_fix_speed * (ep.t[i] - ep.t[last_fix]))
+                new = within
             if new:
                 idx += 1
                 start = ep.t[i]
                 # from a float or fixed epoch only: a first fix after single/DGNSS epochs (no
                 # corrections yet) always "jumps" by metres; that is not a false-fix signature
-                jump = (math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[prev], ep.y[prev], ep.za[prev]))
-                        if prev is not None and ep.t[i] - ep.t[prev] <= gap_s and ep.fix[prev] in (4, 5)
-                        else None)
-                spell = (ep.t[i] - float_since if last_float and float_since is not None
-                         and ep.t[i] - last_t <= gap_s else None)
+                if within:
+                    jump = d
+                elif prev is not None and ep.t[i] - ep.t[prev] <= gap_s and ep.fix[prev] in (4, 5):
+                    jump = math.dist((ep.x[i], ep.y[i], ep.za[i]), (ep.x[prev], ep.y[prev], ep.za[prev]))
+                else:
+                    jump = None
+                spell = ep.t[i] - float_since if spell_on and not within else None
                 reasons = []
                 if jump is not None and jump > suspect_jump_m:
                     reasons.append("jump")
@@ -395,17 +404,17 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
                 why = ";".join(reasons)
             ep.stretch.append(idx); ep.fix_age.append(ep.t[i] - start); ep.jump.append(jump)
             ep.suspect.append(bool(why)); ep.suspect_why.append(why); ep.float_spell.append(spell)
+            last_fix, float_since = i, None
         else:
             ep.stretch.append(-1); ep.fix_age.append(None); ep.jump.append(None); ep.suspect.append(False)
             ep.suspect_why.append(""); ep.float_spell.append(None)
-        is_float = ep.fix[i] == 5 and has
-        if not is_float:
-            float_since = None
-        elif float_since is None or not last_float or ep.t[i] - last_t > gap_s:
-            float_since = ep.t[i]
-        last_float, last_t = is_float, ep.t[i]
+            if is_float:
+                last_fix = None                   # a float epoch ends the stretch
+                if not spell_on:
+                    float_since = ep.t[i]
+                last_float_t = ep.t[i]
         if has:
-            prev, prev_fixed = i, fixed
+            prev = i
 
 
 # ----------------------------------------------------------------------------- pole stops

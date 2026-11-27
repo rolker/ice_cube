@@ -105,6 +105,43 @@ class TestStretchesAndStops(unittest.TestCase):
         self.assertAlmostEqual(ep.jump[j], 1.2, delta=0.01)
         self.assertEqual(ep.suspect_why[j], "jump")
 
+    def test_dropout_parity_with_logger_fixguard(self):
+        """#15, FixGuardTest shortDropoutInsideAFixKeepsTheStretch and
+        floatSpellCarriesOverAShortDropout: a dropout (no position, single or DGPS) of 2 s or
+        less inside a fix keeps the stretch, a longer one ends it, a float epoch always ends
+        it; a float spell carries over a dropout of 2 s or less before the fix."""
+        def run(track):
+            ep = epochs_from(track)
+            for k, (_, _, _, _, f) in enumerate(track):
+                if f == 0:                                     # no position
+                    ep.x[k] = ep.y[k] = ep.za[k] = ep.z[k] = None
+            snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0)
+            return ep
+        seg = lambda t0, s, q, e=0.0, n=0.0: [(t0 + k / 4, e, n, 1.8, q) for k in range(int(s * 4))]  # noqa: E731
+        for q in (0, 1, 2):
+            # fix 2..7.25 s, 7 dropout epochs, fix again 2 s after the last fixed epoch
+            tr = seg(0, 2, 5) + seg(2, 5.25, 4) + seg(7.25, 1.75, q, e=3.0) + seg(9, 1, 4, e=0.1)
+            tr += seg(10, 3, q, e=3.0) + seg(13, 1, 4, e=0.1)   # 3.25 s since the last fix: new
+            ep = run(tr)
+            i = ep.t.index(min(t for t in ep.t if t - ep.t[0] >= 9 - 1e-6))
+            self.assertEqual(ep.stretch[i], 0, q)
+            self.assertAlmostEqual(ep.fix_age[i], 7.0, delta=0.01)
+            self.assertEqual(max(ep.stretch), 1, q)
+        ep = run(seg(0, 0.25, 5) + seg(0.25, 0.25, 4) + seg(0.5, 0.25, 0) + seg(0.75, 0.25, 4, n=1.2))
+        self.assertEqual(max(ep.stretch), 1)                 # a jump inside the fix across a dropout
+        j = ep.stretch.index(1)
+        self.assertAlmostEqual(ep.jump[j], 1.2, delta=0.01)
+        self.assertEqual(ep.suspect_why[j], "jump")
+        ep = run(seg(0, 0.25, 4) + seg(0.25, 0.25, 5) + seg(0.5, 0.25, 4))
+        self.assertEqual(max(ep.stretch), 1)                 # one float epoch ends it
+        for q in (0, 1, 2):                                  # 2026-11-21 shape, one-epoch dropout
+            ep = run(seg(0, 60, 5) + seg(60, 0.25, q, e=3.0) + seg(60.25, 2, 4, n=0.48))
+            i = ep.stretch.index(0)
+            self.assertEqual(ep.suspect_why[i], "float_spell", q)
+            self.assertAlmostEqual(ep.float_spell[i], 60.25, delta=0.01)
+        ep = run(seg(0, 60, 5) + seg(60, 3, 1, e=3.0) + seg(63, 2, 4, n=0.48))
+        self.assertFalse(ep.suspect[ep.stretch.index(0)])     # over 2 s: the spell is over
+
     def test_stops(self):
         tr, s = [], 0.0
         for k in range(20):                      # still 5 s, 3 mm wobble

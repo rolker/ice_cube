@@ -134,12 +134,79 @@ public class FixGuardTest {
         assertTrue(Double.isNaN(s.jump));
         assertEquals(FixGuard.PRIOR_NONE, s.prior);
         assertFalse(s.suspect);
-        assertNull(g.onEpoch(new Epoch(Q, 0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0)));
+        assertNull(g.onEpoch(noPos(Q)));
         assertNull(g.current());
-        // back to fixed: jump from the last position (0.5 s old, a fixed epoch)
-        FixGuard.Stretch t = g.onEpoch(ep(2 * Q, 4, 0, 0.2, 0));
-        assertEquals(0.2, t.jump, 1e-4);
-        assertEquals(FixGuard.PRIOR_NONE, t.prior);
+        // back to fixed within 2 s and 0.5 m: the same stretch (#15, a short dropout)
+        assertNull(g.onEpoch(ep(2 * Q, 4, 0, 0.2, 0)));
+        assertEquals(s, g.current());
+        // after more than 2 s without position: a new stretch, jump unknown
+        for (long t = 3 * Q; t < 3 * Q + 3 * S; t += Q) g.onEpoch(noPos(t));
+        FixGuard.Stretch t = g.onEpoch(ep(3 * Q + 3 * S, 4, 0, 0.2, 0));
+        assertNotNull(t);
+        assertTrue(Double.isNaN(t.jump));
+        assertEquals(FixGuard.PRIOR_GAP, t.prior);   // no position for over 2 s
+    }
+
+    static Epoch noPos(long t) { return new Epoch(t, t / 1e9, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0); }
+
+    // #15 parity with soundings.fix_stretches (test_soundings test_dropout_parity_with_logger_fixguard):
+    // a dropout of 2 s or less inside a fix keeps the stretch; a longer one ends it
+    @Test public void shortDropoutInsideAFixKeepsTheStretch() {
+        for (int q : new int[] {0, 1, 2}) {   // no position, single, DGPS
+            FixGuard g = guard();
+            feed(g, 0, 2, 5, 0, 0, 0);
+            FixGuard.Stretch a = g.onEpoch(ep(2 * S, 4, 0, 0, 0));
+            long t = feed(g, 2 * S + Q, 5, 4, 0, 0, 0);
+            for (long u = t; u < t + 7 * Q; u += Q) g.onEpoch(q == 0 ? noPos(u) : ep(u, q, 3, 0, 0));
+            assertNull(g.current());
+            assertNull(g.onEpoch(ep(t + 7 * Q, 4, 0.1, 0, 0)));   // 2 s after the last fixed epoch: same stretch
+            assertEquals(a, g.current());
+            assertTrue(g.young(t + 7 * Q));          // the age runs on from the stretch start
+            assertEquals(7, (int) a.ageSeconds(t + 7 * Q));
+            assertEquals(1, g.count());
+            // 3 s: a new stretch
+            long v = feed(g, t + 8 * Q, 1, 4, 0.1, 0, 0);
+            for (long u = v; u < v + 3 * S; u += Q) g.onEpoch(q == 0 ? noPos(u) : ep(u, q, 3, 0, 0));
+            FixGuard.Stretch b = g.onEpoch(ep(v + 3 * S, 4, 0.1, 0, 0));
+            assertNotNull(b);
+            assertEquals(2, g.count());
+        }
+        // a step over the in-fix limit across a short dropout is a jump inside the fix
+        FixGuard g = guard();
+        g.onEpoch(ep(0, 5, 0, 0, 0));
+        g.onEpoch(ep(Q, 4, 0, 0, 0));
+        g.onEpoch(noPos(2 * Q));
+        FixGuard.Stretch c = g.onEpoch(ep(3 * Q, 4, 0, 1.2, 0));
+        assertNotNull(c);
+        assertEquals(FixGuard.PRIOR_FIXED_JUMP, c.prior);
+        assertEquals(1.2, c.jump, 0.01);
+        assertTrue(c.suspect);
+        // a float epoch ends the stretch, however short
+        FixGuard h = guard();
+        h.onEpoch(ep(0, 4, 0, 0, 0));
+        h.onEpoch(ep(Q, 5, 0, 0, 0));
+        assertNotNull(h.onEpoch(ep(2 * Q, 4, 0, 0, 0)));
+    }
+
+    /** The 2026-11-21 shape with a one-epoch dropout before the fix: the float spell carries over it. */
+    @Test public void floatSpellCarriesOverAShortDropout() {
+        for (int q : new int[] {0, 1, 2}) {
+            FixGuard g = guard();
+            long t = feed(g, 0, 60, 5, 0, 0, 0);
+            g.onEpoch(q == 0 ? noPos(t) : ep(t, q, 3, 0, 0));
+            FixGuard.Stretch s = g.onEpoch(ep(t + Q, 4, 0, 0.48, 0));
+            assertTrue(s.suspect);
+            assertEquals(FixGuard.REASON_FLOAT_SPELL, s.reason);
+            assertEquals(FixGuard.PRIOR_FLOAT, s.prior);
+            assertEquals(60.25, s.floatSpellS, 1e-9);
+        }
+        // a dropout over 2 s ends the spell
+        FixGuard g = guard();
+        long t = feed(g, 0, 60, 5, 0, 0, 0);
+        t = feed(g, t, 3, 1, 3, 0, 0);
+        FixGuard.Stretch s = g.onEpoch(ep(t, 4, 0, 0.48, 0));
+        assertFalse(s.suspect);
+        assertEquals(FixGuard.PRIOR_SINGLE, s.prior);
     }
 
     @Test public void distanceIsHorizontalWithoutHeight() {
@@ -183,14 +250,20 @@ public class FixGuardTest {
         FixGuard g = new FixGuard(10 * S, 1.0, 0);
         long t = feed(g, 0, 60, 5, 0, 0, 0);
         assertFalse(g.onEpoch(ep(t, 4, 0, 0.48, 0)).suspect);
-        // single epochs break a float run: only the last float run counts
+        // single epochs over 2 s break a float run: only the last float run counts
         FixGuard h = guard();
         t = feed(h, 0, 30, 5, 0, 0, 0);
-        t = feed(h, t, 1, 1, 0, 0, 0);
+        t = feed(h, t, 3, 1, 0, 0, 0);
         t = feed(h, t, 10, 5, 0, 0, 0);
         FixGuard.Stretch s = h.onEpoch(ep(t, 4, 0, 0.1, 0));
         assertEquals(10, s.floatSpellS, 1e-9);
         assertFalse(s.suspect);
+        // 1 s of single epochs does not (#15): the spell runs on from the first float epoch
+        FixGuard m = guard();
+        t = feed(m, 0, 30, 5, 0, 0, 0);
+        t = feed(m, t, 1, 1, 0, 0, 0);
+        t = feed(m, t, 10, 5, 0, 0, 0);
+        assertEquals(41, m.onEpoch(ep(t, 4, 0, 0.1, 0)).floatSpellS, 1e-9);
         // a gap in the float run restarts it
         FixGuard k = guard();
         t = feed(k, 0, 30, 5, 0, 0, 0);

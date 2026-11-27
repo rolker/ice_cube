@@ -261,10 +261,13 @@ In the field data (2026-11-11) several RTK "fixed" stretches were wrong: each be
 in height (and horizontally suspect) for minutes; ordinary captures in them were bad. A
 normal float-to-fix step moves a few centimetres to a few decimetres. So the app follows
 the stretches of RTK fixed GGA epochs:
-- A stretch starts at any epoch of quality 4 after one that was not (float, single, no
-  position), and also when two consecutive fixed epochs are more than 0.5 m apart (or
-  2 m/s times their time difference, if that is more: a step a moving pole cannot make;
-  at 4 Hz that is 0.5 m) or more than 2 s apart (the GPS went quiet).
+- A stretch starts at an epoch of quality 4 unless it continues the last one: the last
+  fixed epoch is at most 2 s older, no float epoch came between, and the two are at most
+  0.5 m apart (or 2 m/s times their time difference, if that is more: a step a moving
+  pole cannot make; at 4 Hz that is 0.5 m). So a float epoch, a step, or more than 2 s
+  since the last fixed epoch (the GPS went quiet, or gave no position, single or DGPS)
+  starts a new stretch; from 0.11.0 a dropout of 2 s or less inside a fix (no position,
+  single or DGPS epochs) does not, and the stretch's age runs on through it.
 - The jump at stretch start is the 3D distance from the previous epoch with a position to
   the first fixed one, only if that epoch was float or fixed and at most 2 s older. From
   0.11.0 it is unknown (empty) after single or DGPS epochs: the first fix of a session (no
@@ -276,8 +279,10 @@ the stretches of RTK fixed GGA epochs:
   (or `jump=unknown after single`, `(jump between fixed epochs)`, ...) with
   `suspect: jump`, `suspect: float_spell` or `suspect: jump;float_spell` when it is.
 - Suspect, for the whole stretch: the jump was over the jump warning (Settings, default
-  1.0 m), or (0.11.0) the stretch began right after a float spell (consecutive float
-  epochs, no 2 s gap) at least the float spell limit long (Settings, default 20 s). On
+  1.0 m), or (0.11.0) the stretch began right after a float spell at least the float
+  spell limit long (Settings, default 20 s), from its first float epoch to the fix. The
+  spell carries over a dropout of 2 s or less (no epochs, or non-float ones), so one
+  single epoch just before the fix does not hide it; a longer dropout ends it. On
   2026-11-21 a fix after a long float spell jumped only 0.48 m and was false; a fix that
   takes long to come is the one most likely to be wrong. Captures are allowed, but the
   notice is amber, `… fix may be false (jumped 2.2 m)` or `… (after a long float spell)`,

@@ -5,11 +5,12 @@ package rink.icecube.logger.core;
  * capture from a young fix gets a warning and the fix is flagged when it began in a way
  * false fixes begin.
  *
- * A stretch starts at an epoch of quality 4 when
- * - the previous epoch was not fixed (float, single, no position, ...), or there was none;
- * - the previous epoch was fixed but this one is more than {@link #inFixLimit} away from it
- *   (0.5 m, more for slow GGA rates: a step a moving pole cannot make between two epochs); or
- * - the previous epoch is more than {@link #GAP_NS} (2 s) older (the GPS went quiet).
+ * A stretch starts at an epoch of quality 4 unless it continues the last one: the last
+ * fixed epoch is at most {@link #GAP_NS} (2 s) older, no float epoch came between, and this
+ * one is at most {@link #inFixLimit} away from it (0.5 m, more for slow GGA rates: a step a
+ * moving pole cannot make between two epochs). So a dropout of 2 s or less inside a fix (no
+ * position, single or DGPS epochs) does not end the stretch; a longer one, a float epoch, a
+ * quiet GPS over 2 s or a bigger step does (#15; soundings.fix_stretches is the same).
  *
  * The jump at stretch start is the 3D distance (m) from the previous epoch with a position
  * to the first fixed epoch, only if that previous epoch was float or fixed and is at most
@@ -21,7 +22,9 @@ package rink.icecube.logger.core;
  * - the jump is over suspectJumpM (field: false fixes began with 1.3 to 2.9 m jumps), or
  * - the stretch starts right after a float spell of at least floatSpellNs (0: rule off):
  *   a fix that took long to come may be wrong by decimetres with only a small jump (field,
- *   2026-11-21: 0.48 m jump after a long float spell, a false fix).
+ *   2026-11-21: 0.48 m jump after a long float spell, a false fix). The spell runs from its
+ *   first float epoch to the fix, and carries over a dropout of 2 s or less (non-float
+ *   epochs, or none), so a one-epoch dropout just before the fix cannot hide it.
  *
  * Young: for youngNs after a stretch starts the fix may still be settling by centimetres
  * (field, 2026-11-26: +6 to +9 cm at 95-113 s). Captures go ahead with a warning; the
@@ -72,8 +75,9 @@ public final class FixGuard {
     private double suspectJumpM;
     private Epoch prev;            // the previous epoch with a position
     private Epoch last;            // the previous epoch, with a position or not
-    private boolean prevFixed;
-    private long floatSinceNs = -1;   // first epoch of the current float run, -1 if the last epoch was not float
+    private Epoch lastFix;         // the last fixed epoch of the open stretch; null after a float epoch
+    private long floatSinceNs = -1;   // first epoch of the float spell, -1 if none (fix since, or over 2 s ago)
+    private long lastFloatNs;         // last float epoch of that spell
     private Stretch current, lastStretch;
     private int count;
 
@@ -98,24 +102,30 @@ public final class FixGuard {
     public Stretch onEpoch(Epoch e) {
         if (e == null) return null;
         Stretch started = null;
+        boolean isFloat = e.quality == 5 && e.hasPosition();
+        // a float spell lives on through a dropout of up to 2 s after its last float epoch
+        boolean spellOn = floatSinceNs >= 0 && e.elapsedNs - lastFloatNs <= GAP_NS;
         if (e.fixed()) {
-            boolean recent = prev != null && e.elapsedNs - prev.elapsedNs <= GAP_NS;
-            double d = recent ? distance(prev, e) : Double.NaN;
-            boolean withinFix = recent && prevFixed && current != null
-                    && d > inFixLimit((e.elapsedNs - prev.elapsedNs) / 1e9);
-            if (current == null || !recent || !prevFixed || withinFix) {
+            boolean cont = lastFix != null && lastStretch != null && e.elapsedNs - lastFix.elapsedNs <= GAP_NS;
+            double dFix = cont ? distance(lastFix, e) : Double.NaN;
+            boolean withinFix = cont && dFix > inFixLimit((e.elapsedNs - lastFix.elapsedNs) / 1e9);
+            if (cont && !withinFix) {
+                current = lastStretch;   // same stretch, also after a short dropout
+            } else {
+                boolean recent = prev != null && e.elapsedNs - prev.elapsedNs <= GAP_NS;
                 // the jump counts only from a float or fixed epoch (corrections in use)
-                double jump = recent && (prev.quality == 4 || prev.quality == 5) ? d : Double.NaN;
+                double jump = withinFix ? dFix
+                        : recent && (prev.quality == 4 || prev.quality == 5) ? distance(prev, e) : Double.NaN;
                 String prior;
                 long spellNs = -1;
-                if (last == null || prev == null) prior = PRIOR_NONE;
-                else if (e.elapsedNs - last.elapsedNs > GAP_NS || !recent) prior = PRIOR_GAP;
-                else if (withinFix) prior = PRIOR_FIXED_JUMP;
-                else if (!last.hasPosition()) prior = PRIOR_NONE;
-                else if (last.quality == 5) {
+                if (withinFix) prior = PRIOR_FIXED_JUMP;
+                else if (last == null || prev == null) prior = PRIOR_NONE;
+                else if (spellOn) {
                     prior = PRIOR_FLOAT;
-                    spellNs = floatSinceNs < 0 ? 0 : e.elapsedNs - floatSinceNs;
-                } else prior = PRIOR_SINGLE;
+                    spellNs = e.elapsedNs - floatSinceNs;
+                } else if (e.elapsedNs - last.elapsedNs > GAP_NS || !recent) prior = PRIOR_GAP;
+                else if (!last.hasPosition()) prior = PRIOR_NONE;
+                else prior = PRIOR_SINGLE;
                 StringBuilder why = new StringBuilder();
                 if (!Double.isNaN(jump) && jump > suspectJumpM) why.append(REASON_JUMP);
                 if (floatSpellNs > 0 && spellNs >= floatSpellNs) {
@@ -126,18 +136,17 @@ public final class FixGuard {
                 current = started;
                 lastStretch = started;
             }
+            lastFix = e;
+            floatSinceNs = -1;
         } else {
             current = null;
+            if (isFloat) {
+                lastFix = null;   // a float epoch ends the stretch
+                if (!spellOn) floatSinceNs = e.elapsedNs;
+                lastFloatNs = e.elapsedNs;
+            }
         }
-        boolean isFloat = e.quality == 5 && e.hasPosition();
-        if (!isFloat) floatSinceNs = -1;
-        else if (floatSinceNs < 0 || last == null || e.elapsedNs - last.elapsedNs > GAP_NS) floatSinceNs = e.elapsedNs;
-        if (e.hasPosition()) {
-            prev = e;
-            prevFixed = e.fixed();
-        } else {
-            prevFixed = false;
-        }
+        if (e.hasPosition()) prev = e;
         last = e;
         return started;
     }
