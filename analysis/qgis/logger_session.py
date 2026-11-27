@@ -260,9 +260,10 @@ def zip_zone_offset(events_info, events_bytes):
     mtime in the phone's zone, a moment later (the logger flushes each line as it writes
     it), so their difference rounded to 15 min is the offset. Accepted only when the
     events.csv mtime, corrected by that offset, is within -(ZONE_TRUNC_S + ZONE_CLOCK_S) (DOS
-    truncation, and a file mtime a few ms behind wall_ms) to +ZONE_RESIDUAL_S of its last wall_ms, and the offset within +-14 h; otherwise None, so
-    a snapshot zip (events written while it was zipped) or a copy tool that reset the mtime
-    gives no offset rather than a confidently wrong one.
+    truncation, and a file mtime a few ms behind wall_ms) to +ZONE_RESIDUAL_S of its last
+    wall_ms, and the offset within +-14 h; otherwise None, so a snapshot zip (events written
+    while it was zipped) or a copy tool that reset the mtime gives no offset rather than a
+    confidently wrong one.
 
     Limit: events.csv alone cannot tell a stale or reset mtime that happens to land within
     that window of a 15 min multiple (about 1 in 75 random gaps under 14 h) from a real
