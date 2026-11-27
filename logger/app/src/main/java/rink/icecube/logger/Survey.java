@@ -335,7 +335,7 @@ final class Survey {
         }
         PointRow r = PointRow.of(counter + 1, mode.key, now, a, svc.poleHeight(), System.currentTimeMillis());
         r.method = PointRow.SINGLE;
-        r.setStretch(s, a.lastNs, guard.young(s, now));
+        r.setStretch(s, a.lastNs, guard.young(s, a.lastNs));   // young at the time fix_age_s is taken
         counter++;
         addRow(r);
         String text = String.format(Locale.US, "%s%d  %s  %d ep  ±%.1f cm", label(r.cls), r.n,
@@ -380,7 +380,7 @@ final class Survey {
         long now = SystemClock.elapsedRealtimeNanos();
         EpochAverage a = average(now);
         FixGuard.Stretch s = stretchOf(a);
-        boolean young = guard.young(s, now);
+        boolean young = a != null && guard.young(s, a.lastNs);   // at the time the lean's fix_age_s is taken
         double[] g = svc.gravityMean(now - WINDOW_NS, now);
         double[] g3 = g == null ? null : new double[] {g[0], g[1], g[2]};
         TiltSet.Added added = t.add(a, g3, g == null ? 0 : (int) g[3], s, young, now, System.currentTimeMillis());
