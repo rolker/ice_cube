@@ -1057,16 +1057,25 @@ class RefsCopyTimeTest(unittest.TestCase):
 
     def test_gpkg_without_refs_copies_seeds_it_from_the_stored_flag(self):
         H = 3600.0
+        six, seven = (self.cleared.replace("s1,5,", "s1,6,"), self.flagged.replace("s1,5,", "s1,7,"))
         self.void([(self.flagged, self.T, H)])
+        imp.import_refs_csv(self.gp, [(six, self.T, H), (seven, self.T, H)])
         self.gp.drop_table("refs_copies")
         self.gp.con.execute("UPDATE refs SET void_copy_unc = NULL")   # from before that column
+        # as main's importer stored them: no copy time
+        self.gp.con.execute("UPDATE refs SET void_copy_mtime = NULL WHERE n IN (6, 7)")
         imp.ensure_schema(self.gp)
-        self.assertEqual(self.gp.con.execute("SELECT copy_id, mtime, unc, void, void_reason FROM refs_copies "
-                                             "WHERE session='s1'").fetchall(),
-                         [("stored", self.T, float(imp.APPROX_S), 1, "moved")])
-        # the stored flag acts as one copy of T +- APPROX_S: a cleared copy inside it ties
-        self.assertEqual(self.void([(self.cleared, self.T + H, 0.0)]), 1)
-        self.assertEqual(self.void([(self.cleared, self.T + imp.APPROX_S + H, 0.0)]), 0)
+        self.assertEqual(self.gp.con.execute("SELECT n, copy_id, mtime, unc, void, void_reason FROM refs_copies "
+                                             "WHERE session='s1' ORDER BY n").fetchall(),
+                         [(5, "stored", self.T, float(imp.APPROX_S), 1, "moved"),
+                          (7, "stored", None, float(imp.APPROX_S), 1, "moved")])   # untimed void 0: no copy
+        # a later copy surely newer than the seeded one clears it: past its 26 h for n=5,
+        # any known time for n=7 (an unknown time is older than every known one)
+        self.assertEqual(self.void([(self.cleared, self.T + 25 * H, 0.0)]), 1)   # within 26 h: a tie
+        self.assertEqual(self.void([(self.cleared, self.T + 27 * H, 0.0)]), 0)
+        imp.import_refs_csv(self.gp, [(self.cleared.replace("s1,5,", "s1,7,"), self.T, 0.0)])
+        self.assertEqual(self.gp.con.execute("SELECT n, void FROM refs WHERE session='s1' ORDER BY n").fetchall(),
+                         [(5, 0), (6, 0), (7, 0)])
 
     def test_tie_keeps_the_flagged_copys_reason(self):
         H = 3600.0

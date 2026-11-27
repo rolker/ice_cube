@@ -69,7 +69,8 @@ decided flagged, and the report names each ref a tie decided. Every copy's flag 
 flag from all copies seen so far, so one import of all the copies and any sequence of
 imports, in any order, agree; refs keep the interval of the copies that decided it
 (`void_copy_mtime` its centre, `void_copy_unc` its half-width). A gpkg from before the
-table seeds it with each stored flag as one copy.
+table seeds it with each stored flag as one copy (a set flag, or one with a copy time: an
+untimed void 0 is how older importers stored a row from any copy, so it is not seeded).
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it). Each sessions row records the schema_version it was
@@ -269,12 +270,16 @@ def ensure_schema(gp):
     seed = "refs_copies" not in gp.tables()
     gp.ensure_attributes_table("refs_copies", REFS_COPIES, unique=("copy_id", "session", "n"),
                                description="Every refs.csv copy's void flag per ref, for the newest-copy rule")
-    if seed:   # a gpkg from before the table: each stored flag becomes one copy
+    if seed:
+        # a gpkg from before the table: each stored flag becomes one copy, but only a set
+        # flag or one with a copy time; main's importer wrote void 0 for every refs.csv row,
+        # a pre-0.9.0 copy's (no void column) included, and that is no copy's flag. A later
+        # copy surely newer than the seeded one decides as with any other copy.
         gp.con.execute(
             "INSERT INTO refs_copies (copy_id, session, n, mtime, unc, void, void_reason) "
             "SELECT 'stored', session, n, void_copy_mtime, coalesce(void_copy_unc, ?), void, "
             "CASE WHEN void = 1 THEN void_reason END FROM refs "
-            "WHERE source = 'refs.csv' AND void IS NOT NULL", (APPROX_S,))
+            "WHERE source = 'refs.csv' AND (void = 1 OR void_copy_mtime IS NOT NULL)", (APPROX_S,))
     for table in ("captures", "refs"):
         left = gp.drop_columns(table, LEGACY_ENU)
         for c in left:   # SQLite older than 3.35: keep the column, empty
