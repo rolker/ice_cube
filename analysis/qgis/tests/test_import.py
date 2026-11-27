@@ -25,7 +25,7 @@ import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
 from logger_session import (_i, find_sessions, load_session, zip_entry_mtime, zip_entry_stamp,  # noqa: E402
-                            zip_entry_time_key, zip_zone_offset)
+                            zip_zone_offset)
 
 
 def run(*argv):
@@ -164,8 +164,8 @@ class ImportTest(unittest.TestCase):
         fids = self.q("SELECT n, fid FROM captures ORDER BY n")
         z.unlink()
         # these zips' events.csv gives no zone offset (synthetic wall times), so their DOS
-        # times are mtime_approx (26 h each): a copy is surely newer only beyond the two
-        # intervals, 52 h (#27 step 18)
+        # times are mtime_approx (read as if UTC, 26 h each): a copy is surely newer only
+        # beyond the two intervals, 52 h (#27 step 18)
         later = time.localtime(time.time() + 3 * 86400)[:6]
         z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False),
                             refs_date=later)
@@ -733,7 +733,7 @@ class ImportTest(unittest.TestCase):
 class RefsCopyTimeTest(unittest.TestCase):
     """Ordering refs.csv copies from zips written on phones in other zones (#27 step 18):
     the 0x5455 UTC time, else the DOS time corrected by the zone offset from events.csv,
-    else (mtime_approx) the PC-zone time within 26 h; a 1 h DST allowance for a corrected
+    else (mtime_approx) the DOS time read as if UTC within 26 h; a 1 h DST allowance for a corrected
     entry other than events.csv. Overlapping intervals tie, decided flagged and reported."""
     T = 1_796_000_000.0     # a made-up moment in late 2026 (UTC)
 
@@ -764,8 +764,7 @@ class RefsCopyTimeTest(unittest.TestCase):
             return got
         with zipfile.ZipFile(z) as zf:   # no events.csv: not a session, read the entry itself
             info = zf.getinfo("refs.csv")
-            key = zip_entry_time_key(info)
-            return (zf.read(info).decode(),) + zip_entry_stamp(info) + ((key,) if key else ())
+            return (zf.read(info).decode(),) + zip_entry_stamp(info)
 
     def void(self, copies, ties=None):
         imp.import_refs_csv(self.gp, copies, ties)
@@ -794,35 +793,42 @@ class RefsCopyTimeTest(unittest.TestCase):
             self.assertIsNone(zip_zone_offset(info, b"elapsed_ns,wall_ms,event\n"))
 
     def test_snapshot_gap_is_approx(self):
-        text, mtime, unc, key = self.copy(self.cleared, self.T, -18000, events_gap_s=600)
+        text, mtime, unc = self.copy(self.cleared, self.T, -18000, events_gap_s=600)
         self.assertEqual(unc, 26 * 3600)                       # mtime_approx, not shifted by 15 min
-        self.assertEqual(key, f"dos:{self.T - 18000!r}")       # the raw DOS stamp, zone-free
+        self.assertEqual(mtime, self.T - 18000)                # the DOS stamp read as if UTC
 
     def test_approx_copy_imported_in_two_zones_is_one_copy(self):
-        """A copy with no 0x5455 and no usable events.csv offset (mtime_approx) is read in
-        the PC's zone, but keyed on its raw DOS stamp: importing the same zip on PCs in two
-        zones adds one copy and gives the same flag (#27)."""
+        """A copy with no 0x5455 and no usable events.csv offset (mtime_approx) stores its
+        DOS time read as if UTC, which no PC zone changes: importing the same zip on PCs in
+        two zones, with an exact copy 20 h after that time (a tie; read in JST, 9 h earlier,
+        the approx copy would be surely older), stores one copy, one time and one flag (#27)."""
         z = synth.phone_zip(self.d / "zones.zip", self.flagged, self.T, -18000, events_gap_s=600)
+        exact = (self.cleared, self.T - 18000 + 20 * 3600, 0.0)
         old_tz = os.environ.get("TZ")
         got = []
         try:
-            for tz in ("UTC0", "JST-9"):
+            for tz in ("UTC0", "JST-9", "EST5EDT"):
                 os.environ["TZ"] = tz
                 time.tzset()
                 src = find_sessions([z])[0]
                 copies = src.refs_csv_copies()
                 src.close()
-                got.append(copies[0][1])
-                got.append(self.void(copies))
+                ties = []
+                void = self.void(copies + [exact], ties)
+                got.append((copies[0][1:], void, ties, self.stored(),
+                            self.gp.con.execute("SELECT mtime, unc FROM refs_copies WHERE session='s1' "
+                                                "ORDER BY mtime").fetchall()))
         finally:
             if old_tz is None:
                 os.environ.pop("TZ", None)
             else:
                 os.environ["TZ"] = old_tz
             time.tzset()
-        self.assertEqual(got[0] - got[2], 9 * 3600)            # the approx times differ by the zones
-        self.assertEqual((got[1], got[3]), (1, 1))
-        self.assertEqual(self.gp.con.execute("SELECT count(*) FROM refs_copies WHERE session='s1'").fetchone(), (1,))
+        self.assertEqual(got[0][0], (self.T - 18000, 26 * 3600))
+        self.assertEqual(got[0][1:3], (1, [("s1", 5, "flagged")]))   # a tie: flagged wins
+        for g in got[1:]:
+            self.assertEqual(g, got[0])                         # same time, flag and copies
+        self.assertEqual(len(got[0][4]), 2)                     # the approx copy and the exact one
 
     def test_extended_timestamp_orders_across_zones(self):
         # flagged on a phone at UTC+3, cleared 10 min later at UTC-5: the DOS times say the
@@ -855,8 +861,8 @@ class RefsCopyTimeTest(unittest.TestCase):
         ties = []
         self.assertEqual(self.void([b, a], ties), 1)           # tie: flagged wins
         self.assertEqual(ties, [("s1", 5, "flagged")])
-        # beyond 26 h the later copy wins, no tie reported (a's DOS time is read in this
-        # PC's zone, so it may be off by up to 14 h: c is well past that)
+        # beyond 26 h the later copy wins, no tie reported (a's DOS time is read as if UTC,
+        # so it is off by its zone offset, up to 14 h: c is well past that)
         clear_refs(self.gp)
         c = self.copy(self.cleared, self.T + 45 * 3600, 0)
         ties = []

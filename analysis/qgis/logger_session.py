@@ -120,9 +120,10 @@ class SessionSource:
         return got[0] if got else None
 
     def refs_csv_copies(self):
-        """[(text, mtime, uncertainty_s[, time_key])] (see refs_csv_dated) of the refs.csv shipped with this session and with each other copy
-        of it that find_sessions set aside (another export of the same session may carry a
-        newer refs.csv), so the newest-copy rule sees them all. Each copy once (same file)."""
+        """[(text, mtime, uncertainty_s)] (see refs_csv_dated) of the refs.csv shipped with this
+        session and with each other copy of it that find_sessions set aside (another export of
+        the same session may carry a newer refs.csv), so the newest-copy rule sees them all.
+        Each copy once (same file)."""
         out, seen = [], set()
         for s in [self, *self.others]:
             where = (str(s.path), s.zip_prefix is not None)
@@ -143,10 +144,9 @@ class SessionSource:
         mtime is in seconds since the epoch (UTC), so zip and folder copies compare: the
         file's modification time, or the zip entry's time (see zip_entry_stamp; mtime None
         when the zip has no usable date). uncertainty_s is how far off mtime may be (0 for a
-        file or a UTC extended timestamp; see zip_entry_stamp). It orders refs.csv copies, so
-        the newest one decides a row's void flag. When the time is mtime_approx (read in this
-        PC's zone) a fourth element, zip_entry_time_key, identifies the copy's time without
-        the PC's zone (import_sessions._copy_id)."""
+        file, 1 s for a UTC extended timestamp; see zip_entry_stamp). It orders refs.csv copies,
+        so the newest one decides a row's void flag. Every time is zone-free (an mtime_approx
+        one too, see zip_entry_stamp), so the same zip gives the same copy on any PC."""
         if self.is_zip:
             inner = self.zip_prefix.rstrip("/")
             parent = inner.rsplit("/", 1)[0] + "/" if "/" in inner else ""
@@ -158,11 +158,9 @@ class SessionSource:
                 text = self._z().read(info).decode("utf-8", "replace")
                 ext = zip_extended_mtime(info)   # exact: events.csv not needed
                 if ext is not None:
-                    return text, ext, 0.0
+                    return text, ext, EXT_S
                 zone, events_info = self.zone_offset()
-                mtime, unc = zip_entry_stamp(info, zone, events_info)
-                key = zip_entry_time_key(info, zone)
-                return (text, mtime, unc) if key is None else (text, mtime, unc, key)
+                return (text,) + zip_entry_stamp(info, zone, events_info)
             return None
         p = self.path.parent / "refs.csv"
         return (p.read_text("utf-8", "replace"), p.stat().st_mtime, 0.0) if p.is_file() else None
@@ -199,8 +197,9 @@ ZONE_STEP_S = 900            # every real zone offset is a multiple of 15 min
 ZONE_RESIDUAL_S = 120        # events.csv's entry time this close after its last line, after rounding
 ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
-APPROX_S = 26 * 3600         # a time read in this PC's zone may be off by up to two zone offsets
+APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
 DST_S = 3600                 # another entry than events.csv may have another DST offset
+EXT_S = 0.0                  # a 0x5455 time is exact
 
 
 def zip_extended_mtime(info):
@@ -277,37 +276,28 @@ def zip_zone_offset(events_info, events_bytes):
 
 def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
     """(mtime, uncertainty_s) of a zip entry for ordering refs.csv copies. With an extended
-    timestamp: that UTC time, uncertainty 0. A DOS time corrected by the zip's zone offset
-    (zip_zone_offset): uncertainty 0 for events.csv itself (`events_info`, the entry the
-    offset came from), DST_S for any other entry (Java converts each file's mtime with the
-    zone rules of that moment, so a DST change between it and events.csv, however near,
-    shifts it by an hour). Without an offset (mtime_approx): the time read in this PC's
-    zone, uncertainty APPROX_S. Each time is the interval mtime +- uncertainty; two copies
-    whose intervals overlap are a tie (flagged wins)."""
+    timestamp: that UTC time, uncertainty EXT_S (it is whole seconds, a folder copy's mtime is
+    not). A DOS time corrected by the zip's zone offset (zip_zone_offset): uncertainty 0 for
+    events.csv itself (`events_info`, the entry the offset came from), DST_S for any other
+    entry (Java converts each file's mtime with the zone rules of that moment, so a DST
+    change between it and events.csv, however near, shifts it by an hour). Without an offset
+    (mtime_approx): the DOS date and time read as if UTC (zip_dos_seconds), uncertainty
+    APPROX_S. That time is off by the writer's zone offset, but it does not depend on the
+    importing PC's zone, so the same zip gives the same copy time (and copy id,
+    import_sessions._copy_id) on every PC and a re-import never changes it. Each time is the
+    interval mtime +- uncertainty; two copies whose intervals overlap are a tie (flagged
+    wins)."""
     ext = zip_extended_mtime(info)
     if ext is not None:
-        return ext, 0.0
-    if zone_offset_s is None:
-        t = zip_entry_mtime(info)
-        return t, (APPROX_S if t is not None else 0.0)
+        return ext, EXT_S
     dos = zip_dos_seconds(info)
     if dos is None:
         return None, 0.0
+    if zone_offset_s is None:
+        return dos, APPROX_S
     same = events_info is not None and info.filename == events_info.filename
     unc = 0.0 if same else DST_S
     return dos - zone_offset_s, unc
-
-
-def zip_entry_time_key(info, zone_offset_s=None):
-    """Zone-free identity of a zip entry's time when that time is mtime_approx (no extended
-    timestamp, no zone offset): its raw DOS date and time, as "dos:<seconds read as UTC>".
-    The approximate time itself is read in this PC's zone, so the same zip imported on PCs
-    in different zones would otherwise give two copies (_copy_id). None for an exact or
-    zone-corrected time (the time is its own identity) and for a zero or invalid date."""
-    if zip_extended_mtime(info) is not None or zone_offset_s is not None:
-        return None
-    dos = zip_dos_seconds(info)
-    return None if dos is None else f"dos:{dos!r}"
 
 
 def _sessions_in_zip(path):
