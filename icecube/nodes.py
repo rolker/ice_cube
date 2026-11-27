@@ -111,13 +111,16 @@ node red after pass 1 (clear and amber nodes are never touched):
    d_bar' C_g d_bar (d_bar the pass-2 main's weighted centroid) is added to sigma'^2: in
    the node's output sigma and in the agreement test below.
 4. Accepted only if the node leaves red or n_out strictly drops, and
-   |z' - a| <= k_sigma * sqrt(var_a + sigma'^2) (the neighbour plane's prediction at the
-   node). Otherwise pass 1 stands. One sweep: fits read pass-1 results only.
+   |z' - a| <= k_sigma * sqrt(var_a + sigma'^2 + 2 d_bar' cov(a, g)) (a the neighbour
+   plane's prediction at the node; the cross term because the error of z' - a is
+   -dg.d_bar + entry noise - da, and a and g come from the same fit). Otherwise pass 1
+   stands. One sweep: fits read pass-1 results only.
    The test is looser than k_sigma reads: a is not an independent prediction. The
    neighbours' discs overlap the node's, so their mains share many of the node's
-   soundings and a and z' are positively correlated (the variance of the difference is
-   var_a + sigma'^2 - 2 cov, not the sum); chi and sigma_g likewise treat the neighbours
-   as independent although adjacent ones share soundings.
+   soundings and a and z' are positively correlated through that noise too (the
+   variance of the difference also loses 2 cov(noise), which the test leaves out); chi
+   and sigma_g likewise treat the neighbours as independent although adjacent ones share
+   soundings.
 Outputs: planar (accepted), gradient |g| (set from the significance gate on: on
 PLANE_NOT_STEEP, PLANE_DEM, PLANE_NO_GAIN, PLANE_OFF_PLANE and PLANE_ACCEPTED; NaN
 otherwise), plane_code.
@@ -421,10 +424,11 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     node (its grid offset plus its main's weighted centroid, m), W the main's weight. Red
     ones are weighted by `red_weight`. Returns (code, fit) with code a PLANE_* gate code
     (0 when the fit passes the count, planarity and conditioning gates) and fit a dict a,
-    var_a, gx, gy, cov_g (2x2), chi (the weighted RMS residual per degree of freedom, in
-    neighbour sigmas) and sigma_g (the square root of cov_g's larger eigenvalue, m/m); on
-    PLANE_NOT_PLANAR the dict holds chi alone, on PLANE_ILL_CONDITIONED chi and sigma_g
-    (sigma_g alone, infinite, when the factorisation fails).
+    var_a, gx, gy, cov_g (2x2), cov_ag (the 2-vector cov(a, (gx, gy)) = cov[0, 1:]), chi
+    (the weighted RMS residual per degree of freedom, in neighbour sigmas) and sigma_g
+    (the square root of cov_g's larger eigenvalue, m/m); on PLANE_NOT_PLANAR the dict
+    holds chi alone, on PLANE_ILL_CONDITIONED chi and sigma_g (sigma_g alone, infinite,
+    when the factorisation fails).
     The covariance is scaled by max(1, chi^2). Every continuous gate fails closed: a NaN
     or infinite chi or sigma_g fails it. Conditioning also needs the normal matrix to pass
     a Cholesky factorisation and var_a > 0 with C_g positive definite; otherwise
@@ -461,7 +465,7 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     if not sigma_g <= max_sigma_g:
         return PLANE_ILL_CONDITIONED, dict(chi=chi, sigma_g=sigma_g)
     return 0, dict(a=float(beta[0]), gx=float(beta[1]), gy=float(beta[2]), var_a=float(cov[0, 0]),
-                   cov_g=cov[1:, 1:], chi=chi, sigma_g=sigma_g)
+                   cov_g=cov[1:, 1:], cov_ag=cov[0, 1:], chi=chi, sigma_g=sigma_g)
 
 
 def _pos_def(cov):
@@ -571,9 +575,14 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         if is_red(len(es2) - o2["n_out"], o2["n_out"]) and not o2["n_out"] < o["n_out"]:
             res[idx] = (PLANE_NO_GAIN, None, g)
             continue
+        # z' - a has error -dg.d_bar + (entry noise) - da, so its variance carries the
+        # cross term 2 d_bar'cov(a, g) besides var_a and sigma'^2 (which holds d_bar'C_g d_bar)
+        cag = fit["cov_ag"]
+        vagree = fit["var_a"] + o2["sigma"] ** 2 + 2.0 * (bx * float(cag[0]) + by * float(cag[1]))
+        tol = k_sigma * math.sqrt(max(vagree, 0.0)) if math.isfinite(vagree) else float("nan")
         if trace is not None:
-            trace.append(("agreement", abs(o2["z"] - fit["a"]), k_sigma * math.sqrt(fit["var_a"] + o2["sigma"] ** 2)))
-        if not abs(o2["z"] - fit["a"]) <= k_sigma * math.sqrt(fit["var_a"] + o2["sigma"] ** 2):
+            trace.append(("agreement", abs(o2["z"] - fit["a"]), tol))
+        if not abs(o2["z"] - fit["a"]) <= tol:
             res[idx] = (PLANE_OFF_PLANE, None, g)
             continue
         res[idx] = (PLANE_ACCEPTED, o2, g)
