@@ -720,3 +720,13 @@ Every finding from 9c71951 is resolved and matches main's code. The revision add
 - [ ] Drop the "folded >= unfolded `1/W'`" check, or restrict it to `cov_g = 0`
 - [ ] Pin the bank-past-CAP test: noise-free linear, `n_dropped == 0`, "unfolded" = large-cap `NodeStore`, margin guard; or assert only `z'` and gradient
 - [ ] Fix the stale `icecube.example.toml` self-check row and the duplicate toggle decision
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:04 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: plan
+**Decision**: proceed
+
+Owner's answer to "How should it continue?": "Proceed, fix in code (Recommended)". The implementer applies the Plan Review at 2f201f7 in code: drop the folded-variance >= unfolded 1/W' check (assert it only with cov_g = 0); the bank-folded-past-CAP test uses a noise-free linear surface, asserts n_dropped == 0, defines "unfolded" as a large-cap NodeStore, and runs the gate-margin guard on both runs (else asserts only z' and the gradient); fix the Principles Self-Check row (no new icecube.example.toml settings) and the duplicate no-toggle decision.
