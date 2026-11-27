@@ -377,3 +377,19 @@ None.
 ### Checks
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 109 tests, OK (skipped=5)
 - Commits ran every pre-commit hook (project pass).
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:13 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #32 at `1d85ba8`
+**Depth**: Deep (reason: fix-round re-review classified on the whole diff, 15 files, +1011/-54, Python and Java; PR-mode round 2, so not a round-3 convergence check: cross-model dispatched)
+**Must-fix**: 1 | **Suggestions**: 1
+
+Scope: the cold read's must-fix and its fix commit 4f656e1. The importer half of the fix is right: an unknown-version session is re-read once, `import_session` stamps it schema 3, so it cannot loop; both new tests fail without the fix (checked by the Claude adversarial pass). The soundings half overreaches (finding 1). Cross-model: gemini complete (its must-fix matches finding 1; its other three points are out of scope or already deferred: the above-floor end-to-end test, a NaN in `_sd_h` reachable only from direct Python callers, and SCHEMA_MIN_APP needing a revisit on the next schema bump, which its comment already says), codex complete (one suggestion on partially NULL methods within a session, outside this fix and not reachable from a 0.6 points.csv; dropped). Tests run in review: analysis/qgis 109 OK (5 skipped), icecube OK. Public-repo check: no coordinates or private data in the fix diff.
+
+### Findings
+- [ ] (must-fix) `maybe_06` counts every unknown-version session as 0.6+, including ones already re-read at schema 3. A genuinely pre-0.6 session with no readable app version (track only, control events, or a points.csv without a session start line) then warns "logger 0.6+ session(s) X have no method/tilt values ... re-import" on every soundings build, and a re-import cannot clear it. Count an unknown-version session as stranded only while its `sessions.schema_version` is NULL or below SCHEMA_VERSION (not yet re-read); keep the missing-column warning as is. The new test asserts the wrong state (schema 3, app NULL, method NULL warns): make it cover both, stale warns and current does not (claude-adversarial, gemini) — `analysis/qgis/soundings.py:623-640`, `analysis/qgis/tests/test_soundings.py:342`
+- [ ] (suggestion) The importer now treats every unknown-version session as stale, including "control events" and "track only" sessions, which have no points.csv and cannot hold 0.6 columns; when their source is not among the inputs they are named as "still at an older schema" on every run. Select `format` in `olds` and re-read an unknown-version session only when its format is points.csv (claude-adversarial) — `analysis/qgis/import_sessions.py:540-544`
