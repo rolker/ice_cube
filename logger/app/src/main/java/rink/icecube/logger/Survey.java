@@ -188,7 +188,6 @@ final class Survey {
 
     void onEpoch(Epoch e) {
         if (e == null) return;
-        PointRow finished = null;
         synchronized (this) {
             epochs.addLast(e);
             while (epochs.peekFirst().elapsedNs < e.elapsedNs - KEEP_NS) epochs.removeFirst();
@@ -223,7 +222,7 @@ final class Survey {
                     break;
                 case DONE:
                     ref = null;
-                    finished = PointRow.of(++counter, PointRow.REF, e.elapsedNs, r.average(), refPole,
+                    PointRow finished = PointRow.of(++counter, PointRow.REF, e.elapsedNs, r.average(), refPole,
                             System.currentTimeMillis());
                     finished.method = PointRow.OCCUPATION;
                     FixGuard.Stretch cur = guard.current();
@@ -233,14 +232,17 @@ final class Survey {
                     addRow(finished);
                     svc.event(String.format(Locale.US, "ref end n=%d epochs=%d pauses=%d", finished.n, r.epochs(), r.pauses()));
                     cue(Feedback.Cue.REF_END);
+                    // Queued under the lock, like finishTilt: a voidCapture right after this
+                    // epoch then queues its refs.csv rewrite after the append, never before
+                    // (which would find no row and log a false error). The rewrite of a row
+                    // not yet appended stays an error in VoidRule.refsVoidEvent, because a
+                    // failed append is a real one.
+                    PointRow f = finished;
+                    run(() -> poleCheck(f));
                     break;
                 default:
                     break;
             }
-        }
-        if (finished != null) {
-            PointRow f = finished;
-            run(() -> poleCheck(f));
         }
     }
 

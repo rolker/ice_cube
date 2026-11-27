@@ -194,6 +194,9 @@ public class VoidRuleTest {
     @Test public void refsVoidEventReportsPartialWrites() {
         assertEquals("ref n=3 voided in refs.csv (1 row)", VoidRule.refsVoidEvent(3, true, 1, 1, 1, 0));
         assertEquals("ref n=3 unvoided in refs.csv (2 rows)", VoidRule.refsVoidEvent(3, false, 2, 2, 2, 0));
+        // holding 0 stays an error: a flag can no longer be queued before its ref's append
+        // (Survey.onEpoch queues the pole check under the lock), so no row means the append failed
+        assertTrue(VoidRule.refsVoidEvent(3, true, 0, 0, 0, 0).startsWith("error: "));
         String none = VoidRule.refsVoidEvent(3, true, 1, 0, 0, 0);
         assertTrue(none, none.startsWith("error: ref n=3 not voided in refs.csv (no row rewritten"));
         String part = VoidRule.refsVoidEvent(3, true, 2, 1, 1, 0);
