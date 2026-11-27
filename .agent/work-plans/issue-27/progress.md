@@ -973,3 +973,13 @@ Scope: round 3's one must-fix and the fix diff 85dfcc3..d87686b only. Cross-mode
 
 ### Findings
 - [ ] (suggestion) copy_id includes the mtime_approx time, which is read in the PC's own zone. A zip without a 0x5455 stamp and without events.csv, imported again on a PC in another zone, therefore becomes a second copy with a shifted interval, and that copy can change which copies decide the flag, in either direction. This is rare: logger 0.9.0+ zips carry 0x5455, and pre-0.9.0 copies have no void column. Key that path on the raw DOS stamp instead, or note it in the docstring — `analysis/qgis/import_sessions.py:421`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:00 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+One open suggestion (the copy id includes an approximate time read in the importing PC's zone) is carried into the PR-mode review.
