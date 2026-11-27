@@ -625,3 +625,13 @@ No human reviews, no conversation comments, no inline comments. Both Local Revie
 **Decision**: merge
 
 Owner's answer to "Merge now and fix F1/F2 in part B, or fix them first?": "Merge, fix in part B (Recommended)". F1 (zip DOS times read in the PC's time zone) and F2 (a real PHOTO in the same second as a voided capture's moved photo loses its window) are deferred to PR B. Outside reviewers: Copilot not available (quota); Codex cold read approved; Gemini and Codex ran in earlier rounds.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:47 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan.md changed since its last review, 8bffd83 -> 9b39fc4, and PR B must take on items deferred from PR A; run-issue step 13 allows only revise)
+**After**: plan
+**Decision**: revise
+
+PR A merged as #33 (6a9a9fe). Owner said "27b" (start part B). Refresh the plan's PR B part with what PR A deferred: F1 zip DOS times read in the importing PC's time zone (logger_session.py:176; e.g. the logger writes the zip extended UTC timestamp); F2 a real PHOTO in the same second as a voided capture's moved photo row loses its window (soundings.py:821; also match the "photos of voided" note); the camera-target fallback when the latest capture is flagged (Survey.java:643); a false error: event when a flag lands as a ref finishes; the photo file-name number after a move; MapView drawing; the undo window's time source; version 0.9.0.
