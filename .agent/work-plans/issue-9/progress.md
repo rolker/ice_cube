@@ -443,3 +443,13 @@ None open.
 
 ### False positives
 None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:23 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #32 (closes issue 9)?": "Merge (Recommended)". Outside reviewers: Copilot not available (out of quota); Codex cold read ran (1 must-fix, fixed); Gemini and Codex ran in pre-push rounds 1-2.
