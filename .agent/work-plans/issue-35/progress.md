@@ -66,3 +66,11 @@ issue: 35
 **Decision**: proceed
 
 Host decisions (owner may veto): auto capture arms only on an RTK-fixed fix that #15 marks neither young (< 120 s) nor suspect; MARK still captures on a young fix with the amber cue; the screen and a cue say which condition is unmet. Calibration as a reusable routine (hold still, lean ~10 s, two slow twists) storing the pole axis now, with an extension point for #38's lever arm and gyro bias. Arming logic a pure, unit-tested state machine. Large touch targets and audible/haptic cues for gloved use. Correction to the review: tilt capture exists in logger/ (core/TiltSet.java, TiltSolver, Survey's tilt mode); auto capture is off while a tilt set is in progress. Implementation after #15 merges.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 17:54 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-35/plan.md` at `c2ab992`
+
+Pure-logic arming state machine (AutoCapture) and a per-session pole-axis calibration (PoleCalibration) that reuses TiltSolver.fitAxis; arms only on a fixed, not-young, not-suspect fix (#15), Surface only, off during tilt sets and refs, with an AUTO status line stating the unmet condition. Implementation after #15 merges.
