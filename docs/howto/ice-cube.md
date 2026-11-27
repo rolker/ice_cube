@@ -152,7 +152,8 @@ residual of at most `plane_planarity` neighbour sigmas (default `k_sigma`), and 
 gradient that exceeds the node's slope allowance by more than `k_sigma` of its own sigma.
 With `slope_from_dem` the gradient must also stay under
 `plane_dem_cap * DEM slope + plane_dem_floor` (2.0, 0.05 m/m); with a single `slope` that
-gate is skipped, and so it is at a node outside the DEM's cover (no DEM slope there).
+gate is skipped, and so it is at a node outside the DEM's cover or next to a NoData hole
+in it (no DEM slope there).
 A gate whose computed value is not a finite number fails, as does a NaN limit; an
 infinite `plane_planarity` or `plane_max_sigma_g` switches that gate off (every finite
 value passes), but an infinite DEM slope fails the DEM gate. A gradient whose

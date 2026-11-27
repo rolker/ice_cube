@@ -157,7 +157,7 @@ def make_grid(ctx, gcfg, all_points):
 def slope_array(ctx, gcfg, grid):
     """(allowance, raw): the slope allowance (one value, or one per node from
     `slope_from_dem`: min(cap, max(floor, factor * s))) and the raw DEM slope s per node
-    (NaN outside the DEM) for the plane pass's DEM gate, None without `slope_from_dem`."""
+    (NaN outside the DEM or next to a NoData hole in it) for the plane pass's DEM gate, None without `slope_from_dem`."""
     sd = gcfg.get("slope_from_dem")
     if not sd:
         return float(gcfg.get("slope", ctx.defaults["slope"])), None

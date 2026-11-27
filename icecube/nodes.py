@@ -102,7 +102,7 @@ node red after pass 1 (clear and amber nodes are never touched):
    significance, |g| - allowance > k_sigma * sigma_g along g (the node's slope allowance,
    as raised by slope_from_dem); and with a raw DEM slope s (`raw_slope`, batch
    slope_from_dem only) |g| <= `plane_dem_cap` * s + `plane_dem_floor`, skipped where s
-   is NaN (outside the DEM's cover). Every continuous gate fails closed on its value: a
+   is NaN (outside the DEM's cover, or next to a NoData hole in it). Every continuous gate fails closed on its value: a
    NaN or infinite computed value fails it, and so does a NaN limit. An infinite
    `plane_planarity` or `plane_max_sigma_g` switches that gate off (every finite value
    passes); the DEM gate's limit comes from data, so an infinite DEM slope fails it. Conditioning also
@@ -577,7 +577,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
             res[idx] = (PLANE_NOT_STEEP, None, g)
             continue
         s = raw_slope(a, b) if raw_slope is not None else None
-        if s is not None and not math.isnan(s):    # NaN: no DEM slope here (outside its cover), gate skipped
+        if s is not None and not math.isnan(s):    # NaN: no DEM slope here (outside its cover or by a NoData hole), gate skipped
             lim = p["dem_cap"] * float(s) + p["dem_floor"]
             if trace is not None:
                 trace.append(("dem", g, lim))
