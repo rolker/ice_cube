@@ -585,3 +585,13 @@ No GitHub reviews, inline comments or conversation comments on the PR. Both roun
 
 ### False positives
 - none
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:42 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #34?": "Merge (Recommended)". Issue 29 stays open for PR B (the logger port).
