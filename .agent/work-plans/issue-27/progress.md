@@ -709,3 +709,13 @@ Also add a phone try-out checklist.
 - [ ] Step 10/17: use one `undoable` flag on `Notice`; fold 17 into 10.
 - [ ] Step 19: exact note match.
 - [ ] Add the phone try-out checklist to step 20, and say how the step 13 screenshot session gets onto the phone.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:52 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work on mechanism only; orchestrator table allows revise; second host revise in a row, so a further plan checkpoint answer is the owner's)
+**After**: plan
+**Decision**: revise
+
+Revise PR B per the Plan Review at 7bfe31d, all 8 findings: step 18 uses the per-zip zone offset from events.csv's last wall_ms vs its DOS time (15-min rounding), the tie only for a zip with no usable events.csv, the same rule in the stored-flag SQL, extended-vs-DOS comparison stated, report only tie-decided rows, an un-flag test, import_sessions.py in the files; write 0x5455 by hand with setExtra and check a phone zip. Drop step 14 (keep a lock-in test). Step 16: move the run(poleCheck) inside the lock only; no "pending" treatment. Step 15: the photo column is the only source for n/attached when the row has the file. Steps 10+17: a boolean undoable on Notice, elapsed clock via VoidRule.undoOpen. Step 19: exact note match. Add the phone try-out checklist and how a synthetic session gets onto the phone.
