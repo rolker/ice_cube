@@ -782,15 +782,20 @@ class TestPlanePass(unittest.TestCase):
     def test_collinear_centroids_never_pass(self):
         # centroids on one random line through the node: N is singular up to roundoff, and a
         # plain inverse returned code 0 on 121 of these 500 (an indefinite C_g whose larger
-        # eigenvalue passed the conditioning gate)
+        # eigenvalue passed the conditioning gate). Planarity is gated before conditioning,
+        # so a fit whose roundoff beta leaves large residuals stops at PLANE_NOT_PLANAR (67
+        # of the 500 here); the rest must stop at the conditioning gate, so a regression that
+        # lets a garbage beta reach planarity cannot hide behind NOT_PLANAR
         rng = np.random.default_rng(0)
+        codes = []
         for _ in range(500):
             th, t = rng.uniform(0, np.pi), rng.uniform(-0.6, 0.6, 8)
             nbrs = [(float(u * np.cos(th)), float(u * np.sin(th)),
                      float(0.3 * u * np.cos(th) + rng.normal(0, 0.01)), float(rng.uniform(1e3, 1e4)), False)
                     for u in t]
-            code, fit = nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)
-            self.assertIn(code, (nodes.PLANE_ILL_CONDITIONED, nodes.PLANE_NOT_PLANAR))
+            codes.append(nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)[0])
+        self.assertEqual(set(codes) - {nodes.PLANE_ILL_CONDITIONED, nodes.PLANE_NOT_PLANAR}, set())
+        self.assertGreaterEqual(codes.count(nodes.PLANE_ILL_CONDITIONED), 400)   # 433 at writing
 
     def test_wrong_cluster_keeps_pass1(self):
         # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes
