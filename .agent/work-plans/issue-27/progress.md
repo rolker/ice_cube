@@ -426,3 +426,27 @@ Cross-model: gemini completed (7 findings), codex completed (3 findings).
 - [ ] (suggestion) RefsStore.setVoid rewrites line by line, but PointRow.text() quotes fields holding line breaks, so a multi-line record would be handled as fragments; forbid line breaks in text() or read whole records (codex) — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:95`
 - [ ] (suggestion) setVoid reports success when one refs.csv copy was updated and another could not be written, and readAll can still serve the stale unvoided copy (codex) — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:86`
 - [ ] (suggestion) import_session stores void_reason even when void=0, unlike import_refs_csv's `reason if void else None` (gemini) — `analysis/qgis/import_sessions.py:259`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:20 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #33 at `4a7db43`
+**Sources**: 2 (Local Review @ `eae8b68` (covers 4a7db43 via bookkeeping), CI rollup: no checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass (no CI checks on this repository)
+
+Owner rule applied: "So flagged data gets deleted? I wonder if it should only be flagged, which is a common approach in multbeam sonar processing." The PR keeps voided captures and refs as flagged rows end to end; finding 3 below is where a flag can be lost downstream. The stale pre-push finding (flagged count from this run's copies only) is addressed by 8619946, which counts from the refs table.
+
+### Findings
+- [ ] (suggestion, Local Review @ eae8b68; needs owner's call) A voided capture makes no capture window, so stops_from_epochs can find the same stationary period and emit a live use=1 pole-stop sounding at a capture voided as 'moved' or a bad ref. This bears on what a flag means under the owner rule: options are to keep the voided window and emit the stop flagged (use=0, reason naming the voided capture), or leave it as is so an accidental MARK does not hide a real stop. Do not change without the owner's decision — `analysis/qgis/soundings.py:739`
+- [ ] (suggestion, Local Review @ eae8b68) setVoid counts success when one refs.csv copy was rewritten and another could not be, and readAll still reads the stale unvoided copy, so the voided ref can come back in the earlier-refs layer; report a partial result (rows changed vs copies holding the row) in the event and Outcome, or make readAll take the void flag from any copy — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:86`
+- [ ] (suggestion, Local Review @ eae8b68) import_refs_csv counts every refs.csv row as seen but the flagged count only rows stored with source='refs.csv', so a voided ref of a session imported from points.csv is seen but not counted flagged (reproduced: (1, 0)); document the choice in the docstring or drop the source filter, and pin it with a test — `analysis/qgis/import_sessions.py:367`
+- [ ] (suggestion, Local Review @ eae8b68) The newest-copy rule holds only within a run: a later run whose only copy is an older 0.9.0 refs.csv (void column, void=0) clears a flag stored from a newer copy; the code comment claims only pre-0.9.0 copies are harmless, so either store the copy's mtime with the row and skip older copies, or document the limit next to that comment — `analysis/qgis/import_sessions.py:360`
+- [ ] (suggestion, Local Review @ eae8b68) RefsStore.setVoid and readAll read refs.csv line by line while PointRow.text() quotes fields holding line breaks; no field gets a line break today (reasons are sanitized by VoidRule.reason, notes are program-made), so make text() replace line breaks with spaces to keep one record per line — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:95`
+- [ ] (suggestion, Local Review @ eae8b68) import_session stores void_reason even when void=0, unlike import_refs_csv's `reason if void else None`; use the same rule — `analysis/qgis/import_sessions.py:259`
+
+### False positives
+- (Local Review @ eae8b68, codex) A points.csv whose void flag flips with an empty reason keeps its size, so the name+size re-import signature skips it — the directory signature includes events.csv's size, and Survey.voidCapture / unvoidCapture always append a "flag n=… reason=… via=…" / "unflag n=…" event (a Survey exists only with an open session, so the event is written); the reason is never empty either (VoidRule.reason returns "other"). A zip is rebuilt with that events.csv, so its size changes too.
