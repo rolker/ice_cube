@@ -1026,3 +1026,22 @@ Key the copy id of a zip with no 0x5455 and no usable events.csv on its raw DOS 
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 155 tests, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 94 tests, OK
 - Full pre-commit pass left to the host. Note: a gpkg that stored an approx copy under the old id gets one more row for it on re-import, with the same time, so the flag does not change.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:12 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #36 at `46796b3`
+**Depth**: Deep (reason: +1930 -156 over 22 files, cross-layer Android logger + Python importer)
+**Must-fix**: 1 | **Suggestions**: 4
+
+PR-mode round 1. Specialists: static (no project pre-commit config and no pre-commit/flake8/ruff installed; ran `git diff --check` clean and py_compile on the changed Python files; public-repo grep of added lines clean), governance (no ADRs in project; public-repo and no-delete rules hold: no row, photo or file is deleted), plan drift (PR B files match the plan's Files to Change), Claude adversarial, cross-model Gemini and Codex (both completed). Checks: analysis/qgis 155 OK (5 skipped), icecube 94 OK; gradle not run. No PR comments or reviews; no CI checks.
+
+### Findings
+- [ ] (must-fix) The round-4 fix is incomplete: an mtime_approx copy now keeps one copy_id across PCs, but `gp.upsert("refs_copies", ...)` updates `mtime` on conflict, so re-importing the same zip on a PC in another zone overwrites the stored time with that PC's reading and can flip the flag, against the PR's order-independence claim. Store a zone-free time (zip_dos_seconds with an uncertainty covering ZONE_MAX_S + ZONE_TRUNC_S) or keep the first mtime/unc on conflict; extend `test_approx_copy_imported_in_two_zones_is_one_copy` to check the flag against an exact copy ~20-30 h away. Found by Claude adversarial, Gemini and Codex — `analysis/qgis/import_sessions.py:493`, `analysis/qgis/logger_session.py:291`
+- [ ] (suggestion) The seed for a gpkg from before refs_copies takes every `void IS NOT NULL` row, but main's importer wrote void=0 for every refs.csv row (pre-0.9.0 copies included), so those seed unflagged copies of unknown time (spurious ties, void 0 instead of the documented NULL); and the 'stored' copy never retires, so a later phone un-flag within 26 h cannot clear it. Seed only `void = 1 OR void_copy_mtime IS NOT NULL`, or document it — `analysis/qgis/import_sessions.py:272`
+- [ ] (suggestion) zip_zone_offset accepts a stale or reset events.csv mtime whenever its gap to the last line falls within -2..+120 s of a multiple of 15 min (about 1 in 7 random gaps), giving an offset wrong by k x 15 min with only the 1 h DST uncertainty; the docstring says such a case gives None. State the limit, or cap the accepted gap (e.g. require the offset to match the phone's zone column if one exists) — `analysis/qgis/logger_session.py:273`
+- [ ] (suggestion) A 0x5455 time is floored to whole seconds with uncertainty 0, while a folder copy uses sub-second st_mtime with uncertainty 0, so two copies in the same second can misorder (a cleared folder copy at T.2 beats a flagged zip copy written at T.7). Give a 0x5455 time uncertainty 1 s (or centre +0.5 s, unc 0.5) — `analysis/qgis/logger_session.py:159`
+- [ ] (suggestion) `undoDownNs` is cleared only in onUndo; a press that slides off UNDO leaves it set, and a later non-touch click (keyboard, accessibility) is timed at that old press and refused with the error cue. Reset it on ACTION_CANCEL and when a new UNDO is shown (safe side, rare) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:207`
