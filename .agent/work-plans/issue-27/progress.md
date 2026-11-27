@@ -615,3 +615,13 @@ No human reviews, no conversation comments, no inline comments. Both Local Revie
 - [ ] (suggestion, Local Review @ cda9e0f) `clist_windows` skips any live photo row whose `utc` (1 s resolution) equals a voided capture's, so a real PHOTO pressed in the same second as a voided capture loses its window. Confirmed the logger's moved-photo row carries `note = "photos of voided n=<n>"` (`VoidRule.photoRowFor`, VoidRule.java:93); require that note prefix as well as the utc match, and add a test with a real photo in the same second — `analysis/qgis/soundings.py:821`
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:28 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: findings
+**Decision**: merge
+
+Owner's answer to "Merge now and fix F1/F2 in part B, or fix them first?": "Merge, fix in part B (Recommended)". F1 (zip DOS times read in the PC's time zone) and F2 (a real PHOTO in the same second as a voided capture's moved photo loses its window) are deferred to PR B. Outside reviewers: Copilot not available (quota); Codex cold read approved; Gemini and Codex ran in earlier rounds.
