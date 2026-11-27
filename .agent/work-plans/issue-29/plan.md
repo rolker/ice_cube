@@ -85,9 +85,15 @@ Two stages, the same definition in Python and Java, held by parity vectors.
   succeed and `var_a > 0`, `C_g` positive definite (`nodes._pos_def`), else code 9; a directional
   variance `u'C_g u` that is not positive fails closed (code 9), never clamped to 0. After the pass-2
   rebuild, the accepted node's `sigma'^2` gains `d_bar'C_g d_bar`, `d_bar` the pass-2 main's
-  weighted centroid (`cx, cy` from `_centroid`), and that sigma feeds the agreement test (the
-  gradient error is common to all reduced entries, so the per-entry `d'C_g d` alone averages
-  down). `plane_pass` counts a node's `n_in` as `len(entries) - n_out`, which counts a folded
+  weighted centroid (`cx, cy` from `_centroid`; the gradient error is common to all reduced
+  entries, so the per-entry `d'C_g d` alone averages down). The agreement test does not use
+  that output sigma: its variance is noise-only, `var_a + 1/W' + d_bar'C_g d_bar +
+  2 d_bar'cov(a, g)` (`cov_ag` from `plane_fit`), the pass bias left out. From the third
+  round: conditioning runs first on the unscaled `(A'WA)^-1` (before beta is solved), then
+  planarity, then conditioning again on the covariance scaled by `max(1, chi^2)`. A NaN
+  limit fails a gate; an infinite `planarity` or `max_sigma_g` switches it off. In batch an
+  infinite DEM slope fails the DEM gate and a NaN one (outside the DEM or by a NoData hole)
+  skips it. `plane_pass` counts a node's `n_in` as `len(entries) - n_out`, which counts a folded
   aggregate as one; on the phone use the members' `cnt` sums, as `NodeStore.outputs` does.
 
 ## Files to Change
