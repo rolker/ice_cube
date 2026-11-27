@@ -1067,3 +1067,22 @@ PR-mode round 1. Specialists: static (no project pre-commit config and no pre-co
 - `python3 -m unittest discover icecube/tests`: Ran 94, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, app-debug.apk 22:21 (C: 112.6 GB free before)
 - Not pushed; the host owns the push.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 22:32 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #36 at `f73949d`
+**Depth**: Deep (reason: whole-PR diff 22 files, +2021 -158, logger and importer cross-layer; fix round 2 classified on the whole diff)
+**Must-fix**: 0 | **Suggestions**: 5
+
+Round-1 must-fix (zone-free mtime_approx copy) verified fixed: the DOS time read as if UTC with 26 h is the same on every PC, so copy id and stored time no longer change on re-import; the 26 h bound covers writer zones -12..+14 h. Zone-offset window -2..+10 s holds for how the logger writes events.csv: Session.event takes System.currentTimeMillis and flushes each line (since 0.2), close() adds no data after the last line, and ShareZip sets each entry's time from lastModified (since 0.5.1), so the corrected mtime sits within DOS truncation before to milliseconds after the last wall_ms; a separate bound is not needed (only caveat: suggestion 2). Python tests 156 OK (5 skipped); Gradle testDebugUnitTest passes. Cross-model: Gemini and Codex completed. Dropped: 2038 int cast of 0x5455 (format limit), NULL refs.void callers (coalesce/falsy already), outside-diff "verify" items.
+
+### Findings
+- [ ] (suggestion) UNDO pressed, slid out past slop and back in, then lifted: View gives no click but the listener keeps undoDownNs (the UP is inside), so a later key/accessibility click is timed at that press; reset at ACTION_UP when `!v.isPressed()` (or on ACTION_MOVE outside slop) and fix the "as View decides" comment (Claude, Gemini) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:210`
+- [ ] (suggestion) Zone window lower bound: file mtimes come from the coarse kernel clock, a few ms behind currentTimeMillis, so with DOS truncation the residual can be just under -2 s and a good events.csv gives no offset (falls to 26 h, safe side); allow e.g. -(ZONE_TRUNC_S + 0.05), and README "under 10 s" should say -2..+10 s (Claude) — `analysis/qgis/logger_session.py:276`, `logger/README.md:738`
+- [ ] (suggestion) A zone-corrected entry's uncertainty leaves out the 2 s DOS truncation: DST_S becomes up to 3602 s off; use DST_S + ZONE_TRUNC_S (and ZONE_TRUNC_S for events.csv itself) (Gemini) — `analysis/qgis/logger_session.py:305`
+- [ ] (suggestion) ShareZip's unknown-mtime sentinel (DOS 1980-01-01 00:00, no 0x5455) is read as a known time, so it is newer than an unknown-time (None) copy such as an untimed seeded flag and can clear it; treat that DOS stamp as None in zip_dos_seconds (Gemini) — `analysis/qgis/logger_session.py:219`
+- [ ] (suggestion) Duplicate (session, n) rows within one refs.csv copy: the importer keeps the last row's flag, the phone's liveRefs takes flagged if any same-time row is; the logger never writes duplicates (append once per n), so only a hand-edited file differs; OR the flags of a copy's duplicate rows (Codex) — `analysis/qgis/import_sessions.py:490`
