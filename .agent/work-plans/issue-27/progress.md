@@ -582,3 +582,17 @@ No hosted reviews, no PR conversation comments, no inline comments. The round-3 
 ### Findings
 
 ### False positives
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:56 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #33 at `cda9e0f`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 0 | **Suggestions**: 2
+
+### Findings
+- [ ] (suggestion) DOS-time zip entries are read in the importing machine's zone, so refs.csv copies made in another zone can misorder by the offset and pick the wrong void flag; documented in the docstring, low risk while phone and PC share a zone (Codex rated must-fix; lead downgraded) — `analysis/qgis/logger_session.py:176`
+- [ ] (suggestion) clist_windows skips any live photo row whose utc (1 s resolution) equals a voided capture's, so a real PHOTO pressed in that same second loses its window; match the moved-photo row by its note ("photos of voided n=") too — `analysis/qgis/soundings.py:821`
