@@ -307,3 +307,28 @@ Cross-model: codex complete (1 must-fix kept: dup_capture windows; 2 suggestions
 - [x] (suggestion) VOID_TIP puts void_reason into map-tip HTML unescaped; VoidRule.reason does not strip `<>&`; escape it in the tip or the sanitiser (gemini) — `analysis/qgis/build_project.py:158-159`
 - [x] (suggestion) plan.md's Files to Change and step 7 still say the importer drops voided rows; update them to the keep-and-flag model of the owner's veto (gemini, plan drift) — `.agent/work-plans/issue-27/plan.md:150`
 - [x] (suggestion, note) a photo planned for a capture flagged while the camera is open keeps its `photo_<voidedN>_...` file name on the row it moves to; document or log the original n (Claude) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:638-649` (deferred: to PR B (owner): document or log the original n of a photo moved off a capture flagged while the camera is open)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:04 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-27 at `9b39fc4`
+**Addressed**: Local Review (Pre-Push) at `17bc9a3` (2026-11-26 19:00 -05:00)
+**Commits**: 10856ce, 870dbc6, 60051c0, 522ab64, e47f89c, d120348, 8ac0791, 37d1de1, 9b39fc4
+
+### Actions
+- [x] (must-fix) clist_windows skips voided captures unless include_voided, with a test — `analysis/qgis/soundings.py:733`
+- [x] assign_anchors' snap loop never makes a voided ground capture an anchor, with a test — `analysis/qgis/soundings.py`
+- [x] import_refs_csv updates void only for rows a copy in this run has a flag for; test of a later pre-0.9.0-only run — `analysis/qgis/import_sessions.py`
+- [x] export_labels writes void 0 for a NULL void, with a test — `analysis/qgis/export_labels.py`
+- [x] refs_csv_dated: zip_entry_mtime uses the UTC extended timestamp when present, DOS local time otherwise, None for a zero date, with a test — `analysis/qgis/logger_session.py`
+- [x] QGIS plugin Export reports the flagged count (core.export_text); the import summary counts flagged captures and refs — `analysis/qgis/plugin/icecube_qgis/plugin.py`, `core.py`
+- [x] poleCheck queued after the lock: false error event — `logger/.../Survey.java:236-238,615` (deferred: to PR B, reachable once UNDO exists)
+- [x] void_reason escaped (& < >) in the map tip, with a test — `analysis/qgis/build_project.py:158`
+- [x] plan.md updated to the keep-and-flag model — `.agent/work-plans/issue-27/plan.md`
+- [x] photo file name keeps the voided n — `logger/.../Survey.java:638-649` (deferred: to PR B, document or log the original n)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 103 tests, OK (skipped=5)
+- No Java changed: Gradle unit tests not run. No pre-commit config in this repo.
