@@ -97,4 +97,33 @@ public class VoidRuleTest {
         assertEquals(PointRow.COLUMNS + 1, PointRow.split(lines.get(1)).size());
         assertEquals(0, VoidRule.setRefsVoid(lines, "s9", 3, true, "x"));
     }
+
+    static PointRow ref(String session, int n, boolean voided) {
+        PointRow r = row(n, PointRow.REF);
+        r.session = session;
+        r.voided = voided;
+        return r;
+    }
+
+    @Test public void liveRefsDropARefVoidedInAnyCopy() {
+        // two refs.csv copies: the voided ref's row in the second could not be rewritten
+        PointRow a1 = ref("s1", 1, false), b1 = ref("s1", 2, true), c1 = ref("s2", 2, false);
+        PointRow a2 = ref("s1", 1, false), b2 = ref("s1", 2, false);
+        List<PointRow> live = VoidRule.liveRefs(Arrays.asList(a1, b1, c1, a2, b2));
+        assertEquals(Arrays.asList(a1, c1, a2), live);   // same n in another session stays
+    }
+
+    @Test public void refsVoidEventReportsPartialWrites() {
+        assertEquals("ref n=3 voided in refs.csv (1 row)", VoidRule.refsVoidEvent(3, true, 1, 1, 1, 0));
+        assertEquals("ref n=3 unvoided in refs.csv (2 rows)", VoidRule.refsVoidEvent(3, false, 2, 2, 2, 0));
+        String none = VoidRule.refsVoidEvent(3, true, 1, 0, 0, 0);
+        assertTrue(none, none.startsWith("error: ref n=3 not voided in refs.csv (no row rewritten"));
+        String part = VoidRule.refsVoidEvent(3, true, 2, 1, 1, 0);
+        assertTrue(part, part.startsWith("error: ref n=3 voided in 1 of 2 refs.csv copies holding it (1 row)"));
+        assertTrue(part, part.contains("stays voided"));
+        String unflag = VoidRule.refsVoidEvent(3, false, 2, 1, 1, 0);
+        assertTrue(unflag, unflag.contains("keeps it voided"));
+        String unread = VoidRule.refsVoidEvent(3, true, 1, 1, 1, 1);
+        assertTrue(unread, unread.startsWith("error: ") && unread.contains("1 refs.csv copy could not be read"));
+    }
 }

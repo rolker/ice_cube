@@ -25,14 +25,15 @@ import rink.icecube.logger.core.VoidRule;
  * It holds positions: it stays on the phone and in Drive, never in the public repo.
  *
  * From 0.9.0 a ref flagged as bad keeps its row with void=1 ({@link #setVoid} rewrites the
- * row in place, the one write that is not an append); readers here skip it.
+ * row in place, the one write that is not an append); readers here skip it, and skip it in
+ * every copy when any copy has it voided ({@link VoidRule#liveRefs}).
  */
 final class RefsStore {
     private RefsStore() { }
 
     /**
-     * All readable refs that are not voided, oldest first within each file (primary root
-     * first). Bad lines are skipped.
+     * All readable refs that are not voided in any copy, oldest first within each file
+     * (primary root first). Bad lines are skipped.
      */
     static List<PointRow> readAll(Context ctx) {
         List<PointRow> out = new ArrayList<>();
@@ -42,15 +43,14 @@ final class RefsStore {
                 while ((line = r.readLine()) != null) {
                     if (line.isEmpty() || line.startsWith("session,")) continue;
                     try {
-                        PointRow p = PointRow.parse(PointRow.split(line), 1);
-                        if (!p.voided) out.add(p);
+                        out.add(PointRow.parse(PointRow.split(line), 1));
                     } catch (IllegalArgumentException ignored) { }
                 }
             } catch (IOException | SecurityException ignored) {
                 // e.g. a file left by an earlier install, which Android no longer lets this app read
             }
         }
-        return out;
+        return VoidRule.liveRefs(out);
     }
 
     /** Appends one ref (creating the file with its header if needed). Returns the file written. */
@@ -72,20 +72,32 @@ final class RefsStore {
         throw last != null ? last : new IOException("no writable folder for refs.csv");
     }
 
+    /** What {@link #setVoid} did: copies holding the row, copies rewritten, rows changed, copies unreadable. */
+    static final class VoidWrite {
+        int holding, rewritten, rows, unreadable;
+
+        /** The events.csv line for ref n (see {@link VoidRule#refsVoidEvent}). */
+        String event(int n, boolean voided) {
+            return VoidRule.refsVoidEvent(n, voided, holding, rewritten, rows, unreadable);
+        }
+    }
+
     /**
      * Sets the void columns of the (session, n) row in every refs.csv (one per storage root)
-     * that holds it, each rewritten whole through a temporary file and a rename. Returns the
-     * number of rows changed; files that cannot be read or written are left alone.
+     * that holds it, each rewritten whole through a temporary file and a rename. Files that
+     * cannot be read or written are left alone and counted, so a partial write is reported.
      */
-    static int setVoid(Context ctx, String session, int n, boolean voided, String reason) {
-        int changed = 0;
+    static VoidWrite setVoid(Context ctx, String session, int n, boolean voided, String reason) {
+        VoidWrite w = new VoidWrite();
         for (File f : Storage.refsFiles(ctx)) {
             List<String> lines = readLines(f);
-            if (lines == null) continue;
+            if (lines == null) { w.unreadable++; continue; }
             int k = VoidRule.setRefsVoid(lines, session, n, voided, reason);
-            if (k > 0 && writeLines(f, lines)) changed += k;
+            if (k == 0) continue;
+            w.holding++;
+            if (writeLines(f, lines)) { w.rewritten++; w.rows += k; }
         }
-        return changed;
+        return w;
     }
 
     private static List<String> readLines(File f) {

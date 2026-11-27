@@ -1,8 +1,11 @@
 package rink.icecube.logger.core;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Flagging a capture as bad (void, logger 0.9.0, issue #27): the undo window, the reasons,
@@ -89,6 +92,45 @@ public final class VoidRule {
         r.photo = voided.photo;
         r.note = "photos of voided n=" + voided.n;
         return r;
+    }
+
+    /**
+     * The refs.csv rows (of every copy, in order) that are not voided: a (session, n) voided
+     * in any copy is left out of every copy, so a copy that {@code setRefsVoid} could not
+     * rewrite never brings a voided ref back. (An unflag that reached only some copies thus
+     * reads as still flagged, the safe side; {@link #refsVoidEvent} says so.)
+     */
+    public static List<PointRow> liveRefs(List<PointRow> all) {
+        Set<String> voided = new HashSet<>();
+        for (PointRow r : all) if (r.voided) voided.add(r.session + "/" + r.n);
+        List<PointRow> out = new ArrayList<>();
+        for (PointRow r : all) if (!voided.contains(r.session + "/" + r.n)) out.add(r);
+        return out;
+    }
+
+    /**
+     * The events.csv line after a refs.csv void write for ref n: holding is the number of
+     * refs.csv copies that hold the row, rewritten how many of them were written back
+     * (rows: rows changed in those), unreadable how many copies could not be read at all.
+     * Starts with "error: " unless every copy that holds the row was rewritten and none was
+     * unreadable.
+     */
+    public static String refsVoidEvent(int n, boolean voided, int holding, int rewritten, int rows, int unreadable) {
+        String what = voided ? "voided" : "unvoided";
+        String skipped = unreadable > 0 ? "; " + unreadable + " refs.csv copy" + (unreadable == 1 ? "" : " copies")
+                + " could not be read" : "";
+        if (rewritten == 0) {
+            return "error: ref n=" + n + " not " + what + " in refs.csv (no row rewritten" + skipped
+                    + "; points.csv and this event are the record)";
+        }
+        String rowsText = rows + " row" + (rows == 1 ? "" : "s");
+        if (rewritten < holding || unreadable > 0) {
+            String effect = voided ? "readers take the flag from any copy, so it stays voided"
+                    : "a copy still flagged keeps it voided for later sessions";
+            return "error: ref n=" + n + " " + what + " in " + rewritten + " of " + holding
+                    + " refs.csv copies holding it (" + rowsText + skipped + "); " + effect;
+        }
+        return "ref n=" + n + " " + what + " in refs.csv (" + rowsText + ")";
     }
 
     /**

@@ -615,13 +615,9 @@ final class Survey {
         String why = r.voidReason;
         String session = dir.getName();
         run(() -> {
-            int k = RefsStore.setVoid(svc, session, r.n, v, why);
-            if (k == 0) {   // no refs.csv rewritten: later sessions still read the old flag
-                svc.event("error: ref n=" + r.n + " not " + (v ? "voided" : "unvoided")
-                        + " in refs.csv (no row rewritten; points.csv and this event are the record)");
-            } else {
-                svc.event("ref n=" + r.n + (v ? " voided" : " unvoided") + " in refs.csv (" + k + " row" + (k == 1 ? "" : "s") + ")");
-            }
+            // a partial write (some copies not rewritten) is an error event too; readers take
+            // the flag from any copy, so a stale copy never brings a voided ref back
+            svc.event(RefsStore.setVoid(svc, session, r.n, v, why).event(r.n, v));
             refsGeneration++;
         });
     }
