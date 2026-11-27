@@ -428,3 +428,25 @@ Specialists: static (no Python linter installed: ruff/flake8/pyflakes absent, py
 - [x] (suggestion) Non-finite inputs fail open at the edges: with plane_max_sigma_g = inf an indefinite covariance passes (sigma_g set to inf compares <= inf), likewise chi = inf with plane_planarity = inf; an infinite raw DEM slope skips the DEM gate (only NaN means outside cover). Return ILL_CONDITIONED directly when not _pos_def, and skip the DEM gate on NaN only (gemini, codex) — `icecube/nodes.py:461-468`, `icecube/nodes.py:562`
 - [x] (suggestion) Every plane test and vector bank slopes along x only; a y-axis regression (gy sign, cy on the wrong axis) would pass. Add one bank sloping along y or diagonally on a non-square grid (Claude adversarial; a probe shows it works today) — `icecube/tests/test_icecube.py:617`, `icecube/logger_vectors.py:347`
 - [x] (suggestion) table_outliers now lists planar nodes but still sorts by maxnr and cuts at 30; cleared planar nodes have low maxnr and drop off on large grids while the header counts them. Say the list is truncated or give planar nodes their own ordering (Claude adversarial) — `icecube/report.py:181`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:46 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #34 at `afa6278`
+**Addressed**: Local Review at `dc5bfb8` (2026-11-26 19:52 -05:00)
+**Commits**: dc20e33, fa0b485, 9222360, afa6278
+
+### Actions
+- [x] (must-fix) Agreement gate uses the noise-only variance var_a + 1/W' + vbar + 2 d_bar'cov(a, g); var_bias stays in the output sigma. test_wrong_cluster_keeps_pass1 now also runs sb = 0.01/0.02/0.03 and stays PLANE_OFF_PLANE (fails on the old code); docstring and howto updated — `icecube/nodes.py` plane_pass
+- [x] (suggestion) plane_fit checks conditioning on the unscaled (A'WA)^-1 (Cholesky, PD, sigma_g) before solving beta, then planarity, then the chi-scaled check. Collinear test: 500/500 ILL_CONDITIONED (was 433 + 67 NOT_PLANAR); new test runs the collinear_ill_conditioned vector's fits in 200 random neighbour orders, all ILL_CONDITIONED — `icecube/nodes.py` plane_fit, `icecube/logger_vectors.py`
+- [x] (suggestion) Non-PD covariance returns ILL_CONDITIONED directly; chi, sigma_g, the DEM limit and the agreement tolerance must be finite to pass (infinite limits no longer let them through); only NaN skips the DEM gate, an infinite DEM slope gives PLANE_DEM. Tests for each — `icecube/nodes.py`
+- [x] (suggestion) TestPlanePass: +y bank and (+x, -y) bank on 9 x 7 (heights and |g| at accepted nodes; mutation-checked: flipping gy's sign or cy's axis fails it); plane_vectors gains bank_diag_clears on 7 x 5 (node (3, 2) accepted). coverage_vectors.json regenerated: only the new case changes — `icecube/tests/test_icecube.py`, `icecube/logger_vectors.py`
+- [x] (suggestion) table_outliers lists planar nodes first (then by worst difference) and adds a "Showing N of M" line when cut; test added — `icecube/report.py`
+
+### Checks
+- `python3 -m unittest discover icecube/tests`: Ran 90, OK
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110, OK (skipped=5)
+- `./gradlew testDebugUnitTest --max-workers 4`: OK (C: 114 GB free)
+- Private replays (counts only), unchanged: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
