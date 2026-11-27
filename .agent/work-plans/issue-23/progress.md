@@ -65,3 +65,11 @@ issue: 23
 **Decision**: proceed
 
 Host decisions (owner may veto): two PRs on this issue: PR A robust reference + placement and steadiness cues (extends #15's PoleCheck and columns; implementation after #15 merges); PR B the "validated by a known point" mark and board-top check points. Board tops: an existing ref mark gets a kind, chosen when the mark is first shot in Ref mode ("fixed ref" default, or "check point (may move)"), stored with the mark; check points get their own robust history and a drift cue against the fixed refs and are never references for fixed refs. Few earlier visits: plan states the rule (1 visit: compare with it, flagged as a single-visit reference; 2: mean, with a disagreement cue if they differ by more than the tolerance; 3+: median). Shared reference rule written once in logger/README.md.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 17:54 -05:00
+**By**: Claude Code Agent (claude-sonnet-5-5)
+**Plan**: `.agent/work-plans/issue-23/plan.md` at `5928531`
+
+Two PRs. PR A (detailed): reference = median of earlier non-voided, non-young visits (1 visit single, 2 mean with disagreement flag, 3+ median), tolerance applied to it, last-visit difference kept, placement (2 cm) and steadiness (1.5 cm) cues as settings, one reference rule in the README, no new row columns. PR B (outline): validated mark and check-point kind chosen in Ref mode. Implementation waits for #15 to merge.
