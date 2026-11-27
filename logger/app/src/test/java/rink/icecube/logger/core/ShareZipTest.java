@@ -66,7 +66,34 @@ public class ShareZipTest {
             for (int k = 0; k < 2; k++) {
                 ZipEntry e = in.getNextEntry();
                 assertEquals(Math.floorDiv(mtimeMs, 1000L), extendedMtime(e.getExtra()));
+                assertEquals(1, extendedCount(e.getExtra()));   // one 0x5455, not a copy per writer
             }
+        }
+    }
+
+    /** How many 0x5455 fields an extra block holds. */
+    static int extendedCount(byte[] extra) {
+        int n = 0;
+        for (int i = 0; extra != null && i + 4 <= extra.length; ) {
+            int id = (extra[i] & 0xFF) | (extra[i + 1] & 0xFF) << 8, size = (extra[i + 2] & 0xFF) | (extra[i + 3] & 0xFF) << 8;
+            if (id == 0x5455) n++;
+            i += 4 + size;
+        }
+        return n;
+    }
+
+    @Test public void unknownMtimeGetsNoExtendedTimestamp() throws IOException {
+        File f = tmp.newFile("refs.csv");
+        try (OutputStream o = new FileOutputStream(f)) { o.write("session,n\n".getBytes("UTF-8")); }
+        assertTrue(f.setLastModified(0));
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bytes)) {
+            ShareZip.addFile(z, "refs.csv", f, f.length(), new byte[64], null);
+        }
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            ZipEntry e = in.getNextEntry();
+            assertEquals(0, extendedCount(e.getExtra()));   // no claim of an exact 1970 time
+            assertEquals(ShareZip.DOS_EPOCH_MS, e.getTime());
         }
     }
 

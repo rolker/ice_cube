@@ -57,14 +57,18 @@ public final class ShareZip {
         return crc.getValue();
     }
 
+    /** 1980-01-01 00:00 local time, the oldest time a DOS date holds. */
+    static final long DOS_EPOCH_MS = new java.util.GregorianCalendar(1980, 0, 1).getTimeInMillis();
+
     /** Zip extra field header id of the extended timestamp ("UT", Info-ZIP). */
     public static final int EXTENDED_TIMESTAMP_ID = 0x5455;
 
     /**
      * The zip extended-timestamp extra field (0x5455) holding only the modification time:
      * id 0x5455, data size 5, flags 1, then the time as 4-byte little-endian signed UTC
-     * seconds. Built by hand so the bytes do not depend on the platform's ZipOutputStream.
-     * Readers (the importer's zip_entry_mtime) then order copies by UTC instead of by the
+     * seconds. Built by hand rather than through setLastModifiedTime; a ZipOutputStream may
+     * still re-encode the field from setExtra (OpenJDK does), so a zip should carry one
+     * 0x5455 per entry with this time, not necessarily these exact bytes. Readers (the importer's zip_entry_mtime) then order copies by UTC instead of by the
      * DOS time, which is the phone's local time.
      */
     public static byte[] extendedTimestamp(long epochSeconds) {
@@ -81,14 +85,20 @@ public final class ShareZip {
      * Writes the first {@code length} bytes of {@code f} as entry {@code entryName}, STORED
      * or DEFLATED by {@link #method}. STORED reads the file twice (CRC, then data). Every
      * entry carries the file's UTC mtime as an extended timestamp ({@link #extendedTimestamp})
-     * besides the DOS time.
+     * besides the DOS time. A file whose mtime is unknown ({@code lastModified()} 0) gets no
+     * extended timestamp, which would claim an exact 1970 time, and the oldest DOS time
+     * ({@link #DOS_EPOCH_MS}), so a reader takes its copy as old, never as the newest.
      */
     public static void addFile(ZipOutputStream z, String entryName, File f, long length, byte[] buf,
                                Progress progress) throws IOException {
         ZipEntry e = new ZipEntry(entryName);
         long mtime = f.lastModified();
-        e.setTime(mtime);
-        e.setExtra(extendedTimestamp(Math.floorDiv(mtime, 1000L)));
+        if (mtime > 0) {
+            e.setTime(mtime);
+            e.setExtra(extendedTimestamp(Math.floorDiv(mtime, 1000L)));
+        } else {
+            e.setTime(DOS_EPOCH_MS);
+        }
         if (method(entryName) == ZipEntry.STORED) {
             e.setMethod(ZipEntry.STORED);
             e.setSize(length);
