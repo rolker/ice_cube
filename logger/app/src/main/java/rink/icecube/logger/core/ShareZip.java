@@ -57,14 +57,38 @@ public final class ShareZip {
         return crc.getValue();
     }
 
+    /** Zip extra field header id of the extended timestamp ("UT", Info-ZIP). */
+    public static final int EXTENDED_TIMESTAMP_ID = 0x5455;
+
+    /**
+     * The zip extended-timestamp extra field (0x5455) holding only the modification time:
+     * id 0x5455, data size 5, flags 1, then the time as 4-byte little-endian signed UTC
+     * seconds. Built by hand so the bytes do not depend on the platform's ZipOutputStream.
+     * Readers (the importer's zip_entry_mtime) then order copies by UTC instead of by the
+     * DOS time, which is the phone's local time.
+     */
+    public static byte[] extendedTimestamp(long epochSeconds) {
+        int t = (int) epochSeconds;
+        return new byte[] {
+            (byte) (EXTENDED_TIMESTAMP_ID & 0xFF), (byte) (EXTENDED_TIMESTAMP_ID >>> 8),
+            5, 0,
+            1,
+            (byte) t, (byte) (t >>> 8), (byte) (t >>> 16), (byte) (t >>> 24),
+        };
+    }
+
     /**
      * Writes the first {@code length} bytes of {@code f} as entry {@code entryName}, STORED
-     * or DEFLATED by {@link #method}. STORED reads the file twice (CRC, then data).
+     * or DEFLATED by {@link #method}. STORED reads the file twice (CRC, then data). Every
+     * entry carries the file's UTC mtime as an extended timestamp ({@link #extendedTimestamp})
+     * besides the DOS time.
      */
     public static void addFile(ZipOutputStream z, String entryName, File f, long length, byte[] buf,
                                Progress progress) throws IOException {
         ZipEntry e = new ZipEntry(entryName);
-        e.setTime(f.lastModified());
+        long mtime = f.lastModified();
+        e.setTime(mtime);
+        e.setExtra(extendedTimestamp(Math.floorDiv(mtime, 1000L)));
         if (method(entryName) == ZipEntry.STORED) {
             e.setMethod(ZipEntry.STORED);
             e.setSize(length);

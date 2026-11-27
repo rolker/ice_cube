@@ -31,6 +31,45 @@ public class ShareZipTest {
         assertEquals("IceCubeLogger_2026-11-11_14-02-28_snapshot.zip", ShareZip.fileName("2026-11-11_14-02-28", true));
     }
 
+    @Test public void extendedTimestampBytes() {
+        // 2026-11-26T12:00:00Z = 1795694400 = 0x6B081F40
+        assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, 0x40, 0x1F, 0x08, 0x6B},
+                ShareZip.extendedTimestamp(1795694400L));
+        assertArrayEquals(new byte[] {0x55, 0x54, 5, 0, 1, 0, 0, 0, 0}, ShareZip.extendedTimestamp(0));
+    }
+
+    /** The mtime of the 0x5455 field in an extra block, or -1. */
+    static long extendedMtime(byte[] extra) {
+        if (extra == null) return -1;
+        for (int i = 0; i + 4 <= extra.length; ) {
+            int id = (extra[i] & 0xFF) | (extra[i + 1] & 0xFF) << 8, size = (extra[i + 2] & 0xFF) | (extra[i + 3] & 0xFF) << 8;
+            if (id == 0x5455 && size >= 5 && (extra[i + 4] & 1) != 0) {
+                return (extra[i + 5] & 0xFF) | (extra[i + 6] & 0xFF) << 8 | (extra[i + 7] & 0xFF) << 16 | (long) extra[i + 8] << 24;
+            }
+            i += 4 + size;
+        }
+        return -1;
+    }
+
+    @Test public void entriesCarryTheExtendedTimestamp() throws IOException {
+        File f = tmp.newFile("refs.csv");
+        try (OutputStream o = new FileOutputStream(f)) { o.write("session,n\n".getBytes("UTF-8")); }
+        long mtimeMs = 1795694400_000L + 1234;
+        assertTrue(f.setLastModified(mtimeMs));
+        mtimeMs = f.lastModified();   // the file system's resolution
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ZipOutputStream z = new ZipOutputStream(bytes)) {
+            ShareZip.addFile(z, "refs.csv", f, f.length(), new byte[64], null);
+            ShareZip.addFile(z, "p.jpg", f, f.length(), new byte[64], null);   // STORED too
+        }
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            for (int k = 0; k < 2; k++) {
+                ZipEntry e = in.getNextEntry();
+                assertEquals(Math.floorDiv(mtimeMs, 1000L), extendedMtime(e.getExtra()));
+            }
+        }
+    }
+
     @Test public void methodByExtension() {
         assertEquals(ZipEntry.STORED, ShareZip.method("s/photos/photo_1_20261111T140322Z.jpg"));
         assertEquals(ZipEntry.STORED, ShareZip.method("s/photos/IMG.JPEG"));
