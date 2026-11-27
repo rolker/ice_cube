@@ -96,7 +96,7 @@ DEFAULTS = {
     "settle_s": 120.0,         # fix age below which a point is not trusted (Nov 3/4: 10-30 cm for 25-75 s;
                                # Nov 26: 6-9 cm at 95-113 s; logger 0.11.0 young limit, #15)
     "suspect_jump_m": 1.0,     # float-to-fix jump that marks a false fix (field: 1.3-2.9 m)
-    "float_spell_s": 20.0,     # a fix right after a float spell this long is suspect (0: off; logger FixGuard)
+    "float_spell_s": 20.0,     # a fix right after a float spell this long is suspect (0 or less: off; logger FixGuard)
     "max_pass_s": 600.0,       # a pass (one RTK bias) is cut after this long
     "gap_s": 120.0,            # points-only sources: a new pass after this gap
     "jump_m": 3.0,             # ... or this horizontal jump
@@ -365,7 +365,7 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
     the 3D step from the previous epoch with a position, if that was float or fixed and
     <= gap_s older (else None). Suspect when the jump is over suspect_jump_m or (logger
     0.11.0, #15) the stretch starts right after a float spell of at least float_spell_s,
-    measured from the spell's first float epoch to the fix (0: rule off). A spell
+    measured from the spell's first float epoch to the fix (0 or less: rule off, as in the logger). A spell
     carries over a dropout of gap_s or less (non-float epochs, or none), so a one-epoch
     dropout before the fix cannot hide it. Fills stretch (-1 when not fixed), fix_age (s
     since the stretch start), jump (m or None), suspect, suspect_why, float_spell."""
@@ -399,7 +399,7 @@ def fix_stretches(ep: Epochs, suspect_jump_m=1.0, in_fix_jump_m=0.5, in_fix_spee
                 reasons = []
                 if jump is not None and jump > suspect_jump_m:
                     reasons.append("jump")
-                if float_spell_s and spell is not None and spell >= float_spell_s:
+                if float_spell_s and float_spell_s > 0 and spell is not None and spell >= float_spell_s:
                     reasons.append("float_spell")
                 why = ";".join(reasons)
             ep.stretch.append(idx); ep.fix_age.append(ep.t[i] - start); ep.jump.append(jump)
@@ -1406,7 +1406,9 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
     v_ok, v_bad = verify_suspect(rows)
     for r in rows:
         finish_use(r)
-    log(f"suspect fix stretches (jump > {cfg['suspect_jump_m']} m or float spell >= {cfg['float_spell_s']} s): {v_ok} passes verified by other data, "
+    spell_rule = (f"float spell >= {cfg['float_spell_s']} s" if cfg["float_spell_s"] and cfg["float_spell_s"] > 0
+                  else "float spell rule off")
+    log(f"suspect fix stretches (jump > {cfg['suspect_jump_m']} m or {spell_rule}): {v_ok} passes verified by other data, "
         f"{v_bad} left out")
     n_out = flag_local_outliers(rows, cfg["stops"]["outlier_radius_m"], cfg["stops"]["outlier_min_dz_m"],
                                 cfg["stops"]["outlier_k"])

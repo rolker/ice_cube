@@ -91,6 +91,8 @@ class TestStretchesAndStops(unittest.TestCase):
         self.assertAlmostEqual(ep.float_spell[i], 60.0, delta=0.01)
         ep, i = run(flt(0, 60) + fix(60, 5, n=0.48), float_spell_s=0)      # rule off
         self.assertFalse(ep.suspect[i])
+        ep, i = run(flt(0, 60) + fix(60, 5, n=0.48), float_spell_s=-5)     # negative: off, as in Java
+        self.assertFalse(ep.suspect[i])
         ep, i = run(flt(0, 5) + fix(5, 5, n=0.48))
         self.assertFalse(ep.suspect[i])
         self.assertAlmostEqual(ep.float_spell[i], 5.0, delta=0.01)
@@ -572,6 +574,18 @@ class TestBuild(unittest.TestCase):
         self.assertNotIn("suspect_jump", snd.flags_of(caps[1]))
         self.assertEqual(caps[1]["use"], 0)
         self.assertIn("suspect_jump", snd.flags_of(caps[2]))
+
+    def test_float_spell_rule_off_in_the_log(self):
+        """#15: float_spell_s 0 or less logs the rule as off, not "float spell >= 0 s"."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        for v in (0, -5):
+            logged = []
+            cfg = {"season": {"gpkg": str(gpkg)},
+                   "soundings": {"float_spell_s": v, "sources": [{"id": "logger", "type": "logger"}]}}
+            snd.build(cfg, self.d, log=lambda *a: logged.append(" ".join(map(str, a))), write=False)
+            text = "\n".join(logged)
+            self.assertIn("or float spell rule off)", text)
+            self.assertNotIn("float spell >=", text)
 
     def test_tilt_capture_gst_floors(self):
         """With GST (1.5 cm height sigma) above the tilt sd_u the GST term wins."""
