@@ -55,3 +55,11 @@ issue: 20
 **Decision**: proceed
 
 Host decisions (owner may veto): the reader is a thin icecube.io adapter over logger_session.py and the soundings rules (no third parser); robust nodes are already delivered by #24/#29, noted as done rather than re-scoped; the settle re-fit is planned in this issue, and if it grows beyond a small change the plan says so and the split goes to the owner as a question (a new issue is his). Implementation starts only after #15 merges and builds on it (120 s settle, new points.csv columns, float-spell rule).
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 17:52 -05:00
+**By**: Claude Code Agent (claude-sonnet-5-5)
+**Plan**: `.agent/work-plans/issue-20/plan.md` at `2451b23`
+
+Thin `icecube.io` reader over logger_session/import_sessions/soundings (scratch gpkg, sigma and stretches from the existing rules, voided excluded), built on #15's 120 s settle, new columns and float-spell rule; settle re-fit as a separate second commit, flagged for owner split if it outgrows `sigma_terms` and its Java mirror. Implementation after #15 merges.
