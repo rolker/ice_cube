@@ -367,3 +367,20 @@ Host reverses its round-1 decision on the start jump (owner may veto): the jump 
 ### Notes
 - PointRowTest and TiltSetTest fed epochs with GGA time 0; they now pass t/1e9 (b61767b), since the float spell is measured on the GGA clock.
 - The Survey ref-latch change has no unit test (Survey is the Android service); covered by review only.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 18:35 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-15 at `b1411ab`
+**Base**: main
+**Depth**: Deep (reason: round 3 convergence check per handoff; whole-branch tier Deep, scope limited to the Checkpoint 2026-11-27 18:24 items and the fix diff febb7cc..b1411ab)
+**Must-fix**: 0 | **Suggestions**: 0
+**Round**: 3 | **Ship**: recommended — no must-fix findings
+
+Cross-model: skipped (round-3 convergence check, per handoff). Claude lead read the fix diff in full against each Checkpoint item. Verified: start jump now from the last float or fixed epoch within 2 s in FixGuard (lastCorr) and fix_stretches (last_corr), parity tests on both sides; every 2 s test and the spell length on the GGA clock with 1 ms slack on both sides (Java dt handles midnight; Python t is rollover-placed); other-station fix resets last_fix, last_corr and the spell; no-raw captures take fix_age_s/fix_jump_m (typed gpkg columns, so fix_young 0 is falsy); an unknown suspect_reason adds fix_suspect, which is in SUSPECT_FLAGS and EXCLUDING and is cleared by verify_suspect and PPK; Survey latches ref young/suspect/jump only when RefOccupation.epochs() grew, before the DONE row is built. analysis/qgis tests 169 OK (5 skipped); gradle testDebugUnitTest at HEAD 232 tests, 0 failures (up to date). No Python or Java linter configured, so no static analysis. The Survey latch change has no unit test (Android service), as the Implementation entry notes.
+
+### Findings
+- [ ] No issues found. LGTM.
