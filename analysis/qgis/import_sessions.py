@@ -52,16 +52,18 @@ many; the report and the sessions table (`n_voided`, `remarks`) count them. A fi
 without the `void` column has none. A flagged ref gets no `site` and plays no part in
 grouping the others. When several refs.csv copies hold a row, the newest copy (zip entry
 or file time) gives it, and the newest copy with a `void` column gives its flag, flagged
-when copies of that same time disagree (the logger reads its copies by the same rule,
-VoidRule.liveRefs); refs keep that copy's time (`void_copy_mtime`, and how far off it may
-be, `void_copy_unc`), so a later import of an older copy cannot change it. A flag moves a capture's photos to another row (the files
-keep their names): a photo's `n` and `attached` come from the points.csv row whose photo
-column lists it, not from the number in its file name or its original event. A zip entry's
-time is its UTC extended timestamp (logger 0.9.0), else its DOS time corrected by the zone
-offset found from the zip's events.csv, else (mtime_approx) the DOS time read in this
-PC's zone; copies whose times are within the larger uncertainty (26 h for mtime_approx,
-1 h for an entry far in time from events.csv, a possible DST change) are a tie, decided
-flagged, and the report names each ref a tie decided.
+when copies whose times may be in either order disagree (the logger reads its copies by
+the same rule, VoidRule.liveRefs); a ref with no copy that has a `void` column has void
+NULL. A flag moves a capture's photos to another row (the files keep their names): a
+photo's `n` and `attached` come from the points.csv row whose photo column lists it, not
+from the number in its file name or its original event. A zip entry's time is its UTC
+extended timestamp (logger 0.9.0, exact), else its DOS time corrected by the zone offset
+found from the zip's events.csv (within 1 h: a DST change may lie between the entry and
+events.csv), else (mtime_approx) the DOS time read in this PC's zone (within 26 h). Each
+copy time is thus an interval; copies whose intervals overlap are a tie, decided flagged,
+and the report names each ref a tie decided. refs keep the interval of the copy (or the
+union of the tied copies) that gave the flag (`void_copy_mtime` its centre,
+`void_copy_unc` its half-width), so a later import of an older copy cannot change it.
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it). Each sessions row records the schema_version it was
@@ -368,15 +370,34 @@ def track_lines(session, track):
 
 def _stamp_order(a, b):
     """1 if copy time a = (mtime, uncertainty_s) is surely later than b, -1 if surely earlier,
-    0 for a tie: the two within the larger uncertainty (equal times when both are exact), or
-    both unknown. An unknown time (None) is older than any known one."""
+    0 for a tie. Each known time is the interval [t - u, t + u]; two copies tie when their
+    intervals overlap (|ta - tb| <= ua + ub: independent errors add), so equal exact times
+    tie. This holds for the 26 h no-offset case (two copies read in this PC's zone) too: its
+    intervals are only wider, the cautious side. An unknown time (None) is older than any
+    known one and ties only another unknown time."""
     (ta, ua), (tb, ub) = a, b
     if ta is None or tb is None:
         return 0 if ta is None and tb is None else (-1 if ta is None else 1)
-    d, w = ta - tb, max(ua or 0.0, ub or 0.0)
+    d, w = ta - tb, (ua or 0.0) + (ub or 0.0)
     if abs(d) <= w:
         return 0
     return 1 if d > 0 else -1
+
+
+def _stamp_hull(stamps):
+    """(centre, half-width) of the union of the intervals [t - u, t + u] of copy times that
+    tie, or (None, 0.0) when the times are unknown (an unknown time ties only another)."""
+    known = [(t, u or 0.0) for t, u in stamps if t is not None]
+    if not known:
+        return None, 0.0
+    lo, hi = min(t - u for t, u in known), max(t + u for t, u in known)
+    return (lo + hi) / 2, (hi - lo) / 2
+
+
+def _flag_reason(cands):
+    """void_reason of the newest flagged copy among (mtime, void_reason) pairs: by time, then
+    by reason text, so the input order never changes it."""
+    return max(cands, key=lambda c: (-math.inf if c[0] is None else c[0], c[1] or ""))[1]
 
 
 def import_refs_csv(gp, texts, ties=None):
@@ -386,17 +407,19 @@ def import_refs_csv(gp, texts, ties=None):
     (see logger_session.zip_entry_stamp). When copies disagree, the newest copy (by mtime;
     equal or unknown times keep input order) gives the row, and its void flag comes from the
     newest copies that have a void column: those no other such copy is surely newer than
-    (_stamp_order: times within the larger uncertainty tie). A copy from before 0.9.0
-    therefore never clears a flag, not even one stored by an earlier import. Tied copies
-    (or all of unknown time) that disagree on the flag give flagged, the safe side. This is
-    the logger's rule too (VoidRule.liveRefs, whose phone-side times are exact), so the
-    gpkg and the phone agree on a ref after a partial write. The time of the copy a stored
-    flag came from is kept in `void_copy_mtime` and `void_copy_unc` (NULL, from before the
-    column: taken as APPROX_S); a later run changes the flag only with a surely newer copy,
-    or a tied one that flags it (_stamp_order here too, so a copy of unknown time ties only a
-    stored flag of unknown time), so an older 0.9.0 copy met in a later run cannot clear (or
-    set) a newer stored flag. On a tie the stored time becomes the later of the two and its
-    uncertainty the larger, so a tie never makes the stored flag easier to clear.
+    (_stamp_order: a copy time is the interval t +- uncertainty, and overlapping intervals
+    tie). A copy from before 0.9.0 therefore never clears a flag, not even one stored by an
+    earlier import. Tied copies (or all of unknown time) that disagree on the flag give
+    flagged, the safe side, with the reason of the newest flagged copy. This is the logger's
+    rule too (VoidRule.liveRefs, whose phone-side times are exact), so the gpkg and the phone
+    agree on a ref after a partial write. The time of the copies a stored flag came from is
+    kept in `void_copy_mtime` and `void_copy_unc` (NULL, from before the column: taken as
+    APPROX_S): one copy's own interval, or for tied copies the union of their intervals
+    (its centre and half-width), so neither import order nor a later run can make a stored
+    flag easier to clear. A later run replaces the flag with a surely newer copy's (and its
+    interval); a tied copy flags it if either does (union interval again, the flagged copy's
+    reason kept); a surely older copy changes nothing. A ref stored from refs.csv copies
+    without a void column has void NULL: the first copy with one decides it as if new.
     `ties`, when a list, gets (session, n, "flagged") for each ref stored from refs.csv whose
     flag a tie decided against a disagreeing copy (in this run, unless a surely newer stored
     copy decided instead, or against the stored flag).
@@ -422,45 +445,51 @@ def import_refs_csv(gp, texts, ties=None):
     for key, cs in cands.items():
         top = [c for c in cs if not any(_stamp_order(o[:2], c[:2]) == 1 for o in cs)]
         void = any(c[2] for c in top)
-        pick = max((c for c in top if c[2] == void), key=lambda c: -math.inf if c[0] is None else c[0])
-        known = [c[0] for c in top if c[0] is not None]
-        flags[key] = (void, pick[3], max(known) if known else None, max(c[1] for c in top))
+        reason = _flag_reason([(c[0], c[3]) for c in top if c[2]]) if void else None
+        flags[key] = (void, reason) + _stamp_hull([c[:2] for c in top])
         if len({c[2] for c in top}) > 1:
             tied.add(key)
     out = []
     for (sess, n), r in sorted(rows.items()):
+        known = (sess, n) in flags
         void, reason, stamp, unc = flags.get((sess, n), (False, None, None, 0.0))
         d = {k: r.get(k) for k, _ in MEAS}
         d.update({"session": sess, "n": n, "source": "refs.csv",
-                  "void": int(void), "void_reason": reason if void else None, "void_copy_mtime": stamp,
+                  "void": int(void) if known else None,   # NULL: no copy had a void column
+                  "void_reason": reason if void else None, "void_copy_mtime": stamp,
                   "void_copy_unc": unc, "geom": _geom(r.get("lat"), r.get("lon"), r.get("h_ground"))})
         out.append(d)
     if out:
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
         # only rows a copy in this run has a void column for: copies from before 0.9.0 alone
-        # never reset a flag that an earlier import took from a newer copy; and only from a
-        # copy surely newer than the one the stored flag came from (void_copy_mtime), or as
-        # new, or tied with it and flagging it (flagged wins)
+        # never reset a flag that an earlier import took from a newer copy
         upd = []
         for d in out:
             key = (d["session"], d["n"])
             if key not in flags:
                 continue
-            got = gp.con.execute("SELECT void, void_copy_mtime, void_copy_unc FROM refs "
+            got = gp.con.execute("SELECT void, void_reason, void_copy_mtime, void_copy_unc FROM refs "
                                  "WHERE session=? AND n=? AND source='refs.csv'", key).fetchone()
             if got is None:
                 continue
-            sv, st, su = got
-            su = APPROX_S if su is None else su
-            # an unknown stored time goes through the same rule: both unknown is a tie
-            order = _stamp_order((d["void_copy_mtime"], d["void_copy_unc"]), (st, su))
-            if order == 1 or (order == 0 and (d["void"] or not sv)):
-                stamp, unc = d["void_copy_mtime"], d["void_copy_unc"]
-                if order == 0:   # a tie: keep the later time and the larger uncertainty
-                    stamp = max(stamp, st) if stamp is not None and st is not None else stamp
-                    unc = max(unc or 0.0, su)
-                upd.append({"void": d["void"], "reason": d["void_reason"], "stamp": stamp,
-                            "unc": unc, "session": d["session"], "n": d["n"]})
+            sv, sr, st, su = got
+            run = (d["void_copy_mtime"], d["void_copy_unc"])
+            if sv is None:   # stored from copies without a void column: this run decides
+                order = 1
+            else:
+                su = APPROX_S if su is None else su
+                # an unknown stored time goes through the same rule: both unknown is a tie
+                order = _stamp_order(run, (st, su))
+            if order == 1:
+                upd.append({"void": d["void"], "reason": d["void_reason"], "stamp": run[0],
+                            "unc": run[1], "session": d["session"], "n": d["n"]})
+            elif order == 0:   # a tie: flagged if either is, over the union interval
+                void = int(bool(d["void"]) or bool(sv))
+                reason = _flag_reason([(c[0], c[1]) for c, f in
+                                       (((st, sr), sv), ((run[0], d["void_reason"]), d["void"])) if f]) if void else None
+                stamp, unc = _stamp_hull([run, (st, su)])
+                upd.append({"void": void, "reason": reason, "stamp": stamp, "unc": unc,
+                            "session": d["session"], "n": d["n"]})
             if order == -1:
                 tied.discard(key)   # a surely newer stored copy decided, not this run's tie
             elif order == 0 and bool(sv) != bool(d["void"]):

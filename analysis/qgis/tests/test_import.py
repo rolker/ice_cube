@@ -155,8 +155,9 @@ class ImportTest(unittest.TestCase):
         fids = self.q("SELECT n, fid FROM captures ORDER BY n")
         z.unlink()
         # these zips' events.csv gives no zone offset (synthetic wall times), so their DOS
-        # times are mtime_approx: a copy is surely newer only beyond 26 h (#27 step 18)
-        later = time.localtime(time.time() + 2 * 86400)[:6]
+        # times are mtime_approx (26 h each): a copy is surely newer only beyond the two
+        # intervals, 52 h (#27 step 18)
+        later = time.localtime(time.time() + 3 * 86400)[:6]
         z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False),
                             refs_date=later)
         summary = imp.run([str(z), "--gpkg", str(self.gpkg)], log=lambda *a: None)
@@ -758,7 +759,7 @@ class RefsCopyTimeTest(unittest.TestCase):
 
     def void(self, copies, ties=None):
         imp.import_refs_csv(self.gp, copies, ties)
-        return self.gp.con.execute("SELECT void FROM refs").fetchone()[0]
+        return self.gp.con.execute("SELECT void FROM refs WHERE session='s1' AND n=5").fetchone()[0]
 
     def test_zone_offset_from_events_csv(self):
         for zone in (-5 * 3600, 3600, 5 * 3600 + 1800, 0):
@@ -864,15 +865,86 @@ class RefsCopyTimeTest(unittest.TestCase):
         self.assertEqual(ties, [("s1", 5, "flagged")])
         self.assertEqual(self.void([(self.cleared, self.T, 0.0)]), 0)
 
-    def test_tie_keeps_the_later_stored_time_and_larger_uncertainty(self):
+    def stored(self):
+        return self.gp.con.execute("SELECT void, void_reason, void_copy_mtime, void_copy_unc FROM refs WHERE session='s1' AND n=5").fetchone()
+
+    def flagged_as(self, reason):
+        return self.flagged.replace(",1,moved\n", f",1,{reason}\n")
+
+    def test_tie_stores_the_union_interval(self):
         H = 3600.0
         self.assertEqual(self.void([(self.flagged, self.T, 26 * H)]), 1)
         self.assertEqual(self.void([(self.flagged, self.T - 25 * H, 0.0)]), 1)   # a tie, agreeing
-        self.assertEqual(self.gp.con.execute("SELECT void_copy_mtime, void_copy_unc FROM refs").fetchall(),
-                         [(self.T, 26 * H)])
+        self.assertEqual(self.stored()[2:], (self.T, 26 * H))   # inside the stored interval
+        self.assertEqual(self.void([(self.flagged, self.T + 20 * H, 0.0)]), 1)
+        self.assertEqual(self.stored()[2:], (self.T, 26 * H))
         ties = []
         self.assertEqual(self.void([(self.cleared, self.T - 24 * H, 0.0)], ties), 1)   # still a tie
         self.assertEqual(ties, [("s1", 5, "flagged")])
+        # an exact copy past the union clears it (the old max-merge stored (T + 20 h, 26 h),
+        # so this copy tied and the result depended on the import order)
+        self.assertEqual(self.void([(self.cleared, self.T + 30 * H, 0.0)]), 0)
+        self.assertEqual(self.stored()[2:], (self.T + 30 * H, 0.0))   # its own interval
+
+    def test_two_dst_uncertain_copies_90_min_apart_tie(self):
+        H = 3600.0
+        a, b = (self.flagged, self.T, H), (self.cleared, self.T + 1.5 * H, H)
+        for copies in ([a, b], [b, a]):
+            self.gp.con.execute("DELETE FROM refs")
+            ties = []
+            self.assertEqual(self.void(copies, ties), 1)
+            self.assertEqual(ties, [("s1", 5, "flagged")])
+            self.assertEqual(self.stored(), (1, "moved", self.T + 0.75 * H, 1.75 * H))   # [T - 1 h, T + 2.5 h]
+        # across runs: the stored copy and this run's tie the same way
+        for first, second in ((a, b), (b, a)):
+            self.gp.con.execute("DELETE FROM refs")
+            self.void([first])
+            self.assertEqual(self.void([second]), 1)
+            self.assertEqual(self.stored(), (1, "moved", self.T + 0.75 * H, 1.75 * H))
+        # a later exact un-flag clears the union-stored flag only once it is surely newer
+        self.assertEqual(self.void([(self.cleared, self.T + 2 * H, 0.0)]), 1)   # inside: a tie
+        self.assertEqual(self.void([(self.cleared, self.T + 3 * H, 0.0)]), 0)
+        self.assertEqual(self.stored(), (0, None, self.T + 3 * H, 0.0))
+
+    def test_import_order_does_not_change_the_result(self):
+        H = 3600.0
+        copies = [(self.flagged_as("early"), self.T, 26 * H), (self.flagged_as("late"), self.T + 20 * H, 0.0),
+                  (self.cleared, self.T + 10 * H, H), (self.cleared, self.T + 30 * H, 0.0)]
+        import itertools
+        for n in (3, 4):   # without and with the surely newer un-flag
+            want = None
+            for perm in itertools.permutations(copies[:n]):
+                for one_run in (True, False):
+                    self.gp.con.execute("DELETE FROM refs")
+                    if one_run:
+                        self.void(list(perm))
+                    else:
+                        for c in perm:
+                            self.void([c])
+                    got = self.stored()
+                    want = want or got
+                    self.assertEqual(got, want, (n, perm, one_run))
+            self.assertEqual(want[:2], (1, "late") if n == 3 else (0, None))
+
+    def test_tie_keeps_the_flagged_copys_reason(self):
+        H = 3600.0
+        self.void([(self.flagged_as("late"), self.T + 600, H)])
+        self.assertEqual(self.void([(self.flagged_as("early"), self.T, H)]), 1)   # older, tied
+        self.assertEqual(self.stored()[:2], (1, "late"))
+        self.assertEqual(self.void([(self.cleared, self.T + 1200, H)]), 1)       # cleared, tied
+        self.assertEqual(self.stored()[:2], (1, "late"))
+        self.gp.con.execute("DELETE FROM refs")
+        self.void([(self.cleared, self.T + 600, H)])
+        self.assertEqual(self.void([(self.flagged_as("early"), self.T, H)]), 1)
+        self.assertEqual(self.stored()[:2], (1, "early"))
+
+    def test_row_from_a_refs_csv_without_void_column_is_not_a_tie(self):
+        old = synth.refs_csv().replace("2026-11-30_09-00-00", "s1")
+        self.assertIsNone(self.void([old]))   # no void column: no flag recorded
+        ties = []
+        self.assertEqual(self.void([self.flagged], ties), 1)   # unknown time: decides as if new
+        self.assertEqual(ties, [])
+        self.assertEqual(self.void([old]), 1)             # an old copy again changes nothing
 
     def test_tie_report_only_names_refs_a_tie_decided(self):
         # an in-run tie that a surely newer stored copy overrides decided nothing
