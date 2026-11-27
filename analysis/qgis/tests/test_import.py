@@ -539,6 +539,34 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT session, n_voided FROM sessions ORDER BY session"),
                          [("2026-12-01_10-00-00", 1), ("2026-12-02_10-00-00", 0)])
 
+    def test_schema3_gpkg_without_void_columns_upgrades(self):
+        """A gpkg written under schema 3 has no void, void_reason, void_copy_mtime or n_voided
+        columns: the next import adds them, re-reads the 0.9 session (n_voided, captures void),
+        marks the 0.6 one current with n_voided 0, and fills a refs.csv ref's flag (#27)."""
+        s9 = synth.with_void(synth.session_v06(), {5: "accidental"})
+        s9["2026-12-01_10-00-00/events.csv"] = s9["2026-12-01_10-00-00/events.csv"].replace(
+            b"app=0.6", b"app=0.9.0")
+        z9 = synth.write_zip(self.d / "s9.zip", s9, refs=synth.refs_csv_void(True))
+        z6 = synth.write_zip(self.d / "s6.zip", synth.session_v06("2026-12-02_10-00-00"))
+        run(z9, z6, "--gpkg", self.gpkg, "--base", *self.base)
+        con = gw.connect(self.gpkg)
+        for table, cols in (("captures", ("void", "void_reason")),
+                            ("refs", ("void", "void_reason", "void_copy_mtime")),
+                            ("sessions", ("n_voided",))):
+            for c in cols:
+                con.execute(f"ALTER TABLE {table} DROP COLUMN {c}")
+        con.execute("UPDATE sessions SET schema_version=3")
+        con.execute("UPDATE icecube_meta SET value='3' WHERE key='schema_version'")
+        con.commit()
+        con.close()
+        self.assertNotIn("n_voided", [r[1] for r in self.q("PRAGMA table_info(sessions)")])
+        run(z9, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertEqual(self.q("SELECT session, n_voided FROM sessions ORDER BY session"),
+                         [("2026-12-01_10-00-00", 1), ("2026-12-02_10-00-00", 0)])
+        self.assertEqual(self.q("SELECT n, void_reason FROM captures WHERE void=1"), [(5, "accidental")])
+        self.assertEqual(self.q("SELECT void, void_reason FROM refs WHERE session='2026-11-30_09-00-00'"),
+                         [(1, "moved")])
+
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())
         run(z, "--gpkg", self.gpkg, "--base", *self.base)
