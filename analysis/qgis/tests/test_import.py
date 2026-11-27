@@ -838,5 +838,40 @@ class RefsCopyTimeTest(unittest.TestCase):
         self.assertEqual(self.void([near], ties), 1)
         self.assertEqual(ties, [("s1", 5, "flagged")])
 
+    def test_unknown_stored_time_ties_an_unknown_copy(self):
+        """A stored flag of unknown time goes through _stamp_order too: an unknown-time copy
+        that clears it ties, so it stays flagged and the tie is reported; a known time is
+        surely newer and clears it."""
+        self.assertEqual(self.void([self.cleared]), 0)
+        self.assertEqual(self.void([self.flagged]), 1)          # tie: flagging wins
+        ties = []
+        self.assertEqual(self.void([self.cleared], ties), 1)    # tie: not cleared
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+        self.assertEqual(self.void([(self.cleared, self.T, 0.0)]), 0)
+
+    def test_tie_keeps_the_later_stored_time_and_larger_uncertainty(self):
+        H = 3600.0
+        self.assertEqual(self.void([(self.flagged, self.T, 26 * H)]), 1)
+        self.assertEqual(self.void([(self.flagged, self.T - 25 * H, 0.0)]), 1)   # a tie, agreeing
+        self.assertEqual(self.gp.con.execute("SELECT void_copy_mtime, void_copy_unc FROM refs").fetchall(),
+                         [(self.T, 26 * H)])
+        ties = []
+        self.assertEqual(self.void([(self.cleared, self.T - 24 * H, 0.0)], ties), 1)   # still a tie
+        self.assertEqual(ties, [("s1", 5, "flagged")])
+
+    def test_tie_report_only_names_refs_a_tie_decided(self):
+        # an in-run tie that a surely newer stored copy overrides decided nothing
+        self.assertEqual(self.void([(self.cleared, 1000.0, 0.0)]), 0)
+        ties = []
+        self.assertEqual(self.void([(self.flagged, 100.0, 0.0), (self.cleared, 100.0, 0.0)], ties), 0)
+        self.assertEqual(ties, [])
+        # a ref of an imported session follows its points.csv: never reported
+        self.gp.con.execute("DELETE FROM refs")
+        self.gp.upsert("refs", [{"session": "s1", "n": 5, "source": "points.csv", "void": 0}],
+                       key=("session", "n"))
+        ties = []
+        imp.import_refs_csv(self.gp, [(self.flagged, 100.0, 0.0), (self.cleared, 100.0, 0.0)], ties)
+        self.assertEqual(ties, [])
+
 if __name__ == "__main__":
     unittest.main()

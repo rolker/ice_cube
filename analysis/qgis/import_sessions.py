@@ -393,10 +393,13 @@ def import_refs_csv(gp, texts, ties=None):
     gpkg and the phone agree on a ref after a partial write. The time of the copy a stored
     flag came from is kept in `void_copy_mtime` and `void_copy_unc` (NULL, from before the
     column: taken as APPROX_S); a later run changes the flag only with a surely newer copy,
-    or a tied one that flags it (one of unknown time changes only a flag of unknown time),
-    so an older 0.9.0 copy met in a later run cannot clear (or set) a newer stored flag.
-    `ties`, when a list, gets (session, n, "flagged") for each ref whose flag a tie decided
-    against a disagreeing copy (in this run or against the stored flag).
+    or a tied one that flags it (_stamp_order here too, so a copy of unknown time ties only a
+    stored flag of unknown time), so an older 0.9.0 copy met in a later run cannot clear (or
+    set) a newer stored flag. On a tie the stored time becomes the later of the two and its
+    uncertainty the larger, so a tie never makes the stored flag easier to clear.
+    `ties`, when a list, gets (session, n, "flagged") for each ref stored from refs.csv whose
+    flag a tie decided against a disagreeing copy (in this run, unless a surely newer stored
+    copy decided instead, or against the stored flag).
 
     Returns (refs.csv rows seen, of which flagged): every row of every copy counts as seen,
     but only rows stored from refs.csv (source 'refs.csv', sessions not imported) count as
@@ -448,21 +451,28 @@ def import_refs_csv(gp, texts, ties=None):
             if got is None:
                 continue
             sv, st, su = got
-            if st is None:
-                order = 1
-            else:
-                order = _stamp_order((d["void_copy_mtime"], d["void_copy_unc"]),
-                                     (st, APPROX_S if su is None else su))
+            su = APPROX_S if su is None else su
+            # an unknown stored time goes through the same rule: both unknown is a tie
+            order = _stamp_order((d["void_copy_mtime"], d["void_copy_unc"]), (st, su))
             if order == 1 or (order == 0 and (d["void"] or not sv)):
-                upd.append({"void": d["void"], "reason": d["void_reason"], "stamp": d["void_copy_mtime"],
-                            "unc": d["void_copy_unc"], "session": d["session"], "n": d["n"]})
-            if order == 0 and bool(sv) != bool(d["void"]):
+                stamp, unc = d["void_copy_mtime"], d["void_copy_unc"]
+                if order == 0:   # a tie: keep the later time and the larger uncertainty
+                    stamp = max(stamp, st) if stamp is not None and st is not None else stamp
+                    unc = max(unc or 0.0, su)
+                upd.append({"void": d["void"], "reason": d["void_reason"], "stamp": stamp,
+                            "unc": unc, "session": d["session"], "n": d["n"]})
+            if order == -1:
+                tied.discard(key)   # a surely newer stored copy decided, not this run's tie
+            elif order == 0 and bool(sv) != bool(d["void"]):
                 tied.add(key)
         gp.con.executemany(
             "UPDATE refs SET void=:void, void_reason=:reason, void_copy_mtime=:stamp, void_copy_unc=:unc "
             "WHERE session=:session AND n=:n AND source='refs.csv'", upd)
     if ties is not None:
-        stored = {(d["session"], d["n"]) for d in out}
+        # only rows stored from refs.csv: a ref of an imported session follows its points.csv
+        stored = {(d["session"], d["n"]) for d in out if gp.con.execute(
+            "SELECT 1 FROM refs WHERE session=? AND n=? AND source='refs.csv'",
+            (d["session"], d["n"])).fetchone()}
         ties.extend((sess, n, "flagged") for sess, n in sorted(tied) if (sess, n) in stored)
     # flagged count from the refs table (stored flags included), not just this run's copies
     n_void = sum(1 for d in out if gp.con.execute(
