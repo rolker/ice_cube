@@ -624,8 +624,9 @@ def run(argv=None, log=print, progress=None):
             return v < schema_min_app(schema) if v else fmt != "points.csv"
         current = [ses for ses, schema, app, fmt in olds if nothing_new(schema, app, fmt)]
         if current:
-            gp.con.executemany("UPDATE sessions SET schema_version=? WHERE session=?",
-                               [(SCHEMA_VERSION, ses) for ses in current])
+            # an app older than every missed step has no void column: n_voided is 0, not unknown
+            gp.con.executemany("UPDATE sessions SET schema_version=?, n_voided=coalesce(n_voided, 0) "
+                               "WHERE session=?", [(SCHEMA_VERSION, ses) for ses in current])
             gp.commit()
         stale = {ses for ses, _, _, _ in olds} - set(current)
         if stale:

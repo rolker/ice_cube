@@ -535,6 +535,9 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT n, void_reason FROM captures WHERE void=1"), [(5, "accidental")])
         self.assertEqual(self.q("SELECT count(*) FROM sessions WHERE schema_version < ?",
                                 imp.SCHEMA_VERSION), [(0,)])
+        # marked current without a re-read: none flagged (0), not unknown (NULL)
+        self.assertEqual(self.q("SELECT session, n_voided FROM sessions ORDER BY session"),
+                         [("2026-12-01_10-00-00", 1), ("2026-12-02_10-00-00", 0)])
 
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())
