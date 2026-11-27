@@ -285,10 +285,11 @@ def zip_zone_offset(events_info, events_bytes):
 def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
     """(mtime, uncertainty_s) of a zip entry for ordering refs.csv copies. With an extended
     timestamp: that UTC time, uncertainty EXT_S (it is whole seconds, a folder copy's mtime is
-    not). A DOS time corrected by the zip's zone offset (zip_zone_offset): uncertainty 0 for
-    events.csv itself (`events_info`, the entry the offset came from), DST_S for any other
-    entry (Java converts each file's mtime with the zone rules of that moment, so a DST
-    change between it and events.csv, however near, shifts it by an hour). Without an offset
+    not). A DOS time corrected by the zip's zone offset (zip_zone_offset): uncertainty
+    ZONE_TRUNC_S for events.csv itself (`events_info`, the entry the offset came from; a DOS
+    time is truncated down to 2 s), DST_S + ZONE_TRUNC_S for any other entry (Java converts
+    each file's mtime with the zone rules of that moment, so a DST change between it and
+    events.csv, however near, shifts it by an hour). Without an offset
     (mtime_approx): the DOS date and time read as if UTC (zip_dos_seconds), uncertainty
     APPROX_S. That time is off by the writer's zone offset, but it does not depend on the
     importing PC's zone, so the same zip gives the same copy time (and copy id,
@@ -304,7 +305,7 @@ def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
     if zone_offset_s is None:
         return dos, APPROX_S
     same = events_info is not None and info.filename == events_info.filename
-    unc = 0.0 if same else DST_S
+    unc = float(ZONE_TRUNC_S) if same else float(DST_S + ZONE_TRUNC_S)
     return dos - zone_offset_s, unc
 
 

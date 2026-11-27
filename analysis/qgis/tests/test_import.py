@@ -870,8 +870,8 @@ class RefsCopyTimeTest(unittest.TestCase):
     def test_dos_time_corrected_by_zone_offset(self):
         a = self.copy(self.flagged, self.T, 3 * 3600)
         b = self.copy(self.cleared, self.T + 3 * 3600, -5 * 3600)
-        self.assertEqual(a[1:], (self.T, 3600))                # a possible DST change: 1 h
-        self.assertEqual(b[1:], (self.T + 3 * 3600, 3600))
+        self.assertEqual(a[1:], (self.T, 3602))                # a possible DST change, DOS 2 s
+        self.assertEqual(b[1:], (self.T + 3 * 3600, 3602))
         self.assertEqual(self.void([a, b]), 0)                 # read in the PC's zone, a would win
 
     def test_no_events_csv_is_a_tie_within_26_h_and_reported(self):
@@ -910,9 +910,9 @@ class RefsCopyTimeTest(unittest.TestCase):
         # refs.csv last written 3 days before the export: its DOS time may carry another DST
         # offset, so it is uncertain by 1 h
         old = self.copy(self.cleared, self.T, -5 * 3600, refs_utc=self.T - 3 * 86400)
-        self.assertEqual(old[1:], (self.T - 3 * 86400, 3600))
+        self.assertEqual(old[1:], (self.T - 3 * 86400, 3602))
         near = self.copy(self.flagged, self.T - 3 * 86400 + 1800, -4 * 3600)
-        self.assertEqual(near[1:], (self.T - 3 * 86400 + 1800, 3600))
+        self.assertEqual(near[1:], (self.T - 3 * 86400 + 1800, 3602))
         ties = []
         self.assertEqual(self.void([near, old], ties), 1)      # 30 min apart: a tie, flagged
         self.assertEqual(ties, [("s1", 5, "flagged")])
@@ -941,9 +941,9 @@ class RefsCopyTimeTest(unittest.TestCase):
             ev = zf.getinfo("2026-11-01_01-00-00/events.csv")
             off = zip_zone_offset(ev, zf.read(ev))
             self.assertEqual(off, -5 * 3600)
-            self.assertEqual(zip_entry_stamp(ev, off, ev), (ev_utc, 0.0))   # events.csv itself: exact
+            self.assertEqual(zip_entry_stamp(ev, off, ev), (ev_utc, 2.0))   # events.csv itself: DOS 2 s
             t, u = zip_entry_stamp(zf.getinfo("refs.csv"), off, ev)
-        self.assertEqual((t, u), (ev_utc, 3600))               # an hour late, within its 1 h
+        self.assertEqual((t, u), (ev_utc, 3602))               # an hour late, within its 1 h and 2 s
         self.assertLessEqual(abs(t - (ev_utc - 3600)), u)
 
     def test_zone_offset_takes_a_residual_just_under_minus_2_s(self):
