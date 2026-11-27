@@ -1185,3 +1185,13 @@ Earlier entries at `d87686b` and `f73949d` are stale (code changed since) and we
 - [ ] (suggestion, Local Review @ `4c8fd95` covers head via bookkeeping) Valid, confirmed in code: `extendedTimestamp` does `int t = (int) epochSeconds;`, so from 2038-01-19 the field wraps negative, and the importer reads 0x5455 as signed, so a post-2038 copy would order as decades old. Fix: in `addFile`, write the 0x5455 extra only when `0 < seconds <= Integer.MAX_VALUE` (otherwise fall back to the DOS time alone, as for unknown mtime), or have `extendedTimestamp` reject out-of-range input; add a boundary test at `Integer.MAX_VALUE` and `Integer.MAX_VALUE + 1`. Low urgency (12 years out) but cheap. — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java`
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 22:48 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (one valid suggestion, a few lines with a boundary test; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Write 0x5455 only when the seconds fit a signed 32-bit int, else the DOS time alone; boundary tests at Integer.MAX_VALUE and one past.
