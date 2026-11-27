@@ -983,3 +983,19 @@ Scope: round 3's one must-fix and the fix diff 85dfcc3..d87686b only. Cross-mode
 **Decision**: publish
 
 One open suggestion (the copy id includes an approximate time read in the importing PC's zone) is carried into the PR-mode review.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 22:00 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #36 at `cd73f5f`
+**Sources**: 1 (Local Review (Pre-Push) @ `d87686b` (covers `cd73f5f` via bookkeeping)); no hosted reviews (Copilot out of quota), no PR comments, no CI checks
+**Cross-source confirmations**: 0
+**CI**: none (no checks configured on the PR head)
+
+### Findings
+- [ ] (suggestion, Local Review (Pre-Push) @ `d87686b`) Valid, still open at head: `_copy_id` keys a copy on its mtime and uncertainty, and on the mtime_approx path (no 0x5455 stamp, no events.csv) that time is the DOS stamp read in the importing PC's zone. The same zip imported on a PC in another zone becomes a second copy with a shifted interval, which can change which copies decide the flag. Rare (logger 0.9.0+ zips carry 0x5455; pre-0.9.0 copies have no void column). Fix: key that path on the raw DOS stamp, or state the limitation in the `_copy_id` docstring — `analysis/qgis/import_sessions.py:421`
+
+### False positives
