@@ -1,4 +1,5 @@
-"""Test vectors for the Ice Cube Logger's live coverage overlay (logger 0.7, issue #6; 0.8, #24).
+"""Test vectors for the Ice Cube Logger's live coverage overlay (logger 0.7, issue #6; 0.8, #24;
+0.10, #29).
 
     python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json
 
@@ -35,13 +36,26 @@ soundings on PLANE_PARAMS, every node fed unfolded entries (no node reaches CAP,
 aggregate), rebuilt with the logger's rule (count promotion, no Eeg, no pass bias), then
 `nodes.plane_pass` with the same rule and `nodes.PLANE_DEFAULTS` (`plane_params` pins
 both). Expected per node: pass-1 z and n_out, the plane code, planar, gradient and the
-final z, sigma, n_in, n_out. The fold aggregate's moments are PR B's.
+final z, sigma, n_in, n_out.
+
+Part `plane_folded_vectors` (PR B): blocks at about 40 soundings per disc fed in arrival
+order through `LiveCoverage` (reach 0), so inner nodes fold past CAP (the aggregate
+carries its geometry moments, `nodes.NodeStore`) and some drop entries; then the plane
+pass over every node. Expected per node as in `plane_vectors` plus the store's folded and
+dropped counts and the pass-1 n_in and weighted centroid (cx, cy).
+
+Part `plane_sequences` (PR B): a bank fed one capture at a time with SEQ_PARAMS; the
+steps as in `sequences`, the status read from the final (plane) values. After every
+capture the expectation is a full recompute (the plane pass over every node from
+scratch), not the Python twin of Coverage.java's ring; the twin (`LiveCoverage(plane=True)`)
+is only checked against it, so a wrong ring rule cannot be pinned on both sides.
 
 Guard: the generator refuses a vector where Java and Python could round to different
 decisions: a sounding within 1e-6 m of a node's capture circle or reach, a test statistic
 within 1e-6 of k_sigma, a weighted-median sum within 1e-9 (relative) of W/2 but not on it
 (an exact half comes from equal weights and is the pinned lower-median rule), a status
-sigma within 1e-9 of the target, a plane gate value within 1e-6 (relative) of its threshold.
+sigma within 1e-9 of the target, a plane gate value within 1e-6 (relative) of its threshold
+(in every plane part, and after every capture of a plane sequence).
 
 Regenerate whenever `soundings.sigma_terms` or its defaults change;
 `icecube/tests/test_logger_vectors.py` fails until the committed file matches.
@@ -541,6 +555,93 @@ def plane_part():
     return [_plane_case(*c) for c in _plane_cases()]
 
 
+def _full_plane(name, cov):
+    """The plane pass over every node of `cov` from scratch (`plane_over`), with the
+    threshold guards; checks that cov's ring (Coverage.java's rule) gave the same result
+    for every node, then sets each node's plane result from the recompute."""
+    trace, gtrace = [], []
+    res = plane_over(cov.stores(), cov.k_sigma, cov.slope, trace, gtrace)
+    _check_trace(name, trace + cov.trace, cov.k_sigma)
+    for g in gtrace:
+        assert abs(g[1] - g[2]) > 1e-6 * max(1.0, abs(g[2])), (name, "plane gate on its threshold", g)
+    for k, nd in cov.nodes.items():
+        if nd.store is None:
+            continue
+        want, got = res.get(k), nd.plane
+        assert (want is None) == (got is None), (name, "ring differs from the recompute", k, want, got)
+        if want is not None:
+            assert want[0] == got[0], (name, "ring code", k, want, got)
+            if want[1] is not None:
+                assert abs(want[1]["z"] - got[1]["z"]) <= 1e-12 and abs(want[1]["sigma"] - got[1]["sigma"]) <= 1e-12, \
+                    (name, "ring pass 2", k)
+        nd.plane = want
+    return res
+
+
+def _plane_folded_cases():
+    """(name, soundings): about 40 soundings per disc, so inner nodes fold past CAP and
+    some drop entries; seeds picked so each case is what it is named for."""
+    return [("bank_0.3_folded", _plane_block(0.3, 8, per_disc=40)),
+            ("bank_diag_folded", _plane_block(0.0, 1, per_disc=40, surface=lambda x, y: 0.2 * x - 0.2 * y))]
+
+
+def _plane_folded_case(name, soundings):
+    """Soundings fed in arrival order through LiveCoverage (reach 0, the logger's stores
+    with the fold), then the plane pass over every node. Expected per node with soundings:
+    the store (n, folded, dropped), pass 1 (z1, n_in1, n_out1, cx, cy: the main's weighted
+    centroid, the aggregate at its own), the plane code, planar, gradient and the final z,
+    sigma, n_in, n_out."""
+    p = _plane_params()
+    rows = _rows(soundings)
+    cov = LiveCoverage(p["cell"], p["capture_radius"], 0.0, k_sigma=p["k_sigma"], slope=p["slope"], plane=True)
+    for r in rows:
+        cov.add(r["x"], r["y"], r["z"], r["sz"], r["sh"], r["id"])
+    _full_plane(name, cov)
+    out = []
+    for (i, j), nd in sorted(cov.nodes.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        if nd.store is None:
+            continue
+        o1, f = nd.store.outputs(), cov.final(nd)
+        out.append({"i": i, "j": j, "n": o1["n"], "folded": nd.store.agg_n, "dropped": nd.store.n_dropped,
+                    "z1": o1["z"], "n_in1": o1["n_in"], "n_out1": o1["n_out"], "cx": o1["cx"], "cy": o1["cy"],
+                    "code": f["code"], "planar": f["planar"],
+                    "gradient": None if math.isnan(f["gradient"]) else f["gradient"],
+                    "z": f["z"], "sigma": f["sigma"], "n_in": f["n_in"], "n_out": f["n_out"]})
+    return {"name": name, "soundings": rows, "nodes": out}
+
+
+def plane_folded_part():
+    return [_plane_folded_case(*c) for c in _plane_folded_cases()]
+
+
+def _plane_sequence_cases():
+    """(name, soundings): fed one at a time with SEQ_PARAMS and the plane pass."""
+    return [("bank_0.3_sequence", _plane_block(0.3, 3))]
+
+
+def _plane_sequence(name, soundings):
+    """As `_sequence`, with the plane pass: after each capture the plane pass is redone over
+    every node from scratch (`_full_plane`, which also checks the ring against it) and the
+    status read from the final values. Steps list the in-area nodes whose status changed."""
+    p = SEQ_PARAMS
+    rows = _rows(soundings)
+    cov = LiveCoverage(p["cell"], p["capture_radius"], p["reach"], p["target"], p["wander"], plane=True)
+    steps = []
+    last = {}
+    for r in rows:
+        cov.add(r["x"], r["y"], r["z"], r["sz"], r["sh"], r["id"])
+        _full_plane(name, cov)
+        now = {k: cov.status(nd) for k, nd in cov.nodes.items() if nd.in_area}
+        steps.append([f"{i} {j} {st}" for (i, j), st in sorted(now.items(), key=lambda kv: (kv[0][1], kv[0][0]))
+                      if last.get((i, j)) != st])
+        last = now
+    return {"name": name, "params": p, "soundings": rows, "steps": steps}
+
+
+def plane_sequences_part():
+    return [_plane_sequence(*c) for c in _plane_sequence_cases()]
+
+
 def build():
     """The whole vectors document (a dict)."""
     sm = _soundings()
@@ -555,6 +656,8 @@ def build():
         "sequences": sequences_part(),
         "plane_params": _plane_params(),
         "plane_vectors": plane_part(),
+        "plane_folded_vectors": plane_folded_part(),
+        "plane_sequences": plane_sequences_part(),
     }
 
 
