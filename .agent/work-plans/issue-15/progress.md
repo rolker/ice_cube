@@ -328,7 +328,7 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 - [x] (suggestion) With a station filter, a fixed epoch from another station is a dropout in Python (not in Java): an A-B-A switch within 2 s continues the stretch, a float spell carries over it, and the next start jump can be measured from the other station's fix. End the stretch on it, or note it in the docstring (Claude, gemini, codex) — `analysis/qgis/soundings.py:376-416`
 - [x] (suggestion) Captures without raw epochs take the logger's suspect flags but not its `fix_age_s`/`fix_young`, so a young capture gets no settle sigma or flag; fall back to the capture's columns (Claude) — `analysis/qgis/soundings.py:691,816`
 - [x] (suggestion) `capture_suspect_flags`: `fix_suspect` 1 with an unknown non-empty reason (a future one) adds no flag and the capture stays usable; add a generic suspect flag when no known reason matched (gemini) — `analysis/qgis/soundings.py:670-680`
-- [ ] (suggestion) The ref's young/suspect latches are set before `RefOccupation.onEpoch` decides whether to count the epoch; an epoch stamped before the ref start (or before the last counted one) can latch young without being counted. Latch only for counted epochs (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:210-218`
+- [x] (suggestion) The ref's young/suspect latches are set before `RefOccupation.onEpoch` decides whether to count the epoch; an epoch stamped before the ref start (or before the last counted one) can latch young without being counted. Latch only for counted epochs (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:210-218`
 
 ## Checkpoint
 **Status**: complete

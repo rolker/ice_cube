@@ -206,8 +206,11 @@ final class Survey {
             RefOccupation r = ref;
             if (r == null) return;
             // every fixed epoch counts (0.11.0, #15: young epochs are no longer paused); the
-            // ref is young if any counted epoch was (worst case, as for tilt rows)
-            if (e.fixed()) {
+            // ref is young if any counted epoch was (worst case, as for tilt rows). Latch only
+            // for an epoch RefOccupation counted (not one stamped before the ref start, #15)
+            int counted = r.epochs();
+            RefOccupation.Change change = r.onEpoch(e);
+            if (r.epochs() > counted) {
                 FixGuard.Stretch cur = guard.current();
                 if (cur != null) {
                     if (!Double.isNaN(cur.jump)) refJump = Double.isNaN(refJump) ? cur.jump : Math.max(refJump, cur.jump);
@@ -217,7 +220,7 @@ final class Survey {
                     refYoung |= guard.young(e.elapsedNs);
                 }
             }
-            switch (r.onEpoch(e)) {
+            switch (change) {
                 case PAUSED:
                     svc.event(String.format(Locale.US, "ref paused: not RTK fixed for 2 s (quality %d), %.0f s to go",
                             e.quality, r.remainingSeconds()));
