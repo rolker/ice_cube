@@ -273,6 +273,16 @@ class TestBuild(unittest.TestCase):
         self.assertIn("voided_included", snd.flags_of(cap[2]))   # the trace stays
         self.assertEqual(cap[2]["use"], 1)
 
+    def test_voided_capture_makes_no_dup_capture_window(self):
+        """A capture flagged void (#27) makes no capture window, so a real pole stop at the
+        same time is not dropped as dup_capture; include_voided keeps its window."""
+        caps = [{"utc": "2026-01-01T00:00:10Z", "class": "ground", "void": 0},
+                {"utc": "2026-01-01T00:01:10Z", "class": "ref", "void": 1}]
+        self.assertEqual(len(snd.clist_windows(caps)), 1)
+        self.assertEqual(len(snd.clist_windows(caps, include_voided=True)), 2)
+        t = snd.parse_iso(caps[0]["utc"])
+        self.assertEqual(snd.clist_windows(caps), [(t - 1.0, t)])
+
     def test_voided_rows_make_no_site_and_skip_suspect_check(self):
         """A voided ref neither makes a site nor lets ground rows join one (#27), and a voided
         row in a suspect pass is not compared, so it cannot clear suspect_jump."""

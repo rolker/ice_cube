@@ -725,16 +725,18 @@ def logger_source(cfg, src, con, frame, history, log):
             f"{sum(1 for s, sus in zip(ep.stretch, ep.suspect) if sus and s >= 0)} epochs in suspect stretches; "
             + ("IMU " + (f"plumb reference from {nref} refs/controls, median spread {plumb_spread:.2f} deg"
                          if plumb else "without a plumb reference") if grav else "no IMU"))
-        rows += stops_from_epochs(cfg, src, ses, ep, clist_windows(clist, ep), grav, cmap, plumb,
-                                  prior, cprior, by_n, by_t)
+        rows += stops_from_epochs(cfg, src, ses, ep, clist_windows(clist, include_voided), grav, cmap,
+                                  plumb, prior, cprior, by_n, by_t)
     return rows
 
 
-def clist_windows(clist, ep):
-    """Time windows (unix s) of the captures of a session, to drop stops that are captures."""
+def clist_windows(clist, include_voided=False):
+    """Time windows (unix s) of the captures of a session, to drop stops that are captures.
+    A capture flagged void in the logger (#27) makes no window unless include_voided, so an
+    accidental MARK does not hide a real pole stop as dup_capture."""
     out = []
     for c in clist:
-        if not c["utc"]:
+        if not c["utc"] or (c["void"] and not include_voided):
             continue
         t = parse_iso(c["utc"])
         span = 30.0 if c["class"] == "ref" else 1.0
