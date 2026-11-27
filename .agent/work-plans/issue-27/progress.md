@@ -643,3 +643,69 @@ PR A merged as #33 (6a9a9fe). Owner said "27b" (start part B). Refresh the plan'
 **Plan**: `.agent/work-plans/issue-27/plan.md` at `58382ef`
 
 Revision after PR A merged as #33: PR A marked delivered; PR B rewritten against main as steps 10 to 20 (Undo notice, Recent captures, PHOTO target line, MapView flagged drawing, camera-target fallback, photo file-name number, false error: event ordering, one undo clock, F1 zip extended timestamp with tie rule, F2 note match, docs and 0.9.0), each with its test.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-26 20:58 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #27 — Logger: undo or flag an accidental capture
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `58382ef`
+**Branch**: `feature/issue-27`
+
+Scope: PR B, steps 10 to 20, checked against main at 5da4114.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | About 12 files, one feature finish plus the deferred fixes; fits one PR. |
+| Issue alignment | Good | Undo bar, Recent captures with reasons and un-flag, PHOTO target line (owner's comment), flagged drawing. Keep-and-flag (owner's veto) is respected: nothing in steps 10-20 deletes. Serves: Project goal "surveyed with the logger" (`docs/roadmap.md` Direction); the project has no design document. |
+| File targeting | Needs work | Step 15 says "if a parse is found": there is one (`logger_session.py:603-617`, see finding 4). `import_sessions.py` (the tie rule's SQL, finding 1) is missing from the PR B file list. |
+| Consequences | Needs work | Step 18's tie rule must also go into `import_refs_csv`'s stored-flag UPDATE (`void_copy_mtime` comparison), or a re-run decides differently from a first run. |
+| Principle alignment | Needs work | Test what breaks: step 14's test would pass on main (its premise is wrong, finding 2); step 18's `ShareZipTest` runs on the desktop JDK, not Android libcore, so it cannot show what the phone writes. |
+| ADR compliance | Good | The project keeps no ADRs. Public repo: fixtures are synthetic; the step 13 screenshot must be in local frame with no basemap (stated). |
+
+### Findings
+
+1. **[Consequences] Step 18's 26 h tie window.** It cannot flag every ref in a normal re-export. In `import_refs_csv` the "flagged wins" branch fires only when copies disagree on a row's flag, and refs.csv rows only change flag in the session that made them. Same-day re-exports with no flag change are unaffected. The real cost runs the other way: flag, export, un-flag, export within 26 h makes a tie, flagged wins, and the un-flag is lost. Only a copy more than 26 h newer recovers it (the refs.csv entry time is the file's mtime, which a later append moves). A tighter rule is available for the old zips. Each logger zip carries `events.csv`, whose last line has `wall_ms` (UTC), and whose DOS entry time is that file's mtime, in the phone's zone. Their difference, rounded to 15 min, is that zip's zone offset. Correct the DOS times by it, and keep the tie only for a zip with no usable `events.csv`. Either way the plan should say: (a) the mixed case (one copy with 0x5455, one DOS-only) and how they compare; (b) that the same rule applies in the stored-flag SQL (`void_copy_mtime`); (c) "report them" means only the rows whose flag a tie decided, not every row of tied copies; (d) add a test for the un-flag case.
+2. **[Principle alignment] Step 14's premise does not hold on main.** `PhotoRule.attachTo(PointRow, photoNs)` already returns -1 unless `0 <= photoNs - last.elapsedNs <= 60 s`, and `photoTaken` passes `p.pressNs`. So the re-ask already applies the 60 s window at the press. An older live capture is taken only when it was within 60 s of the press, the same rule `planPhoto` uses. `replanAttach` as written would reproduce today's behaviour. Its test passes without the change. Also, a flag cannot happen while the camera activity is in front: Recent captures and UNDO live in `MainActivity`. Choose one: (a) drop the step and keep a lock-in test, or (b) say what rule should apply instead. One candidate is the void-move rule (step 5: nearest earlier live, no window), so a photo aimed at a capture flagged while the camera was open goes where that capture's earlier photos went. The only real residue is the file name number, which step 15 covers.
+3. **[Principle alignment] Step 16: the cause is confirmed in code, but the second half of the fix is unneeded and risky.** `onEpoch` queues `poleCheck` after its synchronized block (`Survey.java:236-238`) on a single-thread executor (`:155`). A `voidCapture` in that gap queues `setVoid` before the append. `finishTilt` is a synchronized method that already queues `poleCheck` under the lock (`:425-428`), so only the occupation path needs the move. Moving `run(() -> poleCheck(f))` inside the lock fixes the ordering. Making `refsVoidEvent` treat `holding == 0` as "pending" would also hide a real failure: when `RefsStore.append` threw, holding 0 is a true error. Drop that half. The gap is microseconds and a ref's UNDO notice is set only by `poleCheck`, after the append, so the UI cannot reproduce it. The test comment states the reasoning (the plan allows this). A Survey-free sequencer is not worth building for a one-line move.
+4. **[File targeting] Step 15: the importer does use the name number and the original event.** In `load_session` a photo's `n` is `by_file` (column), else the `photo file=... attached to|own row n=` event, else `PHOTO_RE`'s number from the name. `attached` (capture / own row) comes from the original event only. A photo moved by a void to a new `photo` row therefore keeps `attached="capture"` from the old event. The `photo moved` events are not read. Make the column the only source of `n` and `attached` when the row has the file. Use the event or name only for an orphan file. Test it with a moved-to-own-row photo.
+5. **[Principle alignment] Step 18: the Android zip writer is not testable on the JVM.** minSdk is 26, so `setLastModifiedTime` exists. The unit tests run on the desktop JDK's `ZipOutputStream`, not Android's libcore, so a passing `ShareZipTest` says nothing about what the phone writes. Write the 0x5455 extra by hand (`setExtra` with the tested `ShareZip.extendedTimestamp`) so the bytes do not depend on the platform. Add a phone check: share a zip, then read `info.extra` with the importer's `zip_entry_mtime`.
+6. **[Issue alignment] Step 10: the new fields duplicate `Notice.at`.** `Notice.at` already carries the row (`n`, `elapsedNs`) but is also set by photo notices. A boolean `undoable`, set only by a capture's own notice, does what `undoN` and `undoCaptureNs` do without copying the row. Note that a ref's notice comes from `poleCheck` (async, after `RefsStore.readAll`), so its UNDO can show with less than 8 s left. That is acceptable, but say so. Step 17 is then mostly part of step 10: `MainActivity` has no undo yet, and `VoidRule.undoOpen` already uses `elapsedRealtimeNanos`.
+7. **[Issue alignment] Step 19.** Match the note exactly (`== "photos of voided n=<n>"`, or a regex with an end or word boundary), not by prefix, so `n=1` never matches `n=12`. Confirm `note` is in the clist dict.
+8. **[Principle alignment] The phone try-out has no checklist.** The repo has JVM JUnit tests only (no Robolectric), so the bar, dialog, PHOTO label and drawing are checked only on the phone. Add the list the PR text will report against:
+   - UNDO shows after surface, object, tilt and ref notices, and never on a "Photo on" notice.
+   - A double tap or held press in the first 750 ms does nothing.
+   - UNDO goes at 8 s. Screen off for more than 8 s, then on: no UNDO, or a "Too late" refusal.
+   - A newer notice removes UNDO.
+   - Recent captures is disabled during a ref or tilt. It lists 10 rows, newest first. Free-text reasons with a comma come out clean. Un-flag works.
+   - `info` shows "1 flagged". The REC count drops.
+   - A flagged capture draws as a grey cross with no camera. A moved photo row keeps its camera.
+   - The coverage overlay recovers.
+   - The PHOTO line counts up, switches to "own row" after 60 s and after flagging the last capture.
+   - A shared zip carries 0x5455 (finding 5).
+   - A flagged ref is skipped by the next pole check.
+
+   The step 13 "screenshot of a synthetic session" needs a way to put a synthetic session on the phone. Say how (adb push a folder made by `synth.py`?) or drop it for a field session shown in the local frame.
+
+### Summary
+
+The plan is sound in shape and respects keep-and-flag. Three steps rest on readings of main that need correcting before implementation:
+- Step 14 fixes behaviour that is already correct.
+- Step 16's "pending" half would mask real errors.
+- Step 18's tie rule loses same-day un-flags and is missing from the stored-flag SQL. A per-zip offset from `events.csv` is tighter.
+
+Also add a phone try-out checklist.
+
+### Recommended Actions
+
+- [ ] Step 18: state the mixed-copy and SQL handling and the report scope; consider the per-zip `events.csv` offset; add the un-flag test; write 0x5455 by hand and check it on a phone zip; add `import_sessions.py` to the file list.
+- [ ] Step 14: drop it (keep a lock-in test) or name the rule that should replace the 60 s re-ask.
+- [ ] Step 16: only move `run(() -> poleCheck(f))` inside `onEpoch`'s lock; keep `refsVoidEvent`'s error for holding 0.
+- [ ] Step 15: make the column the source of `n` and `attached`; test a moved-to-own-row photo.
+- [ ] Step 10/17: use one `undoable` flag on `Notice`; fold 17 into 10.
+- [ ] Step 19: exact note match.
+- [ ] Add the phone try-out checklist to step 20, and say how the step 13 screenshot session gets onto the phone.
