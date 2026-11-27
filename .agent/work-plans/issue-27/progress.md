@@ -279,3 +279,31 @@ Cross-model: codex complete (3 must-fix, all kept: anchors, verify_suspect, pole
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 99 tests, OK (skipped=5)
 - `cd logger && ./gradlew testDebugUnitTest --max-workers 4`: BUILD OK (exit 0); C: 113.9 GB free before the run
 - Docs: `docs/howto/ice-cube.md` updated (b334922). Untracked review-*-prompt/findings.md removed.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 19:00 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `17bc9a3`
+**Base**: main
+**Depth**: Standard (reason: 26 files, about 1,000 lines of code across the logger app and the QGIS readers; data-format change; fix-round re-review on the whole diff)
+**Must-fix**: 1 | **Suggestions**: 9
+**Round**: 2 | **Ship**: recommended — round 2: 1 mechanical must-fix (prev 4), not rising; fix and ship rather than another full round
+
+Round-1 must-fixes all verified fixed: assign_anchors and verify_suspect skip `void:` rows (tests added); build_project.py draws flagged captures as a grey x "Flagged (void)" and flagged refs as a grey dashed ring, with void_reason in map tips (compile-checked only, QGIS not installed); Survey.poleCheck rechecks `r.voided` and sets notice/warning/alarm under the lock, poleWarningN volatile. Checked against the owner's rule (his words: "So flagged data gets deleted? I wonder if it should only be flagged, which is a common approach in multbeam sonar processing."): nothing is deleted on the phone or in the gpkg; one place in soundings.py still lets a flagged capture remove a valid sounding (must-fix below). Public-repo check: clean (synthetic 10/20 degree fixtures; no names, hosts or addresses). Tests (Claude adversarial pass): python qgis 99 OK (5 skipped); logger testDebugUnitTest exit 0. Static analysis: no Python linter installed (py_compile clean); Java compiled by the gradle test run.
+
+Cross-model: codex complete (1 must-fix kept: dup_capture windows; 2 suggestions); gemini complete (3 "must-fix" downgraded to suggestions: refs.csv flag cleared only when the newest 0.9.0 copy is no longer among the inputs, void "" for NULL-upgraded rows, zip-time ordering; cue-under-lock dismissed, cue() already runs under the Survey lock in mark/onEpoch; plan-drift note kept as a suggestion).
+
+### Findings
+- [ ] (must-fix) clist_windows builds the capture windows from every capture, voided ones included, so an accidental MARK that was flagged still marks a real pole stop in its window `dup_capture` and drops it from use; skip `c["void"]` captures unless include_voided, with a test (codex, Claude) — `analysis/qgis/soundings.py:733-742`
+- [ ] (suggestion) assign_anchors' snap loop can turn a voided ground capture into an anchor of a site (class, anchor, sigma_ground changed; use stays 0); skip is_voided rows there (codex, gemini) — `analysis/qgis/soundings.py:948-956`
+- [ ] (suggestion) import_refs_csv's UPDATE sets void=0 for a refs.csv-sourced row when no copy in this run has a void column (the 0.9.0 copy no longer among the inputs); update only keys present in `flags` (gemini) — `analysis/qgis/import_sessions.py:356-358`
+- [ ] (suggestion) export_labels.cell writes "" for void on rows whose void is NULL (sessions imported before 0.9.0 and skipped as unchanged after the column was added); write 0 when r["void"] is None too (gemini) — `analysis/qgis/export_labels.py:94-99`
+- [ ] (suggestion) refs_csv_dated orders zip copies by time.mktime of the DOS local time against folder st_mtime; a timezone difference can misorder mixed zip/folder copies, and a zero DOS date may raise; catch errors to None and say "local time" in the docstring (gemini) — `analysis/qgis/logger_session.py:131-135`
+- [ ] (suggestion) QGIS plugin Export calls export_labels.export without stats, so flagged captures are left out with no count in the message bar; the plugin import summary also ignores voided counts (Claude) — `analysis/qgis/plugin/icecube_qgis/plugin.py:317`
+- [ ] (suggestion) poleCheck is queued after onEpoch's synchronized block; a void in that gap reaches the io queue before append, so setVoid finds no row and logs a false `error:` event (refs.csv ends right). Queue poleCheck inside the lock; reachable once PR B's UNDO exists (Claude) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:236-238,615`
+- [ ] (suggestion) VOID_TIP puts void_reason into map-tip HTML unescaped; VoidRule.reason does not strip `<>&`; escape it in the tip or the sanitiser (gemini) — `analysis/qgis/build_project.py:158-159`
+- [ ] (suggestion) plan.md's Files to Change and step 7 still say the importer drops voided rows; update them to the keep-and-flag model of the owner's veto (gemini, plan drift) — `.agent/work-plans/issue-27/plan.md:150`
+- [ ] (suggestion, note) a photo planned for a capture flagged while the camera is open keeps its `photo_<voidedN>_...` file name on the row it moves to; document or log the original n (Claude) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:638-649`
