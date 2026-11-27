@@ -815,3 +815,26 @@ Tests (every hook ran on each commit):
 APK: `logger/app/build/outputs/apk/debug/app-debug.apk`, versionName 0.9.0, versionCode 13. Not installed.
 
 Not done here / for the phone try-out: the whole step-20 checklist (UNDO after each capture kind and never on a photo notice, 750 ms arm, 8 s and screen-off, newer notice ends UNDO, Recent captures list/reasons/Un-flag/refused during ref or tilt, info `flagged` and REC count, grey cross, coverage recovery, PHOTO line, 0x5455 in a phone-made zip read by `zip_entry_mtime`, flagged ref skipped by the next pole check). No screenshot taken. The #20/#21/#23 issue comments from PR A are still not posted.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:22 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `6fc69be`
+**Base**: main
+**Depth**: Deep (reason: 1254 lines across 21 files, Android app plus QGIS importer: cross-layer)
+**Must-fix**: 2 | **Suggestions**: 5
+**Round**: 1 | **Ship**: continue — round 1: 2 must-fix; first round always re-reviews after fixes
+
+PR B only (PR A merged as #33). Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 140, OK (skipped=5); `./gradlew --max-workers 4 testDebugUnitTest lintDebug` 189 tests, 0 failures, lint on changed files only SetTextI18n warnings (existing pattern). No Python linter installed (py_compile only). Focus areas: UI threading is sound (every row change synchronized, writes on the io executor, poleCheck now queued under the lock, poleCheck's result check under the lock skips a voided ref; main-thread reads of PointRow.voided are benign because only main-thread calls write it). Undo window is checked twice on one clock (elapsedRealtime) with the 750 ms arm delay, and photo notices are never undoable. `void_copy_unc` without a schema bump is compatible: ensure_schema adds the column, NULL reads as APPROX_S (the conservative side), refs.csv rows are re-evaluated every run, and no 0.9.0 session with moved photos exists before this app, so no session re-read is needed. The changed existing test (test_import unflag re-import, `later` +1 h to +2 days) is justified: synthetic zips have no 0x5455 and no usable zone offset, so they fall in the 26 h tie; the test_soundings change follows the deliberate exact-note rule. Owner rules held: flags stay flags end to end; a voided stop's use depends on the reason. Outside reviewers: Gemini and Codex (both completed); Claude adversarial subagent (no must-fix). Dropped as false positives: poleCheck voided check (present at Survey.java:516), PHOTO allCaps (bigButton sets false), voidReason null (initialised ""), MapView stroke reset (each branch sets its own).
+
+### Findings
+- [ ] (must-fix) Stored-flag update bypasses the tie rule when the stored copy time is unknown (`st is None` gives order 1): an unknown-time unflagged copy clears an unknown-time stored flag, against "disagreeing unknown-time copies give flagged"; route it through `_stamp_order` (Gemini, Codex) — `analysis/qgis/import_sessions.py:451`
+- [ ] (must-fix) On a tie the UPDATE replaces the stored `void_copy_mtime`/`void_copy_unc` with the incoming copy's, which may be older or exact: e.g. stored (flagged, T, 26 h) tied by (flagged, T-25 h, 0) becomes (T-25 h, 0), and a later exact unflag at T-24 h then clears it; on a tie keep the later stamp and the larger uncertainty (merge), and add a test (Gemini) — `analysis/qgis/import_sessions.py:456`
+- [ ] (suggestion) The tie report can name refs a tie did not decide: refs of imported sessions (source points.csv, filter as n_void does) and in-run ties that a surely newer stored copy overrode (Gemini, Codex) — `analysis/qgis/import_sessions.py:465`
+- [ ] (suggestion) UNDO is keyed on Notice identity: a tilt ref's finishTilt notice is replaced by poleCheck's notice for the same row, so taps in between are dropped silently and the arm delay restarts; key on `nt.at` and give an error cue for an ignored tap (Gemini, Claude) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:533`
+- [ ] (suggestion) Recent captures dialog callbacks use the captured `sv`: a session stopped (from the notification) while the dialog is open gets flagged in memory with its writes silently rejected; check `survey() == sv` before acting (Gemini) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:569`
+- [ ] (suggestion) The changed unflag test now covers only the 26 h fallback; let `synth.write_zip` write 0x5455 and keep a +1 h end-to-end unflag case for real 0.9.0 zips (Claude) — `analysis/qgis/tests/test_import.py:157`
+- [ ] (suggestion) ShareZip: skip the extended timestamp when `lastModified()` is 0 (it would claim an exact 1970 time), and soften the "bytes do not depend on the platform" comment (OpenJDK re-encodes 0x5455 from `setExtra`); confirm on the phone that a shared zip carries one 0x5455 (Gemini, Claude) — `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java:91`
