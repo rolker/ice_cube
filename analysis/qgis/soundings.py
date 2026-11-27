@@ -46,7 +46,9 @@ each row carries its `pass_id` and the source's `prior_m` (the expected pass wan
 Flags (comma-separated; `use` = 1 for rows icecube should take): float, other_station,
 suspect_jump (the fix began with a jump over suspect_jump_m: false fixes), float_spell (the
 fix began right after a float spell of at least float_spell_s: logger 0.11.0, #15; a false
-fix on 2026-11-21 jumped only 0.48 m), settle,
+fix on 2026-11-21 jumped only 0.48 m), fix_suspect (a capture with no raw epochs whose
+logger fix_suspect is 1 for a suspect_reason this script does not know: a newer logger's
+rule; excluding like the two above), settle,
 listed:<reason> (config list of known-bad points), void:<reason> (a capture flagged as bad
 in the logger, 0.9.0; kept as a row with use = 0 unless `[soundings] include_voided = true`
 or --include-voided, and counted in the log; such a row never makes or joins an anchor site
@@ -56,7 +58,9 @@ a capture voided for any reason but 'accidental' (moved, bad pole placement, oth
 stationary period around a capture the user called bad, kept with use = 0 and counted in the
 log; under include_voided that capture makes its window again, so the stop is a dup_capture
 like any other; a capture voided as 'accidental' leaves its stop alone, since an accidental
-MARK says nothing about the pole), no_fix_info, imu_unstable, not_plumb,
+MARK says nothing about the pole), no_fix_info, fix_young (a capture with no raw epochs
+that the logger marked fix_young although its fix_age_s is not under settle_s: a longer
+logger young limit; a trace, not excluding), imu_unstable, not_plumb,
 no_imu, no_plumb_ref, plumb_unverified (a stop without a passed IMU plumb check, left
 out while [soundings.stops] require_plumb = true: on the Nov 4 walk such stops read a median
 4 cm low against nearby points, a leaning pole), dup_capture (a stop that is a capture),
@@ -600,7 +604,7 @@ COLUMNS = [("sid", "TEXT"), ("source", "TEXT"), ("session", "TEXT"), ("kind", "T
            ("n_epochs", "INTEGER"), ("sd_u_m", "REAL"), ("gst_u_m", "REAL"), ("pole_m", "REAL"),
            ("tilt_deg", "REAL"), ("imu_stable_deg", "REAL"), ("label", "TEXT")]
 KEYS = [c for c, _ in COLUMNS]
-EXCLUDING = {"float", "other_station", "suspect_jump", "float_spell", "settle", "imu_unstable", "not_plumb",
+EXCLUDING = {"float", "other_station", "suspect_jump", "float_spell", "fix_suspect", "settle", "imu_unstable", "not_plumb",
              "dup_capture", "local_outlier", "no_position", "plumb_unverified", "void", "void_stop"}
 
 
@@ -637,7 +641,7 @@ def add_suspect_flags(r, ep, k):
         add_flag(r, "float_spell")
 
 
-SUSPECT_FLAGS = ("suspect_jump", "float_spell")
+SUSPECT_FLAGS = ("suspect_jump", "float_spell", "fix_suspect")
 
 
 def finish_use(r):
@@ -682,22 +686,34 @@ def _listed_reason(by_n, by_t, session, n, t):
 
 
 TILT_COLUMNS = ("method", "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m")
-# the logger's own fix flags (0.6 fix_suspect, 0.11.0 suspect_reason): used when the raw
-# session is not read (no session_paths), see capture_suspect_flags
-FIX_COLUMNS = ("fix_suspect", "suspect_reason")
+# the logger's own fix columns (0.6 fix_age_s, fix_jump_m, fix_suspect; 0.11.0
+# suspect_reason, fix_young): used when the raw session is not read (no session_paths), see
+# capture_fix_info
+FIX_COLUMNS = ("fix_age_s", "fix_jump_m", "fix_suspect", "suspect_reason", "fix_young")
 
 
 def capture_suspect_flags(r, c):
     """The suspect flags from a capture's own logger columns, for a capture with no raw
     epochs to rebuild its stretch from: suspect_reason's "jump" and "float_spell" (0.11.0),
-    or suspect_jump for fix_suspect 1 with no reason (0.6 to 0.10 flagged only jumps)."""
+    suspect_jump for fix_suspect 1 with no reason (0.6 to 0.10 flagged only jumps), and
+    fix_suspect for a reason that names neither (a newer logger's rule: suspect all the same)."""
     if not c.get("fix_suspect"):
         return
     why = c.get("suspect_reason") or ""
-    if "jump" in why or not why:
+    parts = {p.strip() for p in why.split(";") if p.strip()}
+    if "jump" in parts or not parts:
         add_flag(r, "suspect_jump")
-    if "float_spell" in why:
+    if "float_spell" in parts:
         add_flag(r, "float_spell")
+    if parts - {"jump", "float_spell"}:
+        add_flag(r, "fix_suspect")
+
+
+def capture_fix_info(r, c):
+    """For a capture with no raw epochs: the logger's own fix_age_s and fix_jump_m (so a young
+    capture still gets the settle sigma and flag) and suspect flags (capture_suspect_flags)."""
+    r["fix_age_s"], r["jump_m"] = c.get("fix_age_s"), c.get("fix_jump_m")
+    capture_suspect_flags(r, c)
 
 
 def logger_source(cfg, src, con, frame, history, log):
@@ -833,7 +849,7 @@ def logger_source(cfg, src, con, frame, history, log):
                         ep.gst_h[j] is not None for j in win) else None
             else:
                 add_flag(r, "no_fix_info")
-                capture_suspect_flags(r, c)     # no raw epochs: the logger's own flags
+                capture_fix_info(r, c)          # no raw epochs: the logger's own columns
             if r["pass_id"] is None:
                 r["pass_id"] = f"{ses}/c{c['n']}"
             r["gst_u_m"] = gst_u
@@ -849,6 +865,8 @@ def logger_source(cfg, src, con, frame, history, log):
             r["tilt_deg"] = tilt
             if r["fix_age_s"] is not None and r["fix_age_s"] < settle_s:
                 add_flag(r, "settle_inflated")
+            elif k is None and c.get("fix_young"):
+                add_flag(r, "fix_young")        # the logger's young limit is longer than settle_s
             if cls == "anchor":
                 site = sites.get((ses, c["n"]))
                 r["anchor"] = f"site{site}" if site is not None else None
@@ -1307,7 +1325,7 @@ def apply_corrections(rows, path, log):
             if sz is not None:
                 r["sigma_rtk"], r["sigma_settle"], r["sigma_age"] = sz, 0.0, 0.0
             r["flags"] = ",".join(f for f in flags_of(r) if f not in (
-                "suspect_jump", "float_spell", "float", "settle", "settle_inflated") and not f.startswith("listed"))
+                *SUSPECT_FLAGS, "float", "settle", "settle_inflated") and not f.startswith("listed"))
             add_flag(r, "ppk")
         elif act == "flag":
             if sz is not None:

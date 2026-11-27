@@ -617,6 +617,42 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(caps[1]["use"], 0)
         self.assertIn("suspect_jump", snd.flags_of(caps[2]))
 
+    def test_no_raw_unknown_suspect_reason_is_suspect(self):
+        """#15: fix_suspect 1 with a reason this script does not know (a newer logger) is
+        flagged fix_suspect and excluded; a known reason next to it keeps its own flag."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='height' WHERE n=1")
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='float_spell;height' WHERE n=2")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg)
+        self.assertEqual(set(snd.flags_of(caps[1])) & {"fix_suspect", "suspect_jump", "float_spell"}, {"fix_suspect"})
+        self.assertEqual(caps[1]["use"], 0)
+        self.assertEqual(set(snd.flags_of(caps[2])) & {"fix_suspect", "suspect_jump", "float_spell"},
+                         {"fix_suspect", "float_spell"})
+
+    def test_no_raw_capture_uses_the_loggers_fix_age(self):
+        """#15: with no session_paths a capture's own fix_age_s gives the settle sigma and
+        flag; fix_young 1 past settle_s (a longer logger limit) leaves a fix_young trace."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_age_s=30, fix_young=1 WHERE n=1")
+        con.execute("UPDATE captures SET fix_age_s=150, fix_young=1 WHERE n=2")
+        con.execute("UPDATE captures SET fix_age_s=150, fix_young=0 WHERE n=3")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg)
+        sg = snd.DEFAULTS["sigma"]
+        self.assertAlmostEqual(caps[1]["fix_age_s"], 30.0)
+        self.assertAlmostEqual(caps[1]["sigma_settle"], sg["settle_extra"] * (1 - 30 / 120) ** 2, places=9)
+        self.assertIn("settle_inflated", snd.flags_of(caps[1]))
+        self.assertNotIn("fix_young", snd.flags_of(caps[1]))
+        self.assertEqual(caps[2]["sigma_settle"], 0.0)
+        self.assertIn("fix_young", snd.flags_of(caps[2]))
+        self.assertNotIn("fix_young", snd.EXCLUDING)          # a trace, not excluding
+        self.assertNotIn("fix_young", snd.flags_of(caps[3]))
+
     def test_float_spell_rule_off_in_the_log(self):
         """#15: float_spell_s 0 or less logs the rule as off, not "float spell >= 0 s"."""
         gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
