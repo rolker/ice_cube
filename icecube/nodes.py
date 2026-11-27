@@ -109,7 +109,9 @@ node red after pass 1 (clear and amber nodes are never touched):
    term dropped), then the same rebuild as pass 1 (Eeg included). The rebuild treats the
    d' C_g d terms as independent, but the gradient error is common to all entries, so
    d_bar' C_g d_bar (d_bar the pass-2 main's weighted centroid) is added to sigma'^2: in
-   the node's output sigma and in the agreement test below.
+   the node's output sigma and in the agreement test below. The per-entry d' C_g d terms
+   stay in v' as well, so the gradient error is counted twice over and sigma'^2 is a
+   conservative upper bound, not an exact variance.
 4. Accepted only if the node leaves red or n_out strictly drops, and
    |z' - a| <= k_sigma * sqrt(var_a + sigma'^2 + 2 d_bar' cov(a, g)) (a the neighbour
    plane's prediction at the node; the cross term because the error of z' - a is
@@ -568,7 +570,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         o2 = run(es2)
         # the gradient error dg is common to every reduced entry (error -dg.d_i), so the
         # per-entry d_i'C_g d_i averages down as if independent; the main's mean carries
-        # -dg.d_bar in full (d_bar its weighted centroid): add d_bar'C_g d_bar to sigma'^2
+        # -dg.d_bar in full (d_bar its weighted centroid): add d_bar'C_g d_bar to sigma'^2.
+        # The per-entry terms stay in v', so sigma'^2 is a conservative upper bound
         bx, by = o2["cx"], o2["cy"]
         vbar = bx * bx * cg[0, 0] + 2.0 * bx * by * cg[0, 1] + by * by * cg[1, 1]
         o2 = dict(o2, sigma=math.sqrt(o2["sigma"] ** 2 + max(float(vbar), 0.0)))
