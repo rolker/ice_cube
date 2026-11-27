@@ -946,6 +946,17 @@ class RefsCopyTimeTest(unittest.TestCase):
         self.assertEqual((t, u), (ev_utc, 3600))               # an hour late, within its 1 h
         self.assertLessEqual(abs(t - (ev_utc - 3600)), u)
 
+    def test_zone_offset_takes_a_residual_just_under_minus_2_s(self):
+        """events.csv's DOS time is truncated to 2 s and its file mtime may be a few ms behind
+        the last line's wall_ms, so a residual a little under -2 s still gives the offset;
+        one 2.1 s early does not."""
+        zone, dos_local = -5 * 3600, 1_796_000_000          # even, as a DOS time is
+        for early_s, want in ((1.99, zone), (2.03, zone), (2.1, None)):
+            info = zipfile.ZipInfo("s/events.csv", time.gmtime(dos_local)[:6])
+            wall = int((dos_local - zone + early_s) * 1000)
+            body = f"elapsed_ns,wall_ms,event\n{synth.T0_NS},{wall},stop\n".encode()
+            self.assertEqual(zip_zone_offset(info, body), want, early_s)
+
     def test_unknown_stored_time_ties_an_unknown_copy(self):
         """A stored flag of unknown time goes through _stamp_order too: an unknown-time copy
         that clears it ties, so it stays flagged and the tie is reported; a known time is

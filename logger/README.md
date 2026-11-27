@@ -735,7 +735,7 @@ in UTC as a zip extended timestamp (extra field 0x5455) besides the DOS time, wh
 phone's local time; the importer orders `refs.csv` copies from zips made in other time
 zones by it. For an older zip it finds the phone's zone offset from the session's
 `events.csv` (its last line's `wall_ms` against its entry time, rounded to 15 min, taken
-only when what is left is under 10 s; an `events.csv` time reset by a copy tool that still
+only when what is left is -2 s to +10 s, the DOS time being truncated to 2 s; an `events.csv` time reset by a copy tool that still
 lands that close to a 15 min step gives a wrong offset, which the file cannot show) and
 allows 1 h for a DST change between an entry and `events.csv`; without an offset it allows
 26 h. Copies whose times, with those allowances, may be in either order are a tie (flagged

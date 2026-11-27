@@ -197,6 +197,7 @@ ZONE_STEP_S = 900            # every real zone offset is a multiple of 15 min
 ZONE_RESIDUAL_S = 10         # events.csv's entry time this close after its last line, after rounding
                              # (the logger flushes each line as it writes it, so its mtime is that line's)
 ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
+ZONE_CLOCK_S = 0.05          # a file mtime (coarse kernel clock) may be a few ms behind wall_ms
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
 APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
 DST_S = 3600                 # another entry than events.csv may have another DST offset
@@ -254,8 +255,8 @@ def zip_zone_offset(events_info, events_bytes):
     events.csv's last line carries wall_ms (UTC) and its DOS entry time is that file's
     mtime in the phone's zone, a moment later (the logger flushes each line as it writes
     it), so their difference rounded to 15 min is the offset. Accepted only when the
-    events.csv mtime, corrected by that offset, is within -ZONE_TRUNC_S (DOS truncation) to
-    +ZONE_RESIDUAL_S of its last wall_ms, and the offset within +-14 h; otherwise None, so
+    events.csv mtime, corrected by that offset, is within -(ZONE_TRUNC_S + ZONE_CLOCK_S) (DOS
+    truncation, and a file mtime a few ms behind wall_ms) to +ZONE_RESIDUAL_S of its last wall_ms, and the offset within +-14 h; otherwise None, so
     a snapshot zip (events written while it was zipped) or a copy tool that reset the mtime
     gives no offset rather than a confidently wrong one.
 
@@ -276,7 +277,7 @@ def zip_zone_offset(events_info, events_bytes):
         return None
     diff = dos - wall
     off = round(diff / ZONE_STEP_S) * ZONE_STEP_S
-    if not -ZONE_TRUNC_S <= diff - off <= ZONE_RESIDUAL_S or abs(off) > ZONE_MAX_S:
+    if not -(ZONE_TRUNC_S + ZONE_CLOCK_S) <= diff - off <= ZONE_RESIDUAL_S or abs(off) > ZONE_MAX_S:
         return None
     return float(off)
 
