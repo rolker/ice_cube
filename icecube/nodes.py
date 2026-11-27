@@ -109,14 +109,16 @@ node red after pass 1 (clear and amber nodes are never touched):
    term dropped), then the same rebuild as pass 1 (Eeg included). The rebuild treats the
    d' C_g d terms as independent, but the gradient error is common to all entries, so
    d_bar' C_g d_bar (d_bar the pass-2 main's weighted centroid) is added to sigma'^2: in
-   the node's output sigma and in the agreement test below. The per-entry d' C_g d terms
+   the node's output sigma and in the agreement test's noise variance below. The per-entry d' C_g d terms
    stay in v' as well, so the gradient error is counted twice over and sigma'^2 is a
    conservative upper bound, not an exact variance.
 4. Accepted only if the node leaves red or n_out strictly drops, and
-   |z' - a| <= k_sigma * sqrt(var_a + sigma'^2 + 2 d_bar' cov(a, g)) (a the neighbour
-   plane's prediction at the node; the cross term because the error of z' - a is
-   -dg.d_bar + entry noise - da, and a and g come from the same fit). Otherwise pass 1
-   stands. One sweep: fits read pass-1 results only.
+   |z' - a| <= k_sigma * sqrt(var_a + 1/W' + d_bar' C_g d_bar + 2 d_bar' cov(a, g)) (a the
+   neighbour plane's prediction at the node, W' the pass-2 main's weight; the cross term
+   because the error of z' - a is -dg.d_bar + entry noise - da, and a and g come from the
+   same fit). The pass-bias part of sigma'^2 is left out, as it is from the fit's
+   weights: the node and its neighbours share passes, so the bias cancels in z' - a (it
+   stays in the output sigma). Otherwise pass 1 stands. One sweep: fits read pass-1 results only.
    The test is looser than k_sigma reads: a is not an independent prediction. The
    neighbours' discs overlap the node's, so their mains share many of the node's
    soundings and a and z' are positively correlated through that noise too (the
@@ -579,9 +581,12 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
             res[idx] = (PLANE_NO_GAIN, None, g)
             continue
         # z' - a has error -dg.d_bar + (entry noise) - da, so its variance carries the
-        # cross term 2 d_bar'cov(a, g) besides var_a and sigma'^2 (which holds d_bar'C_g d_bar)
+        # cross term 2 d_bar'cov(a, g) besides var_a and the noise part of sigma'^2,
+        # 1/W' + d_bar'C_g d_bar. The pass bias is left out: it is shared by the node's
+        # entries and its neighbours' mains, so it cancels in z' - a (var_bias stays in
+        # the output sigma)
         cag = fit["cov_ag"]
-        vagree = fit["var_a"] + o2["sigma"] ** 2 + 2.0 * (bx * float(cag[0]) + by * float(cag[1]))
+        vagree = fit["var_a"] + 1.0 / o2["w"] + max(float(vbar), 0.0) + 2.0 * (bx * float(cag[0]) + by * float(cag[1]))
         tol = k_sigma * math.sqrt(max(vagree, 0.0)) if math.isfinite(vagree) else float("nan")
         if trace is not None:
             trace.append(("agreement", abs(o2["z"] - fit["a"]), tol))

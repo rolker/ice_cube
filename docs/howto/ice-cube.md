@@ -158,8 +158,9 @@ height sits on one line through the node. The node's soundings are then moved to
 (variance `sz^2 + (|g| sh)^2` plus the gradient's own uncertainty, no slope allowance) and
 rebuilt again, Eeg included; the gradient's error is common to all of them, so its
 part at the rebuilt height's centroid is added to the node's sigma in full. The result is kept only if the node leaves red (or loses
-outliers) and its height agrees with the neighbour plane at the node within `k_sigma`;
-otherwise the first result stands. The neighbours' discs overlap the node's and share its
+outliers) and its height agrees with the neighbour plane at the node within `k_sigma` (noise
+only: the pass bias is shared with the neighbours and cancels, though it stays in the
+node's sigma); otherwise the first result stands. The neighbours' discs overlap the node's and share its
 soundings, so that agreement test is looser than `k_sigma` suggests. One sweep: the fits
 read first-pass heights only. Masked nodes (`[[masks]]`) are neither tried nor used as
 neighbours. The surface npz gains `planar` (the node was rebuilt this

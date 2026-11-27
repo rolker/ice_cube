@@ -636,9 +636,9 @@ def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None
     return p, nodes.Grid(0.0, 0.0, 0.5, n, ny)
 
 
-def bank_run(p, grid, **kw):
+def bank_run(p, grid, sb=0.0, **kw):
     kw.setdefault("slope", 0.05)
-    return nodes.grid_surface([p], [np.zeros(len(p))], grid, capture_radius=0.75, k_sigma=3.0, **kw)
+    return nodes.grid_surface([p], [np.full(len(p), float(sb))], grid, capture_radius=0.75, k_sigma=3.0, **kw)
 
 
 def red_of(s):
@@ -837,6 +837,13 @@ class TestPlanePass(unittest.TestCase):
         self.assertTrue(red_of(s0)[self.C])
         self.assertEqual(s.plane_code[self.C], nodes.PLANE_OFF_PLANE)
         self.assert_pass1(s, s0, self.C)
+        # a pass bias is shared by the node and its neighbours, so it cancels in the
+        # agreement test: with sb > 0 the cluster still disagrees with the plane
+        for sb in (0.01, 0.02, 0.03):
+            s0, s = bank_run(p, grid, sb=sb, plane=False), bank_run(p, grid, sb=sb)
+            self.assertTrue(red_of(s0)[self.C], sb)
+            self.assertEqual(s.plane_code[self.C], nodes.PLANE_OFF_PLANE, sb)
+            self.assert_pass1(s, s0, self.C)
 
     def test_flat_edge_outlier_is_not_absorbed(self):
         # 400 trials: a flat 5 x 5 block, one +15 cm capture on the edge of the centre
