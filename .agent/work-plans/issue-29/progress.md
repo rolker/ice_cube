@@ -376,3 +376,13 @@ No GitHub reviews, inline comments or conversation comments on the PR. The four 
 
 ### False positives
 - none
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:24 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (four small suggestions; orchestrator table allows address at findings)
+**After**: findings
+**Decision**: address
+
+Fix all four: agreement-gate cross term (return cov[0,1:] from plane_fit and add 2·d̄'cov(a,g)); state that sigma'^2 is a conservative upper bound; collinear test asserts PLANE_ILL_CONDITIONED on nearly all cases; mask test on a non-square grid with an asymmetric mask through topo.grid_surface.
