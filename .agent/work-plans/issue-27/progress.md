@@ -332,3 +332,22 @@ Cross-model: codex complete (1 must-fix kept: dup_capture windows; 2 suggestions
 ### Checks
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 103 tests, OK (skipped=5)
 - No Java changed: Gradle unit tests not run. No pre-commit config in this repo.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 19:06 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-27 at `3e9388d`
+**Base**: main
+**Depth**: Standard (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 1
+**Round**: 3 | **Ship**: recommended — no must-fix findings
+
+Scope: the round 2 findings and the fix diff 17bc9a3..3e9388d (12 files, +193 -27). All 8 addressed round-2 items verified in code: clist_windows skips voided captures unless include_voided (call site passes it, the unused `ep` parameter is gone, no other callers); assign_anchors' snap loop skips is_voided rows; import_refs_csv's void UPDATE only for keys in `flags`; export_labels.cell writes 0 for a NULL void; zip_entry_mtime reads the 0x5455 UTC timestamp (flag bit 0) and returns None for a zero DOS date; plugin Export reports the flagged count via core.export_text and the import summary counts flagged captures and refs (keys `voided` and `refs_csv_voided` exist in import_sessions' result); VOID_TIP escapes & first, then < >; plan.md now describes keep-and-flag. The two deferrals to PR B (poleCheck ordering, photo name of a moved capture) are recorded. Owner's rule (his words: "So flagged data gets deleted? I wonder if it should only be flagged, which is a common approach in multbeam sonar processing."): the fixes only narrow what a flagged capture can affect; nothing is deleted. Public-repo check: clean (synthetic fixtures only). Tests: `python3 -m unittest discover -s analysis/qgis/tests` Ran 103, OK (skipped=5). No Java changed since round 2.
+
+Cross-model: skipped (round-3 convergence check, per handoff).
+
+### Findings
+- [ ] (suggestion) import_refs_csv returns the flagged count from this run's copies only, so a later run with only pre-0.9.0 copies reports 0 flagged while the stored flag stays 1; the import summary's refs.csv flagged count can understate (count from the table, or say "in this run") — `analysis/qgis/import_sessions.py:362`
