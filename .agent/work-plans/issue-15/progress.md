@@ -307,3 +307,25 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 
 ### Notes
 - The jump at a new stretch after a short single/DGPS dropout is still measured only from a float or fixed previous epoch, so it stays unknown there; only the float-spell rule carries over. A candidate for #41 if the owner wants the jump to carry over too.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 18:23 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-15 at `c73ab09`
+**Base**: main
+**Depth**: Deep (reason: whole-branch diff, 35 files, about 1600 lines, cross-layer Java logger and Python processing with a schema change; round 2 classified on the whole diff)
+**Must-fix**: 0 | **Suggestions**: 6
+**Round**: 2 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Outside reviewers: Claude adversarial subagent, gemini (complete), codex (complete). Verified: analysis/qgis tests 165 OK (5 skipped), icecube tests 102 OK, `./gradlew testDebugUnitTest --max-workers 4` 230 tests 0 failures (C: 110 GB free). No Python or Java linter is configured, so static analysis was not run. All round-1 items checked as addressed: the settle migration lock, the 2 s dropout rule and spell carry-over (Java and Python agree rule by rule, mirrored tests), the cue, notice, refView and mark/lean fixes, the no-raw fallback, the docs. Not counted as findings: gemini's "jump lost after a short single/DGPS dropout between float and fix" (both sides) is the host decision of round 1 (jump unknown there, only the spell carries over), already listed for the owner's veto; gemini's COVERAGE_FIRST worry is a false positive (found by key); codex's "keep the logger's flag when raw epochs are present" is dropped (the raw rebuild reads the same epochs the logger saw, and verify_suspect/PPK must be able to clear it).
+
+### Findings
+- [ ] (suggestion) The 2 s tests use different clocks: Java phone arrival time (`Epoch.elapsedNs`), Python GGA time; a whole-epoch dropout now lands right on "2 s or less", so the two can disagree at the boundary. Use `Epoch.tod` in FixGuard, or a half-epoch tolerance on both sides (Claude) — `logger/app/src/main/java/rink/icecube/logger/core/FixGuard.java:107-109`, `analysis/qgis/soundings.py:379-382`
+- [ ] (suggestion) The sigma table still reads "8 cm x (1 - t/90 s)^2 ... within 90 s are dropped"; the default is now 120 s (Claude) — `docs/howto/ice-cube.md:382`
+- [ ] (suggestion) With a station filter, a fixed epoch from another station is a dropout in Python (not in Java): an A-B-A switch within 2 s continues the stretch, a float spell carries over it, and the next start jump can be measured from the other station's fix. End the stretch on it, or note it in the docstring (Claude, gemini, codex) — `analysis/qgis/soundings.py:376-416`
+- [ ] (suggestion) Captures without raw epochs take the logger's suspect flags but not its `fix_age_s`/`fix_young`, so a young capture gets no settle sigma or flag; fall back to the capture's columns (Claude) — `analysis/qgis/soundings.py:691,816`
+- [ ] (suggestion) `capture_suspect_flags`: `fix_suspect` 1 with an unknown non-empty reason (a future one) adds no flag and the capture stays usable; add a generic suspect flag when no known reason matched (gemini) — `analysis/qgis/soundings.py:670-680`
+- [ ] (suggestion) The ref's young/suspect latches are set before `RefOccupation.onEpoch` decides whether to count the epoch; an epoch stamped before the ref start (or before the last counted one) can latch young without being counted. Latch only for counted epochs (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:210-218`
