@@ -596,3 +596,22 @@ No hosted reviews, no PR conversation comments, no inline comments. The round-3 
 ### Findings
 - [ ] (suggestion) DOS-time zip entries are read in the importing machine's zone, so refs.csv copies made in another zone can misorder by the offset and pick the wrong void flag; documented in the docstring, low risk while phone and PC share a zone (Codex rated must-fix; lead downgraded) — `analysis/qgis/logger_session.py:176`
 - [ ] (suggestion) clist_windows skips any live photo row whose utc (1 s resolution) equals a voided capture's, so a real PHOTO pressed in that same second loses its window; match the moved-photo row by its note ("photos of voided n=") too — `analysis/qgis/soundings.py:821`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:57 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: 6082092363
+
+**PR**: #33 at `472e68b`
+**Sources**: 3 (Local Review @ `cda9e0f` (covers `472e68b` via bookkeeping; Codex cold read, approved, 2 suggestions), Copilot @ `cda9e0f` (review 6082092363: unable to review, insufficient quota; no findings), CI rollup: no CI checks configured (the only check-run, copilot-pull-request-reviewer, is the same quota failure))
+**Cross-source confirmations**: 0
+**CI**: all-pass (no CI checks on this repository)
+
+No human reviews, no conversation comments, no inline comments. Both Local Review suggestions verified against the code at head and carried forward as valid. The stale entries the sources helper lists (Local Review (Pre-Push) @ 3e9388d, Local Review @ eae8b68) were ruled on by the Integrated Reviews @ f3d76a0 and @ 4a7db43 and are not re-listed. Owner rule holds: voided captures and refs stay flagged rows end to end.
+
+### Findings
+- [ ] (suggestion, Local Review @ cda9e0f) `zip_entry_mtime` falls back to the DOS date/time read with `time.mktime` in the importing machine's zone; the logger's zips carry no 0x5455 extended timestamp, so refs.csv copies zipped on a phone in another zone misorder by the offset and the newest-copy rule can pick the wrong void flag. Documented in the docstring; low risk while phone and PC share a zone. Fix options: have the logger write the extended-timestamp field, or treat copies within the max zone offset as ties (flagged) — `analysis/qgis/logger_session.py:176`
+- [ ] (suggestion, Local Review @ cda9e0f) `clist_windows` skips any live photo row whose `utc` (1 s resolution) equals a voided capture's, so a real PHOTO pressed in the same second as a voided capture loses its window. Confirmed the logger's moved-photo row carries `note = "photos of voided n=<n>"` (`VoidRule.photoRowFor`, VoidRule.java:93); require that note prefix as well as the utc match, and add a test with a real photo in the same second — `analysis/qgis/soundings.py:821`
+
+### False positives
