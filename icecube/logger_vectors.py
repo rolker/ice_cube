@@ -1,4 +1,5 @@
-"""Test vectors for the Ice Cube Logger's live coverage overlay (logger 0.7, issue #6; 0.8, #24).
+"""Test vectors for the Ice Cube Logger's live coverage overlay (logger 0.7, issue #6; 0.8, #24;
+0.10, #29).
 
     python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json
 
@@ -35,13 +36,26 @@ soundings on PLANE_PARAMS, every node fed unfolded entries (no node reaches CAP,
 aggregate), rebuilt with the logger's rule (count promotion, no Eeg, no pass bias), then
 `nodes.plane_pass` with the same rule and `nodes.PLANE_DEFAULTS` (`plane_params` pins
 both). Expected per node: pass-1 z and n_out, the plane code, planar, gradient and the
-final z, sigma, n_in, n_out. The fold aggregate's moments are PR B's.
+final z, sigma, n_in, n_out.
+
+Part `plane_folded_vectors` (PR B): blocks at about 40 soundings per disc fed in arrival
+order through `LiveCoverage` (reach 0), so inner nodes fold past CAP (the aggregate
+carries its geometry moments, `nodes.NodeStore`) and some drop entries; then the plane
+pass over every node. Expected per node as in `plane_vectors` plus the store's folded and
+dropped counts and the pass-1 n_in and weighted centroid (cx, cy).
+
+Part `plane_sequences` (PR B): a bank fed one capture at a time with SEQ_PARAMS; the
+steps as in `sequences`, the status read from the final (plane) values. After every
+capture the expectation is a full recompute (the plane pass over every node from
+scratch), not the Python twin of Coverage.java's ring; the twin (`LiveCoverage(plane=True)`)
+is only checked against it, so a wrong ring rule cannot be pinned on both sides.
 
 Guard: the generator refuses a vector where Java and Python could round to different
 decisions: a sounding within 1e-6 m of a node's capture circle or reach, a test statistic
 within 1e-6 of k_sigma, a weighted-median sum within 1e-9 (relative) of W/2 but not on it
 (an exact half comes from equal weights and is the pinned lower-median rule), a status
-sigma within 1e-9 of the target, a plane gate value within 1e-6 (relative) of its threshold.
+sigma within 1e-9 of the target, a plane gate value within 1e-6 (relative) of its threshold
+(in every plane part, and after every capture of a plane sequence).
 
 Regenerate whenever `soundings.sigma_terms` or its defaults change;
 `icecube/tests/test_logger_vectors.py` fails until the committed file matches.
@@ -119,13 +133,46 @@ STATUS = ("none", "no_data", "fringe", "disagree", "thin", "ok")
 
 
 class LiveNode:
-    __slots__ = ("i", "j", "store", "in_area", "quad")
+    __slots__ = ("i", "j", "store", "in_area", "quad", "plane")
 
     def __init__(self, i, j):
         self.i, self.j = i, j
         self.store = None
         self.in_area = False
         self.quad = 0
+        self.plane = None    # (code, pass-2 output or None, |g| or NaN) from the plane pass
+
+
+def _count_run(k_sigma, trace=None):
+    """The logger's rebuild of one node's entries (count promotion, no Eeg, no pass bias)."""
+    from . import nodes
+
+    def run(es):
+        if trace is not None:
+            nodes.rebuild(es, k_sigma, "count", trace)
+        return nodes._robust(es, k_sigma, 0.0, "count")
+    return run
+
+
+def plane_over(stores, cell, k_sigma, slope, trace=None, gtrace=None):
+    """nodes.plane_pass over `stores`, a dict (i, j) -> nodes.NodeStore (the logger's
+    nodes with soundings) on a grid of spacing `cell`, with PLANE_DEFAULTS, the constant slope allowance and no DEM.
+    Returns (i, j) -> (code, pass-2 output or None, |g| or NaN) for the tried nodes. The
+    pass-2 n_out includes the store's dropped entries; `trace`/`gtrace` as in
+    `_check_trace` and plane_pass."""
+    from . import nodes
+    if not stores:
+        return {}
+    i0 = min(i for i, _ in stores); j0 = min(j for _, j in stores)
+    nx = max(i for i, _ in stores) - i0 + 1; ny = max(j for _, j in stores) - j0 + 1
+    idx = {(j - j0) * nx + (i - i0): (i, j) for i, j in stores}
+    es = {q: stores[key]._all() for q, key in idx.items()}
+    out1 = {q: stores[key].outputs() for q, key in idx.items()}
+    dropped = {q: stores[key].n_dropped for q, key in idx.items() if stores[key].n_dropped}
+    tried = nodes.plane_pass(es, out1, nx, ny, cell, k_sigma, _count_run(k_sigma, trace),
+                             lambda a, b: slope, None, gtrace, dropped=dropped,
+                             **{k: v for k, v in nodes.PLANE_DEFAULTS.items()})
+    return {idx[q]: r for q, r in tried.items()}
 
 
 class LiveCoverage:
@@ -135,15 +182,26 @@ class LiveCoverage:
     bit (capture minus node, x >= 0 is bit 0, y >= 0 bit 1). Status: none (not in the
     area), no_data (no sounding, all four quadrants marked: an enclosed gap), fringe (no
     sounding, the area's edge), disagree (n_out > 0 and n_in < OUTVOTE * n_out), thin
-    (sqrt(1/W + wander^2) > target), ok."""
+    (sqrt(1/W + wander^2) > target), ok.
 
-    def __init__(self, cell, rad, reach, target=0.03, wander=0.015, k_sigma=3.0, slope=0.05, cap=None):
+    `plane` (issue #29): after each capture the plane pass is redone for the nodes within
+    one cell (Chebyshev) of a fed node, from the pass-1 state of their neighbours, as
+    Coverage.java does; status then reads the final values (`final`). The vectors' plane
+    expectations do not come from this ring but from a full recompute (`plane_over` over
+    every node after each capture); the ring is checked against it."""
+
+    def __init__(self, cell, rad, reach, target=0.03, wander=0.015, k_sigma=3.0, slope=0.05, cap=None,
+                 plane=False):
         from . import nodes
         self.cell, self.rad, self.reach, self.target, self.wander = cell, rad, reach, target, wander
         self.k_sigma, self.slope = k_sigma, slope
         self.cap = nodes.CAP if cap is None else cap
+        self.plane = plane
         self.nodes = {}
         self.trace = []
+
+    def stores(self):
+        return {k: nd.store for k, nd in self.nodes.items() if nd.store is not None}
 
     def add(self, x, y, z, sz, sh, id):
         from . import nodes
@@ -151,6 +209,7 @@ class LiveCoverage:
         r = max(rad, reach)
         i0, i1 = math.ceil((x - r) / cell), math.floor((x + r) / cell)
         j0, j1 = math.ceil((y - r) / cell), math.floor((y + r) / cell)
+        fed = []
         for j in range(j0, j1 + 1):
             for i in range(i0, i1 + 1):
                 d = math.hypot(i * cell - x, j * cell - y)
@@ -165,10 +224,36 @@ class LiveCoverage:
                     s = self.slope * (d + sh)
                     if nd.store is None:
                         nd.store = nodes.NodeStore(self.k_sigma, self.cap)
-                    nd.store.add(z, sz * sz + s * s, id, self.trace)
+                    nd.store.add(z, sz * sz + s * s, id, self.trace, dx=x - i * cell, dy=y - j * cell,
+                                 sz2=sz * sz, sh=sh)
+                    fed.append((i, j))
                 if marks:
                     nd.in_area = True
                     nd.quad |= 1 << ((1 if x - i * cell >= 0 else 0) | (2 if y - j * cell >= 0 else 0))
+        if self.plane and fed:
+            self._ring(fed)
+
+    def _ring(self, fed):
+        """Redo the plane pass for the fed nodes and their 8 neighbours (the ring), each
+        from its neighbours' pass-1 state: plane_pass over the ring and its neighbours,
+        results kept for the ring only."""
+        ring = {(i + di, j + dj) for i, j in fed for di in (-1, 0, 1) for dj in (-1, 0, 1)}
+        near = {(i + di, j + dj) for i, j in ring for di in (-1, 0, 1) for dj in (-1, 0, 1)}
+        st = {k: self.nodes[k].store for k in near if k in self.nodes and self.nodes[k].store is not None}
+        res = plane_over(st, self.cell, self.k_sigma, self.slope)
+        for k in ring:
+            if k in st:
+                self.nodes[k].plane = res.get(k)
+
+    def final(self, nd):
+        """The node's final outputs: dict(code, planar, gradient, z, sigma, w, n_in, n_out),
+        pass 1 unless the plane pass was accepted."""
+        from . import nodes
+        o = nd.store.outputs()
+        code, o2, g = nd.plane if nd.plane is not None else (nodes.PLANE_NOT_TRIED, None, float("nan"))
+        f = o2 if o2 is not None else o
+        return dict(code=code, planar=code == nodes.PLANE_ACCEPTED, gradient=g, z=f["z"], sigma=f["sigma"],
+                    w=f["w"], n_in=f["n_in"], n_out=f["n_out"])
 
     def status(self, nd):
         from . import nodes
@@ -176,10 +261,11 @@ class LiveCoverage:
             return "none"
         if nd.store is None:
             return "no_data" if nd.quad == 15 else "fringe"
-        o = nd.store.outputs()
+        o = self.final(nd) if self.plane else nd.store.outputs()
         if o["n_out"] > 0 and o["n_in"] < nodes.OUTVOTE * o["n_out"]:
             return "disagree"
-        ds = math.sqrt(1.0 / o["w"] + self.wander * self.wander)
+        var = o["sigma"] ** 2 if self.plane and o.get("planar") else 1.0 / o["w"]   # planar: 1/W' + d_bar'C_g d_bar
+        ds = math.sqrt(var + self.wander * self.wander)
         assert abs(ds - self.target) > 1e-9, ("status sigma on the target", nd.i, nd.j)
         return "thin" if ds > self.target else "ok"
 
@@ -468,6 +554,93 @@ def plane_part():
     return [_plane_case(*c) for c in _plane_cases()]
 
 
+def _full_plane(name, cov):
+    """The plane pass over every node of `cov` from scratch (`plane_over`), with the
+    threshold guards; checks that cov's ring (Coverage.java's rule) gave the same result
+    for every node, then sets each node's plane result from the recompute."""
+    trace, gtrace = [], []
+    res = plane_over(cov.stores(), cov.cell, cov.k_sigma, cov.slope, trace, gtrace)
+    _check_trace(name, trace + cov.trace, cov.k_sigma)
+    for g in gtrace:
+        assert abs(g[1] - g[2]) > 1e-6 * max(1.0, abs(g[2])), (name, "plane gate on its threshold", g)
+    for k, nd in cov.nodes.items():
+        if nd.store is None:
+            continue
+        want, got = res.get(k), nd.plane
+        assert (want is None) == (got is None), (name, "ring differs from the recompute", k, want, got)
+        if want is not None:
+            assert want[0] == got[0], (name, "ring code", k, want, got)
+            if want[1] is not None:
+                assert abs(want[1]["z"] - got[1]["z"]) <= 1e-12 and abs(want[1]["sigma"] - got[1]["sigma"]) <= 1e-12, \
+                    (name, "ring pass 2", k)
+        nd.plane = want
+    return res
+
+
+def _plane_folded_cases():
+    """(name, soundings): about 40 soundings per disc, so inner nodes fold past CAP and
+    some drop entries; seeds picked so each case is what it is named for."""
+    return [("bank_0.3_folded", _plane_block(0.3, 8, per_disc=40)),
+            ("bank_diag_folded", _plane_block(0.0, 1, per_disc=40, surface=lambda x, y: 0.2 * x - 0.2 * y))]
+
+
+def _plane_folded_case(name, soundings):
+    """Soundings fed in arrival order through LiveCoverage (reach 0, the logger's stores
+    with the fold), then the plane pass over every node. Expected per node with soundings:
+    the store (n, folded, dropped), pass 1 (z1, n_in1, n_out1, cx, cy: the main's weighted
+    centroid, the aggregate at its own), the plane code, planar, gradient and the final z,
+    sigma, n_in, n_out."""
+    p = _plane_params()
+    rows = _rows(soundings)
+    cov = LiveCoverage(p["cell"], p["capture_radius"], 0.0, k_sigma=p["k_sigma"], slope=p["slope"], plane=True)
+    for r in rows:
+        cov.add(r["x"], r["y"], r["z"], r["sz"], r["sh"], r["id"])
+    _full_plane(name, cov)
+    out = []
+    for (i, j), nd in sorted(cov.nodes.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        if nd.store is None:
+            continue
+        o1, f = nd.store.outputs(), cov.final(nd)
+        out.append({"i": i, "j": j, "n": o1["n"], "folded": nd.store.agg_n, "dropped": nd.store.n_dropped,
+                    "z1": o1["z"], "n_in1": o1["n_in"], "n_out1": o1["n_out"], "cx": o1["cx"], "cy": o1["cy"],
+                    "code": f["code"], "planar": f["planar"],
+                    "gradient": None if math.isnan(f["gradient"]) else f["gradient"],
+                    "z": f["z"], "sigma": f["sigma"], "n_in": f["n_in"], "n_out": f["n_out"]})
+    return {"name": name, "soundings": rows, "nodes": out}
+
+
+def plane_folded_part():
+    return [_plane_folded_case(*c) for c in _plane_folded_cases()]
+
+
+def _plane_sequence_cases():
+    """(name, soundings): fed one at a time with SEQ_PARAMS and the plane pass."""
+    return [("bank_0.3_sequence", _plane_block(0.3, 3))]
+
+
+def _plane_sequence(name, soundings):
+    """As `_sequence`, with the plane pass: after each capture the plane pass is redone over
+    every node from scratch (`_full_plane`, which also checks the ring against it) and the
+    status read from the final values. Steps list the in-area nodes whose status changed."""
+    p = SEQ_PARAMS
+    rows = _rows(soundings)
+    cov = LiveCoverage(p["cell"], p["capture_radius"], p["reach"], p["target"], p["wander"], plane=True)
+    steps = []
+    last = {}
+    for r in rows:
+        cov.add(r["x"], r["y"], r["z"], r["sz"], r["sh"], r["id"])
+        _full_plane(name, cov)
+        now = {k: cov.status(nd) for k, nd in cov.nodes.items() if nd.in_area}
+        steps.append([f"{i} {j} {st}" for (i, j), st in sorted(now.items(), key=lambda kv: (kv[0][1], kv[0][0]))
+                      if last.get((i, j)) != st])
+        last = now
+    return {"name": name, "params": p, "soundings": rows, "steps": steps}
+
+
+def plane_sequences_part():
+    return [_plane_sequence(*c) for c in _plane_sequence_cases()]
+
+
 def build():
     """The whole vectors document (a dict)."""
     sm = _soundings()
@@ -482,6 +655,8 @@ def build():
         "sequences": sequences_part(),
         "plane_params": _plane_params(),
         "plane_vectors": plane_part(),
+        "plane_folded_vectors": plane_folded_part(),
+        "plane_sequences": plane_sequences_part(),
     }
 
 

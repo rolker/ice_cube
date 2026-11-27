@@ -181,11 +181,14 @@ time order, and a k-sigma test before each fusion that only counts (the count is
 The Ice Cube Logger (0.8) runs a one-pass copy of this rebuild live on the phone for its
 coverage overlay (`logger/README.md`, Coverage): no pass bias (a fixed pass-wander term
 instead), promotion by count, and at most 32 stored soundings a node (past that the
-oldest agreeing ones are merged into one running sum). The plane pass is batch only for
-now; its vectors (`plane_vectors`) are generated for the logger port (issue #29, second
-PR). When this update changes, regenerate its test vectors
+oldest agreeing ones are merged into one running sum, which keeps the weighted sums of
+their offsets and variances so the plane pass can reduce it like one sounding at their
+weighted centroid). From 0.10.0 it also runs the plane pass, with the constant slope
+allowance (0.05 m/m) and no DEM gate, redone after each capture for the fed nodes and
+their neighbours; the overlay colours by the final values. The settings are recorded in
+the session's events line. When this update changes, regenerate its test vectors
 (`python3 -m icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json`)
-and port the change to `core/Coverage.java`.
+and port the change to `core/Coverage.java` and `core/PlanePass.java`.
 
 ### Growth (`icecube/growth.py`)
 

@@ -1120,6 +1120,150 @@ class TestNodeStore(unittest.TestCase):
         self.assertAlmostEqual(o["z"], 0.5, places=12)
 
 
+    # ---- the fold's geometry (issue #29, PR B)
+
+    @staticmethod
+    def _feed(st, rows, slope=0.05):
+        """Adds rows (dx, dy, z, sz, sh, id) to `st`; returns the entries folded into the
+        aggregate since it was last emptied, tracked from outside (a shadow of the fold)."""
+        folded = []
+        for dx, dy, z, sz, sh, i in rows:
+            ids_before = {e[3]: e for e in st.entries}
+            agg_before, drop_before = st.agg_n, st.n_dropped
+            v = sz * sz + (slope * (float(np.hypot(dx, dy)) + sh)) ** 2
+            st.add(z, v, i, dx=dx, dy=dy, sz2=sz * sz, sh=sh)
+            ids_before[i] = nodes.entry(z, v, i, dx=dx, dy=dy, sz2=sz * sz, sh=sh)
+            if st.n_dropped == drop_before + agg_before and agg_before:
+                folded = []                     # the aggregate left the main and was dropped
+            if st.agg_n == len(folded) + 1:
+                gone = set(ids_before) - {e[3] for e in st.entries}
+                folded.append(ids_before[gone.pop()])
+        return folded
+
+    def _check_moments(self, st, folded):
+        self.assertEqual(st.agg_n, len(folded))
+        for got, want in ((st.agg_w, sum(e[2] for e in folded)), (st.agg_wz, sum(e[2] * e[0] for e in folded)),
+                          (st.agg_wdx, sum(e[2] * e[7] for e in folded)), (st.agg_wdy, sum(e[2] * e[8] for e in folded)),
+                          (st.agg_ws, sum(e[2] ** 2 * e[9] for e in folded)),
+                          (st.agg_wh, sum(e[2] ** 2 * e[10] ** 2 for e in folded))):
+            self.assertAlmostEqual(got, want, delta=1e-12 * max(1.0, abs(want)))
+
+    def _gentle(self, n, seed, z=lambda dx, dy: 0.3 + 0.02 * dx - 0.01 * dy):
+        """n rows within a 0.75 m disc on a noise-free linear surface gentle enough that
+        pass 1 keeps every entry in the main (so nothing drops)."""
+        rnd = np.random.default_rng(seed)
+        rows = []
+        for k in range(n):
+            r, a = 0.75 * np.sqrt(rnd.uniform(0.0, 0.99)), rnd.uniform(0.0, 2 * np.pi)
+            dx, dy = round(float(r * np.cos(a)), 4), round(float(r * np.sin(a)), 4)
+            rows.append((dx, dy, z(dx, dy), 0.01 + 0.0002 * (k % 7), 0.005 + 0.001 * (k % 5), k))
+        return rows
+
+    def test_fold_keeps_the_geometry_moments(self):
+        st = nodes.NodeStore()
+        folded = self._feed(st, self._gentle(50, 1))
+        self.assertEqual((st.agg_n, st.n_dropped), (50 - nodes.CAP, 0))
+        self._check_moments(st, folded)
+        W = st.agg_w
+        agg = st._all()[-1]
+        self.assertEqual((agg[3], agg[4]), (-1, st.agg_n))
+        self.assertAlmostEqual(agg[7], st.agg_wdx / W, places=15)
+        self.assertAlmostEqual(agg[8], st.agg_wdy / W, places=15)
+        self.assertAlmostEqual(agg[9], st.agg_ws / W ** 2, places=15)
+        self.assertAlmostEqual(agg[10], np.sqrt(st.agg_wh) / W, places=15)
+        o = st.outputs()       # the main's centroid counts the aggregate at (WDX/W, WDY/W) with weight W
+        es = st._all()
+        self.assertAlmostEqual(o["cx"], sum(e[2] * e[7] for e in es) / sum(e[2] for e in es), places=12)
+        self.assertAlmostEqual(o["cy"], sum(e[2] * e[8] for e in es) / sum(e[2] for e in es), places=12)
+
+    def test_a_dropped_aggregate_zeroes_the_moments(self):
+        # three low, then high ones take over while the aggregate is small: the next fold drops it
+        st = nodes.NodeStore(cap=4)
+        rows = [(0.1 * k, -0.05 * k, z, 0.01, 0.01, k) for k, z in enumerate([0.0] * 3 + [0.5] * 8)]
+        folded = self._feed(st, rows)
+        self.assertEqual((st.n_dropped, st.agg_n), (2, 5))
+        self.assertTrue(all(e[0] == 0.5 for e in folded))
+        self._check_moments(st, folded)
+
+    def test_folded_reduction_matches_unfolded(self):
+        """Noise-free linear surface: the folded node reduces to the same z' as the same
+        entries unfolded; the aggregate's pass-2 variance is the moment formula."""
+        rows = self._gentle(60, 2)
+        a, b = nodes.NodeStore(), nodes.NodeStore(cap=1000)
+        folded = self._feed(a, rows)
+        self._feed(b, rows)
+        self.assertEqual((a.n_dropped, b.agg_n, a.agg_n), (0, 0, 60 - nodes.CAP))
+        gx, gy = 0.02, -0.01
+        cov_g = np.array([[4e-4, 1e-4], [1e-4, 9e-4]])
+        run = lambda es: nodes._robust(es, 3.0, 0.0, "count")   # noqa: E731
+        ra, rb = (run(nodes.reduce_to_plane(st._all(), gx, gy, cov_g)) for st in (a, b))
+        self.assertEqual((ra["n_in"], ra["n_out"], rb["n_in"]), (60, 0, 60))
+        self.assertAlmostEqual(ra["z"], rb["z"], delta=1e-9)
+        self.assertAlmostEqual(ra["z"], 0.3, delta=1e-9)
+        agg = nodes.reduce_to_plane([a._all()[-1]], gx, gy, cov_g)[0]
+        W = sum(e[2] for e in folded)
+        dbx, dby = sum(e[2] * e[7] for e in folded) / W, sum(e[2] * e[8] for e in folded) / W
+        want = (sum(e[2] ** 2 * e[9] for e in folded) / W ** 2
+                + (gx * gx + gy * gy) * sum(e[2] ** 2 * e[10] ** 2 for e in folded) / W ** 2
+                + dbx * dbx * cov_g[0, 0] + 2 * dbx * dby * cov_g[0, 1] + dby * dby * cov_g[1, 1])
+        self.assertAlmostEqual(agg[1], want, delta=1e-9 * want)
+        self.assertAlmostEqual(agg[0], sum(e[2] * (e[0] - gx * e[7] - gy * e[8]) for e in folded) / W, delta=1e-12)
+        # with no gradient covariance the folded pass 2 is a linear unbiased estimate with
+        # exact variances, so it is no better than the unfolded one (Gauss-Markov); with
+        # C_g it can be (the unfolded entries each carry their own d'C_g d), so no check there
+        zero = np.zeros((2, 2))
+        fa, fb = (run(nodes.reduce_to_plane(st._all(), gx, gy, zero)) for st in (a, b))
+        self.assertGreaterEqual(1.0 / fa["w"], 1.0 / fb["w"] * (1 - 1e-12))
+
+    def test_bank_folded_past_the_cap_matches_unfolded(self):
+        """A noise-free 0.3 m/m bank at about 36 soundings per disc: the logger's stores
+        (cap 32) against the same stores with no cap. No entry drops; pass 1 can differ
+        (past the cap it depends on arrival order), but where both runs try a node they
+        give the same code, and accepted nodes the same z' and gradient. No gate value
+        within 1e-6 of its threshold in either run."""
+        from icecube import logger_vectors as lv
+        rows = lv._plane_block(0.3, 1, per_disc=36)
+
+        def go(cap):
+            cov = lv.LiveCoverage(0.5, 0.75, 0.0, cap=cap)
+            for k, r in enumerate(rows):
+                cov.add(r[0], r[1], 0.3 * r[0], r[3], r[4], k)
+            st = cov.stores()
+            gt = []
+            res = lv.plane_over(st, 0.5, 3.0, 0.05, gtrace=gt)
+            for g in gt:
+                self.assertGreater(abs(g[1] - g[2]), 1e-6 * max(1.0, abs(g[2])), g)
+            return st, res
+        sa, ra = go(nodes.CAP)
+        sb, rb = go(100000)
+        self.assertEqual(sum(s.n_dropped for s in sa.values()), 0)
+        self.assertTrue(all(s.agg_n == 0 for s in sb.values()))
+        both = set(ra) & set(rb)
+        accepted_folded = 0
+        for k in both:
+            self.assertEqual(ra[k][0], rb[k][0], k)
+            if ra[k][0] == nodes.PLANE_ACCEPTED:
+                self.assertAlmostEqual(ra[k][1]["z"], rb[k][1]["z"], delta=1e-9)
+                self.assertAlmostEqual(ra[k][2], rb[k][2], delta=1e-9)
+                accepted_folded += sa[k].agg_n > 0
+        self.assertGreater(len(both), 20)
+        self.assertGreater(accepted_folded, 5)
+
+    def test_live_plane_uses_its_cell(self):
+        """LiveCoverage(plane=True) on a 0.25 m grid fits its planes on 0.25 m spacing: a
+        0.3 m/m bank (the 0.5 m block scaled by half) gives accepted nodes a gradient near
+        0.3, not the 0.15 a fit on 0.5 m spacing would give."""
+        from icecube import logger_vectors as lv
+        cov = lv.LiveCoverage(0.25, 0.375, 0.0, plane=True)
+        for k, r in enumerate(lv._plane_block(0.3, 3, per_disc=12)):
+            x, y = 0.5 * r[0], 0.5 * r[1]
+            cov.add(x, y, 0.3 * x + 0.5 * (r[2] - 0.3 * r[0]), 0.5 * r[3], 0.5 * r[4], k)
+        grads = [cov.final(nd)["gradient"] for nd in cov.nodes.values()
+                 if nd.store is not None and nd.plane is not None and nd.plane[0] == nodes.PLANE_ACCEPTED]
+        self.assertGreater(len(grads), 3)
+        for g in grads:
+            self.assertAlmostEqual(g, 0.3, delta=0.06)
+
 class TestGrowth(unittest.TestCase):
     def _surf(self, name, dz, frame="A", seed=0):
         p = make_crossing_survey(name, [0.0] * 8, noise=0.005, frame=frame, seed=seed)

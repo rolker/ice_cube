@@ -9,20 +9,25 @@ from icecube import logger_vectors
 
 
 class TestLoggerVectors(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = logger_vectors.render()     # one render (a few seconds) for every test
+        cls.doc = json.loads(cls.text)
+
     def test_committed_file_is_current(self):
         committed = logger_vectors.DEFAULT_OUT.read_text()
-        self.assertEqual(committed, logger_vectors.render(),
+        self.assertEqual(committed, self.text,
                          "regenerate: python3 -m icecube.logger_vectors --out " + str(logger_vectors.DEFAULT_OUT))
 
     def test_tilt_rule_drops_the_pole_tilt_term(self):
-        doc = json.loads(logger_vectors.render())
+        doc = self.doc
         case = next(c for c in doc["sigma"] if c["name"] == "tilt_capture")
         sg = doc["sigma_defaults"]
         self.assertAlmostEqual(case["expected"]["sigma_pole"], sg["tip_sink"], places=12)
         self.assertAlmostEqual(case["expected"]["sigma_rtk"], case["input"]["tilt_sd_u"], places=12)
 
     def test_tilt_capture_without_sds_takes_the_single_rule(self):
-        doc = json.loads(logger_vectors.render())
+        doc = self.doc
         for name in ("tilt_missing_sd", "tilt_one_sd_missing", "tilt_negative_sd"):
             case = next(c for c in doc["sigma"] if c["name"] == name)
             single = logger_vectors.logger_sigma(dict(case["input"], method="single"))
@@ -30,7 +35,7 @@ class TestLoggerVectors(unittest.TestCase):
             self.assertAlmostEqual(case["expected"]["sigma_rtk"], case["input"]["sd_u"], places=12)
 
     def _case(self, part, name):
-        return next(c for c in json.loads(logger_vectors.render())[part] if c["name"] == name)
+        return next(c for c in self.doc[part] if c["name"] == name)
 
     def _node(self, case, i, j):
         return next(n for n in case["nodes"] if (n["i"], n["j"]) == (i, j))
@@ -71,7 +76,7 @@ class TestLoggerVectors(unittest.TestCase):
 
     def test_plane_cases_do_what_they_are_named_for(self):
         from icecube import nodes
-        doc = json.loads(logger_vectors.render())
+        doc = self.doc
         self.assertEqual(doc["plane_params"]["plane_min_clear"], nodes.PLANE_DEFAULTS["min_clear"])
 
         def centre(name):
@@ -105,6 +110,43 @@ class TestLoggerVectors(unittest.TestCase):
         n = centre("collinear_ill_conditioned")
         self.assertEqual(n["code"], nodes.PLANE_ILL_CONDITIONED)
         self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+
+    def test_plane_codes_are_all_exercised(self):
+        doc = self.doc
+        codes = {n["code"] for part in ("plane_vectors", "plane_folded_vectors") for c in doc[part]
+                 for n in c["nodes"]}
+        self.assertTrue({0, 1, 2, 3, 4, 5, 7, 8, 9} <= codes, codes)    # 6 (DEM) is batch-only
+
+    def test_plane_folded_cases_fold_drop_and_clear(self):
+        from icecube import nodes
+        for name in ("bank_0.3_folded", "bank_diag_folded"):
+            ns = self._case("plane_folded_vectors", name)["nodes"]
+            acc = [n for n in ns if n["code"] == nodes.PLANE_ACCEPTED]
+            self.assertGreater(sum(n["folded"] > 0 for n in acc), 5, name)
+            self.assertGreater(sum(n["dropped"] > 0 for n in acc), 0, name)     # n_dropped in n_out'
+            for n in acc:
+                self.assertTrue(nodes.is_red(n["n_in1"], n["n_out1"]), name)
+                self.assertFalse(nodes.is_red(n["n_in"], n["n_out"]), name)
+                self.assertEqual(n["n_in"] + n["n_out"], n["n"], name)
+            for n in ns:
+                self.assertEqual(n["n_in1"] + n["n_out1"], n["n"], name)
+
+    def test_plane_sequence_clears_nodes_it_did_not_feed(self):
+        """A node can change status on a capture that did not feed it (its neighbour's
+        pass-1 state moved its plane), which is why the logger redoes the ring."""
+        case = self._case("plane_sequences", "bank_0.3_sequence")
+        p = case["params"]
+        cur, ring_cleared = {}, 0
+        for row, step in zip(case["soundings"], case["steps"]):
+            for t in step:
+                i, j, st = t.split()
+                i, j = int(i), int(j)
+                fed = ((i * p["cell"] - row["x"]) ** 2 + (j * p["cell"] - row["y"]) ** 2) ** 0.5 <= p["capture_radius"]
+                if not fed and cur.get((i, j)) == "disagree":
+                    ring_cleared += 1
+                cur[(i, j)] = st
+        self.assertGreater(ring_cleared, 2)
+        self.assertLess(list(cur.values()).count("disagree"), 4)
 
 
 if __name__ == "__main__":

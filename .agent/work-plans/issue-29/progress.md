@@ -595,3 +595,294 @@ No GitHub reviews, inline comments or conversation comments on the PR. Both roun
 **Decision**: merge
 
 Owner's answer to "Merge PR #34?": "Merge (Recommended)". Issue 29 stays open for PR B (the logger port).
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 08:54 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan.md changed since its last review, 9a19cee -> e7a80fe, and PR A's review rounds changed the estimator PR B ports; run-issue step 13 allows only revise)
+**After**: plan
+**Decision**: revise
+
+PR A merged as #34 (5da4114). Owner said "Yes" to starting part B. Refresh the plan's PR B (port the plane pass to the logger's live coverage overlay) against main as merged: the gate order (unscaled conditioning, planarity, scaled conditioning, significance, DEM), the noise-only agreement variance with its 2·d̄'cov(a,g) cross term, the limit rules (non-finite value or NaN limit fails; infinite planarity/max_sigma_g turns that gate off; NaN DEM slope skips, infinite fails), PLANE_NOT_PLANAR carrying sigma_g, and parity with the 9 plane_vectors in coverage_vectors.json (incl. the diagonal bank). Say where the logger gets a DEM (or that the DEM gate is skipped on the phone), what the overlay shows for a planar node, and the version bump.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 08:58 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `d1e1ec5`
+
+Revised for PR B. PR A is delivered (#34, 5da4114); the plan now records the merged gate order, limit rules and vector codes, and lists eight PR B steps each with its test: Python reference (NodeStore geometry and aggregate moments, counts by cnt), folded and sequence vectors, Java geometry store, `PlanePass` fit with gate unit tests, the 25-node ring pass in `Coverage`, JVM parity with all 9 `plane_vectors` plus the new vectors, timing, docs and version 0.10.0 (build 14). The phone has no DEM, so the DEM gate is skipped; a planar node draws by its final status.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 08:57 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #29 — Steep-bank relief for the node rebuild: a gradient from the neighbourhood, not the node's own split
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `d1e1ec5`
+**Branch**: `feature/issue-29`
+**Serves**: Roadmap line "`icecube` runs on logger sessions in the project's local frame"; the project keeps no goals or design document, so none.
+
+Reviewed with the host's answers to the five open questions: (1) aggregate sz2/sh from the exact moments WS/WH; (2) no new tint or tap readout for planar nodes; (3) 0.10.0 / build 14 (current 0.9.0 / 13); (4) no Settings toggle, always on, recorded in the events line; (5) measure memory in step 3, per-capture fallback above ~1.5x.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | One PR: reference tweak, vectors, Java port, docs. Steps each carry a test. |
+| Issue alignment | Good | Closes #29 with PR A merged (#34); decisions match the host's answers. |
+| File targeting | Good | `LiveCoverage` (Python twin) lives in `logger_vectors.py`, listed; `icecube.example.toml` needs nothing (no new setting). |
+| Consequences | Needs work | Ring definition and sequence vectors could be circular (findings 2, 3); memory fallback interacts with the bounded-store test (finding 5). |
+| Principle alignment | Needs work | "Test what breaks": the step 1 fold-equivalence test claims an equality that does not hold (finding 1). |
+| ADR compliance | Good | Project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Principle: test what breaks]** Step 1's test "a node folded past CAP equals the same entries unfolded ... to the pass-2 variance within 1e-9 for a linear surface" cannot pass in general. On a noise-free linear surface `z'` matches (mean of `z_i - g.d_i` = `WZ/W - g.(WDX,WDY)/W`), but the variances differ: unfolded pass 2 reweights each entry by `1/(sz2_i + g^2 sh_i^2 + d_i'C_g d_i)`, while the aggregate keeps its pass-1 weights (which carry `SLOPE*(d+sh)`, distance-dependent) inside `WS/W^2 + g^2 WH/W^2 + dbar'C_g dbar`. Equal only in degenerate cases (identical entries at one spot, `C_g = 0`). Resolve: test `z'` equality, and test the aggregate's pass-2 variance against the stated moment formula (and, if wanted, that it is >= the unfolded `1/W'`), not equality with unfolded. The acceptance section already says folded nodes may differ; make step 1 consistent with it.
+2. **[Consequences: 25-node ring]** The ring is sufficient in principle: a node's plane result depends only on its own pass-1 state and its 8 neighbours' pass-1 `z, w, cx, cy, n_in, red`; there is no fit radius beyond Chebyshev 1, and the one-sweep rule (neighbours read pass-1 colour) means a neighbour's pass-1 change reaches only nodes adjacent to it. So "every node within Chebyshev 1 of a node whose pass 1 changed" is exact. But "the 3x3 fed" is not always true: `Coverage.add` feeds every node with `d <= captureRadius` (0.75 m on a 0.5 m grid), and at a tie (capture 0.25 m off a node row) 4 nodes in a line are fed. Define the ring as the Chebyshev-1 dilation of the actual fed set (up to 30 nodes), not a fixed 5x5 around the capture; or prove the tie away. Same for `MAX_NODES`: a neighbour not created is simply absent on both sides (confirm the Python twin treats it the same).
+3. **[Consequences: sequence vectors]** `plane_sequences` "pins the 25-node ring" only if its expected statuses come from a full recompute (rebuild every node + `plane_pass` over the whole grid after each capture), not from a Python twin that implements the same ring. Say so in step 2; otherwise a wrong ring rule is pinned on both sides. `incrementalEqualsRebuild` with `plane=true` (step 5) is the matching Java-side check.
+4. **[File targeting: step 1]** `plane_pass` computes `n_in` as `len(entries) - n_out` at three sites (red map, neighbour `min_nin` usability, and the NO_GAIN test on `es2`), not one. All three must take `n_in` from the output (`main.cnt`). For the batch this changes nothing: every batch entry has `cnt = 1` and `_robust` already sets `n_out = len(es) - main.cnt` after Eeg culls, so `main.cnt == len - n_out`; `_running` has no `n_in` and keeps the fallback. Step 1 is therefore justified as making the reference correct for folded aggregates, with no PR A result or committed vector changed; the `plane_vectors` byte-identical check plus the 94 unchanged tests are the right guard. Note it in the PR body.
+5. **[Consequences: memory fallback]** Current per-entry store is 3 doubles + 1 int; adding 4 doubles is ~2x, so the host's >1.5x trigger will likely fire. The "per-capture table" fallback grows with session capture count while the node store is bounded, which conflicts with what `manyCapturesStayBounded` guards; plan how the table is bounded (only captures still referenced by stored entries) before choosing it. Storing `edx, edy` as floats would save space but breaks 1e-9 parity; rule it out explicitly.
+6. **[Parity tolerance]** 1e-9 absolute across Java/Python is sound: existing node parity already uses 1e-9 for `z`, `sigma`; synthetic z are small; the generator guards every plane gate at a 1e-6 relative margin and keeps captures off the radius circle, so summation-order differences (~1e-15) cannot flip a code. Keep it absolute, and apply the same guard to `plane_folded_vectors` and `plane_sequences`. `gradient` null-as-NaN compares fine with JUnit `assertEquals(double, double, delta)`.
+7. **[Issue alignment]** Fold the host's five answers into the plan's Decisions and drop the Open Questions section, so the implementer reads one settled plan.
+
+### Summary
+
+The port is well-structured and the batch change in step 1 is behaviour-neutral for PR A (cnt = 1 everywhere), so it is justified. The ring argument holds once defined from the actual fed set. One planned test asserts an equality that is false (finding 1); fix that and pin sequences from a full recompute, then implement.
+
+### Recommended Actions
+
+- [ ] Rewrite step 1's fold test: `z'` equality; variance against the moment formula, not the unfolded result
+- [ ] Define the ring as the Chebyshev-1 dilation of the fed set (handle the 4-wide tie)
+- [ ] State that `plane_sequences` expectations come from a full per-capture recompute
+- [ ] List all three `len - n_out` sites in `plane_pass` for step 1
+- [ ] Bound the per-capture fallback table (or reject it); forbid float storage for geometry
+- [ ] Record the host's five answers in Decisions; remove Open Questions
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 08:59 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work on plan text only; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Host decisions for PR B (owner may veto): aggregate sz2/sh from exact moments WS/WH; no new tint or tap readout for planar nodes; version 0.10.0 / build 14; no Settings toggle (always on, recorded in the events line); memory: keep per-entry doubles (floats break 1e-9 parity) and drop the per-capture fallback, because the store is bounded per node by CAP; step 3 reports the worst-case bytes for a full grid and a typical session, and the bounded-store test stays as is. Address the Plan Review at 9c71951: all three n_in = len − n_out sites in plane_pass switch to the count; the ring is the actual fed set grown by one cell; the fold test checks z′ equality and the aggregate variance against the moment formula; plane_sequences expectations come from a full recompute after each capture; the 1e-6 gate-margin guard also covers the folded and sequence vectors; write these decisions into the plan and remove Open Questions.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 09:00 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `e8ef68c`
+
+Revised PR B per the plan review: fold test checks z' equality and the moment-formula variance (not the unfolded result); ring is the Chebyshev-1 dilation of the actual fed set (up to 30); plane_sequences expectations from a full per-capture recompute with the 1e-6 guard; all three n_in sites listed; memory keeps doubles with no fallback table; host decisions recorded and Open Questions removed.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 09:02 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #29 — Steep-bank relief for the node rebuild: a gradient from the neighbourhood, not the node's own split
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `e8ef68c`
+**Branch**: `feature/issue-29`
+**Serves**: Roadmap line "`icecube` runs on logger sessions in the project's local frame"; the project keeps no goals or design document, so none.
+
+Re-review of the revision for the Plan Review at 9c71951, checked against `icecube/nodes.py` and `Coverage.java` on main (94 Python tests pass).
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | Unchanged: one PR, eight steps each with a test. |
+| Issue alignment | Good | Host decisions (1)-(8) recorded; Open Questions removed (prior 7 resolved). |
+| File targeting | Good | All three `len(stores[..]) - n_out` sites (lines 540, 553, 598) listed with the `_running` fallback (prior 4 resolved). |
+| Consequences | Good | Ring is the Chebyshev-1 dilation of the fed set, tie case tested (prior 2); sequences from a full recompute (prior 3); doubles kept, no fallback table (prior 5); 1e-6 guard extended (prior 6). |
+| Principle alignment | Needs work | "Test what breaks": step 1 still plans two assertions that do not hold in general (findings 1, 2). |
+| ADR compliance | Good | Project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Principle: test what breaks]** Step 1's new check "the folded variance is checked to be at least the unfolded `1/W'`" is false in general (my previous review offered it as optional; that was wrong). The unfolded `reduce_to_plane` gives each entry its own `d_i'C_g d_i`, a conservative per-entry term, while the aggregate carries only `d_agg'C_g d_agg`. Counterexample: two equal entries at `d = (±1, 0)`, `C_g = cI`, `sh = 0`: folded `s/2`, unfolded `1/W' = (s + c)/2`, so folded < unfolded. The inequality holds only with `C_g = 0` (then it is Gauss-Markov: the folded pass-1 weights are not optimal). Resolve: drop it, or assert it only with `cov_g = 0` passed to `reduce_to_plane`.
+2. **[Principle: test what breaks]** "A bank whose nodes each exceed CAP gets the same plane code and a `z'` within 1e-9 of the unfolded block" is under-specified. `NodeStore` drops (not folds) stored outliers when the store holds no main member, and the conditioning and significance gates use the neighbours' pass-1 `w`, which differs between folded and unfolded mains; so the code can differ near a threshold and dropped entries change `n_out'` (NO_GAIN). `z'` and the gradient match only on a noise-free linear surface where every neighbour main lies on the plane. Resolve: state the case is noise-free linear with no entry dropped (assert `n_dropped == 0`), name what "unfolded" is (the same `NodeStore` with `cap` large, not the batch `_robust`, which uses weight promotion and Eeg), and run the 1e-6 gate-margin guard on both runs so the code equality is not a coincidence; otherwise assert only `z'` and the gradient.
+3. **[Minor, plan text]** The Principles Self-Check row "New settings in `icecube.example.toml`" contradicts "no new setting" (PR B adds none); decisions (4) and (7) both say "no Settings toggle". Tidy when revising.
+
+### Summary
+
+Every finding from 9c71951 is resolved and matches main's code. The revision added two test claims in step 1 that assert things that are not true in general (one was my earlier suggestion). These are plan-text fixes; once made, the plan is ready to implement.
+
+### Recommended Actions
+
+- [ ] Drop the "folded >= unfolded `1/W'`" check, or restrict it to `cov_g = 0`
+- [ ] Pin the bank-past-CAP test: noise-free linear, `n_dropped == 0`, "unfolded" = large-cap `NodeStore`, margin guard; or assert only `z'` and gradient
+- [ ] Fix the stale `icecube.example.toml` self-check row and the duplicate toggle decision
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:04 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: plan
+**Decision**: proceed
+
+Owner's answer to "How should it continue?": "Proceed, fix in code (Recommended)". The implementer applies the Plan Review at 2f201f7 in code: drop the folded-variance >= unfolded 1/W' check (assert it only with cov_g = 0); the bank-folded-past-CAP test uses a noise-free linear surface, asserts n_dropped == 0, defines "unfolded" as a large-cap NodeStore, and runs the gate-margin guard on both runs (else asserts only z' and the gradient); fix the Principles Self-Check row (no new icecube.example.toml settings) and the duplicate no-toggle decision.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 09:24 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-29 at ee61100
+**Plan**: `.agent/work-plans/issue-29/plan.md` (PR B), Checkpoint 09:04 (proceed, fixes in code)
+**Commits**: 361b858, 78737c1, efc9c02, 858df1c, 538559e, 5b2d180, ee61100
+
+### Actions
+- [x] Step 1: `NodeStore` keeps dx, dy, sz^2, sh per entry and WDX, WDY, WS, WH for the aggregate (zeroed on drop); `_robust` returns n_in = main.cnt, n_out by cnt; `plane_pass` reads n_in from the output at all three sites and takes `dropped` (node -> count) for n_out' (a parameter rather than "through run": run sees entries only) — `icecube/nodes.py` (361b858)
+- [x] Step 1 tests per the Checkpoint: moments, dropped aggregate, folded z' = unfolded and the moment-formula variance within 1e-9, folded >= unfolded 1/W' only with cov_g = 0; bank past CAP noise-free, n_dropped == 0, unfolded = large-cap NodeStore, margin guard on both runs, same code where both try a node, z' and gradient within 1e-9 — `icecube/tests/test_icecube.py` (361b858)
+- [x] Step 2: `plane_folded_vectors` (2 banks, ~40/disc, folds and drops, cx, cy) and `plane_sequences` (bank one capture at a time); expectations from a full recompute after each capture, ring twin only checked against it; guards on every recompute — `icecube/logger_vectors.py`, `test_logger_vectors.py`, `coverage_vectors.json` (78737c1)
+- [x] Steps 3-6: `PlanePass.java` (fit, gates, significance) with `PlanePassTest`; `Coverage` geometry store, cx/cy, ring over the fed-set dilation, final fields, status/displaySigma on final, ring-touched repaint, events line; parity tests for all plane parts, code guard 0-5,7,8,9, ring = full recompute incl. tie captures (efc9c02, 858df1c)
+- [x] Step 7: `CoverageWorkerTest` ring-touched patch and the 5000-capture cost ratio (538559e)
+- [x] Step 8: README Coverage section, howto logger paragraph, log entry, 0.10.0 / build 14 (5b2d180)
+- [x] Plan text fixes from the Plan Review (ee61100)
+
+### Checks
+- `plane_vectors` byte-identical: the committed file before this PR is an exact prefix of the new one up to its closing bracket (219,377 bytes of `plane_vectors` unchanged); its sha256 over the parsed section is unchanged
+- `python3 -m unittest discover icecube/tests`: Ran 101 tests, OK (94 before)
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
+- `./gradlew testDebugUnitTest assembleDebug lintDebug --max-workers 4`: 214 JVM tests, 0 failures (C: 111 GB free); APK `logger/app/build/outputs/apk/debug/app-debug.apk`, 0.10.0 (14); not installed
+- Timing: 5000-capture bank rebuild 21.5 us/capture without the plane pass, 43.9 with it (ratio 2.04, test bound 6)
+- Memory (estimated): a node at CAP 1.16 kB -> 2.40 kB; full 250,000-node grid at CAP 290 -> 600 MB (theoretical); two replayed sessions 0.69 -> 1.31 MB and 0.49 -> 0.94 MB
+- Private batch replays (counts only), identical output before and after: 11-21 red 19 -> 17, planar 2; 11-26 red 6 -> 1, planar 5
+- Logger-twin replay (LiveCoverage plane=True, unfolded nodes only; no node folded): 11-26 planar 5 = batch 5; 11-21 planar 1 vs batch 2: the one node is not red in the logger's pass 1 (count promotion, 2:1) but red in the batch (weight promotion), so a rule difference, not the port
+
+### Deferred
+- PR body (no batch result or committed vector changes; the measured cost and memory) is the host's
+- The worst-case full-grid memory (600 MB) is beyond a phone heap, as the 290 MB before was; not reachable in a real session, noted in the README
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 09:33 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-29 at `cbba472`
+**Base**: main
+**Depth**: Deep (reason: ~1,650 code lines across Python reference, Java port and tests (+8,415 generated vector lines), cross-layer batch/logger parity)
+**Must-fix**: 0 | **Suggestions**: 4
+**Round**: 1 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Specialists: static (gradle lintDebug clean; no Python linter installed, py_compile clean), governance, plan drift, Claude adversarial, cross-model (gemini, codex: both complete).
+Verified: `./gradlew testDebugUnitTest lintDebug --max-workers 4` 214 tests, 0 failures (C: 111 GB free); `python3 -m unittest discover icecube/tests` 101 OK; regenerated `coverage_vectors.json` is byte-identical to the committed file, and every pre-existing section (incl. `plane_vectors`) equals main's. Parity of PlanePass/Coverage with `plane_fit`/`plane_pass`/`reduce_to_plane` checked gate by gate (order, `!(v <= lim)` form, Cholesky inverse, posDef, NaN/inf); ring = Chebyshev-1 dilation of the fed set is exact (pass-1 state changes only in feed; tested against `replaneAll` at zero tolerance); Coverage stays on the single worker thread, UI sees immutable frames only; batch `plane_pass` caller passes no `dropped` and `_robust` counts are unchanged for cnt = 1. The 11-21 live 1 vs batch 2 planar difference is pre-existing #24 behaviour: on main `NodeStore.rebuild` uses `promote="count"` and `_robust` `promote="weight"`. Memory: real sessions 0.5-1.3 MB, well within what the overlay held before; only the unreachable full-grid bound doubles (290 -> ~600 MB).
+
+### Findings
+- [ ] (suggestion) `plane_over` hardcodes `PLANE_PARAMS["cell"]`; pass `cov.cell`/`self.cell` from `_ring` and `_full_plane` (gemini + codex) — `icecube/logger_vectors.py:172`
+- [ ] (suggestion) Ring size "up to 30" is wrong: the largest fed-set dilation at the defaults is 26 (the tie capture's 5x6 box minus 4 corners); fix the comment, the test javadoc and the README — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:56`, `logger/app/src/test/java/rink/icecube/logger/core/CoverageTest.java:341`, `logger/README.md`
+- [ ] (suggestion) `Node.varFinal` javadoc says 1/W' but it holds 1/W' + d_bar'C_g d_bar — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:150`
+- [ ] (suggestion) `LiveCoverage.gtrace` is set and never used — `icecube/logger_vectors.py:202`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:34 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved, 0 must-fix; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+The 4 small suggestions (plane_over hardcoded cell, ring max 26 not 30, varFinal javadoc, unused gtrace) go through the PR-mode triage.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-27 09:35 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #37 at `a4edb66`
+**Sources**: 1 (Local Review (Pre-Push) @ `cbba472`, covers `a4edb66` via bookkeeping); no hosted reviews (Copilot not requested, out of quota), no CI checks configured
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+### Findings
+- [x] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `plane_over` passes `PLANE_PARAMS["cell"]` to `nodes.plane_pass` instead of the caller's cell; every current caller uses 0.5 so no output is wrong today, but a `LiveCoverage(plane=True)` with another cell would fit planes on the wrong spacing. Add a `cell` argument and pass `self.cell` from `_ring` and `cov.cell` from `_full_plane` (and the test at `icecube/tests/test_icecube.py:1233`) — `icecube/logger_vectors.py:172`
+- [x] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) Ring size "up to 30" is wrong: the tie capture (0, 0.25) feeds 8 nodes (column 0 j=-1..2, i=±1 j=0..1); its one-cell dilation is the 5x6 box minus the 4 corners at i=±2, j=-2/3, i.e. 26. Fix "up to 30" in the class comment, the test javadoc ("5 by 6 = 30 nodes") and the README — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:56`, `logger/app/src/test/java/rink/icecube/logger/core/CoverageTest.java:342`, `logger/README.md:592`
+- [x] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `Node.varFinal` javadoc says "1/W', or 1/W when not planar", but line 396 sets it to `1.0 / w2 + vbar` (1/W' + d_bar'C_g d_bar); update the javadoc — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:150`
+- [x] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `LiveCoverage.gtrace` is initialised and never read or written (`_ring` calls `plane_over` without it; `_full_plane` uses a local list); remove it — `icecube/logger_vectors.py:202`
+
+### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:35 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (4 small valid suggestions, each a few lines; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Fix all four as the Integrated Review at a9b1fb0 describes.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 09:40 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #37 at `4641ffc`
+**Addressed**: Integrated Review at `a4edb66` (2026-11-27 09:35 -05:00)
+**Commits**: 42de88a, e2dc17a, 0db6840, 4641ffc
+
+### Actions
+- [x] `plane_over` takes a `cell` argument; `_ring` passes `self.cell`, `_full_plane` `cov.cell`, the bank test 0.5; new `test_live_plane_uses_its_cell` (0.25 m grid, 0.3 m/m bank: accepted gradients near 0.3; before the fix they came out about 0.12 to 0.18) — `icecube/logger_vectors.py:157`, `icecube/tests/test_icecube.py`
+- [x] Ring size "up to 30" corrected to 26 (5 by 6 less 4 corners) in the class comment, the test javadoc and the README — `Coverage.java:56`, `CoverageTest.java:342`, `logger/README.md:592`
+- [x] `Node.varFinal` javadoc now reads 1/W' + d_bar'C_g d_bar when planar, else 1/W — `Coverage.java:150`
+- [x] Unused `LiveCoverage.gtrace` removed — `icecube/logger_vectors.py:202`
+
+### Checks
+- `python3 -m icecube.logger_vectors`: coverage_vectors.json regenerated, byte-identical (every vector case uses cell 0.5)
+- `python3 -m unittest discover icecube/tests`: Ran 159 tests, OK (skipped=5)
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 102 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 214 tests, 0 failures (C: 111 GB free); APK unchanged (Java changes are comments only)
+- Full pre-commit pass left to the host
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 09:41 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #37 at `ba45104`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Cold read: Codex alone, given the PR title, URL, diff (work-plans excluded) and the plan's Approach; no earlier review entries or findings. Prompt about 270 KB, coverage_vectors.json kept in (it fit). Codex EXIT=0, review complete: no issues found. Its review was terse (two lines), so the lead spot-read PlanePass.java, the Coverage.java diff and the nodes.py diff and found nothing to add.
+
+### Findings
+- [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-27 09:42 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #37 at `d4d6191`
+**Sources**: 1 (Local Review @ `ba45104`, Codex cold read, covers `d4d6191` via bookkeeping; approved, 0 findings); no hosted reviews (Copilot not requested, out of quota), no CI checks configured
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+Prior Integrated Review at `a4edb66` (4 suggestions) verified fixed in the code at head: `plane_over` takes `cell` and `_ring`/`_full_plane` pass `self.cell`/`cov.cell` (`icecube/logger_vectors.py:157,243,562`); ring "up to 26" in `Coverage.java:56`, `CoverageTest.java:342` and `logger/README.md:592`; `Node.varFinal` javadoc names 1/W' + d_bar'C_g d_bar (`Coverage.java:150`); `LiveCoverage.gtrace` removed. The pre-push review at `cbba472` is stale and was closed by that Integrated Review.
+
+### Findings
+
+### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:43 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #37?": "Merge (Recommended)".
