@@ -247,3 +247,31 @@ Stretches 26/17/1/11. New `float_spell` reason on 9/1/1/0 stretches (alone on 3/
 - Live-notice texts for the young ref start are unchanged (young is reported at ref end).
 - The chip and notices show the young fix's age, not the time left.
 - Follow-ups stay with #39, #40, #41, #23.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 18:09 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-15 at `2a4cdad`
+**Base**: main
+**Depth**: Deep (reason: 35 files, about 1600 lines, cross-layer Java logger and Python processing with a schema change)
+**Must-fix**: 1 | **Suggestions**: 11
+**Round**: 1 | **Ship**: continue: round 1, 1 must-fix; the first round always re-reviews after fixes
+
+Outside reviewers: Claude adversarial subagent, gemini (complete), codex (complete). Verified: analysis/qgis tests 162 OK (5 skipped), icecube tests 102 OK, regenerated coverage vectors are byte-identical to the committed file. Gradle not re-run here (the implementation entry reports 228 JVM tests passing). No Python or Java linter is installed or configured, so static analysis was not run. Java/Python parity of the float-spell rule and the jump source (fixed-to-fixed jumps still measured and suspect), parsing of 17/27/29/33-column rows, the refs.csv header upgrade, PoleCheck's young skip (old rows usable), importer schema 5, and the coverage overlay (suspect float-spell captures stay red, Coverage.java:585) all check out.
+
+### Findings
+- [ ] (must-fix) Settle migration race: `settleChecked` is set before `migrateSettle` runs, without synchronisation, so a concurrent first read can see the old "10". Make `prefs()` synchronized, or set the flag after the migration (gemini, codex, Claude) — `logger/app/src/main/java/rink/icecube/logger/Settings.java:68-73`
+- [ ] (suggestion) Parity: an epoch with no position inside a fix ends the Java stretch (young again for 120 s, prior "none", jump measured from the earlier fixed epoch), while Python `fix_stretches` keeps the same stretch. Pick one rule and pin it with a parity test (Claude, codex) — `logger/app/src/main/java/rink/icecube/logger/core/FixGuard.java:108-139`, `analysis/qgis/soundings.py:401-408`
+- [ ] (suggestion) One single, DGPS or no-position epoch between a long float spell and the fix bypasses the float-spell rule in both Java and Python: the 11-21 case with a one-epoch dropout goes unflagged. Consider letting a spell carry over a short interruption of 2 s or less, or defer to #41 (Claude) — `FixGuard.java:111-118`, `soundings.py:388-389`
+- [ ] (suggestion) A ref that is both young and suspect plays YOUNG at ref end, then SUSPECT from the pole check. Elsewhere SUSPECT wins over YOUNG (gemini) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:247`
+- [ ] (suggestion) The young-ref notice shows the last epoch's age, so a ref that crosses 120 s reads "fix young: 135 s". Show the youngest age or leave the seconds out (gemini) — `Survey.java:299-301`
+- [ ] (suggestion) `refView()` uses `guard.young(now)`, not the `refYoung` latch, so "(fix young)" drops off the ring even though the saved ref will be young (gemini) — `Survey.java:715`
+- [ ] (suggestion) `mark()`/`lean()` test young at `now` but record `fix_age_s` at `a.lastNs`, so a row at the boundary can have `fix_age_s` < limit with `fix_young` 0. Use `a.lastNs` (gemini) — `Survey.java:330,375`
+- [ ] (suggestion) When a logger source has no `session_paths`, the logger's own `fix_suspect`/`suspect_reason` are ignored and float-spell captures get use = 1. This predates the change, but the change widens it; fall back to the capture's columns (codex) — `analysis/qgis/soundings.py:782`
+- [ ] (suggestion) README version example still reads "0.8.1 (build 12)"; plan step 6 said to update it (gemini) — `logger/README.md:27`
+- [ ] (suggestion) Stale docstring "(SCHEMA_APP: 0.6 for 3, 0.9 for 4)" is missing "0.11 for 5" (Claude) — `analysis/qgis/import_sessions.py:81`
+- [ ] (suggestion) Python treats a negative `float_spell_s` as on (Java needs > 0), and the build log says "float spell >= 0 s" when the rule is off (gemini) — `analysis/qgis/soundings.py:393,1382`
+- [ ] (suggestion) Owner call: "young if any counted epoch was young" makes a ref started at fix age 100 s permanently unusable as a pole-check reference. This follows the plan's decision 3 and is documented in the README. Confirm it, or decide by the age at the end or the share of young epochs (Claude) — `Survey.java:217`, `PoleCheck.java`
