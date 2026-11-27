@@ -379,3 +379,13 @@ No hosted reviews or PR comments yet (Copilot not requested; out of quota today)
 - [ ] (suggestion, Local Review @ `3e9388d`) import_refs_csv's flagged count comes from this run's copies only; a later run with only pre-0.9.0 copies reports 0 flagged while the stored flag stays 1. Count flagged rows from the refs table for the imported keys, or label the summary count "in this run" — `analysis/qgis/import_sessions.py:362`
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:07 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (one small suggestion open; orchestrator table allows address at findings)
+**After**: findings
+**Decision**: address
+
+Fix the open suggestion: import_refs_csv's flagged count comes from the refs table (so a run with only pre-0.9.0 copies doesn't report 0 while a stored flag stays 1), or is labelled 'flagged in this run'.
