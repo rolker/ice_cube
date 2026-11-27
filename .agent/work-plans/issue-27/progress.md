@@ -956,3 +956,20 @@ Option 1 as the Checkpoint decided. New `refs_copies` table (copy_id, session, n
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 154, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 94, OK
 - No Java change; gradle not run. Pre-commit hooks ran on every commit; nothing pushed.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:59 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-27 at `d87686b`
+**Base**: main
+**Depth**: Deep (reason: round 4 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 1
+**Round**: 4 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Scope: round 3's one must-fix and the fix diff 85dfcc3..d87686b only. Cross-model: skipped (round-4 convergence check, per handoff). The must-fix is fixed: the flag is now `_decide_flag` over every copy in `refs_copies`, a function of the set of copies, so one run and any run sequence agree as long as each copy gets the same copy_id every time. Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 154, OK (skipped=5). Probe (not committed): 80 random cases of 3-4 copies plus one duplicate copy, with unknown (None) times, uncertainties 0/1 h/26 h, two refs per text (one sometimes absent), every permutation imported one per run, split in two runs at a random cut, and the whole set imported twice: 6336 permutations, 0 differences from one run. Copy identity: copy_id is a 128-bit content hash plus mtime and uncertainty; two copies that differ in content or time never collide, and two that share all three carry the same (mtime, unc, void, reason) per ref, so merging them changes nothing. The same copy is counted twice only when its computed time changes between imports (below). Seeding: an old gpkg seeds one 'stored' copy per refs.csv flag (NULL unc taken as APPROX_S, unknown mtime kept as unknown, which is older than any known time, as before); because a tie union is stored as one wide copy, an old gpkg can still err toward flagged, never toward cleared. Tested by `test_gpkg_without_refs_copies_seeds_it_from_the_stored_flag`. The two changed tests now expect the one-run answer, which I checked by hand: the cleared T-24 h copy is surely older than the exact T+20 h flagged copy, so it is dropped and no tie is reported; the exact T+2 h un-flag is surely newer than flagged T+-1 h and ties only cleared T+1.5 h+-1 h, so the result is cleared over [T+0.5 h, T+2.5 h]. Docs (`docs/howto/qgis.md`, `logger/README.md`) match.
+
+### Findings
+- [ ] (suggestion) copy_id includes the mtime_approx time, which is read in the PC's own zone. A zip without a 0x5455 stamp and without events.csv, imported again on a PC in another zone, therefore becomes a second copy with a shifted interval, and that copy can change which copies decide the flag, in either direction. This is rare: logger 0.9.0+ zips carry 0x5455, and pre-0.9.0 copies have no void column. Key that path on the raw DOS stamp instead, or note it in the docstring — `analysis/qgis/import_sessions.py:421`
