@@ -410,7 +410,8 @@ pip; object capture a two-tone pip; ref start a long low tone; ref paused a long
 tone; ref resumed a short one; ref end a rising three-tone; ref cancelled a falling two;
 photo a click; pole check OK two rising beeps; pole check failed an alternating alarm;
 a capture in a suspect fix stretch a fast warble ending low; a capture, lean or ref from a
-young fix two even middle tones with two long pulses (0.11.0); tilt start three rising
+young fix two even middle tones with two long pulses (0.11.0; one that is both suspect and
+young plays only the suspect cue, a ref too); tilt start three rising
 tones, each lean two short beeps, tilt saved a rising three-tone; errors (no fix, no
 session, mode change during a ref, a refused lean) a low buzz. Sounds use the media
 volume, so silent mode does not mute them.

@@ -244,7 +244,8 @@ final class Survey {
                     addRow(finished);
                     svc.event(String.format(Locale.US, "ref end n=%d epochs=%d pauses=%d young=%d", finished.n, r.epochs(),
                             r.pauses(), finished.fixYoung));
-                    cue(refYoung ? Feedback.Cue.YOUNG : Feedback.Cue.REF_END);
+                    // one fix cue: SUSPECT (from the pole check) wins over YOUNG, as for MARK
+                    cue(refYoung && !refSuspect ? Feedback.Cue.YOUNG : Feedback.Cue.REF_END);
                     // Queued under the lock, like finishTilt: a voidCapture right after this
                     // epoch then queues its refs.csv rewrite after the append, never before
                     // (which would find no row and log a false error). The rewrite of a row
