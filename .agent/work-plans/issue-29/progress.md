@@ -822,3 +822,25 @@ The 4 small suggestions (plane_over hardcoded cell, ring max 26 not 30, varFinal
 **Decision**: address
 
 Fix all four as the Integrated Review at a9b1fb0 describes.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 09:40 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #37 at `4641ffc`
+**Addressed**: Integrated Review at `a4edb66` (2026-11-27 09:35 -05:00)
+**Commits**: 42de88a, e2dc17a, 0db6840, 4641ffc
+
+### Actions
+- [x] `plane_over` takes a `cell` argument; `_ring` passes `self.cell`, `_full_plane` `cov.cell`, the bank test 0.5; new `test_live_plane_uses_its_cell` (0.25 m grid, 0.3 m/m bank: accepted gradients near 0.3; before the fix they came out about 0.12 to 0.18) — `icecube/logger_vectors.py:157`, `icecube/tests/test_icecube.py`
+- [x] Ring size "up to 30" corrected to 26 (5 by 6 less 4 corners) in the class comment, the test javadoc and the README — `Coverage.java:56`, `CoverageTest.java:342`, `logger/README.md:592`
+- [x] `Node.varFinal` javadoc now reads 1/W' + d_bar'C_g d_bar when planar, else 1/W — `Coverage.java:150`
+- [x] Unused `LiveCoverage.gtrace` removed — `icecube/logger_vectors.py:202`
+
+### Checks
+- `python3 -m icecube.logger_vectors`: coverage_vectors.json regenerated, byte-identical (every vector case uses cell 0.5)
+- `python3 -m unittest discover icecube/tests`: Ran 159 tests, OK (skipped=5)
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 102 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 214 tests, 0 failures (C: 111 GB free); APK unchanged (Java changes are comments only)
+- Full pre-commit pass left to the host
