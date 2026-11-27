@@ -209,7 +209,8 @@ class ImportTest(unittest.TestCase):
 
     def test_refs_csv_copies_newest_decides_void(self):
         """Copies of refs.csv that disagree: the newest decides, and an older-format copy
-        (no void column) never clears a flag, whatever the input order, nor in a later run."""
+        (no void column) never clears a flag, whatever the input order, nor in a later run;
+        nor does an older 0.9.0 copy met in a later run (void_copy_mtime)."""
         gp = gw.GeoPackage(self.d / "r.gpkg")
         imp.ensure_schema(gp)
         hdr = "session," + synth.POINTS_HDR
@@ -229,6 +230,30 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(void(), [(1, "moved")])              # keeps the stored flag
         self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 100.0)]), (1, 0))
         self.assertEqual(void(), [(0, None)])                 # unflagged since: newest wins
+        # a later run whose only copy is an older 0.9.0 one: the stored, newer flag stays
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 250.0)]), (1, 0))
+        self.assertEqual(void(), [(0, None)])
+        self.assertEqual(imp.import_refs_csv(gp, [flagged]), (1, 0))   # unknown time: no change
+        self.assertEqual(void(), [(0, None)])
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 500.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])              # a newer copy still changes it
+        self.assertEqual(gp.con.execute("SELECT void_copy_mtime FROM refs").fetchall(), [(500.0,)])
+        gp.close()
+
+    def test_refs_csv_flagged_count_only_rows_it_stores(self):
+        """import_refs_csv counts every refs.csv row as seen, but as flagged only rows stored
+        from refs.csv: a ref of an imported session follows its points.csv and is counted with
+        that session's captures, so a flagged refs.csv row of such a session counts (1, 0)."""
+        gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(gp)
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        flagged = "session," + synth.POINTS_HDR + ",void,void_reason\n" + row + ",1,moved\n"
+        gp.upsert("refs", [{"session": "s1", "n": 5, "source": "points.csv", "void": 1, "void_reason": "moved"}],
+                  key=("session", "n"))
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0)]), (1, 0))
+        self.assertEqual(gp.con.execute("SELECT source, void FROM refs").fetchall(), [("points.csv", 1)])
         gp.close()
 
     def test_zip_entry_mtime_utc_and_zero_date(self):

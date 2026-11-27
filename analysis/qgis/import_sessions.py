@@ -49,7 +49,8 @@ or checks (soundings.py, export_labels.py) leave void=1 rows out by default and 
 many; the report and the sessions table (`n_voided`, `remarks`) count them. A file
 without the `void` column has none. A flagged ref gets no `site` and plays no part in
 grouping the others. When several refs.csv copies hold a row, the newest copy (zip entry
-or file time) gives it, and the newest copy with a `void` column gives its flag.
+or file time) gives it, and the newest copy with a `void` column gives its flag; refs keep
+that copy's time (`void_copy_mtime`), so a later import of an older copy cannot change it.
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it); rows are matched by their keys and updated in place, so
@@ -99,7 +100,7 @@ SCHEMA = {
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
-            [("source", T), ("note", T)] + VOID,
+            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -334,8 +335,16 @@ def import_refs_csv(gp, texts):
     `texts` holds refs.csv texts, or (text, mtime) pairs. When copies disagree, the newest
     copy (by mtime; equal or unknown times keep input order) gives the row, and its void
     flag comes from the newest copy that has a void column, so a copy from before 0.9.0
-    never clears a flag, not even one stored by an earlier import. Returns (refs.csv rows, of which flagged void=1 in the refs table,
-    so a stored flag counts even when this run's copies predate 0.9.0)."""
+    never clears a flag, not even one stored by an earlier import. The mtime of the copy a
+    stored flag came from is kept in `void_copy_mtime`; a later run changes the flag only
+    with a copy at least that new (one of unknown time changes only a flag of unknown time),
+    so an older 0.9.0 copy met in a later run cannot clear (or set) a newer stored flag.
+
+    Returns (refs.csv rows seen, of which flagged): every row of every copy counts as seen,
+    but only rows stored from refs.csv (source 'refs.csv', sessions not imported) count as
+    flagged, read from the refs table so a stored flag counts even when this run's copies
+    predate 0.9.0. A ref of an imported session follows its points.csv, whatever refs.csv
+    says, and is counted with that session's flagged captures, not here."""
     dated = [(t, None) if isinstance(t, str) else tuple(t) for t in texts]
     dated = sorted(enumerate(dated), key=lambda it: (it[1][1] if it[1][1] is not None else float("-inf"), it[0]))
     rows, flags = {}, {}
@@ -344,22 +353,26 @@ def import_refs_csv(gp, texts):
             key = (r["session"], r["n"])
             rows[key] = r
             if r.get("void_known"):
-                flags[key] = (bool(r.get("void")), r.get("void_reason"))
+                flags[key] = (bool(r.get("void")), r.get("void_reason"), _mtime)
     out = []
     for (sess, n), r in sorted(rows.items()):
-        void, reason = flags.get((sess, n), (False, None))
+        void, reason, stamp = flags.get((sess, n), (False, None, None))
         d = {k: r.get(k) for k, _ in MEAS}
         d.update({"session": sess, "n": n, "source": "refs.csv",
-                  "void": int(void), "void_reason": reason if void else None,
+                  "void": int(void), "void_reason": reason if void else None, "void_copy_mtime": stamp,
                   "geom": _geom(r.get("lat"), r.get("lon"), r.get("h_ground"))})
         out.append(d)
     if out:
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
         # only rows a copy in this run has a void column for: copies from before 0.9.0 alone
-        # never reset a flag that an earlier import took from a newer copy
-        gp.con.executemany("UPDATE refs SET void=?, void_reason=? WHERE session=? AND n=? AND source='refs.csv'",
-                           [(d["void"], d["void_reason"], d["session"], d["n"]) for d in out
-                            if (d["session"], d["n"]) in flags])
+        # never reset a flag that an earlier import took from a newer copy; and only from a
+        # copy at least as new as the one the stored flag came from (void_copy_mtime)
+        gp.con.executemany(
+            "UPDATE refs SET void=:void, void_reason=:reason, void_copy_mtime=:stamp "
+            "WHERE session=:session AND n=:n AND source='refs.csv' "
+            "AND (void_copy_mtime IS NULL OR :stamp >= void_copy_mtime)",
+            [{"void": d["void"], "reason": d["void_reason"], "stamp": d["void_copy_mtime"],
+              "session": d["session"], "n": d["n"]} for d in out if (d["session"], d["n"]) in flags])
     # flagged count from the refs table (stored flags included), not just this run's copies
     n_void = sum(1 for d in out if gp.con.execute(
         "SELECT 1 FROM refs WHERE session=? AND n=? AND source='refs.csv' AND coalesce(void, 0) = 1",
