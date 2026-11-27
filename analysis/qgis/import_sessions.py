@@ -18,8 +18,9 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
 
   captures      PointZ  one row per capture, key (session, n). Z = ground height.
                         `note` and `label` are yours: edited in QGIS, never overwritten.
-                        Logger 0.6 columns (method, fix_suspect, tilt_*, ...) are NULL
-                        for older sessions.
+                        Logger 0.6 columns (method, fix_suspect, tilt_*, ...) and 0.11.0
+                        columns (fix_start, float_spell_s, suspect_reason, fix_young) are
+                        NULL for older sessions.
   photos        PointZ  one row per photo file, key (session, name); `note` is yours.
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
@@ -105,11 +106,12 @@ from logger_session import APPROX_S, app_version, find_sessions, load_session, r
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 4     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+SCHEMA_VERSION = 5     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
                        # 4: captures and refs carry the logger 0.9.0 void flag (void, void_reason)
+                       # 5: captures carry the logger 0.11.0 fix columns (fix_start, fix_young, ...)
 SCHEMA_TILT = 3        # the schema that brought the logger 0.6 columns: a session re-read at
                        # it or later holds whatever tilt values its source has
-SCHEMA_APP = {3: (0, 6), 4: (0, 9)}   # the oldest app whose sessions have data for each schema
+SCHEMA_APP = {3: (0, 6), 4: (0, 9), 5: (0, 11)}   # the oldest app whose sessions have data for each schema
                                       # step; add an entry with every SCHEMA_VERSION change
 
 
@@ -133,13 +135,16 @@ LOGGER_06 = [("fix_age_s", R), ("fix_jump_m", R), ("fix_suspect", I), ("method",
              ("tilt_rms_m", R), ("tilt_cover_deg", R), ("tilt_sd_e_m", R), ("tilt_sd_n_m", R),
              ("tilt_sd_u_m", R)]   # points.csv 0.6 columns, NULL for older sessions
 VOID = [("void", I), ("void_reason", T)]   # logger 0.9.0: flagged as bad, kept (see below)
+LOGGER_11 = [("fix_start", T), ("float_spell_s", R), ("suspect_reason", T), ("fix_young", I)]
+# points.csv 0.11.0 columns (#15, false-fix guard), NULL for older sessions
 LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
 POINT_TABLES = ("captures", "photos", "refs", "track_points")
 NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
-                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06 + VOID,
+                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06 + VOID
+                + LOGGER_11,
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
                ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
@@ -321,6 +326,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
             **{k: c.get(k) for k, _ in LOGGER_06},
+            **{k: c.get(k) for k, _ in LOGGER_11},
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
 
