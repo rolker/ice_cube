@@ -360,4 +360,4 @@ None.
 **Must-fix**: 1 | **Suggestions**: 0
 
 ### Findings
-- [ ] (must-fix) A session whose app version is unknown (`app_version` returns `()`: no readable `session start` event) counts as pre-0.6, so it is marked schema 3 without a re-read. If its points.csv has 0.6 rows, the tilt columns stay NULL for good and soundings uses the single-capture sigma, and the soundings warning (`_version(...) >= (0, 6)`) misses it too. Every logger since 0.2 writes `app=`, so an unknown version should mean re-read (stale), not nothing new. `analysis/qgis/import_sessions.py:542` (also `analysis/qgis/soundings.py:623`)
+- [x] (must-fix) A session whose app version is unknown (`app_version` returns `()`: no readable `session start` event) counts as pre-0.6, so it is marked schema 3 without a re-read. If its points.csv has 0.6 rows, the tilt columns stay NULL for good and soundings uses the single-capture sigma, and the soundings warning (`_version(...) >= (0, 6)`) misses it too. Every logger since 0.2 writes `app=`, so an unknown version should mean re-read (stale), not nothing new. `analysis/qgis/import_sessions.py:542` (also `analysis/qgis/soundings.py:623`)

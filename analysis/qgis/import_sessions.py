@@ -48,7 +48,7 @@ skipped (--force re-reads it). Each sessions row records the schema_version it w
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
 session imported in full; a session from an app older than SCHEMA_MIN_APP has nothing to
-fill and is marked current without a re-read. Sessions still at an older schema after a run (not among the
+fill and is marked current without a re-read (one whose app version is unknown is re-read). Sessions still at an older schema after a run (not among the
 inputs, or seen only as a snapshot) are named in the log and re-read on a later run. Rows are matched by their keys and updated in place, so
 nothing is duplicated and the user columns survive. Close the project in QGIS before
 importing from the command line; the Ice Cube QGIS plugin (plugin/) does that itself.
@@ -539,7 +539,9 @@ def run(argv=None, log=print, progress=None):
         done = {r[0]: (r[1], r[2]) for r in gp.con.execute("SELECT session, source_sig, snapshot FROM sessions")}
         olds = [(r[0], r[2]) for r in gp.con.execute("SELECT session, schema_version, app FROM sessions")
                 if (r[1] or 0) < SCHEMA_VERSION]    # imported by an older schema (NULL: before 3)
-        nothing_new = [ses for ses, app in olds if app_version(app) < SCHEMA_MIN_APP]
+        # () is an unknown app version (no readable session start event): it may hold 0.6
+        # rows, so it is re-read rather than marked current
+        nothing_new = [ses for ses, app in olds if () < app_version(app) < SCHEMA_MIN_APP]
         if nothing_new:
             gp.con.executemany("UPDATE sessions SET schema_version=? WHERE session=?",
                                [(SCHEMA_VERSION, ses) for ses in nothing_new])

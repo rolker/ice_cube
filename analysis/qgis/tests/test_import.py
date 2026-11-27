@@ -292,6 +292,20 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT count(*) FROM sessions WHERE schema_version IS NULL "
                                 "OR schema_version < ?", imp.SCHEMA_VERSION), [(0,)])
 
+    def test_schema2_unknown_app_version_is_reread(self):
+        """A session with no readable app version may hold 0.6 rows: re-read, not marked current."""
+        z = synth.write_zip(self.d / "s.zip", synth.session_v06())
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        self._as_schema2()
+        con = gw.connect(self.gpkg)
+        con.execute("UPDATE sessions SET app=NULL")
+        con.commit()
+        con.close()
+        out = run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("re-reading those in the inputs", out)
+        self.assertNotIn("unchanged, skipped", out)
+        self.assertEqual(self.q("SELECT method, tilt_sd_u_m FROM captures WHERE n=5"), [("tilt", 0.012)])
+
     def test_schema2_upgrade_keeps_snapshot_guard(self):
         z = synth.write_zip(self.d / "full.zip", synth.session_v06())
         run(z, "--gpkg", self.gpkg, "--base", *self.base)

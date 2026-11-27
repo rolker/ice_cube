@@ -620,7 +620,10 @@ def logger_source(cfg, src, con, frame, history, log):
         apps = dict(con.execute("SELECT session, app FROM sessions"))
     except sqlite3.Error:
         pass
-    new_app = [c for c in caps if c["class"] != "photo" and _version(apps.get(c["session"])) >= (0, 6)]
+    def maybe_06(ses):          # 0.6 or later, or unknown (no readable app version)
+        v = _version(apps.get(ses))
+        return not v or v >= (0, 6)
+    new_app = [c for c in caps if c["class"] != "photo" and maybe_06(c["session"])]
     if missing and new_app:
         log(f"  warning: the captures table has no {', '.join(missing)} column(s): tilt captures get "
             "the single-capture sigma; re-import the full session sources (import_sessions.py "

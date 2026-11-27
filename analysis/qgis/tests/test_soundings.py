@@ -339,6 +339,26 @@ class TestBuild(unittest.TestCase):
         con.close()
         self.assertNotIn("warning", self._build_logger(gpkg)[1])
 
+    def test_unknown_app_version_counts_as_new(self):
+        """No readable app version: the session may be 0.6, so both warnings still fire."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE sessions SET app=NULL")
+        con.execute("UPDATE captures SET method=NULL, tilt_sd_e_m=NULL, tilt_sd_n_m=NULL, tilt_sd_u_m=NULL")
+        con.commit()
+        con.close()
+        logged = self._build_logger(gpkg)[1]
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("no method/tilt values", logged)
+        con = gw.connect(gpkg)
+        for k, _ in imp.LOGGER_06:
+            con.execute(f"ALTER TABLE captures DROP COLUMN {k}")
+        con.commit()
+        con.close()
+        logged = self._build_logger(gpkg)[1]
+        self.assertEqual(logged.count("warning"), 1)
+        self.assertIn("has no", logged)
+
     def test_mixed_sessions_warn_naming_the_stranded_one(self):
         """One 0.6 session with its tilt columns and one without: warn, naming only that one."""
         src = self.d / "in"
