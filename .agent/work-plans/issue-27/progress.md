@@ -389,3 +389,17 @@ No hosted reviews or PR comments yet (Copilot not requested; out of quota today)
 **Decision**: address
 
 Fix the open suggestion: import_refs_csv's flagged count comes from the refs table (so a run with only pre-0.9.0 copies doesn't report 0 while a stored flag stays 1), or is labelled 'flagged in this run'.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:09 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+
+**PR**: #33 at `8619946`
+**Addressed**: Integrated Review at `f3d76a0` (2026-11-26 19:07 -05:00)
+**Commits**: 8619946
+
+### Actions
+- [x] import_refs_csv flagged count now read from the refs table (source refs.csv, void=1) for the imported keys; test extended for a later pre-0.9.0-only run — `analysis/qgis/import_sessions.py:362`
+
+Tests: `python3 -m unittest discover -s analysis/qgis/tests` OK (103, 5 skipped).
