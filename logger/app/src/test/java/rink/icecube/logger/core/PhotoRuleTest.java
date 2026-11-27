@@ -28,6 +28,30 @@ public class PhotoRuleTest {
         assertEquals(-1, PhotoRule.attachTo(earlier, 111 * S));   // stale: a row of its own, as before
     }
 
+    @Test public void targetLine() {
+        PointRow last = new PointRow();
+        last.n = 12; last.cls = PointRow.SURFACE; last.elapsedNs = 100 * S;
+        assertEquals("S12 (14 s)", PhotoRule.targetText(last, 114 * S));
+        assertEquals("S12 (60 s)", PhotoRule.targetText(last, 160 * S));
+        assertEquals("own row", PhotoRule.targetText(last, 160 * S + 1));   // stale
+        assertEquals("own row", PhotoRule.targetText(null, 114 * S));        // no capture yet
+        last.voided = true;                                                 // last capture flagged
+        assertEquals("own row", PhotoRule.targetText(last, 114 * S));
+    }
+
+    @Test public void flaggedPlannedCaptureReasksFromThePress() {
+        // photoTaken: the planned capture was flagged while the camera was open; the latest
+        // live capture is asked with the press time, under the same 60 s window as planPhoto
+        PointRow planned = new PointRow();
+        planned.n = 5; planned.cls = PointRow.OBJECT; planned.elapsedNs = 200 * S; planned.voided = true;
+        PointRow older = new PointRow();
+        older.n = 4; older.cls = PointRow.SURFACE; older.elapsedNs = 150 * S;
+        long press = 203 * S;
+        assertEquals(-1, PhotoRule.attachTo(planned, press));
+        assertEquals(4, PhotoRule.attachTo(older, press));                  // inside the window from the press
+        assertEquals(-1, PhotoRule.attachTo(older, 211 * S));               // outside: a row of its own
+    }
+
     @Test public void namesAndColumn() {
         assertEquals("photo_12_20261111T140322Z.jpg", PhotoRule.fileName(12, "20261111T140322Z"));
         assertEquals("a.jpg", PhotoRule.add("", "a.jpg"));

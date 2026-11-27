@@ -678,6 +678,8 @@ final class Survey {
     /** The k newest capture rows, flagged ones included, newest first (see VoidRule.recent). */
     synchronized List<PointRow> recent(int k) { return VoidRule.recent(rows, k); }
     synchronized int flagged() { return VoidRule.flaggedCount(rows); }
+    /** Where PHOTO would put a photo now: "S12 (14 s)" or "own row" (PhotoRule.targetText). */
+    synchronized String photoTarget() { return PhotoRule.targetText(lastCapture, SystemClock.elapsedRealtimeNanos()); }
     synchronized RefView refView() {
         long now = SystemClock.elapsedRealtimeNanos();
         return ref == null ? null : new RefView(ref, refSeconds, now, guard.settling(now));

@@ -28,7 +28,21 @@ public final class PhotoRule {
         return attachTo(last.n, last.elapsedNs, photoNs);
     }
 
-    /** photo_<n>_<utc>.jpg, utc as yyyyMMddTHHmmssZ. */
+    /**
+     * Where PHOTO would put a photo pressed at nowNs, for the button's second line:
+     * "S12 (14 s)" (the capture and its age) or "own row" (none, stale or flagged).
+     */
+    public static String targetText(PointRow last, long nowNs) {
+        if (attachTo(last, nowNs) < 0) return "own row";
+        return PointRow.label(last.cls) + last.n + " (" + (nowNs - last.elapsedNs) / 1_000_000_000L + " s)";
+    }
+
+    /**
+     * photo_<n>_<utc>.jpg, utc as yyyyMMddTHHmmssZ. The number is the capture planned when
+     * PHOTO was pressed (or the next row number); it is a unique, time-ordered label only.
+     * Files are never renamed: after a flag moves a photo, the row whose photo column lists
+     * the file is the link, not the number in its name.
+     */
     public static String fileName(int n, String utcCompact) { return "photo_" + n + "_" + utcCompact + ".jpg"; }
 
     /** The photo column after adding a file name. */

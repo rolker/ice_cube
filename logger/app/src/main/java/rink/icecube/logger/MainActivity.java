@@ -110,6 +110,8 @@ public final class MainActivity extends Activity {
     /** The notice UNDO is shown for, and when it first showed (elapsedRealtime ns), for the arm delay. */
     private Survey.Notice undoNotice;
     private long undoShownNs;
+    /** PHOTO's second line as last shown ("" for none). */
+    private String photoTargetShown = "";
     private FrameLayout mapFrame, drawer;
     private LinearLayout drawerItems;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -1090,6 +1092,18 @@ public final class MainActivity extends Activity {
             noticeBar.setText(at == null ? nt.text : nt.text + "\n" + at);
             noticeBar.setBackgroundColor(nt.warn ? AMBER : nt.ok ? 0xFF2E7D32 : 0xFFC62828);
             noticeBar.setTextColor(nt.warn ? TEXT : Color.WHITE);
+        }
+
+        // PHOTO's second line: where a photo would go now
+        String target = sv == null ? "" : "→ " + sv.photoTarget();
+        if (!target.equals(photoTargetShown)) {
+            photoTargetShown = target;
+            if (target.isEmpty()) photoB.setText("PHOTO");
+            else {
+                SpannableStringBuilder pb = new SpannableStringBuilder("PHOTO\n" + target);
+                pb.setSpan(new RelativeSizeSpan(0.65f), 6, pb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                photoB.setText(pb);
+            }
         }
 
         StringBuilder t = new StringBuilder();
