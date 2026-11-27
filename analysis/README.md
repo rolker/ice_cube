@@ -51,7 +51,7 @@ QGIS. Standard library only (Python 3.11+); settings in the repo-root `config.to
 | `qgis/fetch_parcels.py --config site.toml` | Tax-parcel polygons (NH GRANIT ParcelMosaic; a subdivision plus its neighbours) datum shifted into our frame as a GeoJSON map layer, without owner names or addresses; prints the core extent for a wider imagery copy; needs numpy |
 | `qgis/imagery_check.py crops/align` | Registration check of those copies: crops with surveyed features drawn on top, and image-to-image offset by phase correlation |
 | `qgis/export_labels.py` | Captures with labels to a CSV in the SW Maps columns icecube's `swmaps_csv` reader takes |
-| `qgis/soundings.py` | The season's ground heights with per-point sigmas, passes and anchors into a `soundings` table of the gpkg (logger captures and IMU-checked pole stops, SW Maps points with their logs, other networks with a frame shift, PPK corrections); icecube's `soundings` reader takes it. Config `[soundings]` |
+| `qgis/soundings.py` | The season's ground heights with per-point sigmas, passes and anchors into a `soundings` table of the gpkg (logger captures, tilt captures with their own tilt-solution sigma, and IMU-checked pole stops, SW Maps points with their logs, other networks with a frame shift, PPK corrections); icecube's `soundings` reader takes it. Config `[soundings]` |
 | `qgis/topo_to_gpkg.py RUN_DIR` | An icecube topography run's contours and points-by-pass (with biases) into the gpkg (`layer_topo_contours`, `topo_points`) |
 | `qgis/gpkg_writer.py`, `logger_session.py`, `local_frame.py` | GeoPackage 1.3 writer on sqlite3, session parsing, local frame |
 

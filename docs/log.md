@@ -112,3 +112,9 @@ Reference material is in `howto/`, the narrative in `story/`.
   and run, so it is in the inputs. A 3 h run follows.
 - 11-07: repo restructured into tools and story; the siting branch merged; `docs/howto/`,
   `docs/story/` (outlines) and this log added.
+- 11-26: soundings.py gives logger tilt captures their own sigma (the tilt solution's
+  sds, no pole tilt term, GST still a floor), the same rule as the logger's live view;
+  the importer now keeps the 0.6 points.csv columns (method, fix_suspect, tilt_*).
+  Each sessions row records the import schema it was read with, so an existing gpkg
+  re-reads its 0.6 sessions (snapshot guard kept, user columns kept) the next time their
+  sources are among the inputs, without `--force`; pre-0.6 sessions are marked current.
