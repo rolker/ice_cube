@@ -128,6 +128,17 @@ public class PointRowTest {
         assertTrue(Double.isNaN(back.lat));
     }
 
+    @Test public void lineBreaksBecomeSpaces() {
+        assertEquals("a b c d", PointRow.text("a\nb\r\nc\rd"));
+        assertEquals("\"x, y z\"", PointRow.text("x, y\nz"));
+        PointRow r = PointRow.of(2, PointRow.REF, 1, null, 1.5, MIDNIGHT);
+        r.note = "two\nlines";
+        r.session = "s";
+        String line = r.toRefsCsv();
+        assertFalse(line.contains("\n") || line.contains("\r"));
+        assertEquals("two lines", PointRow.parse(PointRow.split(line), 1).note);
+    }
+
     @Test public void utcDatesNearPhoneClock() {
         assertEquals("2026-11-11T00:00:01.00Z", PointRow.utc(1.0, MIDNIGHT + 2000));
         // GGA just before midnight, phone just after: previous day

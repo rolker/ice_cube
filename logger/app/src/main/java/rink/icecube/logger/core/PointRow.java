@@ -10,8 +10,8 @@ import java.util.Locale;
 /**
  * One row of points.csv (and, with the session name in front, of refs.csv). See the
  * README, "points.csv", for the meaning of each column. Missing numbers are written as
- * empty fields. Text fields (photo, note, session) are quoted when they hold a comma,
- * quote or line break.
+ * empty fields. Text fields (photo, note, session) are quoted when they hold a comma or
+ * quote; line breaks become spaces, so every row is one line.
  */
 public final class PointRow {
     public static final String SURFACE = "surface", OBJECT = "object", REF = "ref", PHOTO = "photo";
@@ -166,10 +166,14 @@ public final class PointRow {
         return String.format(Locale.US, "%." + decimals + "f", v);
     }
 
-    /** A CSV text field, quoted (with doubled quotes) only when needed. */
+    /**
+     * A CSV text field, quoted (with doubled quotes) only when needed. Line breaks become
+     * spaces: readers of points.csv and refs.csv (and {@link #split}) take one row per line.
+     */
     public static String text(String s) {
         if (s == null) return "";
-        if (s.indexOf(',') < 0 && s.indexOf('"') < 0 && s.indexOf('\n') < 0 && s.indexOf('\r') < 0) return s;
+        s = s.replace("\r\n", " ").replace('\r', ' ').replace('\n', ' ');
+        if (s.indexOf(',') < 0 && s.indexOf('"') < 0) return s;
         return '"' + s.replace("\"", "\"\"") + '"';
     }
 

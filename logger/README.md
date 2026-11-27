@@ -366,7 +366,8 @@ from `refs.csv` as grey rings when Settings > Survey > Show earlier refs is on.
 ### points.csv
 One header line, then one row per capture, in capture order. UTF-8, comma separated, `.`
 decimals; an empty field means not available. Text fields are quoted (RFC 4180) only when
-they contain a comma, quote or line break. The app rewrites the whole file on each change
+they contain a comma or quote; a line break in a text field is written as a space, so each
+row is one line. The app rewrites the whole file on each change
 (e.g. when a photo is attached or a capture is flagged), so it is always complete; it is
 not append-only. `events.csv` is the append-only record.
 
