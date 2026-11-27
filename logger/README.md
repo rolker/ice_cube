@@ -737,7 +737,9 @@ zones by it. For an older zip it finds the phone's zone offset from the session'
 `events.csv` (its last line's `wall_ms` against its entry time, rounded to 15 min) and
 allows 1 h for a DST change between an entry and `events.csv`; without an offset it allows
 26 h. Copies whose times, with those allowances, may be in either order are a tie (flagged
-wins, named in the report).
+wins, named in the report). The importer keeps every copy it has seen (`refs_copies` in the
+gpkg) and decides each ref from all of them, so importing the zips together or one at a
+time, in any order, gives the same flag.
 If the session is still recording the app asks:
 Stop and share (stops the session, then zips the complete files), or Share snapshot (keeps
 recording; flushes the files and zips each one, `refs.csv` included, up to its length at that
