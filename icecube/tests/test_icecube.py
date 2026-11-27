@@ -844,6 +844,13 @@ class TestPlanePass(unittest.TestCase):
             code, fit = nodes.plane_fit(huge, 5, 2, 0.25, inf, inf)
         self.assertEqual(code, nodes.PLANE_NOT_PLANAR)
         self.assertEqual(fit["chi"], inf)
+        # a NaN limit fails a finite value; an infinite one passes it (the gate off)
+        rough = [(x, y, 0.3 * x + (0.2 if (x, y) == (0.0, 0.5) else 0.0), 1e4, False) for x, y, *_ in nbrs]
+        code, fit = nodes.plane_fit(rough, 5, 2, 0.25, 3.0, 0.08)
+        self.assertEqual(code, nodes.PLANE_NOT_PLANAR)
+        self.assertTrue(np.isfinite(fit["chi"]) and np.isfinite(fit["sigma_g"]))
+        self.assertEqual(nodes.plane_fit(rough, 5, 2, 0.25, float("nan"), 0.08)[0], nodes.PLANE_NOT_PLANAR)
+        self.assertEqual(nodes.plane_fit(rough, 5, 2, 0.25, inf, inf)[0], 0)
         self.assertFalse(nodes._pos_def(np.diag([1e-4, 1.0, -1e-9])))
         self.assertFalse(nodes._pos_def(np.diag([0.0, 1e-4, 1e-4])))
         self.assertTrue(nodes._pos_def(np.diag([1e-4, 1e-4, 1e-4])))

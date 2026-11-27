@@ -99,8 +99,10 @@ node red after pass 1 (clear and amber nodes are never touched):
    significance, |g| - allowance > k_sigma * sigma_g along g (the node's slope allowance,
    as raised by slope_from_dem); and with a raw DEM slope s (`raw_slope`, batch
    slope_from_dem only) |g| <= `plane_dem_cap` * s + `plane_dem_floor`, skipped where s
-   is NaN (outside the DEM's cover). Every continuous gate fails closed: a NaN or
-   infinite value or limit fails it (an infinite DEM slope included). Conditioning also
+   is NaN (outside the DEM's cover). Every continuous gate fails closed on its value: a
+   NaN or infinite computed value fails it, and so does a NaN limit. An infinite
+   `plane_planarity` or `plane_max_sigma_g` switches that gate off (every finite value
+   passes); the DEM gate's limit comes from data, so an infinite DEM slope fails it. Conditioning also
    fails unless A'WA passes a Cholesky factorisation and the covariance has var_a > 0
    and C_g positive definite (exactly collinear centroids), and a directional variance
    u'C_g u that is not positive fails it rather than clamping to 0. Conditioning is
@@ -442,7 +444,8 @@ def plane_fit(nbrs, min_neighbours, min_clear, red_weight, planarity, max_sigma_
     whatever its roundoff, never at planarity. Then planarity, and the covariance scaled
     by max(1, chi^2) must again be positive definite with sigma_g <= max_sigma_g. Every
     continuous gate fails closed: a NaN or infinite chi or sigma_g fails it, whatever
-    the limit (an infinite limit included)."""
+    the limit, and so does a NaN limit; an infinite limit passes every finite value
+    (the gate off)."""
     use = [(X, Y, z, W * (red_weight if red else 1.0), red) for X, Y, z, W, red in nbrs]
     use = [u for u in use if u[3] > 0]
     if len(use) < max(min_neighbours, 4):
