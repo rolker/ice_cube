@@ -859,3 +859,20 @@ Cold read: Codex alone, given the PR title, URL, diff (work-plans excluded) and 
 
 ### Findings
 - [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-27 09:42 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #37 at `d4d6191`
+**Sources**: 1 (Local Review @ `ba45104`, Codex cold read, covers `d4d6191` via bookkeeping; approved, 0 findings); no hosted reviews (Copilot not requested, out of quota), no CI checks configured
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+Prior Integrated Review at `a4edb66` (4 suggestions) verified fixed in the code at head: `plane_over` takes `cell` and `_ring`/`_full_plane` pass `self.cell`/`cov.cell` (`icecube/logger_vectors.py:157,243,562`); ring "up to 26" in `Coverage.java:56`, `CoverageTest.java:342` and `logger/README.md:592`; `Node.varFinal` javadoc names 1/W' + d_bar'C_g d_bar (`Coverage.java:150`); `LiveCoverage.gtrace` removed. The pre-push review at `cbba472` is stale and was closed by that Integrated Review.
+
+### Findings
+
+### False positives
