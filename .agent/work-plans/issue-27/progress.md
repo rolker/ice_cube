@@ -351,3 +351,13 @@ Cross-model: skipped (round-3 convergence check, per handoff).
 
 ### Findings
 - [ ] (suggestion) import_refs_csv returns the flagged count from this run's copies only, so a later run with only pre-0.9.0 copies reports 0 flagged while the stored flag stays 1; the import summary's refs.csv flagged count can understate (count from the table, or say "in this run") — `analysis/qgis/import_sessions.py:362`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:06 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved at round 3, no must-fix; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+PR A of two (Part of #27). Round 3 suggestion (refs flag count from this run only) left for triage/PR B.
