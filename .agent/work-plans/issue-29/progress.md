@@ -730,3 +730,35 @@ Every finding from 9c71951 is resolved and matches main's code. The revision add
 **Decision**: proceed
 
 Owner's answer to "How should it continue?": "Proceed, fix in code (Recommended)". The implementer applies the Plan Review at 2f201f7 in code: drop the folded-variance >= unfolded 1/W' check (assert it only with cov_g = 0); the bank-folded-past-CAP test uses a noise-free linear surface, asserts n_dropped == 0, defines "unfolded" as a large-cap NodeStore, and runs the gate-margin guard on both runs (else asserts only z' and the gradient); fix the Principles Self-Check row (no new icecube.example.toml settings) and the duplicate no-toggle decision.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 09:24 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-29 at ee61100
+**Plan**: `.agent/work-plans/issue-29/plan.md` (PR B), Checkpoint 09:04 (proceed, fixes in code)
+**Commits**: 361b858, 78737c1, efc9c02, 858df1c, 538559e, 5b2d180, ee61100
+
+### Actions
+- [x] Step 1: `NodeStore` keeps dx, dy, sz^2, sh per entry and WDX, WDY, WS, WH for the aggregate (zeroed on drop); `_robust` returns n_in = main.cnt, n_out by cnt; `plane_pass` reads n_in from the output at all three sites and takes `dropped` (node -> count) for n_out' (a parameter rather than "through run": run sees entries only) — `icecube/nodes.py` (361b858)
+- [x] Step 1 tests per the Checkpoint: moments, dropped aggregate, folded z' = unfolded and the moment-formula variance within 1e-9, folded >= unfolded 1/W' only with cov_g = 0; bank past CAP noise-free, n_dropped == 0, unfolded = large-cap NodeStore, margin guard on both runs, same code where both try a node, z' and gradient within 1e-9 — `icecube/tests/test_icecube.py` (361b858)
+- [x] Step 2: `plane_folded_vectors` (2 banks, ~40/disc, folds and drops, cx, cy) and `plane_sequences` (bank one capture at a time); expectations from a full recompute after each capture, ring twin only checked against it; guards on every recompute — `icecube/logger_vectors.py`, `test_logger_vectors.py`, `coverage_vectors.json` (78737c1)
+- [x] Steps 3-6: `PlanePass.java` (fit, gates, significance) with `PlanePassTest`; `Coverage` geometry store, cx/cy, ring over the fed-set dilation, final fields, status/displaySigma on final, ring-touched repaint, events line; parity tests for all plane parts, code guard 0-5,7,8,9, ring = full recompute incl. tie captures (efc9c02, 858df1c)
+- [x] Step 7: `CoverageWorkerTest` ring-touched patch and the 5000-capture cost ratio (538559e)
+- [x] Step 8: README Coverage section, howto logger paragraph, log entry, 0.10.0 / build 14 (5b2d180)
+- [x] Plan text fixes from the Plan Review (ee61100)
+
+### Checks
+- `plane_vectors` byte-identical: the committed file before this PR is an exact prefix of the new one up to its closing bracket (219,377 bytes of `plane_vectors` unchanged); its sha256 over the parsed section is unchanged
+- `python3 -m unittest discover icecube/tests`: Ran 101 tests, OK (94 before)
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 159 tests, OK (skipped=5)
+- `./gradlew testDebugUnitTest assembleDebug lintDebug --max-workers 4`: 214 JVM tests, 0 failures (C: 111 GB free); APK `logger/app/build/outputs/apk/debug/app-debug.apk`, 0.10.0 (14); not installed
+- Timing: 5000-capture bank rebuild 21.5 us/capture without the plane pass, 43.9 with it (ratio 2.04, test bound 6)
+- Memory (estimated): a node at CAP 1.16 kB -> 2.40 kB; full 250,000-node grid at CAP 290 -> 600 MB (theoretical); two replayed sessions 0.69 -> 1.31 MB and 0.49 -> 0.94 MB
+- Private batch replays (counts only), identical output before and after: 11-21 red 19 -> 17, planar 2; 11-26 red 6 -> 1, planar 5
+- Logger-twin replay (LiveCoverage plane=True, unfolded nodes only; no node folded): 11-26 planar 5 = batch 5; 11-21 planar 1 vs batch 2: the one node is not red in the logger's pass 1 (count promotion, 2:1) but red in the batch (weight promotion), so a rule difference, not the port
+
+### Deferred
+- PR body (no batch result or committed vector changes; the measured cost and memory) is the host's
+- The worst-case full-grid memory (600 MB) is beyond a phone heap, as the 290 MB before was; not reachable in a real session, noted in the README
