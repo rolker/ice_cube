@@ -1245,3 +1245,13 @@ None.
 
 ### False positives
 None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 08:33 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #36?": "Merge now" (before the phone try-out; anything the try-out finds becomes a new issue).
