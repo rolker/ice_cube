@@ -460,3 +460,24 @@ Owner rule applied: "So flagged data gets deleted? I wonder if it should only be
 **Decision**: address
 
 Owner's answer on finding 1 (AskUserQuestion "What should flagging a capture do to the still-pole period around it?"): "Depends on reason (Recommended)" — 'accidental' flags only the capture; 'moved', 'bad pole placement' or 'other' also flag the stop around it (soundings emits that stop with use=0 and a reason naming the voided capture). Address findings 2-6 as suggested.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:25 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #33 at `a7709a6`
+**Addressed**: Integrated Review at `4a7db43` (2026-11-26 19:20 -05:00)
+**Commits**: 0b43d6b, 5622e9a, d804f99, 0e0a7cb, a7709a6
+
+### Actions
+- [x] Owner's call "depends on reason": a capture voided as moved / bad pole placement / other also flags its pole stop (kept, use 0, flag `void_stop:c<n>:<reason>`, counted in the log, no anchor site or suspect comparison); accidental flags only the capture; include_voided brings the capture back and its stop is a dup_capture; tests for moved, bad pole placement, accidental, include_voided and the window rule — `analysis/qgis/soundings.py:776`
+- [x] RefsStore.setVoid reports copies holding / rewritten / unreadable and the event is an error on a partial write (VoidRule.refsVoidEvent); readAll drops a (session, n) voided in any copy (VoidRule.liveRefs). The write runs on the io thread after the Outcome is returned, so the report is in events.csv, not the toast — `logger/app/src/main/java/rink/icecube/logger/RefsStore.java:86`
+- [x] import_refs_csv flagged count kept to rows it stores (source refs.csv) to avoid double counting a session's own ref; docstring says so and a test pins (1, 0) — `analysis/qgis/import_sessions.py:332`
+- [x] refs gains `void_copy_mtime`; a later run changes a stored flag only from a copy at least that new (unknown time changes only an unstamped flag); tests for an older 0.9.0 copy, an unknown-time copy and a newer copy — `analysis/qgis/import_sessions.py:360`
+- [x] PointRow.text() writes line breaks as spaces (README updated, test) — `logger/app/src/main/java/rink/icecube/logger/core/PointRow.java:170`
+- [x] import_session stores void_reason only when void=1, for captures and refs (test) — `analysis/qgis/import_sessions.py:259`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 108 tests, OK (skipped=5)
+- `./gradlew testDebugUnitTest --max-workers 4`: 179 tests, 0 failures (C: 114 GB free)
