@@ -53,8 +53,7 @@ run with it false where they pin pass-1 status, and `eventText` gains `plane=1 p
 plane_max_sigma_g=0.08` so a session replays exactly. No Settings toggle. (5) Version 0.10.0, versionCode 14
 (`logger/app/build.gradle`, README title and Coverage section, `docs/howto/ice-cube.md` logger paragraph;
 current 0.9.0 / 13). (6) The aggregate's `sz2`, `sh` come from the exact moments `WS`, `WH`, not a simpler `1/W`
-and 0. (7) No new tint or tap readout for planar nodes, no Settings toggle (always on, recorded in the events
-line). (8) Memory: per-entry geometry stays as doubles (floats would break the 1e-9 parity) and there is no
+and 0. (7) No new tint or tap readout for planar nodes. (8) Memory: per-entry geometry stays as doubles (floats would break the 1e-9 parity) and there is no
 per-capture fallback table; the store is bounded per node by CAP, so `manyCapturesStayBounded` stays as is.
 
 **Folded aggregate (new definition, Python first).** A node past CAP folds members into the aggregate, so the
@@ -79,8 +78,11 @@ a fold, so no worse than pass 1). Pass-1 weights stay `w = W, v = 1/W`. The aggr
    mean `z'` as the same entries unfolded, within 1e-9; the aggregate's pass-2 variance equals the stated moment
    formula `WS/W^2 + g^2 WH/W^2 + d_bar'C_g d_bar` within 1e-9 (not the unfolded result: the unfolded pass
    reweights each entry by its own slope and `d_i'C_g d_i`, so it differs by design; the folded variance is
-   checked to be at least the unfolded `1/W'`); a dropped aggregate zeroes the moments; a bank whose nodes each
-   exceed CAP gets the same plane code and a `z'` within 1e-9 of the unfolded block.
+   checked to be at least the unfolded `1/W'` only with `cov_g = 0`, where Gauss-Markov makes it hold); a dropped
+   aggregate zeroes the moments; a noise-free linear bank whose nodes exceed CAP, with `n_dropped == 0` asserted,
+   against the same stores with no cap ("unfolded": a large-cap `NodeStore`), the gate-margin guard on both runs:
+   where both runs try a node (pass 1 past CAP depends on arrival order, so red can differ) the same plane code,
+   and accepted nodes the same `z'` and gradient within 1e-9.
 2. **Vectors, `logger_vectors.py`.** Keep `plane_vectors` byte-identical. Add `plane_folded_vectors`: 2 blocks
    at about 40 soundings per disc (nodes past CAP), fed in arrival order through `NodeStore`, expected per node
    as in `_plane_case` plus `cx, cy`; and `plane_sequences`: a bank block fed one capture at a time, steps
@@ -169,7 +171,7 @@ grows from 9 to about 25 nodes (up to 30) per capture; noted in `logger/README.m
 | Principle | Consideration |
 |---|---|
 | Public repo | Pinned cases synthetic, local coordinates; replays report counts only |
-| Scripts take values from config | New settings in `icecube.example.toml`, none hardcoded |
+| Scripts take values from config | PR B adds no setting (`icecube.example.toml` unchanged); the logger's plane thresholds are constants recorded in the events line |
 | Rink clearance is not a rule | Not touched |
 
 ## ADR Compliance
