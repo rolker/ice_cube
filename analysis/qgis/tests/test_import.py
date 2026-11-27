@@ -965,6 +965,16 @@ class RefsCopyTimeTest(unittest.TestCase):
         self.assertIsNone(zip_entry_mtime(info))
         self.assertIsNotNone(zip_entry_stamp(zipfile.ZipInfo("refs.csv", date_time=(1980, 1, 1, 0, 0, 2)))[0])
 
+    def test_duplicate_rows_in_one_copy_flagged_if_any(self):
+        """A hand-edited refs.csv with two rows of one ref: flagged if either is, in either
+        order, as the phone (VoidRule.liveRefs) reads it."""
+        row = self.flagged.splitlines()[1]
+        clear_row = self.cleared.splitlines()[1]
+        hdr = self.flagged.splitlines()[0]
+        for rows in ((row, clear_row), (clear_row, row)):
+            clear_refs(self.gp)
+            self.assertEqual(self.void([("\n".join((hdr,) + rows) + "\n", self.T, 0.0)]), 1)
+
     def test_unknown_stored_time_ties_an_unknown_copy(self):
         """A stored flag of unknown time goes through _stamp_order too: an unknown-time copy
         that clears it ties, so it stays flagged and the tie is reported; a known time is

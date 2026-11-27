@@ -486,7 +486,10 @@ def import_refs_csv(gp, texts, ties=None):
         for r in read_refs_csv(text):
             key = (r["session"], r["n"])
             rows[key] = r
-            if r.get("void_known"):
+            prev = copies.get((cid,) + key)
+            if r.get("void_known") and not (prev and prev["void"]):
+                # duplicate rows of a ref in one copy (only a hand-edited file has them): flagged
+                # if any is, as VoidRule.liveRefs on the phone reads them
                 copies[(cid,) + key] = {"copy_id": cid, "session": key[0], "n": key[1], "mtime": mtime,
                                         "unc": unc, "void": int(bool(r.get("void"))),
                                         "void_reason": r.get("void_reason") if r.get("void") else None}
