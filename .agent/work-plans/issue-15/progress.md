@@ -329,3 +329,13 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 - [ ] (suggestion) Captures without raw epochs take the logger's suspect flags but not its `fix_age_s`/`fix_young`, so a young capture gets no settle sigma or flag; fall back to the capture's columns (Claude) — `analysis/qgis/soundings.py:691,816`
 - [ ] (suggestion) `capture_suspect_flags`: `fix_suspect` 1 with an unknown non-empty reason (a future one) adds no flag and the capture stays usable; add a generic suspect flag when no known reason matched (gemini) — `analysis/qgis/soundings.py:670-680`
 - [ ] (suggestion) The ref's young/suspect latches are set before `RefOccupation.onEpoch` decides whether to count the epoch; an epoch stamped before the ref start (or before the last counted one) can latch young without being counted. Latch only for counted epochs (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:210-218`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 18:24 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push approved with suggestions; one host decision reversed for ice-survey safety; orchestrator table allows address)
+**After**: publish
+**Decision**: address
+
+Host reverses its round-1 decision on the start jump (owner may veto): the jump also carries over a dropout of 2 s or less (no position, single or DGPS), measured from the last float or fixed epoch before the dropout, in Java and Python alike, with parity tests (the 11-21 shape with a one-epoch single dropout and a float spell under 20 s must be flagged by the jump). Also fix the six suggestions of the Local Review at 551d5fb: one clock for the 2 s test (state which, same on both sides); docs/howto/ice-cube.md sigma table 120 s; a fixed epoch from another station breaks the stretch in Python's station filter; no-raw captures take the logger's fix_age_s/fix_young for the settle sigma; an unknown suspect_reason with fix_suspect=1 counts as suspect; ref young/suspect flags set only for epochs RefOccupation counts.
