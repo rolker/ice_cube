@@ -1086,3 +1086,25 @@ Round-1 must-fix (zone-free mtime_approx copy) verified fixed: the DOS time read
 - [ ] (suggestion) A zone-corrected entry's uncertainty leaves out the 2 s DOS truncation: DST_S becomes up to 3602 s off; use DST_S + ZONE_TRUNC_S (and ZONE_TRUNC_S for events.csv itself) (Gemini) — `analysis/qgis/logger_session.py:305`
 - [ ] (suggestion) ShareZip's unknown-mtime sentinel (DOS 1980-01-01 00:00, no 0x5455) is read as a known time, so it is newer than an unknown-time (None) copy such as an untimed seeded flag and can clear it; treat that DOS stamp as None in zip_dos_seconds (Gemini) — `analysis/qgis/logger_session.py:219`
 - [ ] (suggestion) Duplicate (session, n) rows within one refs.csv copy: the importer keeps the last row's flag, the phone's liveRefs takes flagged if any same-time row is; the logger never writes duplicates (append once per n), so only a hand-edited file differs; OR the flags of a copy's duplicate rows (Codex) — `analysis/qgis/import_sessions.py:490`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 22:34 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #36 at `44f0c31`
+**Sources**: 1 (Local Review @ `f73949d`, covers 44f0c31 via bookkeeping; no hosted reviews, Copilot out of quota; no CI checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks reported for the head)
+
+All five suggestions from the PR-mode round-2 Local Review were checked against the code at 44f0c31 and are valid. None is must-fix; the review approved.
+
+### Findings
+- [ ] (suggestion, Local Review @ `f73949d`) UNDO slid out past slop and back in, then lifted: View cleared its pressed state on the MOVE and gives no click, but the listener only resets on CANCEL or an UP outside slop, so undoDownNs survives and a later key or accessibility click is timed at that old press. Reset at ACTION_UP when `!v.isPressed()` (the listener runs before onTouchEvent, so isPressed is still the pre-UP state; mind prepressed, which only arises in a scrolling container) and fix the "as View decides" comment — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`
+- [ ] (suggestion, Local Review @ `f73949d`) zip_zone_offset's lower bound is exactly -ZONE_TRUNC_S; DOS truncation (up to 2 s) plus a file mtime from the coarse kernel clock a few ms behind wall_ms can put the residual just under -2 s, so a good events.csv gives no offset (falls back to 26 h, safe side). Allow e.g. -(ZONE_TRUNC_S + 0.05), and make the README's "under 10 s" say -2 to +10 s — `analysis/qgis/logger_session.py`, `logger/README.md`
+- [ ] (suggestion, Local Review @ `f73949d`) zip_entry_stamp's zone-corrected uncertainty omits DOS truncation: 0 for events.csv and DST_S for other entries, but each DOS time can be up to 2 s early. Use ZONE_TRUNC_S and DST_S + ZONE_TRUNC_S — `analysis/qgis/logger_session.py`
+- [ ] (suggestion, Local Review @ `f73949d`) ShareZip writes DOS_EPOCH_MS (1980-01-01 local) and no 0x5455 for a file with lastModified() 0; zip_dos_seconds reads that as a real time, so such a copy ranks newer than an unknown-time (None) copy and can decide against it. Return None for the 1980-01-01 00:00 DOS stamp in zip_dos_seconds — `analysis/qgis/logger_session.py`
+- [ ] (suggestion, Local Review @ `f73949d`) Duplicate (session, n) rows in one refs.csv copy: the importer's copies dict keeps the last row's flag, while VoidRule.liveRefs on the phone treats it as flagged if any row is. The logger never writes duplicates, so only a hand-edited file differs; OR the flags of a copy's duplicate rows to match the phone — `analysis/qgis/import_sessions.py`
+
+### False positives
