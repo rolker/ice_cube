@@ -777,3 +777,13 @@ The revision resolves all 8 earlier findings, and each one checks out against ma
 
 - [ ] Step 18b: residual bound (about 120 s) on the rounded offset, else `mtime_approx`; compute with `calendar.timegm`; test a 10 min snapshot gap.
 - [ ] Step 18b/c: 1 h DST allowance (tie) for an entry more than about 12 h from `events.csv`'s DOS time, in Python and the stored-flag SQL; test it.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 20:56 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready, no must-fix; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+The two new step-18b findings from the Plan Review at 967586e are taken into implementation: accept the events.csv zone offset only when the remainder after 15-min rounding is under about 120 s (else mtime_approx), both times via calendar.timegm, a 10-min snapshot-gap test; a refs.csv entry more than about 12 h from events.csv is uncertain by 1 h (copies within 1 h tie, flagged wins), the same in the stored-flag SQL, with a test.
