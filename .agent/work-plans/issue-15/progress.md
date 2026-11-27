@@ -406,3 +406,21 @@ Cross-model: skipped (round-3 convergence check, per handoff). Claude lead read 
 ### Findings
 - [x] (must-fix) A capture with raw epochs whose matched epoch is not fixed (`ep.stretch[k] < 0`, e.g. float or no position at the capture time) skips both the stretch flags and the logger's own `fix_suspect`/`suspect_reason`/`fix_age_s` fallback (`capture_fix_info` runs only when `k is None`), so a suspect fix=4 capture can stay use=1; fall back to the capture columns in that case — `analysis/qgis/soundings.py:841`
 - [x] (suggestion) `within2s` accepts a negative GGA dt, so an out-of-order or backward-stepped GGA time would continue a stretch or float spell; the guard now runs on the receiver clock instead of the monotonic phone clock, so consider requiring `0 <= dt` (and the same in `fix_stretches`) or note the precondition — `logger/app/src/main/java/rink/icecube/logger/core/FixGuard.java:119`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 18:42 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #42 at `cb574ef`
+**Addressed**: Local Review at `067a767` (2026-11-27 18:52 -05:00)
+**Commits**: ba24163, cb574ef
+
+### Actions
+- [x] (must-fix) A capture whose nearest raw epoch is in no fix stretch now falls back to its own logger columns (`capture_fix_info`: fix_suspect/suspect_reason/fix_age_s/fix_jump_m, and the fix_young trace), without the no_fix_info flag; test `test_capture_on_a_float_epoch_uses_the_loggers_columns` (fails before the fix) — `analysis/qgis/soundings.py:841`
+- [x] (suggestion) A backward GGA time step is never within 2 s: `FixGuard.within2s` requires dt >= 0, and every gap test in `fix_stretches` too (spell, continuation, start jump); parity tests `backwardGgaTimeStepStartsAStretch` and `test_backward_time_step_parity_with_logger_fixguard` — `logger/app/src/main/java/rink/icecube/logger/core/FixGuard.java:119`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 171 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 102 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: passed (FixGuardTest 22 tests, 0 failures; app-debug.apk built); C: had 109.6 GB free
