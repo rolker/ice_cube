@@ -793,3 +793,22 @@ Verified: `./gradlew testDebugUnitTest lintDebug --max-workers 4` 214 tests, 0 f
 **Decision**: publish
 
 The 4 small suggestions (plane_over hardcoded cell, ring max 26 not 30, varFinal javadoc, unused gtrace) go through the PR-mode triage.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-27 09:35 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #37 at `a4edb66`
+**Sources**: 1 (Local Review (Pre-Push) @ `cbba472`, covers `a4edb66` via bookkeeping); no hosted reviews (Copilot not requested, out of quota), no CI checks configured
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+### Findings
+- [ ] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `plane_over` passes `PLANE_PARAMS["cell"]` to `nodes.plane_pass` instead of the caller's cell; every current caller uses 0.5 so no output is wrong today, but a `LiveCoverage(plane=True)` with another cell would fit planes on the wrong spacing. Add a `cell` argument and pass `self.cell` from `_ring` and `cov.cell` from `_full_plane` (and the test at `icecube/tests/test_icecube.py:1233`) — `icecube/logger_vectors.py:172`
+- [ ] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) Ring size "up to 30" is wrong: the tie capture (0, 0.25) feeds 8 nodes (column 0 j=-1..2, i=±1 j=0..1); its one-cell dilation is the 5x6 box minus the 4 corners at i=±2, j=-2/3, i.e. 26. Fix "up to 30" in the class comment, the test javadoc ("5 by 6 = 30 nodes") and the README — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:56`, `logger/app/src/test/java/rink/icecube/logger/core/CoverageTest.java:342`, `logger/README.md:592`
+- [ ] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `Node.varFinal` javadoc says "1/W', or 1/W when not planar", but line 396 sets it to `1.0 / w2 + vbar` (1/W' + d_bar'C_g d_bar); update the javadoc — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:150`
+- [ ] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `LiveCoverage.gtrace` is initialised and never read or written (`_ring` calls `plane_over` without it; `_full_plane` uses a local list); remove it — `icecube/logger_vectors.py:202`
+
+### False positives
