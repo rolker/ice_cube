@@ -275,3 +275,35 @@ Outside reviewers: Claude adversarial subagent, gemini (complete), codex (comple
 - [x] (suggestion) Stale docstring "(SCHEMA_APP: 0.6 for 3, 0.9 for 4)" is missing "0.11 for 5" (Claude) — `analysis/qgis/import_sessions.py:81`
 - [x] (suggestion) Python treats a negative `float_spell_s` as on (Java needs > 0), and the build log says "float spell >= 0 s" when the rule is off (gemini) — `analysis/qgis/soundings.py:393,1382`
 - [x] (suggestion) Owner call: "young if any counted epoch was young" makes a ref started at fix age 100 s permanently unusable as a pole-check reference. This follows the plan's decision 3 and is documented in the README. Confirm it, or decide by the age at the end or the share of young epochs (Claude) — `Survey.java:217`, `PoleCheck.java` (deferred: host decision: keep 'young if any counted epoch was young' (plan decision 3); listed for the owner's veto)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 18:17 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-15 at `57cf63e`
+**Addressed**: Local Review (Pre-Push) at `2a4cdad` (2026-11-27 18:09 -05:00)
+**Commits**: 64ed440, be59995, 36ceb54, 462dd77, 2768ddb, 1038b6c, 14000b5, cc386eb, 63cfd89, 04c27d3, 57cf63e
+
+### Actions
+- [x] (must-fix) Settle migration race: migration runs under a lock, flag set after it — `logger/app/src/main/java/rink/icecube/logger/Settings.java:68-80`
+- [x] Parity of dropouts inside a fix (host-decided, owner may veto): a no-position, single or DGPS dropout of 2 s or less keeps the stretch in Java and Python, a longer one, a float epoch or an over-limit step ends it; pinned by mirrored tests (FixGuardTest.shortDropoutInsideAFixKeepsTheStretch, test_soundings test_dropout_parity_with_logger_fixguard) — `FixGuard.java`, `analysis/qgis/soundings.py` fix_stretches
+- [x] Float spell carries over a dropout of 2 s or less (host-decided, owner may veto), both sides, tested with the 11-21 shape plus a one-epoch no-position/single/DGPS dropout; a mid-spell dropout of 2 s or less also no longer restarts the spell — same files
+- [x] Suspect and young ref plays one cue (suspect wins) — `Survey.java` ref end
+- [x] Young-ref notice reads "fix young during the ref" (no stale seconds); any row with age not under the limit drops the seconds — `Survey.java` youngText
+- [x] refView respects the refYoung latch (refYoung || young now) — `Survey.java` refView
+- [x] mark()/lean() test young at a.lastNs, where fix_age_s is taken — `Survey.java` mark, lean
+- [x] No-raw path uses the capture's own fix_suspect/suspect_reason (float-spell capture gets use 0; test) — `analysis/qgis/soundings.py` capture_suspect_flags
+- [x] README version example 0.11.0 (build 15) — `logger/README.md:27`
+- [x] import_sessions docstring names 0.11 for schema 5 — `analysis/qgis/import_sessions.py:81`
+- [x] Negative float_spell_s is off; the build log says "float spell rule off" (tests) — `analysis/qgis/soundings.py`, `config.example.toml`
+- [x] Young-ref rule — `Survey.java:217` (deferred: host decision, keep "young if any counted epoch was young"; listed for the owner's veto)
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 165 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 102 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 230 tests, 0 failures; APK logger/app/build/outputs/apk/debug/app-debug.apk (0.11.0 build 15). C: had 110 GB free.
+- coverage_vectors.json unchanged (no sigma change).
+
+### Notes
+- The jump at a new stretch after a short single/DGPS dropout is still measured only from a float or fixed previous epoch, so it stays unknown there; only the float-spell rule carries over. A candidate for #41 if the owner wants the jump to carry over too.
