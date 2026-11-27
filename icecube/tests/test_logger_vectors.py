@@ -88,6 +88,9 @@ class TestLoggerVectors(unittest.TestCase):
         n = centre("flat_cluster_not_steep")
         self.assertEqual(n["code"], nodes.PLANE_NOT_STEEP)
         self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
+        n = centre("collinear_ill_conditioned")
+        self.assertEqual(n["code"], nodes.PLANE_ILL_CONDITIONED)
+        self.assertTrue(nodes.is_red(n["n"] - n["n_out1"], n["n_out1"]))
 
 
 if __name__ == "__main__":

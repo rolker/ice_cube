@@ -693,6 +693,33 @@ class TestPlanePass(unittest.TestCase):
                 np.testing.assert_array_equal(getattr(s, k)[~red_of(s0)], getattr(s0, k)[~red_of(s0)])
         self.assertEqual(red_neighbours(s0, *self.C), 3)   # the 0.3 case has red neighbours
 
+    def test_accepted_sigma_carries_the_common_gradient_error(self):
+        # the gradient error is common to every reduced entry: the output sigma'^2 is the
+        # pass-2 rebuild's plus d_bar'C_g d_bar (d_bar the pass-2 main's centroid)
+        from unittest import mock
+        seen = []
+        real_reduce, real_robust = nodes.reduce_to_plane, nodes._robust
+
+        def reduce(es, gx, gy, cov_g):
+            seen.append(["cov", cov_g])
+            return real_reduce(es, gx, gy, cov_g)
+
+        def robust(*a, **k):
+            o = real_robust(*a, **k)
+            if seen and len(seen[-1]) == 2:
+                seen[-1].append(o)
+            return o
+        p, grid = bank_block(0.3, 0)
+        with mock.patch.object(nodes, "reduce_to_plane", reduce), mock.patch.object(nodes, "_robust", robust):
+            s = bank_run(p, grid)
+        self.assertEqual(s.plane_code[self.C], nodes.PLANE_ACCEPTED)
+        z_c = float(s.z[self.C])
+        (_, cg, o2), = [q for q in seen if q[2]["z"] == z_c]
+        d = np.array([o2["cx"], o2["cy"]])
+        vbar = float(d @ cg @ d)
+        self.assertGreater(vbar, 0.0)
+        self.assertAlmostEqual(s.sigma[self.C] ** 2, o2["sigma"] ** 2 + vbar, places=12)
+
     def test_bank_clears_with_one_red_neighbour(self):
         p, grid = bank_block(0.2, 33)
         s0 = bank_run(p, grid, plane=False)
@@ -736,6 +763,22 @@ class TestPlanePass(unittest.TestCase):
         self.assertTrue(np.isnan(nodes._sigma_g_max(float("nan"), 0.0, 1.0)))
         self.assertAlmostEqual(nodes._sigma_g_max(4.0, 0.0, 1.0), 2.0)
         self.assertAlmostEqual(nodes._sigma_g_max(2.0, 1.0, 2.0), np.sqrt(3.0))
+        self.assertFalse(nodes._pos_def(np.diag([1e-4, 1.0, -1e-9])))
+        self.assertFalse(nodes._pos_def(np.diag([0.0, 1e-4, 1e-4])))
+        self.assertTrue(nodes._pos_def(np.diag([1e-4, 1e-4, 1e-4])))
+
+    def test_collinear_centroids_never_pass(self):
+        # centroids on one random line through the node: N is singular up to roundoff, and a
+        # plain inverse returned code 0 on 121 of these 500 (an indefinite C_g whose larger
+        # eigenvalue passed the conditioning gate)
+        rng = np.random.default_rng(0)
+        for _ in range(500):
+            th, t = rng.uniform(0, np.pi), rng.uniform(-0.6, 0.6, 8)
+            nbrs = [(float(u * np.cos(th)), float(u * np.sin(th)),
+                     float(0.3 * u * np.cos(th) + rng.normal(0, 0.01)), float(rng.uniform(1e3, 1e4)), False)
+                    for u in t]
+            code, fit = nodes.plane_fit(nbrs, 5, 2, 0.25, 3.0, 0.08)
+            self.assertIn(code, (nodes.PLANE_ILL_CONDITIONED, nodes.PLANE_NOT_PLANAR))
 
     def test_wrong_cluster_keeps_pass1(self):
         # a 0.3 m/m bank plus a tight cluster 15 cm above it around the node: pass 2 makes

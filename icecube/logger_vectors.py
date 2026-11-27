@@ -392,6 +392,18 @@ def _plane_cases():
         x, y = round(rnd.uniform(0.85, 1.15), 4), round(rnd.uniform(0.85, 1.15), 4)
         fc.append([x, y, round(0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
     out.append(("flat_cluster_not_steep", fc))
+    # a 0.3 m/m bank surveyed along the one line y = 1 (node row 2) plus 6 captures 15 cm
+    # up near node (2, 2): every neighbour centroid sits on Y = 0 (up to roundoff), so the
+    # normal matrix is singular and the gradient's y part is not pinned (code 9)
+    rnd = random.Random(3)
+    ln = []
+    for _ in range(30):
+        x = round(rnd.uniform(-0.75, 2.75), 4)
+        ln.append([x, 1.0, round(0.3 * x + rnd.gauss(0.0, 0.02), 4), 0.02, 0.01])
+    for _ in range(6):
+        x = round(rnd.uniform(0.85, 1.15), 4)
+        ln.append([x, 1.0, round(0.3 * x + 0.15 + rnd.gauss(0.0, 0.005), 4), 0.02, 0.01])
+    out.append(("collinear_ill_conditioned", ln))
     return out
 
 
