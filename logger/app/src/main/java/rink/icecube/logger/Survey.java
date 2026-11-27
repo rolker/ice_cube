@@ -296,10 +296,17 @@ final class Survey {
         return "  fix may be false (jumped " + jumpText(r.fixJump) + ")";
     }
 
-    /** "  fix young: 95 s" for a young row, else "". */
-    private static String youngText(PointRow r) {
+    /**
+     * "  fix young: 95 s" for a young row, else "". An occupation ref is young if any counted
+     * epoch was, while its fix_age_s is the last epoch's (often past the limit), so it reads
+     * "  fix young during the ref" without seconds; so does any row whose age is unknown or
+     * not under the young limit.
+     */
+    private String youngText(PointRow r) {
         if (r.fixYoung != 1) return "";
-        return Double.isNaN(r.fixAge) ? "  fix young" : String.format(Locale.US, "  fix young: %.0f s", Math.floor(r.fixAge));
+        if (PointRow.OCCUPATION.equals(r.method)) return "  fix young during the ref";
+        return Double.isNaN(r.fixAge) || r.fixAge * 1e9 >= guard.youngNs() ? "  fix young"
+                : String.format(Locale.US, "  fix young: %.0f s", Math.floor(r.fixAge));
     }
 
     synchronized Outcome mark(SurveyMode mode) {

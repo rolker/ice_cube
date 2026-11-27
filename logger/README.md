@@ -292,7 +292,7 @@ the stretches of RTK fixed GGA epochs:
 - Young: for the young limit after a stretch starts (Settings, default 120 s) the fix may
   still be settling by centimetres (2026-11-26: a re-fix read 6 to 9 cm high at 95 to
   113 s). From 0.11.0 this is a warning, not a hold: MARK, tilt leans and refs go ahead,
-  the notice is amber (`… fix young: 95 s`), the cue is two even middle tones with two long
+  the notice is amber (`… fix young: 95 s`; a ref `… fix young during the ref`), the cue is two even middle tones with two long
   pulses (YOUNG), and the row has `fix_young` 1. Until 0.10 the app refused captures for
   the (10 s) settle time instead; field data showed 10 s was far too short, and a refusal
   that long would stall the survey. A ref counts every fixed epoch; it is young if any of them was (its ring adds
