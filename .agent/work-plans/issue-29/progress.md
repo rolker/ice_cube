@@ -324,3 +324,23 @@ Specialists: static analysis (no linter installed: py_compile only; 82 tests OK)
 - logger `./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL (C: 114 GB free)
 - Private replays (counts only), unchanged from round 1: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
 - Review prompt/findings scratch files removed
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 19:17 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Verdict**: approved
+
+**Branch**: feature/issue-29 at `ef8f74b`
+**Base**: main
+**Depth**: Standard (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 4
+**Round**: 3 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Scope: round 2's findings and the fix diff 9d4c380..HEAD. Specialists: static analysis (no linter installed: py_compile clean; 85 tests OK; coverage_vectors.json byte-identical to a fresh `python3 -m icecube.logger_vectors`), governance (public repo: nothing private in the fix diff; new vector synthetic), plan drift (none; plan.md port notes match the code), Claude adversarial (no must-fix). Cross-model: skipped (round-3 convergence check, per handoff). All 7 round-2 items verified addressed: Cholesky + `_pos_def` fail closed on collinear centroids, u'C_g u <= 0 fails closed, d_bar'C_g d_bar added in the same node-centred frame and weights as the main, masked nodes skipped as tried and as neighbours (mask orientation matches the store index), docs and defaults.
+
+### Findings
+- [ ] (suggestion) Agreement variance leaves out the cross term 2 d_bar'cov(a, g) (z' - a error is -dg.d_bar - da); small for symmetric neighbours, larger at edges or with masked neighbours; cov[0, 1:] makes it exact — `icecube/nodes.py:575-576`
+- [ ] (suggestion) Per-entry d_i'C_g d_i stays in v' and d_bar'C_g d_bar is added on top, so sigma'^2 is a conservative upper bound; say so in the docstring — `icecube/nodes.py:565-570`
+- [ ] (suggestion) test_collinear_centroids_never_pass also accepts PLANE_NOT_PLANAR, so a regression routing collinear fits through a garbage beta into planarity would pass; assert ILL_CONDITIONED on most cases — `icecube/tests/test_icecube.py`
+- [ ] (suggestion) Mask test uses a square grid and bypasses topo.grid_surface's meshgrid; a non-square grid with an asymmetric mask would catch a transposed mask — `icecube/tests/test_icecube.py`
