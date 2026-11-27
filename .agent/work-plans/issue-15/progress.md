@@ -137,3 +137,13 @@ The approach is right and matches the owner's choices; the host's six answers ar
 - [ ] Mark a ref young if any counted epoch was young; gather the ref jump/suspect from all fixed epochs (finding 5).
 - [ ] Trim the python port to float spell only; decide on the per-lean columns (finding 6).
 - [ ] Replace the plan's Open Questions with the host's answers.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:48 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work on plan completeness only; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Host answers to the planner's six open questions (owner may veto; the review found all six right): 1 float spell 20 s, a setting, retuned in #41; 2 float (quality 5) only, single/DGPS logged not suspect; 3 young refs and tilt leans captured with the warning, a young ref recorded young and never used as a pole-check reference (still checked and shown), a young lean kept and its row marked young; 4 a distinct short YOUNG cue, loud for gloved use; 5 one-time migration (marker pref): a stored fix_settle_s of 10 becomes 120, other values kept; 6 processing moves to 120 s, regenerate coverage_vectors.json, say it in the PR. Revise the plan for all findings of the Plan Review at 7b8f635 (PoleCheck.matches skips young refs + test; Feedback.Cue YOUNG + README; one-time settings migration; move fix_age_past_settle past 120 s before regenerating vectors; a ref is young if any counted epoch was young, refJump/refSuspect gathered on every fixed epoch; port only the float-spell rule to Python; state the per-lean tilt header choice) and replace the Open Questions with these answers.
