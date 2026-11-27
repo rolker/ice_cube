@@ -614,15 +614,17 @@ class TestRobustNodes(unittest.TestCase):
         self.assertEqual(nodes.eeg_cull(e, list(range(len(z))), q_cube * 1.001), [])
 
 
-def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None):
-    """Soundings at random on a block of n x n nodes (cell 0.5 m, node (0, 0) at the origin),
-    `per_disc` per 0.75 m capture disc on average, z = g*x plus N(0, sz)
-    noise; `extra` (x, y, z) arrays appended; `ymin` drops soundings below it (a survey edge)."""
+def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None, ny=None):
+    """Soundings at random on a block of n x n nodes (n x `ny` when given: n columns along x,
+    ny rows along y; cell 0.5 m, node (0, 0) at the origin), `per_disc` per 0.75 m capture
+    disc on average, z = g*x plus N(0, sz) noise; `extra` (x, y, z) arrays appended; `ymin`
+    drops soundings below it (a survey edge)."""
+    ny = n if ny is None else ny
     rng = np.random.default_rng(seed)
-    lo, hi = -0.75, (n - 1) * 0.5 + 0.75
-    m = int(round(per_disc / (np.pi * 0.75 ** 2) * (hi - lo) ** 2))
+    lo, hi, hiy = -0.75, (n - 1) * 0.5 + 0.75, (ny - 1) * 0.5 + 0.75
+    m = int(round(per_disc / (np.pi * 0.75 ** 2) * (hi - lo) * (hiy - lo)))
     x = rng.uniform(lo, hi, m)
-    y = rng.uniform(lo, hi, m)
+    y = rng.uniform(lo, hiy, m)
     z = g * x + rng.normal(0, sz, m)
     if extra is not None:
         x, y, z = np.r_[x, extra[0]], np.r_[y, extra[1]], np.r_[z, extra[2]]
@@ -631,7 +633,7 @@ def bank_block(g, seed, n=7, per_disc=8, sz=0.02, sh=0.01, extra=None, ymin=None
         x, y, z = x[k], y[k], z[k]
     p = local_points("b", x, y, z, t=np.arange(len(z), dtype=float), sz=np.full(len(z), sz), sh=np.full(len(z), sh))
     p.pass_id = np.zeros(len(z), int)
-    return p, nodes.Grid(0.0, 0.0, 0.5, n, n)
+    return p, nodes.Grid(0.0, 0.0, 0.5, n, ny)
 
 
 def bank_run(p, grid, **kw):
@@ -731,6 +733,32 @@ class TestPlanePass(unittest.TestCase):
         self.assertEqual(bank_run(p, grid, node_mask=m).plane_code[self.C], nodes.PLANE_FEW)
         with self.assertRaises(ValueError):
             bank_run(p, grid, node_mask=np.zeros((2, 2), bool))
+
+    def test_topo_mask_orientation_on_a_non_square_grid(self):
+        # 9 columns (x) by 5 rows (y), masks drawn as polygons through topo.grid_surface. The
+        # target node (row 2, col 3) at (1.5, 1.0) passes unmasked; masking 4 of its 8
+        # neighbours (row 1, cols 2-4, and row 2, col 2) leaves 4 usable, PLANE_FEW. The
+        # transpose of that (5, 9) mask is (9, 5): a transposed mask anywhere fails the
+        # shape check, and the masked nodes must be exactly these (row, col).
+        from icecube import topo
+        p, grid = bank_block(0.3, 0, n=9, ny=5)
+        T = (2, 3)
+        sq = lambda x0, x1, y0, y1: np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
+
+        def run(masks):
+            ctx = topo.Context(cfg={}, base=None, site=None, surveys={"b": (p, [], {})}, masks=masks)
+            return topo.grid_surface(ctx, {}, grid, "s", [p], [np.zeros(len(p))], (0.05, None))
+        s, m = run([])
+        self.assertEqual(s.z.shape, (5, 9))
+        self.assertFalse(m.any())
+        self.assertEqual(s.plane_code[T], nodes.PLANE_ACCEPTED)
+        s, m = run([("row1", sq(0.75, 2.25, 0.25, 0.75)), ("left", sq(0.75, 1.25, 0.75, 1.25))])
+        self.assertEqual(sorted(map(tuple, np.argwhere(m))), [(1, 2), (1, 3), (1, 4), (2, 2)])
+        self.assertTrue(np.all(np.isnan(s.z[m])))
+        self.assertTrue(np.all(s.plane_code[m] == nodes.PLANE_NOT_TRIED))
+        self.assertEqual(s.plane_code[T], nodes.PLANE_FEW)
+        with self.assertRaises(ValueError):
+            bank_run(p, grid, node_mask=m.T)
 
     def test_bank_clears_with_one_red_neighbour(self):
         p, grid = bank_block(0.2, 33)

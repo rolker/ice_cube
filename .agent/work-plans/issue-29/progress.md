@@ -372,7 +372,7 @@ No GitHub reviews, inline comments or conversation comments on the PR. The four 
 - [x] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Agreement gate variance `var_a + sigma'^2` omits the cross term 2 d_bar'cov(a, g): the z' - a error is -dg.d_bar - da, and plane_fit returns only var_a and cov_g, not cov[0, 1:]; return the full 3x3 (or cov[0, 1:]) and add the term — `icecube/nodes.py:577-578`
 - [x] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Per-entry d_i'C_g d_i stays in v' and d_bar'C_g d_bar is added on top, so sigma'^2 is a conservative upper bound; the comment at the add does not say so — state it there or in the module docstring — `icecube/nodes.py:568-572`
 - [x] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) test_collinear_centroids_never_pass accepts PLANE_NOT_PLANAR too, so a regression that reaches planarity with a garbage beta passes; count codes and assert ILL_CONDITIONED on (nearly) all 500 — `icecube/tests/test_icecube.py:782-793`
-- [ ] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Mask test is on a square 7x7 grid and its 4-of-8 mask is symmetric under transpose (both orientations leave 4 neighbours, PLANE_FEW), and the shape-mismatch check uses (2, 2); use a non-square grid and a mask whose transpose changes the outcome — `icecube/tests/test_icecube.py:723-733`
+- [x] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Mask test is on a square 7x7 grid and its 4-of-8 mask is symmetric under transpose (both orientations leave 4 neighbours, PLANE_FEW), and the shape-mismatch check uses (2, 2); use a non-square grid and a mask whose transpose changes the outcome — `icecube/tests/test_icecube.py:723-733`
 
 ### False positives
 - none
