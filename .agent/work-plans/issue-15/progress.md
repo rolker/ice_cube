@@ -208,3 +208,13 @@ The revision took in every earlier finding correctly. The one point to get right
 - [ ] Ref banner/RefView, FLOAT_SPELL_S wiring, python `float_spell_s` default (finding 3).
 - [ ] Run the migration on first read of the setting (finding 4).
 - [ ] Fix the consequences row wording (finding 5).
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:50 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implementation must also settle the Plan Review at 6b369a9's items: start jump from the previous float OR fixed epoch (unknown only after single/DGPS, no position, first epoch or a gap; keep a test for a suspect jump within a fix, matching Python fix_stretches); extend verify_suspect to float_spell stretches (or document they are not cleared: prefer extending); MapView ref banner and RefView.settling; FLOAT_SPELL_S pref key in Settings.LIMIT_KEYS/LIMITS, FixGuard constructor and setLimits; Python float_spell_s default; run the settle migration on first read of the setting; consequences: drop ShareZip check, add RefsStore header rewrite.
