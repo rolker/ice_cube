@@ -135,7 +135,8 @@ public final class LoggerService extends Service {
             }
         } else if (Settings.FRAME.equals(key) || Settings.FRAME_EPOCH.equals(key)) {
             updateFrame();
-        } else if (Settings.SETTLE_S.equals(key) || Settings.JUMP_M.equals(key)) {
+        } else if (Settings.SETTLE_S.equals(key) || Settings.JUMP_M.equals(key)
+                || Settings.FLOAT_SPELL_S.equals(key)) {
             Survey sv = survey;
             if (sv != null) sv.applyGuardSettings();
         }
