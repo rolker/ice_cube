@@ -536,3 +536,18 @@ Address all nine: pin the cross term and the untested gates with behavioural tes
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110 tests, OK (skipped=5)
 - `./gradlew testDebugUnitTest --max-workers 4`: pass (C: 113 GB free)
 - Private replays (counts only), unchanged: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 20:37 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #34 at `f53eadf`
+**Depth**: Standard (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the Integrated Review's 9 findings (at `677b6cb`) and the fix diff 9acf476..f53eadf. Cross-model: skipped (round-3 convergence check, per handoff). All 8 code/doc findings are resolved as described; item 9 (PR body Decision summary) stays with the host per Checkpoint 20:30. Checked: `python3 -m unittest discover icecube/tests` ran 94, OK; mutations of the cross-term sign, the `n_out` strict `<`, and the significance allowance each fail a test (worktree restored, clean).
+
+### Findings
+- [ ] No issues found. LGTM.
