@@ -89,9 +89,14 @@ PR A (data model and readers), in this order:
    restart rebuild from file skips it).
 7. **Readers** — every reader of `points.csv` on main: `analysis/qgis/logger_session.py`
    and `import_sessions.py` (the only ones in the repo; `soundings.py` reads the gpkg
-   `captures` table the importer writes). The importer DROPS rows with `void=1`: they
-   never reach the gpkg, so `soundings.py` needs no change; the per-session report counts
-   the dropped rows. A file with no `void` column reads as not voided. Test in
+   `captures` table the importer writes). Keep and flag (owner's veto of 11-26, as in
+   multibeam processing: flagged data is never deleted): the importer keeps rows with
+   `void=1` and writes `void`, `void_reason` to the gpkg (captures and refs; a re-import
+   updates the flag both ways), and the per-session report counts the flagged rows.
+   `soundings.py` keeps them as rows with flag `void:<reason>` and use 0 (no site, no
+   capture window, no anchor join) unless `[soundings] include_voided`; `export_labels`
+   leaves them out unless `--include-voided`; `build_project` draws them apart. A file
+   with no `void` column reads as not voided. Test in
    `analysis/qgis/tests/test_import.py` with a synthetic session (`synth.py`). For #20
    (icecube) and #21 (analysis) write the requirement as a comment on each issue: skip
    `void=1` by default, report the skipped count, missing column means not voided, drop
@@ -147,7 +152,8 @@ version bump and the UI ship together in B.
 | `.../RefsStore.java`, `Storage.java` | void columns, header migration, setVoid over every refs.csv, refsGeneration bump, map read skips voided |
 | `.../MainActivity.java`, `MapView.java` (PR B) | Undo notice with undoN/undoUntilMs and arm delay, Recent captures dialog, flagged drawing, PHOTO target line |
 | `logger/app/src/test/.../core/` | PointRowTest, VoidRuleTest (new), PhotoRuleTest, PoleCheckTest, CoverageTest, CoverageWorkerTest |
-| `analysis/qgis/logger_session.py`, `import_sessions.py`, `tests/` | drop voided rows, count per session |
+| `analysis/qgis/logger_session.py`, `import_sessions.py`, `tests/` | keep voided rows with void, void_reason columns; count per session |
+| `analysis/qgis/soundings.py`, `export_labels.py`, `build_project.py`, plugin | flag void rows out of use (include_voided to use them), export filter and count, flagged drawing and map tip |
 | `logger/README.md`, `docs/howto/ice-cube.md` | docs (A); `logger/app/build.gradle` 0.9.0 / 13 (B) |
 
 ## Prior Art
@@ -193,7 +199,7 @@ formats change, recorded in `logger/README.md`.
 | Pole-check "last visit" | #23 (open) | Skip rule noted on #23; no reference-selection changes here |
 | Photo attach rule | PhotoRule, README Photos | Yes |
 | Voiding a ref | `refsGeneration` bump, earlier-refs layer, every refs.csv root | Yes |
-| Importer drops voided rows | `soundings.py` reads the gpkg only, so unchanged | Yes |
+| Importer keeps and flags voided rows | `soundings.py`, `export_labels.py`, `build_project.py` read the gpkg `void` column | Yes |
 
 ## Open Questions
 
@@ -203,7 +209,8 @@ formats change, recorded in `logger/README.md`.
   (planned) versus staying on the voided row. Confirm.
 - Re-attach has no 60 s limit on void (planned). Confirm.
 - Map-tap flagging only if the hit test is simple; the MENU list is the committed path.
-- Importer drops voided rows (host decision, 11-26).
+- Importer keeps voided rows with a flag; nothing is deleted (owner's veto of 11-26 of
+  the earlier host decision to drop them).
 - Version 0.9.0 (host decision), bumped in PR B.
 
 ## Estimated Scope
