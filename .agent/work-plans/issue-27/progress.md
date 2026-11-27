@@ -503,3 +503,25 @@ Owner's answer on finding 1 (AskUserQuestion "What should flagging a capture do 
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 125 tests, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
 - `./gradlew testDebugUnitTest --max-workers 4`: 179 tests, 0 failures (C: 114 GB free)
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-26 19:39 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #33 at `9b5a108`
+**Depth**: Deep (reason: fix-round re-review on the whole diff, 31 files +2192/-160, cross-layer logger + importer + processing; merge of main 5af2b92 with SCHEMA_VERSION 4)
+**Must-fix**: 1 | **Suggestions**: 7
+
+Merge resolution checked: both features intact (0.6 method/tilt columns and per-session re-read; void flag). schema_min_app correct for schema 3 from 0.6-0.8 (marked current), schema 2/NULL from 0.9 (re-read), unknown app points.csv (re-read), snapshot guard kept; a real upgrade from a main-built gpkg (adversarial, in scratch) filled void, n_voided and refs.csv void. Tests: analysis/qgis 125 OK (5 skipped), icecube 68 OK, logger JVM unit tests OK. Reviewers: Claude adversarial, gemini (complete), codex (complete).
+
+### Findings
+- [ ] (must-fix) A capture voided as 'accidental' that has photos gets a photo row (VoidRule.photoRowFor) with the voided capture's utc; clist_windows makes a window for that photo row, so the pole stop is marked dup_capture (use 0), against the owner's "depends on reason" rule. Skip such photo rows (or photo rows at a voided capture's time) in clist_windows, with a test (gemini) — `analysis/qgis/soundings.py:821`
+- [ ] (suggestion) stranded_06 compares an unknown-app session's schema with SCHEMA_VERSION (now 4) though the 0.6 columns came in schema 3: a false re-import warning for an unknown-app points.csv session at schema 3; compare with 3 via a named constant (Claude, merge drift) — `analysis/qgis/soundings.py:659`
+- [ ] (suggestion) The importer takes a ref's flag from the newest copy with a void column; VoidRule.liveRefs drops a ref voided in any copy. After a partial unflag (or a missed copy later appended to) the gpkg and the phone disagree; align the rules or document the difference (Claude + codex) — `analysis/qgis/import_sessions.py:381`
+- [ ] (suggestion) logger/README.md still describes only the "no refs.csv rewritten" error; add the partial-write event form (k of m copies, unreadable count) and that readers drop a ref voided in any copy (Claude) — `logger/README.md:209`
+- [ ] (suggestion) find_sessions keeps one source per session name before refs_csv_dated runs, so a refs.csv copy in a second export of the same session never reaches the newest-copy rule; collect refs.csv from every found source or document it (codex) — `analysis/qgis/import_sessions.py:623`
+- [ ] (suggestion) Sessions marked current at schema 4 without a re-read keep n_voided NULL; set 0 when marking them current (codex) — `analysis/qgis/import_sessions.py:615`
+- [ ] (suggestion) test_schema3_reread_fills_void_only_for_09_sessions fakes schema 3 by NULLing columns; add a case with a gpkg lacking the void/void_copy_mtime/n_voided columns and assert n_voided and a refs.csv ref's void are filled (Claude) — `analysis/qgis/tests/test_import.py:472`
+- [ ] (suggestion) When the planned photo target is flagged while the camera is open, the fallback checks only lastCapture; an earlier live capture within 60 s is missed if a newer capture was made meanwhile (PR B scope possible) (codex) — `logger/app/src/main/java/rink/icecube/logger/Survey.java:643`
