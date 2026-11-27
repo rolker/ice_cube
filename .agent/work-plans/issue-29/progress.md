@@ -292,10 +292,35 @@ Flagged deviations:
 Specialists: static analysis (no linter installed: py_compile only; 82 tests OK), governance (public repo: nothing private in the diff; vectors synthetic), plan drift (none new; round-1 fixes match their Implementation entry), Claude adversarial (no must-fix, 3 suggestions; regenerated vectors byte-identical), cross-model gemini (complete) and codex (complete). Round-1 must-fixes (fringe conditioning gate, NaN DEM slope) verified fixed.
 
 ### Findings
-- [ ] (must-fix) Conditioning gate fails open on exactly collinear neighbour centroids: `np.linalg.inv` returns a non-PD Ninv (one huge negative eigenvalue), `_sigma_g_max` takes only the larger eigenvalue (passes), `sg` clamps a negative u'C_g u to 0, and reduce_to_plane can get negative v' (ValueError in Hyp.nr) or accept a garbage gradient. Lead reproduced: 30 of 500 collinear fits return code 0, all with a negative eigenvalue. Require C_g positive definite (cxx>0, cyy>0, cxx*cyy-cxy^2>0, finite) and var_a>0 before code 0 (else PLANE_ILL_CONDITIONED, e.g. via Cholesky of N), fail closed on negative u'C_g u, add a collinear case to tests/plane_vectors (gemini, confirmed by lead) — `icecube/nodes.py:429-452,512`
-- [ ] (must-fix) Pass 2 adds the gradient error d_i'C_g d_i to each entry as independent variance, so it averages down by 1/n, but it is common to all entries (error -dg.d_bar); sigma' understated (adversarial measured up to ~40% at edge nodes; codex: 4 cm vs 0.4 cm for one-sided soundings), making the output sigma and the agreement test too tight. Add d_bar'C_g d_bar (d_bar = pass-2 main's weighted centroid) to the accepted node's sigma^2 and to the agreement variance; port note for PR B (codex, gemini, Claude adversarial) — `icecube/nodes.py:455-466,527-535`
-- [ ] (suggestion) Neighbour fit weights by main's w, which excludes the pass-bias part of sigma; across a pass seam chi and sigma_g are noise-only. Weight by 1/sigma^2 or document the assumption next to the correlation caveat (codex, gemini) — `icecube/nodes.py:498`
-- [ ] (suggestion) topo masks after nodes.grid_surface, so masked nodes serve as plane neighbours (with masked=false their non-ground heights feed the fit). Consider passing the node mask into plane_pass to exclude them, or state it (gemini, Claude adversarial) — `icecube/topo.py:196-210`
-- [ ] (suggestion) Docs npz contents list omits plane_code (gemini, Claude adversarial) — `docs/howto/ice-cube.md:236`
-- [ ] (suggestion) grid_surface duplicates PLANE_DEFAULTS as literals for 7 of 8 plane_* args; take all from PLANE_DEFAULTS (gemini) — `icecube/nodes.py:596-600`
-- [ ] (suggestion) PR B note: plane_pass counts n_in as len(entries) - n_out, which undercounts folded entries (cnt > 1) if reused on aggregates (gemini) — `icecube/nodes.py:482`
+- [x] (must-fix) Conditioning gate fails open on exactly collinear neighbour centroids: `np.linalg.inv` returns a non-PD Ninv (one huge negative eigenvalue), `_sigma_g_max` takes only the larger eigenvalue (passes), `sg` clamps a negative u'C_g u to 0, and reduce_to_plane can get negative v' (ValueError in Hyp.nr) or accept a garbage gradient. Lead reproduced: 30 of 500 collinear fits return code 0, all with a negative eigenvalue. Require C_g positive definite (cxx>0, cyy>0, cxx*cyy-cxy^2>0, finite) and var_a>0 before code 0 (else PLANE_ILL_CONDITIONED, e.g. via Cholesky of N), fail closed on negative u'C_g u, add a collinear case to tests/plane_vectors (gemini, confirmed by lead) — `icecube/nodes.py:429-452,512`
+- [x] (must-fix) Pass 2 adds the gradient error d_i'C_g d_i to each entry as independent variance, so it averages down by 1/n, but it is common to all entries (error -dg.d_bar); sigma' understated (adversarial measured up to ~40% at edge nodes; codex: 4 cm vs 0.4 cm for one-sided soundings), making the output sigma and the agreement test too tight. Add d_bar'C_g d_bar (d_bar = pass-2 main's weighted centroid) to the accepted node's sigma^2 and to the agreement variance; port note for PR B (codex, gemini, Claude adversarial) — `icecube/nodes.py:455-466,527-535`
+- [x] (suggestion) Neighbour fit weights by main's w, which excludes the pass-bias part of sigma; across a pass seam chi and sigma_g are noise-only. Weight by 1/sigma^2 or document the assumption next to the correlation caveat (codex, gemini) — `icecube/nodes.py:498`
+- [x] (suggestion) topo masks after nodes.grid_surface, so masked nodes serve as plane neighbours (with masked=false their non-ground heights feed the fit). Consider passing the node mask into plane_pass to exclude them, or state it (gemini, Claude adversarial) — `icecube/topo.py:196-210`
+- [x] (suggestion) Docs npz contents list omits plane_code (gemini, Claude adversarial) — `docs/howto/ice-cube.md:236`
+- [x] (suggestion) grid_surface duplicates PLANE_DEFAULTS as literals for 7 of 8 plane_* args; take all from PLANE_DEFAULTS (gemini) — `icecube/nodes.py:596-600`
+- [x] (suggestion) PR B note: plane_pass counts n_in as len(entries) - n_out, which undercounts folded entries (cnt > 1) if reused on aggregates (gemini) — `icecube/nodes.py:482`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:14 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-29 at `80ce1a2`
+**Addressed**: Local Review (Pre-Push) at `28bcf3f` (2026-11-26 19:08 -05:00)
+**Commits**: bab1cb0, 9f9adde, d74cb05, 5a2724a, 0e4b713, 80ce1a2
+
+### Actions
+- [x] (must-fix) Conditioning fails closed: Cholesky of A'WA, var_a > 0 and C_g positive definite (`nodes._pos_def`) required for code 0, else PLANE_ILL_CONDITIONED; non-positive u'C_g u fails closed (no clamp). Unit test of 500 random collinear fits (121 returned code 0 before, 0 now) and a `collinear_ill_conditioned` plane_vectors case — `icecube/nodes.py` plane_fit, plane_pass (bab1cb0)
+- [x] (must-fix) Accepted node's sigma'^2 gains d_bar'C_g d_bar (d_bar = pass-2 main's centroid), which also feeds the agreement test; test pins it; PR B port note in plan.md — `icecube/nodes.py` plane_pass (bab1cb0, 80ce1a2)
+- [x] (suggestion) Neighbour fit kept weighted by w (host decision); docstring and comment say why pass bias is left out — `icecube/nodes.py` (9f9adde)
+- [x] (suggestion) topo builds the node mask before gridding; `grid_surface(node_mask=)` / `plane_pass(skip=)` keep masked nodes out of fits and untried; test — `icecube/topo.py`, `icecube/nodes.py` (d74cb05)
+- [x] (suggestion) plane_code added to the docs' npz list (plus PD gate, common gradient error, masks) — `docs/howto/ice-cube.md` (5a2724a)
+- [x] (suggestion) grid_surface's plane_* defaults read from PLANE_DEFAULTS — `icecube/nodes.py` (0e4b713)
+- [x] (suggestion) PR B note on n_in vs folded cnt: code comment (bab1cb0) and plan.md port notes (80ce1a2)
+
+### Checks
+- `python3 -m unittest discover icecube/tests`: Ran 85 tests, OK
+- coverage_vectors.json regenerated, matches `python3 -m icecube.logger_vectors`
+- logger `./gradlew testDebugUnitTest --max-workers 4`: BUILD SUCCESSFUL (C: 114 GB free)
+- Private replays (counts only), unchanged from round 1: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
+- Review prompt/findings scratch files removed
