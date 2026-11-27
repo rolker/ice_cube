@@ -661,3 +661,13 @@ The port is well-structured and the batch change in step 1 is behaviour-neutral 
 - [ ] List all three `len - n_out` sites in `plane_pass` for step 1
 - [ ] Bound the per-capture fallback table (or reject it); forbid float storage for geometry
 - [ ] Record the host's five answers in Decisions; remove Open Questions
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 08:59 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review needs-work on plan text only; orchestrator table allows revise)
+**After**: plan
+**Decision**: revise
+
+Host decisions for PR B (owner may veto): aggregate sz2/sh from exact moments WS/WH; no new tint or tap readout for planar nodes; version 0.10.0 / build 14; no Settings toggle (always on, recorded in the events line); memory: keep per-entry doubles (floats break 1e-9 parity) and drop the per-capture fallback, because the store is bounded per node by CAP; step 3 reports the worst-case bytes for a full grid and a typical session, and the bounded-store test stays as is. Address the Plan Review at 9c71951: all three n_in = len − n_out sites in plane_pass switch to the count; the ring is the actual fed set grown by one cell; the fold test checks z′ equality and the aggregate variance against the moment formula; plane_sequences expectations come from a full recompute after each capture; the 1e-6 gate-margin guard also covers the folded and sequence vectors; write these decisions into the plan and remove Open Questions.
