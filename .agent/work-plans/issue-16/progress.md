@@ -74,3 +74,11 @@ issue: 16
 **Decision**: proceed
 
 Host decisions (owner may veto): a dedicated NOTE button (tap to start, tap to stop, vibration and tone), not the volume keys or a PHOTO long-press; mono AAC m4a ~32 kbps, auto-stop at 60 s with a cue; attach by PhotoRule's window and own-row fallback; a flagged capture's notes move like its photos (consistency with #27); RECORD_AUDIO, foreground only; older sessions read fine; audio only in the session folder and shared zip, README privacy note. Speech-to-text is NOT in the first PR; whether it is wanted at all (and if a later local desktop transcription is acceptable) is an owner question, asked at the hand-back. Implementation after #15 and #35.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-27 17:58 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-16/plan.md` at `459f04c`
+
+NOTE button records mono AAC m4a (60 s cap) into notes/, attached via PhotoRule's window, new trailing voice column, notes move with photos on flag, zip and importer carry them. No speech-to-text. Implement after #15 and #35 (shared Survey, MainActivity).
