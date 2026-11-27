@@ -783,3 +783,13 @@ Verified: `./gradlew testDebugUnitTest lintDebug --max-workers 4` 214 tests, 0 f
 - [ ] (suggestion) Ring size "up to 30" is wrong: the largest fed-set dilation at the defaults is 26 (the tie capture's 5x6 box minus 4 corners); fix the comment, the test javadoc and the README — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:56`, `logger/app/src/test/java/rink/icecube/logger/core/CoverageTest.java:341`, `logger/README.md`
 - [ ] (suggestion) `Node.varFinal` javadoc says 1/W' but it holds 1/W' + d_bar'C_g d_bar — `logger/app/src/main/java/rink/icecube/logger/core/Coverage.java:150`
 - [ ] (suggestion) `LiveCoverage.gtrace` is set and never used — `icecube/logger_vectors.py:202`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:34 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved, 0 must-fix; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+The 4 small suggestions (plane_over hardcoded cell, ring max 26 not 30, varFinal javadoc, unused gtrace) go through the PR-mode triage.
