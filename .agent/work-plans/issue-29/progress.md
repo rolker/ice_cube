@@ -613,3 +613,51 @@ PR A merged as #34 (5da4114). Owner said "Yes" to starting part B. Refresh the p
 **Plan**: `.agent/work-plans/issue-29/plan.md` at `d1e1ec5`
 
 Revised for PR B. PR A is delivered (#34, 5da4114); the plan now records the merged gate order, limit rules and vector codes, and lists eight PR B steps each with its test: Python reference (NodeStore geometry and aggregate moments, counts by cnt), folded and sequence vectors, Java geometry store, `PlanePass` fit with gate unit tests, the 25-node ring pass in `Coverage`, JVM parity with all 9 `plane_vectors` plus the new vectors, timing, docs and version 0.10.0 (build 14). The phone has no DEM, so the DEM gate is skipped; a planar node draws by its final status.
+
+## Plan Review
+**Status**: complete
+**When**: 2026-11-27 08:57 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: needs-work
+
+**Issue**: #29 — Steep-bank relief for the node rebuild: a gradient from the neighbourhood, not the node's own split
+**Plan**: `.agent/work-plans/issue-29/plan.md` at `d1e1ec5`
+**Branch**: `feature/issue-29`
+**Serves**: Roadmap line "`icecube` runs on logger sessions in the project's local frame"; the project keeps no goals or design document, so none.
+
+Reviewed with the host's answers to the five open questions: (1) aggregate sz2/sh from the exact moments WS/WH; (2) no new tint or tap readout for planar nodes; (3) 0.10.0 / build 14 (current 0.9.0 / 13); (4) no Settings toggle, always on, recorded in the events line; (5) measure memory in step 3, per-capture fallback above ~1.5x.
+
+### Evaluation
+
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Scope | Good | One PR: reference tweak, vectors, Java port, docs. Steps each carry a test. |
+| Issue alignment | Good | Closes #29 with PR A merged (#34); decisions match the host's answers. |
+| File targeting | Good | `LiveCoverage` (Python twin) lives in `logger_vectors.py`, listed; `icecube.example.toml` needs nothing (no new setting). |
+| Consequences | Needs work | Ring definition and sequence vectors could be circular (findings 2, 3); memory fallback interacts with the bounded-store test (finding 5). |
+| Principle alignment | Needs work | "Test what breaks": the step 1 fold-equivalence test claims an equality that does not hold (finding 1). |
+| ADR compliance | Good | Project has no ADRs. |
+| ROS conventions | N/A | Not a ROS project. |
+
+### Findings
+
+1. **[Principle: test what breaks]** Step 1's test "a node folded past CAP equals the same entries unfolded ... to the pass-2 variance within 1e-9 for a linear surface" cannot pass in general. On a noise-free linear surface `z'` matches (mean of `z_i - g.d_i` = `WZ/W - g.(WDX,WDY)/W`), but the variances differ: unfolded pass 2 reweights each entry by `1/(sz2_i + g^2 sh_i^2 + d_i'C_g d_i)`, while the aggregate keeps its pass-1 weights (which carry `SLOPE*(d+sh)`, distance-dependent) inside `WS/W^2 + g^2 WH/W^2 + dbar'C_g dbar`. Equal only in degenerate cases (identical entries at one spot, `C_g = 0`). Resolve: test `z'` equality, and test the aggregate's pass-2 variance against the stated moment formula (and, if wanted, that it is >= the unfolded `1/W'`), not equality with unfolded. The acceptance section already says folded nodes may differ; make step 1 consistent with it.
+2. **[Consequences: 25-node ring]** The ring is sufficient in principle: a node's plane result depends only on its own pass-1 state and its 8 neighbours' pass-1 `z, w, cx, cy, n_in, red`; there is no fit radius beyond Chebyshev 1, and the one-sweep rule (neighbours read pass-1 colour) means a neighbour's pass-1 change reaches only nodes adjacent to it. So "every node within Chebyshev 1 of a node whose pass 1 changed" is exact. But "the 3x3 fed" is not always true: `Coverage.add` feeds every node with `d <= captureRadius` (0.75 m on a 0.5 m grid), and at a tie (capture 0.25 m off a node row) 4 nodes in a line are fed. Define the ring as the Chebyshev-1 dilation of the actual fed set (up to 30 nodes), not a fixed 5x5 around the capture; or prove the tie away. Same for `MAX_NODES`: a neighbour not created is simply absent on both sides (confirm the Python twin treats it the same).
+3. **[Consequences: sequence vectors]** `plane_sequences` "pins the 25-node ring" only if its expected statuses come from a full recompute (rebuild every node + `plane_pass` over the whole grid after each capture), not from a Python twin that implements the same ring. Say so in step 2; otherwise a wrong ring rule is pinned on both sides. `incrementalEqualsRebuild` with `plane=true` (step 5) is the matching Java-side check.
+4. **[File targeting: step 1]** `plane_pass` computes `n_in` as `len(entries) - n_out` at three sites (red map, neighbour `min_nin` usability, and the NO_GAIN test on `es2`), not one. All three must take `n_in` from the output (`main.cnt`). For the batch this changes nothing: every batch entry has `cnt = 1` and `_robust` already sets `n_out = len(es) - main.cnt` after Eeg culls, so `main.cnt == len - n_out`; `_running` has no `n_in` and keeps the fallback. Step 1 is therefore justified as making the reference correct for folded aggregates, with no PR A result or committed vector changed; the `plane_vectors` byte-identical check plus the 94 unchanged tests are the right guard. Note it in the PR body.
+5. **[Consequences: memory fallback]** Current per-entry store is 3 doubles + 1 int; adding 4 doubles is ~2x, so the host's >1.5x trigger will likely fire. The "per-capture table" fallback grows with session capture count while the node store is bounded, which conflicts with what `manyCapturesStayBounded` guards; plan how the table is bounded (only captures still referenced by stored entries) before choosing it. Storing `edx, edy` as floats would save space but breaks 1e-9 parity; rule it out explicitly.
+6. **[Parity tolerance]** 1e-9 absolute across Java/Python is sound: existing node parity already uses 1e-9 for `z`, `sigma`; synthetic z are small; the generator guards every plane gate at a 1e-6 relative margin and keeps captures off the radius circle, so summation-order differences (~1e-15) cannot flip a code. Keep it absolute, and apply the same guard to `plane_folded_vectors` and `plane_sequences`. `gradient` null-as-NaN compares fine with JUnit `assertEquals(double, double, delta)`.
+7. **[Issue alignment]** Fold the host's five answers into the plan's Decisions and drop the Open Questions section, so the implementer reads one settled plan.
+
+### Summary
+
+The port is well-structured and the batch change in step 1 is behaviour-neutral for PR A (cnt = 1 everywhere), so it is justified. The ring argument holds once defined from the actual fed set. One planned test asserts an equality that is false (finding 1); fix that and pin sequences from a full recompute, then implement.
+
+### Recommended Actions
+
+- [ ] Rewrite step 1's fold test: `z'` equality; variance against the moment formula, not the unfolded result
+- [ ] Define the ring as the Chebyshev-1 dilation of the fed set (handle the 4-wide tie)
+- [ ] State that `plane_sequences` expectations come from a full per-capture recompute
+- [ ] List all three `len - n_out` sites in `plane_pass` for step 1
+- [ ] Bound the per-capture fallback table (or reject it); forbid float storage for geometry
+- [ ] Record the host's five answers in Decisions; remove Open Questions
