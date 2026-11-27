@@ -344,3 +344,13 @@ Scope: round 2's findings and the fix diff 9d4c380..HEAD. Specialists: static an
 - [ ] (suggestion) Per-entry d_i'C_g d_i stays in v' and d_bar'C_g d_bar is added on top, so sigma'^2 is a conservative upper bound; say so in the docstring — `icecube/nodes.py:565-570`
 - [ ] (suggestion) test_collinear_centroids_never_pass also accepts PLANE_NOT_PLANAR, so a regression routing collinear fits through a garbage beta into planarity would pass; assert ILL_CONDITIONED on most cases — `icecube/tests/test_icecube.py`
 - [ ] (suggestion) Mask test uses a square grid and bypasses topo.grid_surface's meshgrid; a non-square grid with an asymmetric mask would catch a transposed mask — `icecube/tests/test_icecube.py`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:19 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push review approved at round 3, no must-fix; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+PR A (batch) of two; Part of #29. Round-3 suggestions (agreement cross term, conservative-bound docstring, collinear test strictness, non-square mask test) left for triage.
