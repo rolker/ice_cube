@@ -108,7 +108,7 @@ public final class MainActivity extends Activity {
     /** The notice bar and its UNDO button, side by side. */
     private LinearLayout noticeRow;
     /** The notice UNDO is shown for, and when it first showed (elapsedRealtime ns), for the arm delay. */
-    private Survey.Notice undoNotice;
+    private PointRow undoAt;   // the capture UNDO is shown for (a notice's row, by identity)
     private long undoShownNs;
     /** PHOTO's second line as last shown ("" for none). */
     private String photoTargetShown = "";
@@ -524,30 +524,40 @@ public final class MainActivity extends Activity {
     /**
      * UNDO beside the notice: shown while the notice is a capture's own (Notice.undoable),
      * its row is not flagged and the 8 s window from the row's own time is open (one clock,
-     * elapsedRealtime, as Survey checks). A newer notice replaces it. The first frame that
-     * shows it starts the arm delay.
+     * elapsedRealtime, as Survey checks). Keyed on the notice's row, not the notice: a newer
+     * notice for the same capture (a ref's pole check after its save) keeps UNDO and its arm
+     * delay; one for another capture replaces it. The first frame that shows it starts the
+     * arm delay.
      */
     private void updateUndo(Survey.Notice nt) {
         long now = SystemClock.elapsedRealtimeNanos();
         boolean show = nt != null && nt.undoable && !nt.at.voided && VoidRule.undoOpen(nt.at.elapsedNs, now);
-        if (show && nt != undoNotice) {
-            undoNotice = nt;
+        if (show && nt.at != undoAt) {
+            undoAt = nt.at;
             undoShownNs = now;
         } else if (!show) {
-            undoNotice = null;
+            undoAt = null;
         }
         undoB.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
-    /** A tap on UNDO: flags the notice's capture as accidental (ignored in the first 750 ms). */
+    /**
+     * A tap on UNDO: flags the notice's capture as accidental. A tap that is ignored (in the
+     * first 750 ms, or the notice no longer names the capture UNDO was shown for) plays the
+     * error cue, so it is never dropped silently.
+     */
     private void onUndo() {
         Survey sv = survey();
-        Survey.Notice nt = undoNotice;
-        if (sv == null || nt == null || sv.notice() != nt) return;
-        if (!VoidRule.armed(undoShownNs, SystemClock.elapsedRealtimeNanos())) return;
-        Survey.Outcome o = sv.voidCapture(nt.at.n, VoidRule.ACCIDENTAL, VoidRule.VIA_UNDO);
+        Survey.Notice nt = sv == null ? null : sv.notice();
+        PointRow at = undoAt;
+        if (nt == null || at == null || !nt.undoable || nt.at != at
+                || !VoidRule.armed(undoShownNs, SystemClock.elapsedRealtimeNanos())) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            return;
+        }
+        Survey.Outcome o = sv.voidCapture(at.n, VoidRule.ACCIDENTAL, VoidRule.VIA_UNDO);
         Feedback.play(this, o.ok ? Feedback.Cue.REF_CANCEL : Feedback.Cue.ERROR);
-        undoNotice = null;
+        undoAt = null;
         handle(o);
     }
 
