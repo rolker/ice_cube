@@ -153,7 +153,9 @@ class ImportTest(unittest.TestCase):
         # unflagged on the phone since: a re-import clears the flags, rows and fids unchanged
         fids = self.q("SELECT n, fid FROM captures ORDER BY n")
         z.unlink()
-        z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False))
+        later = time.localtime(time.time() + 3600)[:6]     # zip times have 2 s steps: newer, not tied
+        z = synth.write_zip(self.d / name, synth.with_void(synth.session_v05(), {}), refs=synth.refs_csv_void(False),
+                            refs_date=later)
         summary = imp.run([str(z), "--gpkg", str(self.gpkg)], log=lambda *a: None)
         self.assertEqual((summary["added"][0]["voided"], summary["refs_csv_voided"]), (0, 0))
         self.assertEqual(self.q("SELECT n, void, void_reason FROM captures ORDER BY n"),
@@ -243,6 +245,31 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(imp.import_refs_csv(gp, [(flagged, 500.0)]), (1, 1))
         self.assertEqual(void(), [(1, "moved")])              # a newer copy still changes it
         self.assertEqual(gp.con.execute("SELECT void_copy_mtime FROM refs").fetchall(), [(500.0,)])
+        gp.close()
+
+    def test_refs_csv_copies_of_the_same_time_flagged_wins(self):
+        """Copies of the same time (or of unknown time) that disagree on a ref's flag give
+        flagged, in either input order, within a run and against a stored flag of that time:
+        the logger's rule (VoidRule.liveRefs) (#27)."""
+        gp = gw.GeoPackage(self.d / "r.gpkg")
+        imp.ensure_schema(gp)
+        hdr = "session," + synth.POINTS_HDR + ",void,void_reason\n"
+        lat, lon, h = synth.offset(0.1, 2.0, 1.8)
+        row = (f"s1,5,ref,1,2026-11-30T14:00:00.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,{h - 1.8:.4f},"
+               "4,30,0.002,0.002,0.004,1.0,,")
+        flagged, cleared = hdr + row + ",1,moved\n", hdr + row + ",0,\n"
+        void = lambda: gp.con.execute("SELECT void, void_reason FROM refs").fetchall()  # noqa: E731
+        for copies in ([(flagged, 100.0), (cleared, 100.0)], [(cleared, 100.0), (flagged, 100.0)],
+                       [flagged, cleared], [cleared, flagged]):
+            gp.con.execute("DELETE FROM refs")
+            self.assertEqual(imp.import_refs_csv(gp, copies), (1, 1))
+            self.assertEqual(void(), [(1, "moved")])
+        # a later run: a copy of the stored flag's time does not clear it; a newer one does
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 300.0)]), (1, 1))
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0)]), (1, 1))
+        self.assertEqual(void(), [(1, "moved")])
+        self.assertEqual(imp.import_refs_csv(gp, [(cleared, 301.0)]), (1, 0))
+        self.assertEqual(imp.import_refs_csv(gp, [(flagged, 301.0)]), (1, 1))   # same time, flags
         gp.close()
 
     def test_refs_csv_flagged_count_only_rows_it_stores(self):

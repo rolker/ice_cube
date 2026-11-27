@@ -198,9 +198,12 @@ it (UNDO right after a capture, and flagging from a list of recent captures) com
   is not flagged, within the usual 60 s.
 - A flagged ref: its `refs.csv` row is rewritten in place with the same columns (the one
   write to refs.csv that is not an append), in every storage root's refs.csv that holds
-  it. A flagged ref is never a "last visit" for the pole check and is not drawn among the
-  earlier refs; its pole-check notice and warning are cleared. The rewrite keeps the row's
-  `photo` column as it was appended: refs.csv photo names are never updated after the
+  it. When the copies disagree (a rewrite that reached only some of them), a reader takes
+  a ref's flag from the newest copy by file time whose row has a void value, and flagged
+  when copies of that time disagree; the QGIS importer reads the copies it is given by the
+  same rule, so the phone and the gpkg agree. A flagged ref is never a "last visit" for
+  the pole check and is not drawn among the earlier refs; its pole-check notice and
+  warning are cleared. The rewrite keeps the row's `photo` column as it was appended: refs.csv photo names are never updated after the
   append (not for a photo attached later, not for a move), and `points.csv` is the record
   of which photos belong to which capture.
 - Coverage: a flagged capture leaves the overlay (it is rebuilt without it); unflagged, it

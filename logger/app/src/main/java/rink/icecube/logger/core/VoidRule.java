@@ -3,9 +3,9 @@ package rink.icecube.logger.core;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 /**
  * Flagging a capture as bad (void, logger 0.9.0, issue #27): the undo window, the reasons,
@@ -94,17 +94,49 @@ public final class VoidRule {
         return r;
     }
 
+    /** One refs.csv copy: its rows in file order and the file's modification time (ms). */
+    public static final class RefsCopy {
+        public final long mtime;
+        public final List<PointRow> rows;
+
+        public RefsCopy(long mtime, List<PointRow> rows) {
+            this.mtime = mtime;
+            this.rows = rows;
+        }
+    }
+
     /**
-     * The refs.csv rows (of every copy, in order) that are not voided: a (session, n) voided
-     * in any copy is left out of every copy, so a copy that {@code setRefsVoid} could not
-     * rewrite never brings a voided ref back. (An unflag that reached only some copies thus
-     * reads as still flagged, the safe side; {@link #refsVoidEvent} says so.)
+     * The refs.csv rows (of every copy, in order) of refs that are not voided. A (session, n)
+     * takes its flag from the newest copy (by file time) whose row for it has a void value;
+     * copies of that same time that disagree give voided, the safe side. A row from before
+     * 0.9.0 (no void value) never decides. A ref decided voided is left out of every copy,
+     * and so is a voided row of a ref decided live (an older copy that a later unflag did
+     * not reach). This is the importer's rule too (import_sessions.import_refs_csv), so the
+     * phone and the gpkg agree after a partial write; {@link #refsVoidEvent} says when a
+     * write was partial.
      */
-    public static List<PointRow> liveRefs(List<PointRow> all) {
-        Set<String> voided = new HashSet<>();
-        for (PointRow r : all) if (r.voided) voided.add(r.session + "/" + r.n);
+    public static List<PointRow> liveRefs(List<RefsCopy> copies) {
+        Map<String, Long> when = new HashMap<>();
+        Map<String, Boolean> flag = new HashMap<>();
+        for (RefsCopy c : copies) {
+            for (PointRow r : c.rows) {
+                if (!r.voidKnown) continue;
+                String k = r.session + "/" + r.n;
+                Long t = when.get(k);
+                if (t == null || c.mtime > t) {
+                    when.put(k, c.mtime);
+                    flag.put(k, r.voided);
+                } else if (c.mtime == t && r.voided) {
+                    flag.put(k, true);
+                }
+            }
+        }
         List<PointRow> out = new ArrayList<>();
-        for (PointRow r : all) if (!voided.contains(r.session + "/" + r.n)) out.add(r);
+        for (RefsCopy c : copies) {
+            for (PointRow r : c.rows) {
+                if (!r.voided && !Boolean.TRUE.equals(flag.get(r.session + "/" + r.n))) out.add(r);
+            }
+        }
         return out;
     }
 
@@ -125,8 +157,8 @@ public final class VoidRule {
         }
         String rowsText = rows + " row" + (rows == 1 ? "" : "s");
         if (rewritten < holding || unreadable > 0) {
-            String effect = voided ? "readers take the flag from any copy, so it stays voided"
-                    : "a copy still flagged keeps it voided for later sessions";
+            String effect = "readers take the flag from the newest copy, so a copy not rewritten"
+                    + " brings the old flag back if it is written to later";
             return "error: ref n=" + n + " " + what + " in " + rewritten + " of " + holding
                     + " refs.csv copies holding it (" + rowsText + skipped + "); " + effect;
         }

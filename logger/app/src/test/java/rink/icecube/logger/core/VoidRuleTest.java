@@ -102,15 +102,49 @@ public class VoidRuleTest {
         PointRow r = row(n, PointRow.REF);
         r.session = session;
         r.voided = voided;
+        r.voidKnown = true;
         return r;
     }
 
-    @Test public void liveRefsDropARefVoidedInAnyCopy() {
-        // two refs.csv copies: the voided ref's row in the second could not be rewritten
+    static VoidRule.RefsCopy copy(long mtime, PointRow... rows) {
+        return new VoidRule.RefsCopy(mtime, Arrays.asList(rows));
+    }
+
+    @Test public void liveRefsNewestCopyDecides() {
+        // a flag that reached only the newer copy: voided in both
         PointRow a1 = ref("s1", 1, false), b1 = ref("s1", 2, true), c1 = ref("s2", 2, false);
         PointRow a2 = ref("s1", 1, false), b2 = ref("s1", 2, false);
-        List<PointRow> live = VoidRule.liveRefs(Arrays.asList(a1, b1, c1, a2, b2));
-        assertEquals(Arrays.asList(a1, c1, a2), live);   // same n in another session stays
+        assertEquals(Arrays.asList(a1, c1, a2),
+                VoidRule.liveRefs(Arrays.asList(copy(200, a1, b1, c1), copy(100, a2, b2))));
+        // an unflag that reached only the newer copy: live, the older voided row left out
+        PointRow u1 = ref("s1", 2, false), u2 = ref("s1", 2, true);
+        assertEquals(Arrays.asList(u1), VoidRule.liveRefs(Arrays.asList(copy(200, u1), copy(100, u2))));
+        assertEquals(Arrays.asList(u1), VoidRule.liveRefs(Arrays.asList(copy(100, u2), copy(200, u1))));
+    }
+
+    @Test public void liveRefsTiesGiveVoided() {
+        PointRow x = ref("s1", 2, false), y = ref("s1", 2, true);
+        assertEquals(0, VoidRule.liveRefs(Arrays.asList(copy(100, x), copy(100, y))).size());
+        assertEquals(0, VoidRule.liveRefs(Arrays.asList(copy(100, y), copy(100, x))).size());
+    }
+
+    @Test public void liveRefsPre09RowNeverDecides() {
+        PointRow old = row(2, PointRow.REF);
+        old.session = "s1";                             // no void value: voidKnown false
+        PointRow flagged = ref("s1", 2, true);
+        assertEquals(0, VoidRule.liveRefs(Arrays.asList(copy(300, old), copy(100, flagged))).size());
+        PointRow alone = row(3, PointRow.REF);
+        alone.session = "s1";
+        assertEquals(Arrays.asList(alone), VoidRule.liveRefs(Arrays.asList(copy(300, alone))));
+    }
+
+    @Test public void parseSetsVoidKnown() {
+        PointRow r = ref("s1", 3, true);
+        PointRow back = PointRow.parse(PointRow.split(r.toRefsCsv()), 1);
+        assertTrue(back.voided && back.voidKnown);
+        r.voided = false;
+        back = PointRow.parse(PointRow.split(r.toRefsCsv()), 1);
+        assertTrue(!back.voided && back.voidKnown);
     }
 
     @Test public void refsVoidEventReportsPartialWrites() {
@@ -120,9 +154,9 @@ public class VoidRuleTest {
         assertTrue(none, none.startsWith("error: ref n=3 not voided in refs.csv (no row rewritten"));
         String part = VoidRule.refsVoidEvent(3, true, 2, 1, 1, 0);
         assertTrue(part, part.startsWith("error: ref n=3 voided in 1 of 2 refs.csv copies holding it (1 row)"));
-        assertTrue(part, part.contains("stays voided"));
+        assertTrue(part, part.contains("newest copy"));
         String unflag = VoidRule.refsVoidEvent(3, false, 2, 1, 1, 0);
-        assertTrue(unflag, unflag.contains("keeps it voided"));
+        assertTrue(unflag, unflag.contains("newest copy"));
         String unread = VoidRule.refsVoidEvent(3, true, 1, 1, 1, 1);
         assertTrue(unread, unread.startsWith("error: ") && unread.contains("1 refs.csv copy could not be read"));
     }

@@ -52,6 +52,11 @@ public final class PointRow {
      */
     public volatile boolean voided;
     public volatile String voidReason = "";
+    /**
+     * Set by {@link #parse}: the row had a void value (0 or 1). False for a row from before
+     * 0.9.0, read as not voided; refs.csv readers then take its flag from another copy.
+     */
+    public boolean voidKnown;
     /** refs.csv only: the session folder name. */
     public String session = "";
 
@@ -147,7 +152,9 @@ public final class PointRow {
                 r.tiltSdU = dbl(f.get(i++));
             }
             if (f.size() >= offset + COLUMNS) {
-                r.voided = "1".equals(f.get(i++).trim());
+                String v = f.get(i++).trim();
+                r.voided = "1".equals(v);
+                r.voidKnown = r.voided || "0".equals(v);
                 r.voidReason = f.get(i);
             }
         } catch (NumberFormatException e) {

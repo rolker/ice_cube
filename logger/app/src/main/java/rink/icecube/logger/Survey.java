@@ -616,7 +616,7 @@ final class Survey {
         String session = dir.getName();
         run(() -> {
             // a partial write (some copies not rewritten) is an error event too; readers take
-            // the flag from any copy, so a stale copy never brings a voided ref back
+            // the flag from the newest copy (VoidRule.liveRefs), and a rewritten copy is newer
             svc.event(RefsStore.setVoid(svc, session, r.n, v, why).event(r.n, v));
             refsGeneration++;
         });

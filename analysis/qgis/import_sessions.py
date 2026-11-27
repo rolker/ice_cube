@@ -51,8 +51,10 @@ or checks (soundings.py, export_labels.py) leave void=1 rows out by default and 
 many; the report and the sessions table (`n_voided`, `remarks`) count them. A file
 without the `void` column has none. A flagged ref gets no `site` and plays no part in
 grouping the others. When several refs.csv copies hold a row, the newest copy (zip entry
-or file time) gives it, and the newest copy with a `void` column gives its flag; refs keep
-that copy's time (`void_copy_mtime`), so a later import of an older copy cannot change it.
+or file time) gives it, and the newest copy with a `void` column gives its flag, flagged
+when copies of that same time disagree (the logger reads its copies by the same rule,
+VoidRule.liveRefs); refs keep that copy's time (`void_copy_mtime`), so a later import of
+an older copy cannot change it.
 
 Idempotent and incremental: a session already imported from an unchanged source is
 skipped (--force re-reads it). Each sessions row records the schema_version it was
@@ -363,10 +365,13 @@ def import_refs_csv(gp, texts):
     `texts` holds refs.csv texts, or (text, mtime) pairs. When copies disagree, the newest
     copy (by mtime; equal or unknown times keep input order) gives the row, and its void
     flag comes from the newest copy that has a void column, so a copy from before 0.9.0
-    never clears a flag, not even one stored by an earlier import. The mtime of the copy a
-    stored flag came from is kept in `void_copy_mtime`; a later run changes the flag only
-    with a copy at least that new (one of unknown time changes only a flag of unknown time),
-    so an older 0.9.0 copy met in a later run cannot clear (or set) a newer stored flag.
+    never clears a flag, not even one stored by an earlier import. Copies of the same time
+    (or all of unknown time) that disagree on the flag give flagged, the safe side. This is
+    the logger's rule too (VoidRule.liveRefs), so the gpkg and the phone agree on a ref
+    after a partial write. The mtime of the copy a stored flag came from is kept in
+    `void_copy_mtime`; a later run changes the flag only with a newer copy, or one of the
+    same time that flags it (one of unknown time changes only a flag of unknown time), so
+    an older 0.9.0 copy met in a later run cannot clear (or set) a newer stored flag.
 
     Returns (refs.csv rows seen, of which flagged): every row of every copy counts as seen,
     but only rows stored from refs.csv (source 'refs.csv', sessions not imported) count as
@@ -381,6 +386,9 @@ def import_refs_csv(gp, texts):
             key = (r["session"], r["n"])
             rows[key] = r
             if r.get("void_known"):
+                was = flags.get(key)
+                if was and was[0] and was[2] == _mtime and not r.get("void"):
+                    continue          # same time, disagreeing: flagged wins
                 flags[key] = (bool(r.get("void")), r.get("void_reason"), _mtime)
     out = []
     for (sess, n), r in sorted(rows.items()):
@@ -394,11 +402,13 @@ def import_refs_csv(gp, texts):
         gp.upsert("refs", out, key=("session", "n"), preserve=[k for k in out[0] if k not in ("session", "n")])
         # only rows a copy in this run has a void column for: copies from before 0.9.0 alone
         # never reset a flag that an earlier import took from a newer copy; and only from a
-        # copy at least as new as the one the stored flag came from (void_copy_mtime)
+        # copy newer than the one the stored flag came from (void_copy_mtime), or as new and
+        # flagging it (same time, disagreeing: flagged wins)
         gp.con.executemany(
             "UPDATE refs SET void=:void, void_reason=:reason, void_copy_mtime=:stamp "
             "WHERE session=:session AND n=:n AND source='refs.csv' "
-            "AND (void_copy_mtime IS NULL OR :stamp >= void_copy_mtime)",
+            "AND (void_copy_mtime IS NULL OR :stamp > void_copy_mtime "
+            "OR (:stamp = void_copy_mtime AND (:void = 1 OR coalesce(void, 0) = 0)))",
             [{"void": d["void"], "reason": d["void_reason"], "stamp": d["void_copy_mtime"],
               "session": d["session"], "n": d["n"]} for d in out if (d["session"], d["n"]) in flags])
     # flagged count from the refs table (stored flags included), not just this run's copies

@@ -25,32 +25,35 @@ import rink.icecube.logger.core.VoidRule;
  * It holds positions: it stays on the phone and in Drive, never in the public repo.
  *
  * From 0.9.0 a ref flagged as bad keeps its row with void=1 ({@link #setVoid} rewrites the
- * row in place, the one write that is not an append); readers here skip it, and skip it in
- * every copy when any copy has it voided ({@link VoidRule#liveRefs}).
+ * row in place, the one write that is not an append); readers here skip it. When copies
+ * disagree, the newest copy (by file time) decides, voided on a tie
+ * ({@link VoidRule#liveRefs}).
  */
 final class RefsStore {
     private RefsStore() { }
 
     /**
-     * All readable refs that are not voided in any copy, oldest first within each file
-     * (primary root first). Bad lines are skipped.
+     * All readable refs that are not voided ({@link VoidRule#liveRefs}), oldest first within
+     * each file (primary root first). Bad lines are skipped.
      */
     static List<PointRow> readAll(Context ctx) {
-        List<PointRow> out = new ArrayList<>();
+        List<VoidRule.RefsCopy> copies = new ArrayList<>();
         for (File f : Storage.refsFiles(ctx)) {
+            List<PointRow> rows = new ArrayList<>();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
                     if (line.isEmpty() || line.startsWith("session,")) continue;
                     try {
-                        out.add(PointRow.parse(PointRow.split(line), 1));
+                        rows.add(PointRow.parse(PointRow.split(line), 1));
                     } catch (IllegalArgumentException ignored) { }
                 }
+                copies.add(new VoidRule.RefsCopy(f.lastModified(), rows));
             } catch (IOException | SecurityException ignored) {
                 // e.g. a file left by an earlier install, which Android no longer lets this app read
             }
         }
-        return VoidRule.liveRefs(out);
+        return VoidRule.liveRefs(copies);
     }
 
     /** Appends one ref (creating the file with its header if needed). Returns the file written. */
