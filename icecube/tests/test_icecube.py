@@ -709,6 +709,23 @@ class TestPlanePass(unittest.TestCase):
             np.testing.assert_allclose(s.gradient[acc], np.hypot(gx, gy), atol=0.06)
             self.assertFalse(np.any(red_of(s) & ~red_of(s0)))
 
+    def test_outlier_table_lists_planar_nodes_first(self):
+        # a large bank: many outlier nodes, the cleared (planar) ones with a low worst
+        # difference; cut to 5 rows, the planar nodes still come first and the cut is said
+        from icecube import report
+        p, grid = bank_block(0.3, 0, n=9, ny=7)
+        s = bank_run(p, grid)
+        npl = int(s.planar.sum())
+        self.assertGreaterEqual(npl, 3)
+        rows = report.table_outliers(s, limit=npl + 2).splitlines()
+        self.assertEqual(rows[0], f"Planar nodes (rebuilt on a neighbour plane): {npl}")
+        self.assertTrue(rows[1].startswith(f"Showing {npl + 2} of "))
+        body = [r for r in rows if r.startswith("| ") and not r.startswith("| east")]
+        self.assertEqual(len(body), npl + 2)
+        self.assertTrue(all(r.rstrip(" |").split("|")[-1].strip() for r in body[:npl]))   # gradient filled
+        self.assertFalse(any(r.split("|")[-2].strip() for r in body[npl:]))
+        self.assertNotIn("Showing", report.table_outliers(s, limit=1000))
+
     def test_accepted_sigma_carries_the_common_gradient_error(self):
         # the gradient error is common to every reduced entry: the output sigma'^2 is the
         # pass-2 rebuild's plus d_bar'C_g d_bar (d_bar the pass-2 main's centroid)

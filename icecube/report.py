@@ -169,7 +169,10 @@ def table_outliers(surface: Surface, mask=None, limit=30):
     surface), the strength max(0, 5 - n_in/n_out), the worst normalised difference of any
     sounding from the node's final estimate (robust = false: n_out is the running flag
     count and "worst" the running maximum), and the neighbour-plane gradient |g| where the
-    plane pass replaced pass 1 (issue #29). A first line counts the planar nodes."""
+    plane pass replaced pass 1 (issue #29). A first line counts the planar nodes. Planar
+    nodes are listed first (cleared ones have a low worst difference and would otherwise
+    drop off a long list), then the rest, each group by worst difference; at most `limit`
+    rows, and a line says when the list is cut."""
     planar = surface.planar if surface.planar is not None else np.zeros(surface.n.shape, bool)
     m = (surface.n_out > 0) | planar
     if mask is not None:
@@ -177,9 +180,12 @@ def table_outliers(surface: Surface, mask=None, limit=30):
     jj, ii = np.where(m)
     if len(jj) == 0:
         return "no nodes with outliers"
-    head = f"Planar nodes (rebuilt on a neighbour plane): {int(planar[m].sum())}"
-    order = np.argsort(-surface.maxnr[jj, ii], kind="stable")[:limit]
-    rows = [head, "", "| east (m) | north (m) | n | passes | outliers | largest bin | bin minus node (cm) | strength | "
+    head = [f"Planar nodes (rebuilt on a neighbour plane): {int(planar[m].sum())}"]
+    order = np.lexsort((-surface.maxnr[jj, ii], ~planar[jj, ii]))
+    if len(order) > limit:
+        head.append(f"Showing {limit} of {len(order)} nodes: planar first, then by worst difference.")
+    order = order[:limit]
+    rows = head + ["", "| east (m) | north (m) | n | passes | outliers | largest bin | bin minus node (cm) | strength | "
             "worst (sigma) | node sigma (cm) | plane gradient |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for k in order:
         a, b = jj[k], ii[k]

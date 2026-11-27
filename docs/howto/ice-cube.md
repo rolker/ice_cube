@@ -167,7 +167,7 @@ read first-pass heights only. Masked nodes (`[[masks]]`) are neither tried nor u
 neighbours. The surface npz gains `planar` (the node was rebuilt this
 way), `gradient` (|g| of every fit that reached the slope test, kept or not) and
 `plane_code` (which gate stopped it, `nodes.PLANE_*`; 0 not tried), and the outlier table
-counts planar nodes. On the 11-26
+counts planar nodes and lists them first (a cut list says so). On the 11-26
 logger session (batch replay, slope 0.05) this cleared the 5 bank nodes and left the one
 bad capture red; nodes off the banks are unchanged by construction.
 
