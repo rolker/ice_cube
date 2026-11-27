@@ -55,3 +55,13 @@ issue: 23
 - [ ] Decide in the plan how a robust reference behaves with 1 and 2 earlier visits (median of two is the mean; a bad first visit has no defence), and skip voided and young refs when forming it.
 - [ ] Treat board tops as their own mark class compared against their own robust history, with a drift cue against the stable refs, never as references for the ref check.
 - [ ] Write the reference rule once in the README and have #15's follow-up text point to it.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:52 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (mechanism; owner asked to orchestrate in parallel while he is busy: "Orchestrate the issues while I'm busy and run them in parallel if practical")
+**After**: issue-actions
+**Decision**: proceed
+
+Host decisions (owner may veto): two PRs on this issue: PR A robust reference + placement and steadiness cues (extends #15's PoleCheck and columns; implementation after #15 merges); PR B the "validated by a known point" mark and board-top check points. Board tops: an existing ref mark gets a kind, chosen when the mark is first shot in Ref mode ("fixed ref" default, or "check point (may move)"), stored with the mark; check points get their own robust history and a drift cue against the fixed refs and are never references for fixed refs. Few earlier visits: plan states the rule (1 visit: compare with it, flagged as a single-visit reference; 2: mean, with a disagreement cue if they differ by more than the tolerance; 3+: median). Shared reference rule written once in logger/README.md.
