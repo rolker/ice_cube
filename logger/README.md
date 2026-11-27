@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.9.0
+# Ice Cube Logger 0.10.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -576,11 +576,37 @@ overlay and set in Settings > Coverage.
   main estimate's. Arrival order does not matter (up to 32 captures a node; past that the
   oldest agreeing ones are merged into one running sum, and a node with a long run of
   outliers keeps its height and turns red instead).
+- Plane pass (from 0.10.0, issue #29; nodes.py's `plane_pass`): on a steep bank a node
+  holds more relief inside its capture radius than the 0.05 m/m allowance, so its up- and
+  down-slope captures split into bins and it stays red. A node red after the rebuild above
+  is tried again: a plane is fitted through its 8 neighbours' estimates (each where its
+  captures actually sit, its main estimate's weighted centroid; red neighbours at a
+  quarter weight; at least 5 usable, 2 of them not red), and if the plane is flat enough to
+  trust (residuals within 3 sigma, the gradient pinned to 0.08 m/m) and steeper than the
+  allowance by 3 sigma, every capture is moved to the node centre along it and the node
+  rebuilt. The result replaces the first one only if the node leaves red (or has fewer
+  outliers) and its height agrees with the plane at the node; otherwise the first stands.
+  There is no DEM on the phone, so the batch's DEM gate is skipped and the allowance is
+  the constant 0.05 m/m everywhere. A node's result depends only on its own captures and
+  its 8 neighbours', so after each capture the pass is redone for the nodes the capture
+  fed and every node within one grid step of them (about 25 nodes at the defaults, up to
+  30), a few times the work of the rebuild alone (a 5000-capture bank rebuilds about 2x
+  slower with it on the desktop JVM, about 44 µs a capture). The overlay draws a node by
+  its final values: one cleared by the plane is clear or amber like any other (nothing
+  new to capture there); its sigma includes the plane's gradient uncertainty.
+  - Memory: each stored capture also keeps its offset from the node, sz² and sh (four
+    more numbers, and four running sums for the merged ones), about twice the store: a node
+    at the 32-capture limit is about 2.4 kB instead of 1.2 kB, so the full 250,000-node
+    grid at that limit would be about 600 MB (it was about 290 MB; no session comes near:
+    fringe nodes store nothing and most nodes hold a few captures). Two logged sessions
+    replayed at the defaults (1,000-1,600 nodes with captures) went from about 0.5-0.7 MB
+    to 0.9-1.3 MB.
 - Area: nodes within reach (default 2 m) of any capture. Only those are drawn.
-- Colours: **red** where the outliers are not outvoted 2:1 (outliers > 0 and agreeing
-  captures < 2 × outliers), or where an in-area node has no capture within the capture
-  radius but captures on all four sides (a gap between passes wider than about 1.5 m at
-  the defaults shows as a red strip); **amber** where the node sigma, with the pass wander
+- Colours (from the final values, after the plane pass): **red** where the outliers are
+  not outvoted 2:1 (outliers > 0 and agreeing captures < 2 × outliers), or where an
+  in-area node has no capture within the capture radius but captures on all four sides (a
+  gap between passes wider than about 1.5 m at the defaults shows as a red strip);
+  **amber** where the node sigma, with the pass wander
   added (sqrt(sigma² + wander²)), is above the target; **clear** at or below it; a faint
   **grey** for the edge of the walked area with no capture yet (reach minus capture radius,
   1.25 m at the defaults: the survey ends there). All are translucent so the layers show
@@ -629,15 +655,21 @@ overlay and set in Settings > Coverage.
   example after the app is swiped away from the recent apps and opened again).
 - Replay: each rebuild with settings or an origin not yet logged for the session writes
   `coverage cell=… radius=… reach=… target=… wander=… ground=… slope=… k_sigma=… cap=…
-  outvote=… origin_lat=… origin_lon=… origin_h=… origin_source="…"` to `events.csv`, so the
+  outvote=… plane=1 plane_min_neighbours=… plane_min_nin=… plane_min_clear=…
+  plane_red_weight=… plane_planarity=… plane_max_sigma_g=… origin_lat=… origin_lon=…
+  origin_h=… origin_source="…"` to `events.csv` (the plane settings from 0.10.0), so the
   overlay can be replayed exactly from the session files.
 
 The Java ports are checked against icecube: `python3 -m icecube.logger_vectors --out
 logger/app/src/test/resources/coverage_vectors.json` writes test vectors from
-`nodes.NodeStore` (through a Python twin of Coverage with its area and status rules) and
-`soundings.sigma_terms`, and the JVM tests (`CoverageTest`, `SoundingSigmaTest`) compare
-against them, node by node and status by status after each capture; regenerate when
-either changes. The drawing
+`nodes.NodeStore` (through a Python twin of Coverage with its area and status rules),
+`nodes.plane_pass` and `soundings.sigma_terms`, and the JVM tests (`CoverageTest`,
+`PlanePassTest`, `SoundingSigmaTest`) compare against them, node by node and status by
+status after each capture; regenerate when either changes. The plane parts are
+`plane_vectors` (9 blocks below the 32-capture limit), `plane_folded_vectors` (2 banks
+past it, with merges and drops) and `plane_sequences` (a bank captured one at a time,
+the expected status after each capture from the plane pass redone over the whole grid,
+so the ring rule is checked, not copied). The drawing
 window and the background thread's order and cancellation have their own JVM tests
 (`CoverageRasterTest`, `CoverageWorkerTest`).
 

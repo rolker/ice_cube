@@ -124,3 +124,11 @@ Reference material is in `howto/`, the narrative in `story/`.
   entries carry a UTC timestamp; the importer also corrects older zips' local times by the
   phone's zone offset from events.csv, takes a moved photo's row from the photo column, and
   soundings.py keeps a real photo's window in the same second as a flagged capture.
+- 11-27: logger 0.10.0 (#29, second PR): the plane pass runs live on the phone. A node red
+  after the rebuild is retried with a plane through its 8 neighbours (constant 0.05 m/m
+  allowance, no DEM gate) and drawn by its final values, so a steep bank no longer stays
+  red. Captures merged past the 32-a-node limit keep their offsets and variances as
+  weighted sums, so a busy node reduces exactly; nodes.py does the same, and every batch
+  result and earlier vector is unchanged. The pass is redone for about 25 nodes per
+  capture: a 5000-capture bank rebuild takes about 2x as long, and the store about 2x
+  the memory.
