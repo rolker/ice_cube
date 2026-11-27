@@ -50,6 +50,19 @@ public final class VoidRule {
     }
 
     /**
+     * True when a touch event on UNDO ends its press with no click to follow, so the press-down
+     * it recorded must be forgotten: a cancel, or a lift (up) when the button is no longer
+     * pressed (View cleared it on a move past the touch slop, even if the finger came back) or
+     * lands outside the button and its slop. pressed is the button's state before View sees the
+     * lift. A lift while only prepressed (a tap shorter than the tap timeout, inside a scrolling
+     * container, which UNDO is not in) is also forgotten; its click is then timed at the click,
+     * at most that timeout after the press.
+     */
+    public static boolean pressEndsWithoutClick(boolean cancel, boolean up, boolean pressed, boolean outsideSlop) {
+        return cancel || (up && (!pressed || outsideSlop));
+    }
+
+    /**
      * A reason fit for points.csv and an events.csv line: commas, semicolons, '=' and line
      * breaks become spaces, runs of spaces collapse, trimmed; empty becomes "other".
      */

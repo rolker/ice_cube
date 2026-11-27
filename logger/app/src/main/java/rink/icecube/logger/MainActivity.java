@@ -204,16 +204,19 @@ public final class MainActivity extends Activity {
         undoB.setVisibility(View.GONE);
         // the arm delay is checked against the press-down, so a press already under way when
         // UNDO appears cannot undo however long it is held. A press that ends with no click
-        // (cancelled, or lifted outside the button and its touch slop, as View decides) is
-        // forgotten, so a later key or accessibility click is timed at that click instead.
+        // (cancelled, lifted outside the button and its touch slop, or lifted after sliding
+        // out past the slop and back, which already cleared the pressed state) is forgotten,
+        // so a later key or accessibility click is timed at that click instead. The listener
+        // runs before View's own onTouchEvent, so isPressed() is still the state before the lift.
         int slop = ViewConfiguration.get(this).getScaledTouchSlop();
         undoB.setOnTouchListener((v, e) -> {
             int a = e.getActionMasked();
             if (a == MotionEvent.ACTION_DOWN) {
                 undoDownNs = SystemClock.elapsedRealtimeNanos();
-            } else if (a == MotionEvent.ACTION_CANCEL || (a == MotionEvent.ACTION_UP
-                    && (e.getX() < -slop || e.getY() < -slop
-                        || e.getX() >= v.getWidth() + slop || e.getY() >= v.getHeight() + slop))) {
+            } else if (VoidRule.pressEndsWithoutClick(a == MotionEvent.ACTION_CANCEL,
+                    a == MotionEvent.ACTION_UP, v.isPressed(),
+                    e.getX() < -slop || e.getY() < -slop
+                        || e.getX() >= v.getWidth() + slop || e.getY() >= v.getHeight() + slop)) {
                 undoDownNs = -1;
             }
             return false;   // the button still handles the press and the click

@@ -43,6 +43,14 @@ public class VoidRuleTest {
         assertFalse(VoidRule.undoOpen(capture, appeared + VoidRule.UNDO_ARM_MS * MS));
     }
 
+    @Test public void undoPressForgottenWithoutClick() {
+        assertFalse(VoidRule.pressEndsWithoutClick(false, true, true, false));   // a tap: click follows
+        assertTrue(VoidRule.pressEndsWithoutClick(false, true, false, false));   // slid out and back, then lifted
+        assertTrue(VoidRule.pressEndsWithoutClick(false, true, true, true));     // lifted outside the slop
+        assertTrue(VoidRule.pressEndsWithoutClick(true, false, true, false));    // cancelled
+        assertFalse(VoidRule.pressEndsWithoutClick(false, false, false, true));  // a move keeps the press
+    }
+
     @Test public void recentCapturesNewestFirst() {
         List<PointRow> rows = new ArrayList<>();
         for (int n = 1; n <= 14; n++) rows.add(row(n, n % 4 == 0 ? PointRow.PHOTO : PointRow.SURFACE));
