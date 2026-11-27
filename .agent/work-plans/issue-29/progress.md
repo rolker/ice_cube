@@ -812,3 +812,13 @@ The 4 small suggestions (plane_over hardcoded cell, ring max 26 not 30, varFinal
 - [ ] (suggestion, Local Review (Pre-Push) @ `cbba472` covers via bookkeeping) `LiveCoverage.gtrace` is initialised and never read or written (`_ring` calls `plane_over` without it; `_full_plane` uses a local list); remove it — `icecube/logger_vectors.py:202`
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 09:35 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (4 small valid suggestions, each a few lines; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Fix all four as the Integrated Review at a9b1fb0 describes.
