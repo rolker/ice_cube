@@ -5,6 +5,7 @@ import contextlib
 import csv
 import math
 import io
+import os
 import itertools
 import random
 import shutil
@@ -24,7 +25,7 @@ import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
 from logger_session import (_i, find_sessions, load_session, zip_entry_mtime, zip_entry_stamp,  # noqa: E402
-                            zip_zone_offset)
+                            zip_entry_time_key, zip_zone_offset)
 
 
 def run(*argv):
@@ -763,7 +764,8 @@ class RefsCopyTimeTest(unittest.TestCase):
             return got
         with zipfile.ZipFile(z) as zf:   # no events.csv: not a session, read the entry itself
             info = zf.getinfo("refs.csv")
-            return (zf.read(info).decode(),) + zip_entry_stamp(info)
+            key = zip_entry_time_key(info)
+            return (zf.read(info).decode(),) + zip_entry_stamp(info) + ((key,) if key else ())
 
     def void(self, copies, ties=None):
         imp.import_refs_csv(self.gp, copies, ties)
@@ -792,8 +794,35 @@ class RefsCopyTimeTest(unittest.TestCase):
             self.assertIsNone(zip_zone_offset(info, b"elapsed_ns,wall_ms,event\n"))
 
     def test_snapshot_gap_is_approx(self):
-        text, mtime, unc = self.copy(self.cleared, self.T, -18000, events_gap_s=600)
+        text, mtime, unc, key = self.copy(self.cleared, self.T, -18000, events_gap_s=600)
         self.assertEqual(unc, 26 * 3600)                       # mtime_approx, not shifted by 15 min
+        self.assertEqual(key, f"dos:{self.T - 18000!r}")       # the raw DOS stamp, zone-free
+
+    def test_approx_copy_imported_in_two_zones_is_one_copy(self):
+        """A copy with no 0x5455 and no usable events.csv offset (mtime_approx) is read in
+        the PC's zone, but keyed on its raw DOS stamp: importing the same zip on PCs in two
+        zones adds one copy and gives the same flag (#27)."""
+        z = synth.phone_zip(self.d / "zones.zip", self.flagged, self.T, -18000, events_gap_s=600)
+        old_tz = os.environ.get("TZ")
+        got = []
+        try:
+            for tz in ("UTC0", "JST-9"):
+                os.environ["TZ"] = tz
+                time.tzset()
+                src = find_sessions([z])[0]
+                copies = src.refs_csv_copies()
+                src.close()
+                got.append(copies[0][1])
+                got.append(self.void(copies))
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+        self.assertEqual(got[0] - got[2], 9 * 3600)            # the approx times differ by the zones
+        self.assertEqual((got[1], got[3]), (1, 1))
+        self.assertEqual(self.gp.con.execute("SELECT count(*) FROM refs_copies WHERE session='s1'").fetchone(), (1,))
 
     def test_extended_timestamp_orders_across_zones(self):
         # flagged on a phone at UTC+3, cleared 10 min later at UTC-5: the DOS times say the

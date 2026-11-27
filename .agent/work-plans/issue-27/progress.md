@@ -996,7 +996,7 @@ One open suggestion (the copy id includes an approximate time read in the import
 **CI**: none (no checks configured on the PR head)
 
 ### Findings
-- [ ] (suggestion, Local Review (Pre-Push) @ `d87686b`) Valid, still open at head: `_copy_id` keys a copy on its mtime and uncertainty, and on the mtime_approx path (no 0x5455 stamp, no events.csv) that time is the DOS stamp read in the importing PC's zone. The same zip imported on a PC in another zone becomes a second copy with a shifted interval, which can change which copies decide the flag. Rare (logger 0.9.0+ zips carry 0x5455; pre-0.9.0 copies have no void column). Fix: key that path on the raw DOS stamp, or state the limitation in the `_copy_id` docstring — `analysis/qgis/import_sessions.py:421`
+- [x] (suggestion, Local Review (Pre-Push) @ `d87686b`) Valid, still open at head: `_copy_id` keys a copy on its mtime and uncertainty, and on the mtime_approx path (no 0x5455 stamp, no events.csv) that time is the DOS stamp read in the importing PC's zone. The same zip imported on a PC in another zone becomes a second copy with a shifted interval, which can change which copies decide the flag. Rare (logger 0.9.0+ zips carry 0x5455; pre-0.9.0 copies have no void column). Fix: key that path on the raw DOS stamp, or state the limitation in the `_copy_id` docstring — `analysis/qgis/import_sessions.py:421`
 
 ### False positives
 

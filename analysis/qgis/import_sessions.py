@@ -61,9 +61,10 @@ photo's `n` and `attached` come from the points.csv row whose photo column lists
 from the number in its file name or its original event. A zip entry's time is its UTC
 extended timestamp (logger 0.9.0, exact), else its DOS time corrected by the zone offset
 found from the zip's events.csv (within 1 h: a DST change may lie between the entry and
-events.csv), else (mtime_approx) the DOS time read in this PC's zone (within 26 h). Each
-copy time is thus an interval; copies whose intervals overlap are a tie, decided flagged,
-and the report names each ref a tie decided. Every copy's flag per ref is kept in the
+events.csv), else (mtime_approx) the DOS time read in this PC's zone (within 26 h; such a
+copy is identified by its raw DOS stamp, so importing it on a PC in another zone adds no
+copy). Each copy time is thus an interval; copies whose intervals overlap are a tie,
+decided flagged, and the report names each ref a tie decided. Every copy's flag per ref is kept in the
 `refs_copies` table (once per copy: content hash and time), and each import decides the
 flag from all copies seen so far, so one import of all the copies and any sequence of
 imports, in any order, agree; refs keep the interval of the copies that decided it
@@ -418,11 +419,16 @@ def _flag_reason(cands):
     return max(cands, key=lambda c: (-math.inf if c[0] is None else c[0], c[1] or ""))[1]
 
 
-def _copy_id(text, mtime, unc):
+def _copy_id(text, mtime, unc, time_key=None):
     """Identity of one refs.csv copy: its content hash and its time (mtime, uncertainty), so
     the same file met again (the same zip imported twice, or shipped in two exports of a
-    session) is one copy, and a copy whose content or time differs is another."""
+    session) is one copy, and a copy whose content or time differs is another. `time_key`,
+    when given (logger_session.zip_entry_time_key: the raw DOS stamp of an mtime_approx
+    copy), stands for the time instead, since that mtime depends on the importing PC's zone:
+    the same zip imported on PCs in different zones is then still one copy."""
     h = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:32]
+    if time_key is not None:
+        return f"{h}@{time_key}"
     return f"{h}@{'' if mtime is None else repr(float(mtime))}+{float(unc or 0.0)!r}"
 
 
@@ -442,8 +448,9 @@ def _decide_flag(cs):
 def import_refs_csv(gp, texts, ties=None):
     """refs.csv rows of sessions not otherwise imported (rows already there are kept, except
     that the void flag of a row taken from a refs.csv follows the refs.csv copies, both ways).
-    `texts` holds refs.csv texts, or (text, mtime) or (text, mtime, uncertainty_s) tuples
-    (see logger_session.zip_entry_stamp). When copies disagree, the newest copy of this run
+    `texts` holds refs.csv texts, or (text, mtime), (text, mtime, uncertainty_s) or
+    (text, mtime, uncertainty_s, time_key) tuples (see logger_session.zip_entry_stamp and
+    SessionSource.refs_csv_dated; time_key keys the copy's identity, _copy_id). When copies disagree, the newest copy of this run
     (by mtime; equal or unknown times keep input order) gives a new row's values.
 
     The void flag comes from every copy with a void column seen in this run or any earlier
@@ -470,11 +477,12 @@ def import_refs_csv(gp, texts, ties=None):
     dated = []
     for t in texts:
         t = (t,) if isinstance(t, str) else tuple(t)
-        dated.append((t[0], t[1] if len(t) > 1 else None, (t[2] if len(t) > 2 else 0.0) or 0.0))
+        dated.append((t[0], t[1] if len(t) > 1 else None, (t[2] if len(t) > 2 else 0.0) or 0.0,
+                      t[3] if len(t) > 3 else None))
     dated = sorted(enumerate(dated), key=lambda it: (it[1][1] if it[1][1] is not None else float("-inf"), it[0]))
     rows, copies = {}, {}
-    for _, (text, mtime, unc) in dated:   # oldest first: later copies give the row
-        cid = _copy_id(text, mtime, unc)
+    for _, (text, mtime, unc, time_key) in dated:   # oldest first: later copies give the row
+        cid = _copy_id(text, mtime, unc, time_key)
         for r in read_refs_csv(text):
             key = (r["session"], r["n"])
             rows[key] = r
