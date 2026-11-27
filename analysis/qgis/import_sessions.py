@@ -88,6 +88,8 @@ REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
 SCHEMA_VERSION = 4     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
                        # 4: captures and refs carry the logger 0.9.0 void flag (void, void_reason)
+SCHEMA_TILT = 3        # the schema that brought the logger 0.6 columns: a session re-read at
+                       # it or later holds whatever tilt values its source has
 SCHEMA_APP = {3: (0, 6), 4: (0, 9)}   # the oldest app whose sessions have data for each schema
                                       # step; add an entry with every SCHEMA_VERSION change
 
