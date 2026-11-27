@@ -495,7 +495,7 @@ def reduce_to_plane(es, gx, gy, cov_g):
     return out
 
 
-def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, trace=None, **prm):
+def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, trace=None, skip=(), **prm):
     """The neighbourhood-gradient pass (issue #29) over pass-1 results.
 
     `stores`: node index (a*nx + b) -> entries; `out1`: node index -> pass-1 output dict
@@ -505,7 +505,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
     each fit uses the pass-1 mains of the 8 neighbours (one sweep, nothing cleared here
     feeds a later fit). Returns node index -> (code, pass-2 output or None, |g| or NaN)
     for every tried node. `trace`, when a list, receives (name, value, threshold) for each
-    continuous gate comparison (the vector generator's threshold guard)."""
+    continuous gate comparison (the vector generator's threshold guard). `skip`: node
+    indices neither tried nor used as neighbours (masked nodes)."""
     p = dict(PLANE_DEFAULTS, **{k: v for k, v in prm.items() if v is not None})
     planarity = k_sigma if p["planarity"] is None else float(p["planarity"])
     # n_in as len(entries) - n_out: right for unfolded entries (batch); a folded aggregate
@@ -513,7 +514,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
     red = {i: is_red(len(stores[i]) - o["n_out"], o["n_out"]) for i, o in out1.items()}
     res = {}
     for idx, o in out1.items():
-        if not red[idx]:
+        if not red[idx] or idx in skip:
             continue
         a, b = divmod(idx, nx)
         nbrs = []
@@ -523,7 +524,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
                 if (da == 0 and db == 0) or not (0 <= aa < ny and 0 <= bb < nx):
                     continue
                 j = aa * nx + bb
-                if j not in out1 or len(stores[j]) - out1[j]["n_out"] < p["min_nin"]:
+                if j not in out1 or j in skip or len(stores[j]) - out1[j]["n_out"] < p["min_nin"]:
                     continue
                 o_j = out1[j]    # weight w, not 1/sigma^2: pass bias left out on purpose (docstring)
                 nbrs.append((db * cell + o_j.get("cx", 0.0), da * cell + o_j.get("cy", 0.0), o_j["z"], o_j["w"],
@@ -639,7 +640,7 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
                  robust=True, eeg_quotient_limit=30.0, plane=True, raw_slope=None,
                  plane_min_neighbours=5, plane_min_nin=2, plane_min_clear=2, plane_red_weight=0.25,
                  plane_planarity=None, plane_max_sigma_g=PLANE_DEFAULTS["max_sigma_g"], plane_dem_cap=2.0,
-                 plane_dem_floor=0.05) -> Surface:
+                 plane_dem_floor=0.05, node_mask=None) -> Surface:
     """Fuse the (bias-corrected) points of one or more surveys into node estimates.
     `sb_list[k]` is the per-point bias sigma of `surveys[k]` (from crossover.apply).
     `slope` is one allowance (m/m) or an array of the grid's shape (ny, nx), one per node
@@ -651,7 +652,10 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
     `plane` (robust mode only; ignored with robust=False) runs the neighbourhood-gradient
     pass on nodes red after pass 1 (module docstring, Plane pass); the `plane_*` arguments
     are its thresholds (`plane_planarity` None: k_sigma). `raw_slope`, an array of the
-    grid's shape with the raw DEM slope (m/m) per node, turns on its DEM gate; None skips it."""
+    grid's shape with the raw DEM slope (m/m) per node, turns on its DEM gate; None skips it.
+    `node_mask`, a bool array of the grid's shape, marks nodes the plane pass neither tries
+    nor uses as neighbours (masked ground: its heights are not the surface); their pass-1
+    values are still returned, for the caller to blank."""
     frames = {s.frame for s in surveys}
     if len(frames) > 1:
         raise ValueError(f"gridding across frames refused: {sorted(frames)}")
@@ -664,6 +668,10 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
         raw_slope = np.asarray(raw_slope, float)
         if raw_slope.shape != (grid.ny, grid.nx):
             raise ValueError("raw_slope must have the grid's shape (ny, nx)")
+    if node_mask is not None:
+        node_mask = np.asarray(node_mask, bool)
+        if node_mask.shape != (grid.ny, grid.nx):
+            raise ValueError("node_mask must have the grid's shape (ny, nx)")
     xs, ys, zs, vs, sbs, ts, pks, rrs = [], [], [], [], [], [], [], []
     pass_offset = 0
     radii = capture_radius if np.ndim(capture_radius) else [capture_radius] * len(surveys)
@@ -743,7 +751,8 @@ def grid_surface(surveys: list[Points], sb_list: list[np.ndarray], grid: Grid,
     if plane and robust:
         allow = (lambda a, b: float(slope_grid[a, b])) if slope_grid is not None else (lambda a, b: float(slope))
         raw = (lambda a, b: float(raw_slope[a, b])) if raw_slope is not None else None
-        tried = plane_pass(stores, out1, nx, ny, grid.cell, k_sigma, run, allow, raw,
+        skip = set(np.flatnonzero(node_mask).tolist()) if node_mask is not None else ()
+        tried = plane_pass(stores, out1, nx, ny, grid.cell, k_sigma, run, allow, raw, skip=skip,
                            min_neighbours=plane_min_neighbours, min_nin=plane_min_nin,
                            min_clear=plane_min_clear, red_weight=plane_red_weight,
                            planarity=plane_planarity, max_sigma_g=plane_max_sigma_g,

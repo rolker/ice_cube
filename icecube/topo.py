@@ -183,8 +183,8 @@ def plane_kwargs(gcfg):
 
 
 def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slopes):
-    """Grid the non-anchor corrected points; masked nodes get no value. `slopes` is
-    slope_array's (allowance, raw)."""
+    """Grid the non-anchor corrected points; masked nodes get no value and are not plane
+    neighbours. `slopes` is slope_array's (allowance, raw)."""
     slope, raw = slopes
     pts = [c.subset(c.anchor == "") for c in corrected]
     sbl = [sb[c.anchor == ""] for c, sb in zip(corrected, sbs)]
@@ -193,14 +193,14 @@ def grid_surface(ctx, gcfg, grid, sname, corrected, sbs, slopes):
     default = float(gcfg.get("capture_radius", 1.5 * grid.cell))
     # a survey's own capture_radius (e.g. a 2 m DEM) is a floor for every grid
     capture = [max(default, float(ctx.surveys[p.survey][2].get("capture_radius", 0.0))) for p in pts]
+    X, Y = np.meshgrid(grid.xs, grid.ys)
+    nmask = mask_points(ctx.masks, X, Y) if ctx.masks else np.zeros(X.shape, bool)
     surf = nodes.grid_surface(pts, sbl, grid, capture_radius=capture, slope=slope,
                               k_sigma=float(gcfg.get("k_sigma", 3.0)), robust=bool(gcfg.get("robust", True)),
                               eeg_quotient_limit=float(gcfg.get("eeg_quotient_limit", 30.0)),
                               plane=bool(gcfg.get("plane", True)), raw_slope=raw,
                               **plane_kwargs(gcfg), name=sname,
-                              date=max(p.date for p in pts), frame=pts[0].frame)
-    X, Y = np.meshgrid(grid.xs, grid.ys)
-    nmask = mask_points(ctx.masks, X, Y) if ctx.masks else np.zeros(X.shape, bool)
+                              date=max(p.date for p in pts), frame=pts[0].frame, node_mask=nmask)
     surf.z = np.where(nmask, np.nan, surf.z)
     surf.sigma = np.where(nmask, np.nan, surf.sigma)
     surf.n = np.where(nmask, 0, surf.n)

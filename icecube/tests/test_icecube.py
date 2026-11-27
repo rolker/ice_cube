@@ -720,6 +720,18 @@ class TestPlanePass(unittest.TestCase):
         self.assertGreater(vbar, 0.0)
         self.assertAlmostEqual(s.sigma[self.C] ** 2, o2["sigma"] ** 2 + vbar, places=12)
 
+    def test_masked_nodes_are_not_tried_or_neighbours(self):
+        p, grid = bank_block(0.3, 0)
+        self.assertEqual(bank_run(p, grid).plane_code[self.C], nodes.PLANE_ACCEPTED)
+        m = np.zeros((grid.ny, grid.nx), bool)
+        m[self.C] = True
+        self.assertEqual(bank_run(p, grid, node_mask=m).plane_code[self.C], nodes.PLANE_NOT_TRIED)
+        m[:] = False
+        m[2, 2:5] = m[3, 2] = True    # 4 of the 8 neighbours masked: 4 usable, under 5
+        self.assertEqual(bank_run(p, grid, node_mask=m).plane_code[self.C], nodes.PLANE_FEW)
+        with self.assertRaises(ValueError):
+            bank_run(p, grid, node_mask=np.zeros((2, 2), bool))
+
     def test_bank_clears_with_one_red_neighbour(self):
         p, grid = bank_block(0.2, 33)
         s0 = bank_run(p, grid, plane=False)
