@@ -45,3 +45,13 @@ issue: 20
 - Reader reuses `logger_session.py` and the `soundings.py` sigma and stretch rules; carry `fix_age_s`, `fix_jump_m` and `fix_suspect` (and #15's `fix_young`, `float_spell_s`) through, exclude voided captures, and make fix stretches the pass boundaries.
 - Re-fit the settle term on the 11-11, 11-15 and 11-21 sessions (flat to about the settle time, then taper), report only relative figures, and ship it with the vectors and Java port in the same PR.
 - Treat the settle re-fit as separable: if it grows beyond a small change, split it from the reader.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:51 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (mechanism only; owner asked to orchestrate the issues in parallel while he is busy: "Orchestrate the issues while I'm busy and run them in parallel if practical")
+**After**: issue-actions
+**Decision**: proceed
+
+Host decisions (owner may veto): the reader is a thin icecube.io adapter over logger_session.py and the soundings rules (no third parser); robust nodes are already delivered by #24/#29, noted as done rather than re-scoped; the settle re-fit is planned in this issue, and if it grows beyond a small change the plan says so and the split goes to the owner as a question (a new issue is his). Implementation starts only after #15 merges and builds on it (120 s settle, new points.csv columns, float-spell rule).
