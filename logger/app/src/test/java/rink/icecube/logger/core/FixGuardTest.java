@@ -199,6 +199,7 @@ public class FixGuardTest {
             assertEquals(FixGuard.REASON_FLOAT_SPELL, s.reason);
             assertEquals(FixGuard.PRIOR_FLOAT, s.prior);
             assertEquals(60.25, s.floatSpellS, 1e-9);
+            assertEquals(0.48, s.jump, 1e-4);   // from the last float epoch, across the dropout
         }
         // a dropout over 2 s ends the spell
         FixGuard g = guard();
@@ -207,6 +208,47 @@ public class FixGuardTest {
         FixGuard.Stretch s = g.onEpoch(ep(t, 4, 0, 0.48, 0));
         assertFalse(s.suspect);
         assertEquals(FixGuard.PRIOR_SINGLE, s.prior);
+    }
+
+    // #15 parity with test_soundings test_jump_carries_over_a_short_dropout: the start jump is
+    // measured from the last float or fixed epoch across a dropout of 2 s or less
+    @Test public void startJumpCarriesOverAShortDropout() {
+        for (int q : new int[] {0, 1, 2}) {
+            // the 2026-11-21 shape with a float spell under 20 s: flagged by the jump
+            FixGuard g = guard();
+            long t = feed(g, 0, 10, 5, 0, 0, 0);
+            g.onEpoch(q == 0 ? noPos(t) : ep(t, q, 3, 0, 0));
+            FixGuard.Stretch s = g.onEpoch(ep(t + Q, 4, 0, 1.5, 0));
+            assertEquals(1.5, s.jump, 1e-4);
+            assertTrue(s.suspect);
+            assertEquals(FixGuard.REASON_JUMP, s.reason);
+            assertEquals(FixGuard.PRIOR_FLOAT, s.prior);
+            // a whole 2 s of dropout still carries it
+            FixGuard h = guard();
+            t = feed(h, 0, 10, 5, 0, 0, 0);
+            for (long u = t; u < t + 7 * Q; u += Q) h.onEpoch(q == 0 ? noPos(u) : ep(u, q, 3, 0, 0));
+            assertEquals(1.5, h.onEpoch(ep(t + 7 * Q, 4, 0, 1.5, 0)).jump, 1e-4);
+            // over 2 s: unknown
+            FixGuard k = guard();
+            t = feed(k, 0, 10, 5, 0, 0, 0);
+            t = feed(k, t, 3, q, 3, 0, 0);
+            FixGuard.Stretch u = k.onEpoch(ep(t, 4, 0, 1.5, 0));
+            assertTrue(Double.isNaN(u.jump));
+            assertFalse(u.suspect);
+        }
+    }
+
+    // #15: the 2 s tests run on the GGA clock, as soundings.fix_stretches does, not on phone arrival time
+    @Test public void gapTestsUseTheGgaClock() {
+        FixGuard g = guard();
+        g.onEpoch(new Epoch(0, 100.0, 0, 0, 0, 1, 5));
+        FixGuard.Stretch a = g.onEpoch(new Epoch(Q, 100.25, 0, 0, 0, 1, 4));
+        g.onEpoch(new Epoch(2 * Q, 100.5, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0));
+        // arrives 2.2 s after the last fixed epoch on the phone, 2.00 s on the GGA clock: same stretch
+        assertNull(g.onEpoch(new Epoch(Q + 2200_000_000L, 102.25, 0, 0, 0, 1, 4)));
+        assertEquals(a, g.current());
+        assertEquals(2.0, FixGuard.dt(new Epoch(0, 86399.0, 0, 0, 0, 1, 4), new Epoch(0, 1.0, 0, 0, 0, 1, 4)), 1e-9);
+        assertEquals(1.5, FixGuard.dt(new Epoch(0, Double.NaN, 0, 0, 0, 1, 4), new Epoch(1500_000_000L, 1.0, 0, 0, 0, 1, 4)), 1e-9);
     }
 
     @Test public void distanceIsHorizontalWithoutHeight() {

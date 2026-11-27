@@ -267,10 +267,13 @@ the stretches of RTK fixed GGA epochs:
   pole cannot make; at 4 Hz that is 0.5 m). So a float epoch, a step, or more than 2 s
   since the last fixed epoch (the GPS went quiet, or gave no position, single or DGPS)
   starts a new stretch; from 0.11.0 a dropout of 2 s or less inside a fix (no position,
-  single or DGPS epochs) does not, and the stretch's age runs on through it.
-- The jump at stretch start is the 3D distance from the previous epoch with a position to
-  the first fixed one, only if that epoch was float or fixed and at most 2 s older. From
-  0.11.0 it is unknown (empty) after single or DGPS epochs: the first fix of a session (no
+  single or DGPS epochs) does not, and the stretch's age runs on through it. Every 2 s
+  test runs on the GGA time (the receiver's clock, as soundings.py), not on when the phone
+  read the sentence, so a whole-epoch dropout of exactly 2 s reads the same on both.
+- The jump at stretch start is the 3D distance from the last float or fixed epoch to the
+  first fixed one, only if that epoch is at most 2 s older; so it carries over a dropout
+  of 2 s or less (no position, single or DGPS) between float and fix. From 0.11.0 it is
+  unknown (empty) after longer single or DGPS spells: the first fix of a session (no
   corrections yet) always "jumps" by metres, and that flagged good fixes (2026-11 field
   data, a 2.3 m step). Unknown is neither suspect nor clean; `fix_start` says what came
   before the stretch: `float`, `single` (single or DGPS), `none` (first epoch, or an epoch

@@ -6,17 +6,23 @@ package rink.icecube.logger.core;
  * false fixes begin.
  *
  * A stretch starts at an epoch of quality 4 unless it continues the last one: the last
- * fixed epoch is at most {@link #GAP_NS} (2 s) older, no float epoch came between, and this
+ * fixed epoch is at most {@link #GAP_S} (2 s) older, no float epoch came between, and this
  * one is at most {@link #inFixLimit} away from it (0.5 m, more for slow GGA rates: a step a
  * moving pole cannot make between two epochs). So a dropout of 2 s or less inside a fix (no
  * position, single or DGPS epochs) does not end the stretch; a longer one, a float epoch, a
  * quiet GPS over 2 s or a bigger step does (#15; soundings.fix_stretches is the same).
  *
- * The jump at stretch start is the 3D distance (m) from the previous epoch with a position
- * to the first fixed epoch, only if that previous epoch was float or fixed and is at most
- * 2 s older; otherwise it is unknown (NaN). After single or DGPS epochs (no corrections
- * yet) the first fix always "jumps" by metres, which is not a false-fix signature (logger
- * 0.11.0, #15); unknown is neither suspect nor clean: {@link Stretch#prior} says why.
+ * Clock: every 2 s test and the float spell length use the GGA time of day ({@link #dt}, the
+ * receiver's clock, as soundings.fix_stretches does), with {@link #GAP_TOL_S} of slack so a
+ * whole-epoch dropout that lands on 2 s reads the same on both sides; the phone time only
+ * stands in when a GGA has no time. Stretch ages (young) run on the phone time.
+ *
+ * The jump at stretch start is the 3D distance (m) from the last float or fixed epoch to the
+ * first fixed epoch, if that epoch is at most 2 s older; so it carries over a dropout of 2 s
+ * or less (no position, single or DGPS epochs) between float and fix (#15). Otherwise it is
+ * unknown (NaN): after single or DGPS epochs (no corrections yet) the first fix always
+ * "jumps" by metres, which is not a false-fix signature (logger 0.11.0, #15); unknown is
+ * neither suspect nor clean: {@link Stretch#prior} says why.
  *
  * Suspect, for the whole stretch, when either
  * - the jump is over suspectJumpM (field: false fixes began with 1.3 to 2.9 m jumps), or
@@ -33,7 +39,10 @@ package rink.icecube.logger.core;
  */
 public final class FixGuard {
     public static final double IN_FIX_JUMP_M = 0.5, IN_FIX_SPEED_MPS = 2.0;
-    public static final long GAP_NS = 2_000_000_000L;
+    /** Longest dropout (s) a stretch, a float spell and the start jump carry over. */
+    public static final double GAP_S = 2.0;
+    /** Slack (s) on the 2 s tests: GGA times are to 0.01 s, so this only absorbs rounding. */
+    public static final double GAP_TOL_S = 1e-3;
     /** What came before a stretch (points.csv fix_start). */
     public static final String PRIOR_FLOAT = "float", PRIOR_SINGLE = "single", PRIOR_NONE = "none",
             PRIOR_FIXED_JUMP = "fixed-jump", PRIOR_GAP = "gap";
@@ -75,9 +84,10 @@ public final class FixGuard {
     private double suspectJumpM;
     private Epoch prev;            // the previous epoch with a position
     private Epoch last;            // the previous epoch, with a position or not
+    private Epoch lastCorr;        // the last float or fixed epoch (the start jump's origin)
     private Epoch lastFix;         // the last fixed epoch of the open stretch; null after a float epoch
-    private long floatSinceNs = -1;   // first epoch of the float spell, -1 if none (fix since, or over 2 s ago)
-    private long lastFloatNs;         // last float epoch of that spell
+    private Epoch floatSince;      // first epoch of the float spell, null if none (fix since)
+    private Epoch lastFloat;       // last float epoch of that spell
     private Stretch current, lastStretch;
     private int count;
 
@@ -90,6 +100,21 @@ public final class FixGuard {
 
     /** The largest step (m) between consecutive fixed epochs dt seconds apart that is still the same stretch. */
     public static double inFixLimit(double dtSeconds) { return Math.max(IN_FIX_JUMP_M, IN_FIX_SPEED_MPS * dtSeconds); }
+
+    /**
+     * Seconds from a to b on the GGA clock (time of day, midnight rollover handled), or on
+     * the phone clock when either GGA has no time.
+     */
+    public static double dt(Epoch a, Epoch b) {
+        if (Double.isNaN(a.tod) || Double.isNaN(b.tod)) return (b.elapsedNs - a.elapsedNs) / 1e9;
+        double d = b.tod - a.tod;
+        if (d < -43200) d += 86400;
+        else if (d > 43200) d -= 86400;
+        return d;
+    }
+
+    /** Whether b is at most 2 s after a ({@link #dt}, with {@link #GAP_TOL_S} of slack). */
+    static boolean within2s(Epoch a, Epoch b) { return dt(a, b) <= GAP_S + GAP_TOL_S; }
 
     /** 3D distance in metres; horizontal only if either height is missing. */
     public static double distance(Epoch a, Epoch b) {
@@ -104,46 +129,48 @@ public final class FixGuard {
         Stretch started = null;
         boolean isFloat = e.quality == 5 && e.hasPosition();
         // a float spell lives on through a dropout of up to 2 s after its last float epoch
-        boolean spellOn = floatSinceNs >= 0 && e.elapsedNs - lastFloatNs <= GAP_NS;
+        boolean spellOn = floatSince != null && within2s(lastFloat, e);
         if (e.fixed()) {
-            boolean cont = lastFix != null && lastStretch != null && e.elapsedNs - lastFix.elapsedNs <= GAP_NS;
+            boolean cont = lastFix != null && lastStretch != null && within2s(lastFix, e);
             double dFix = cont ? distance(lastFix, e) : Double.NaN;
-            boolean withinFix = cont && dFix > inFixLimit((e.elapsedNs - lastFix.elapsedNs) / 1e9);
+            boolean withinFix = cont && dFix > inFixLimit(dt(lastFix, e));
             if (cont && !withinFix) {
                 current = lastStretch;   // same stretch, also after a short dropout
             } else {
-                boolean recent = prev != null && e.elapsedNs - prev.elapsedNs <= GAP_NS;
-                // the jump counts only from a float or fixed epoch (corrections in use)
+                boolean recent = prev != null && within2s(prev, e);
+                // the jump counts only from a float or fixed epoch (corrections in use), also
+                // across a dropout of 2 s or less (#15)
                 double jump = withinFix ? dFix
-                        : recent && (prev.quality == 4 || prev.quality == 5) ? distance(prev, e) : Double.NaN;
+                        : lastCorr != null && within2s(lastCorr, e) ? distance(lastCorr, e) : Double.NaN;
                 String prior;
-                long spellNs = -1;
+                double spellS = Double.NaN;
                 if (withinFix) prior = PRIOR_FIXED_JUMP;
                 else if (last == null || prev == null) prior = PRIOR_NONE;
                 else if (spellOn) {
                     prior = PRIOR_FLOAT;
-                    spellNs = e.elapsedNs - floatSinceNs;
-                } else if (e.elapsedNs - last.elapsedNs > GAP_NS || !recent) prior = PRIOR_GAP;
+                    spellS = dt(floatSince, e);
+                } else if (!within2s(last, e) || !recent) prior = PRIOR_GAP;
                 else if (!last.hasPosition()) prior = PRIOR_NONE;
                 else prior = PRIOR_SINGLE;
                 StringBuilder why = new StringBuilder();
                 if (!Double.isNaN(jump) && jump > suspectJumpM) why.append(REASON_JUMP);
-                if (floatSpellNs > 0 && spellNs >= floatSpellNs) {
+                if (floatSpellNs > 0 && !Double.isNaN(spellS) && spellS * 1e9 >= floatSpellNs) {
                     why.append(why.length() > 0 ? ";" : "").append(REASON_FLOAT_SPELL);
                 }
-                started = new Stretch(++count, e.elapsedNs, jump, prior,
-                        spellNs < 0 ? Double.NaN : spellNs / 1e9, why.toString());
+                started = new Stretch(++count, e.elapsedNs, jump, prior, spellS, why.toString());
                 current = started;
                 lastStretch = started;
             }
             lastFix = e;
-            floatSinceNs = -1;
+            lastCorr = e;
+            floatSince = null;
         } else {
             current = null;
             if (isFloat) {
                 lastFix = null;   // a float epoch ends the stretch
-                if (!spellOn) floatSinceNs = e.elapsedNs;
-                lastFloatNs = e.elapsedNs;
+                if (!spellOn) floatSince = e;
+                lastFloat = e;
+                lastCorr = e;
             }
         }
         if (e.hasPosition()) prev = e;

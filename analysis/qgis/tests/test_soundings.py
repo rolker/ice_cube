@@ -143,6 +143,48 @@ class TestStretchesAndStops(unittest.TestCase):
             self.assertAlmostEqual(ep.float_spell[i], 60.25, delta=0.01)
         ep = run(seg(0, 60, 5) + seg(60, 3, 1, e=3.0) + seg(63, 2, 4, n=0.48))
         self.assertFalse(ep.suspect[ep.stretch.index(0)])     # over 2 s: the spell is over
+        for q in (0, 1, 2):                                  # the jump carries over a one-epoch dropout too
+            ep = run(seg(0, 60, 5) + seg(60, 0.25, q, e=3.0) + seg(60.25, 2, 4, n=0.48))
+            self.assertAlmostEqual(ep.jump[ep.stretch.index(0)], 0.48, delta=0.01)
+
+    def test_jump_carries_over_a_short_dropout(self):
+        """#15, FixGuardTest startJumpCarriesOverAShortDropout: the start jump is measured from
+        the last float or fixed epoch across a dropout (no position, single or DGPS) of 2 s or
+        less; a float spell under 20 s with a 1.5 m step is flagged by the jump."""
+        def run(track):
+            ep = epochs_from(track)
+            for k, (_, _, _, _, f) in enumerate(track):
+                if f == 0:
+                    ep.x[k] = ep.y[k] = ep.za[k] = ep.z[k] = None
+            snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0)
+            return ep, ep.stretch.index(0)
+        seg = lambda t0, s, q, e=0.0, n=0.0: [(t0 + k / 4, e, n, 1.8, q) for k in range(int(s * 4))]  # noqa: E731
+        for q in (0, 1, 2):
+            ep, i = run(seg(0, 10, 5) + seg(10, 0.25, q, e=3.0) + seg(10.25, 2, 4, n=1.5))
+            self.assertAlmostEqual(ep.jump[i], 1.5, delta=0.01)
+            self.assertEqual(ep.suspect_why[i], "jump", q)
+            ep, i = run(seg(0, 10, 5) + seg(10, 1.75, q, e=3.0) + seg(11.75, 2, 4, n=1.5))   # 2 s exactly
+            self.assertAlmostEqual(ep.jump[i], 1.5, delta=0.01)
+            ep, i = run(seg(0, 10, 5) + seg(10, 3, q, e=3.0) + seg(13, 2, 4, n=1.5))         # over 2 s
+            self.assertIsNone(ep.jump[i])
+            self.assertFalse(ep.suspect[i])
+
+    def test_other_station_fix_ends_the_stretch(self):
+        """#15: with a station filter, a fixed epoch from another station ends the stretch, the
+        float spell and the jump origin, so an A-B-A switch within 2 s is a new stretch with
+        an unknown jump, not a continued one."""
+        seg = lambda t0, s, q, e=0.0, n=0.0: [(t0 + k / 4, e, n, 1.8, q) for k in range(int(s * 4))]  # noqa: E731
+        tr = seg(0, 30, 5) + seg(30, 5, 4) + seg(35, 0.5, 4, n=2.0) + seg(35.5, 5, 4, n=0.1)
+        ep = epochs_from(tr)
+        for k, (t, *_rest) in enumerate(tr):
+            ep.station[k] = 7 if 35 <= t < 35.5 else 3
+        snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0, station=3)
+        self.assertEqual(max(ep.stretch), 1)
+        self.assertTrue(ep.suspect[ep.stretch.index(0)])     # after 30 s of float
+        j = ep.stretch.index(1)
+        self.assertIsNone(ep.jump[j])
+        self.assertIsNone(ep.float_spell[j])
+        self.assertFalse(ep.suspect[j])
 
     def test_stops(self):
         tr, s = [], 0.0
