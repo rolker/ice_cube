@@ -386,3 +386,26 @@ No GitHub reviews, inline comments or conversation comments on the PR. The four 
 **Decision**: address
 
 Fix all four: agreement-gate cross term (return cov[0,1:] from plane_fit and add 2·d̄'cov(a,g)); state that sigma'^2 is a conservative upper bound; collinear test asserts PLANE_ILL_CONDITIONED on nearly all cases; mask test on a non-square grid with an asymmetric mask through topo.grid_surface.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 19:29 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #34 at `70293ea`
+**Addressed**: Integrated Review at `6e5ed5c` (2026-11-26 19:20 -05:00)
+**Commits**: 3f32ef8 (merge origin/main, #32), fac18d6, 0aedb88, 4bd1837, 70293ea
+
+Merged origin/main (#32, issue 9): auto-merged cleanly; coverage_vectors.json regenerated from the merged generator, byte-identical to the merge result (SIGMA_CASES additions and plane_params/plane_vectors both present).
+
+### Actions
+- [x] Agreement gate adds 2 d_bar'cov(a, g); plane_fit returns cov_ag = cov[0, 1:]; module docstring updated. Vectors regenerate unchanged — `icecube/nodes.py` plane_fit/plane_pass
+- [x] sigma'^2 stated as a conservative upper bound (module docstring and the comment at the add) — `icecube/nodes.py`
+- [x] test_collinear_centroids_never_pass counts codes: only ILL_CONDITIONED/NOT_PLANAR, ILL_CONDITIONED >= 400 of 500 (433 now). The other 67 stop at NOT_PLANAR because planarity is gated before conditioning; all 67 also fail conditioning on the unscaled inverse, so checking conditioning first would give 500/500 (a code-order change, left out) — `icecube/tests/test_icecube.py`
+- [x] Mask orientation test through topo.grid_surface on a 9 x 5 grid with an asymmetric polygon mask (target node goes ACCEPTED -> PLANE_FEW; exact masked (row, col) asserted; transposed mask raises) — `icecube/tests/test_icecube.py`
+
+### Checks
+- `python3 -m unittest discover icecube/tests`: Ran 87, OK
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 110, OK (skipped=5)
+- `./gradlew testDebugUnitTest --max-workers 4`: BUILD OK (C: 113 GB free)
+- Private replays (counts only), unchanged: 11-21 red 19 -> 17; 11-21 fix90 6 -> 6; 11-21 DEM 14 -> 14; 11-26 red 6 -> 1; 11-26 DEM 1 -> 1; new red 0, ok -> thin 0 in every variant
