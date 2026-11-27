@@ -124,3 +124,13 @@ The plan is complete and reuses the photo path throughout; it is ready for imple
 - [ ] Bump importer `SCHEMA_VERSION` after #15's, with its history line; update `docs/howto/qgis.md` (finding 2).
 - [ ] Decide and test how a note-only own row shows on the map, in counts and in the importer (finding 3).
 - [ ] Extend `analysis/qgis/tests/test_import.py` / `synth.py` for the `voice` column and `notes/` copy (finding 4).
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:55 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implementation is held until #15 and #35 merge (shared Survey/MainActivity/PointRow); then rebase on main. Settle during implementation the Plan Review at ab68ef9's items: .gitignore *.m4a (test audio created at run time, none committed); importer SCHEMA_VERSION bump after #15's with its history line, docs/howto/qgis.md voice column and notes/ folder; a note-only own row: decide icon, counts, photoRowFor text and the photos table, each with a test; extend test_import.py and synth.py.
