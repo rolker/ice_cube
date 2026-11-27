@@ -218,3 +218,32 @@ The revision took in every earlier finding correctly. The one point to get right
 **Decision**: proceed
 
 Implementation must also settle the Plan Review at 6b369a9's items: start jump from the previous float OR fixed epoch (unknown only after single/DGPS, no position, first epoch or a gap; keep a test for a suspect jump within a fix, matching Python fix_stretches); extend verify_suspect to float_spell stretches (or document they are not cleared: prefer extending); MapView ref banner and RefView.settling; FLOAT_SPELL_S pref key in Settings.LIMIT_KEYS/LIMITS, FixGuard constructor and setLimits; Python float_spell_s default; run the settle migration on first read of the setting; consequences: drop ShareZip check, add RefsStore header rewrite.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 18:03 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Branch**: feature/issue-15 at e9f8177
+
+First PR of the plan, plus every item of the Checkpoint after the plan review at 6b369a9.
+
+### Commits
+- 26abd98 FixGuard: jump only from a float or fixed epoch (unknown after single/DGPS, none, first epoch, gap; in-fix jumps still measured and suspect, matching `fix_stretches`); float spell rule (`Limit.FLOAT_SPELL_S` 0-300, default 20, 0 off; pref `fix_float_spell_s` in `LIMIT_KEYS`/`LIMITS`, constructor and `setLimits`); `Stretch.prior/floatSpellS/reason`; settling renamed young; `Limit.SETTLE_S` "Fix young limit" 0-300 default 120; `core/SettleMigration` + test, run from `Settings.prefs()` on the first read (service or Settings screen).
+- e3b8284 points.csv `fix_start,float_spell_s,suspect_reason,fix_young` after `void_reason` (29 -> 33; older rows unknown); TiltSet row combines leans (any young, every reason; per-lean OBS_HEADER unchanged); PoleCheck skips `fix_young` = 1 earlier refs (voided skip and #23 note kept). RefsStore/VoidRule header upgrade covers the new header with no code change.
+- 507acc8 Survey: no refusal while young (MARK, leans, ref counting); amber `fix young: N s` notice and new `Feedback.Cue.YOUNG`; ref young if any counted epoch was, ref jump/suspect/reasons from every fixed epoch; RefView `young` replaces `settling` (MapView ring `(fix young)`), tilt banner `fix young N s`; chip `FIX young Ns` / `FIXED? after float`.
+- 7021a71 soundings.py settle_s 90 -> 120 (and `sigma_terms` default), `SoundingSigma.SETTLE_S` 120, `fix_age_past_settle` vector to 150 s plus a 90 s case inside the window, vectors regenerated; `fix_stretches` float-spell rule (`DEFAULTS["float_spell_s"]` 20, `config.example.toml`), flag `float_spell` in EXCLUDING, cleared by `verify_suspect` (both flags become `suspect_verified`) and PPK replace; parity and verify tests.
+- 995a6cc import: captures carry the four columns (`LOGGER_11`), SCHEMA_VERSION 5, SCHEMA_APP 5 -> 0.11; `logger_session.read_points` and `REFS_COLUMNS`; import test old vs new.
+- e9f8177 0.11.0 / versionCode 15; README (guard section, settings, chip, cues, points.csv table/example, refs, overlay budget), docs/log.md, docs/howto/ice-cube.md.
+
+### Tests
+- `python3 -m unittest discover -s analysis/qgis/tests`: 162 OK (5 skipped).
+- `python3 -m unittest discover icecube/tests`: 102 OK.
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 228 tests, 0 failures. APK `logger/app/build/outputs/apk/debug/app-debug.apk`, 0.11.0 (build 15). Not installed.
+
+### Private replay (counts only, python fix_stretches, 4 sessions of 2026-27)
+Stretches 26/17/1/11. New `float_spell` reason on 9/1/1/0 stretches (alone on 3/1/0/0). Jump unknown at 1/1/0/2 starts. Captures with fix age 90-120 s (newly young, newly inside the settle window): 1/25/21/7 of 30/713/275/713.
+
+### Deferred / notes
+- Live-notice texts for the young ref start are unchanged (young is reported at ref end).
+- The chip and notices show the young fix's age, not the time left.
+- Follow-ups stay with #39, #40, #41, #23.
