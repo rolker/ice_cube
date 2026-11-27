@@ -719,3 +719,11 @@ Also add a phone try-out checklist.
 **Decision**: revise
 
 Revise PR B per the Plan Review at 7bfe31d, all 8 findings: step 18 uses the per-zip zone offset from events.csv's last wall_ms vs its DOS time (15-min rounding), the tie only for a zip with no usable events.csv, the same rule in the stored-flag SQL, extended-vs-DOS comparison stated, report only tie-decided rows, an un-flag test, import_sessions.py in the files; write 0x5455 by hand with setExtra and check a phone zip. Drop step 14 (keep a lock-in test). Step 16: move the run(poleCheck) inside the lock only; no "pending" treatment. Step 15: the photo column is the only source for n/attached when the row has the file. Steps 10+17: a boolean undoable on Notice, elapsed clock via VoidRule.undoOpen. Step 19: exact note match. Add the phone try-out checklist and how a synthetic session gets onto the phone.
+
+## Plan Authored
+**Status**: complete
+**When**: 2026-11-26 20:54 -05:00
+**By**: Claude Code Agent (claude-sonnet)
+**Plan**: `.agent/work-plans/issue-27/plan.md` at `fda6dda`
+
+PR B revised for all 8 plan-review findings: step 18 uses a per-zip zone offset from events.csv (tie only without it), the same rule in the stored-flag SQL, 0x5455 written by hand, un-flag test; step 14 dropped to a lock-in test; step 16 is only the move inside the lock; step 15 takes n/attached from the photo column; steps 10 and 17 merged with one undoable flag; step 19 exact note match; step 20 has the phone checklist and how a synthetic session gets on the phone.
