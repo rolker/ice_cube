@@ -256,7 +256,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "sd_u_m": c.get("sd_u_m"), "age_s": c.get("age_s"),
             "photo": rel(files[0]) if files else None, "photo_count": len(files),
             "source": c.get("source"), "elapsed_ns": c.get("elapsed_ns"), "note": c.get("note"),
-            "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason"),
+            "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
@@ -277,7 +277,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             continue
         r = {k: c.get(k) for k, _ in MEAS}
         r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
-                  "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason"),
+                  "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
         for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok"):
             r[k] = s.refs.get(c["n"], {}).get(k)

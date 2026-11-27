@@ -178,6 +178,20 @@ class ImportTest(unittest.TestCase):
         rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
         self.assertEqual(rows["1"]["void"], "0")
 
+    def test_void_reason_stored_only_when_flagged(self):
+        """A row with void=0 but a reason left over stores no void_reason, in captures and in
+        refs, the same rule as import_refs_csv (#27)."""
+        name = "IceCubeLogger_2026-12-01_10-00-00.zip"
+        files = synth.with_void(synth.session_v05(), {})
+        key = "2026-12-01_10-00-00/points.csv"
+        lines = files[key].decode().splitlines()
+        lines = [l[:-len(",0,")] + ",0,moved" if l.startswith(("1,", "3,")) else l for l in lines]
+        files[key] = ("\n".join(lines) + "\n").encode()
+        run(synth.write_zip(self.d / name, files), "--gpkg", self.gpkg)
+        self.assertEqual(self.q("SELECT n, void, void_reason FROM captures WHERE n IN (1, 3) ORDER BY n"),
+                         [(1, 0, None), (3, 0, None)])
+        self.assertEqual(self.q("SELECT void, void_reason FROM refs WHERE n = 3"), [(0, None)])
+
     def test_read_refs_csv_keeps_void_past_a_short_header(self):
         """Headerless, or under a header the logger did not upgrade, a 0.9.0 row keeps its
         void column (read by the logger's column order); a pre-0.9.0 row is not voided."""
