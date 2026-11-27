@@ -130,3 +130,13 @@ A sound, well-reused plan that matches the owner's decisions and the host's answ
 - [ ] Settle during implementation: cue only gate changes; stillness test robust at 1 Hz; calibration requires fixed epochs and no running tilt/ref; MARK while latched counts as taken; Python docstrings mention `auto`.
 - [ ] Branch after #15 merges; version 0.12.0 (or one minor past #15's); carry #15's columns through the shared capture path.
 - [ ] Plumb sign test plus phone check before merge.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 17:56 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (plan review ready; orchestrator table allows proceed)
+**After**: plan
+**Decision**: proceed
+
+Implementation held until #15 merges (then rebase on main, re-check #15's names and columns). Settle during implementation the Plan Review at 75b4165's items: add PointRow.AUTO to Coverage.feeds with a CoverageTest case and docs; cues only on condition changes; stillness by max deviation/range over the hold window; calibration only on RTK-fixed epochs and not during a tilt set or ref; a MARK while latched counts as that stop's capture; the shared capture path carries #15's new columns.
