@@ -546,7 +546,7 @@ Merge resolution checked: both features intact (0.6 method/tilt columns and per-
 - [x] Camera-target fallback misses an earlier live capture — `logger/.../Survey.java:643` (deferred: host decision, PR B scope)
 
 ### Checks
-- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 131 tests, OK (skipped=5)
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 130 tests, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 68 tests, OK
 - `./gradlew testDebugUnitTest --max-workers 4`: 182 tests, 0 failures, 0 errors (C: 114 GB free)
 - Not pushed; the host owns the push.
