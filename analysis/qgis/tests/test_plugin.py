@@ -298,6 +298,13 @@ class BuildProjectTest(unittest.TestCase):
         self.project.setCrs.side_effect = lambda c: setattr(self.project.crs, "return_value", c)
         self.bp.QgsProject.instance.return_value = self.project
 
+    def test_void_tip_escapes_reason(self):
+        """void_reason is typed on the phone: the map tip escapes & < > before HTML (#27)."""
+        tip = self.bp.VOID_TIP
+        for a, b in (("'&'", "'&amp;'"), ("'<'", "'&lt;'"), ("'>'", "'&gt;'")):
+            self.assertIn(f"{a}, {b}", tip)
+        self.assertLess(tip.index("'&amp;'"), tip.index("'&lt;'"))   # & first, or &lt; turns into &amp;lt;
+
     def test_crs_set_after_layers_and_checked(self):
         """A first layer that changes the project CRS must not survive the build."""
         crs = mock.MagicMock(name="local")

@@ -155,8 +155,10 @@ def add(project, group, layer, visible=True):
 
 # ----------------------------------------------------------------------------- layers
 
+# void_reason is typed on the phone: escape & < > so it shows as text in the HTML map tip
 VOID_TIP = ('[% CASE WHEN "void" = 1 THEN \'<br><b>flagged void</b>: \' || '
-            'coalesce("void_reason", \'\') ELSE \'\' END %]')
+            'replace(replace(replace(coalesce("void_reason", \'\'), \'&\', \'&amp;\'), '
+            '\'<\', \'&lt;\'), \'>\', \'&gt;\') ELSE \'\' END %]')
 
 
 def style_captures(lyr):
