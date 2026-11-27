@@ -84,7 +84,10 @@ node red after pass 1 (clear and amber nodes are never touched):
    w-weighted mean (dx, dy) over the main's members only, not over all its entries: where
    its z actually sits; on a bank the members of a disc are not centred), weight its main's W,
    red neighbours times `plane_red_weight`; usable: main n_in >= `plane_min_nin`. The node
-   itself is excluded. The covariance is (A'WA)^-1 scaled by max(1, chi^2).
+   itself is excluded. W leaves out the pass-bias part of sigma on purpose: a pass bias
+   offsets a whole pass, and the neighbours share the node's passes, so it mostly shifts
+   the plane (and the node's own pass-2 z with it) rather than tilting it; across a pass
+   seam it can tilt it, and chi and sigma_g are noise-only there. The covariance is (A'WA)^-1 scaled by max(1, chi^2).
 2. Gates, in order (Surface.plane_code says which failed): at least
    `plane_min_neighbours` usable; at least `plane_min_clear` of them not red; planarity,
    chi = sqrt(sum w r^2 / (m - 3)) <= `plane_planarity` (default k_sigma); conditioning,
@@ -522,7 +525,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
                 j = aa * nx + bb
                 if j not in out1 or len(stores[j]) - out1[j]["n_out"] < p["min_nin"]:
                     continue
-                o_j = out1[j]
+                o_j = out1[j]    # weight w, not 1/sigma^2: pass bias left out on purpose (docstring)
                 nbrs.append((db * cell + o_j.get("cx", 0.0), da * cell + o_j.get("cy", 0.0), o_j["z"], o_j["w"],
                              red[j]))
         code, fit = plane_fit(nbrs, p["min_neighbours"], p["min_clear"], p["red_weight"], planarity,
