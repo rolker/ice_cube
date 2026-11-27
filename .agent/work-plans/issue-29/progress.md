@@ -354,3 +354,25 @@ Scope: round 2's findings and the fix diff 9d4c380..HEAD. Specialists: static an
 **Decision**: publish
 
 PR A (batch) of two; Part of #29. Round-3 suggestions (agreement cross term, conservative-bound docstring, collinear test strictness, non-square mask test) left for triage.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-26 19:20 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Reviews-read**: none
+
+**PR**: #34 at `6e5ed5c`
+**Sources**: 1 (Local Review (Pre-Push) @ `ef8f74b`, covers `6e5ed5c` via bookkeeping; CI rollup: no checks configured; no hosted or human reviews)
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured)
+
+No GitHub reviews, inline comments or conversation comments on the PR. The four round-3 suggestions were re-checked against the code at `6e5ed5c` (only progress.md changed since `ef8f74b`); all four still apply. None is must-fix: they tighten an error budget, a docstring and two tests.
+
+### Findings
+- [ ] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Agreement gate variance `var_a + sigma'^2` omits the cross term 2 d_bar'cov(a, g): the z' - a error is -dg.d_bar - da, and plane_fit returns only var_a and cov_g, not cov[0, 1:]; return the full 3x3 (or cov[0, 1:]) and add the term — `icecube/nodes.py:577-578`
+- [ ] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Per-entry d_i'C_g d_i stays in v' and d_bar'C_g d_bar is added on top, so sigma'^2 is a conservative upper bound; the comment at the add does not say so — state it there or in the module docstring — `icecube/nodes.py:568-572`
+- [ ] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) test_collinear_centroids_never_pass accepts PLANE_NOT_PLANAR too, so a regression that reaches planarity with a garbage beta passes; count codes and assert ILL_CONDITIONED on (nearly) all 500 — `icecube/tests/test_icecube.py:782-793`
+- [ ] (suggestion, Local Review (Pre-Push) @ `ef8f74b`) Mask test is on a square 7x7 grid and its 4-of-8 mask is symmetric under transpose (both orientations leave 4 neighbours, PLANE_FEW), and the shape-mismatch check uses (2, 2); use a non-square grid and a mask whose transpose changes the outcome — `icecube/tests/test_icecube.py:723-733`
+
+### False positives
+- none
