@@ -166,8 +166,8 @@ public class TiltSetTest {
         Random rnd = new Random(11);
         FixGuard g = new FixGuard(120 * S, 1.0, 20 * S);
         long t = 0;
-        for (; t < 30 * S; t += S / 4) g.onEpoch(new Epoch(t, 0, 10, 20, 100, 1, 5));
-        FixGuard.Stretch spell = g.onEpoch(new Epoch(t, 0, 10, 20, 100, 1, 4));
+        for (; t < 30 * S; t += S / 4) g.onEpoch(new Epoch(t, t / 1e9, 10, 20, 100, 1, 5));
+        FixGuard.Stretch spell = g.onEpoch(new Epoch(t, t / 1e9, 10, 20, 100, 1, 4));
         assertEquals(FixGuard.REASON_FLOAT_SPELL, spell.reason);
         TiltSet ts = new TiltSet(PointRow.SURFACE, L, new TiltSet.Gates(), 0);
         double[] az = {0, 90, 180, 270};

@@ -69,9 +69,9 @@ public class PointRowTest {
         LocalFrame fr = new LocalFrame(10, 20, 100);
         FixGuard g = new FixGuard(120 * s, 1.0, 20 * s);
         long t = 0;
-        for (; t < 60 * s; t += s / 4) g.onEpoch(new Epoch(t, 0, 10, 20, 100, 1, 5));
+        for (; t < 60 * s; t += s / 4) g.onEpoch(new Epoch(t, t / 1e9, 10, 20, 100, 1, 5));
         double[] p = fr.toGeodetic(0, 0.48, 0);
-        FixGuard.Stretch st = g.onEpoch(new Epoch(t, 0, p[0], p[1], p[2], 1, 4));
+        FixGuard.Stretch st = g.onEpoch(new Epoch(t, t / 1e9, p[0], p[1], p[2], 1, 4));
         PointRow r = PointRow.of(3, PointRow.SURFACE, 1, null, 1.8, MIDNIGHT);
         r.setStretch(st, t + 100 * s, true);
         String csv = r.toCsv();
