@@ -732,8 +732,10 @@ logs and text are deflated. From 0.9.0 every entry carries its file's modificati
 in UTC as a zip extended timestamp (extra field 0x5455) besides the DOS time, which is the
 phone's local time; the importer orders `refs.csv` copies from zips made in other time
 zones by it. For an older zip it finds the phone's zone offset from the session's
-`events.csv` (its last line's `wall_ms` against its entry time, rounded to 15 min), and
-treats copies it cannot place within 26 h as a tie (flagged wins, named in the report).
+`events.csv` (its last line's `wall_ms` against its entry time, rounded to 15 min) and
+allows 1 h for a DST change between an entry and `events.csv`; without an offset it allows
+26 h. Copies whose times, with those allowances, may be in either order are a tie (flagged
+wins, named in the report).
 If the session is still recording the app asks:
 Stop and share (stops the session, then zips the complete files), or Share snapshot (keeps
 recording; flushes the files and zips each one, `refs.csv` included, up to its length at that

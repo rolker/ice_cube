@@ -153,7 +153,8 @@ class SessionSource:
                     info = self._z().getinfo(cand)
                 except KeyError:
                     continue
-                mtime, unc = zip_entry_stamp(info, *self.zone_offset())
+                ext = zip_extended_mtime(info)   # exact: events.csv not needed
+                mtime, unc = (ext, 0.0) if ext is not None else zip_entry_stamp(info, *self.zone_offset())
                 return self._z().read(info).decode("utf-8", "replace"), mtime, unc
             return None
         p = self.path.parent / "refs.csv"
@@ -188,11 +189,11 @@ class SessionSource:
 
 
 ZONE_STEP_S = 900            # every real zone offset is a multiple of 15 min
-ZONE_RESIDUAL_S = 120        # events.csv's entry time this close to its last line, after rounding
+ZONE_RESIDUAL_S = 120        # events.csv's entry time this close after its last line, after rounding
+ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
 APPROX_S = 26 * 3600         # a time read in this PC's zone may be off by up to two zone offsets
-DST_FAR_S = 12 * 3600        # an entry this far from events.csv may have another DST offset
-DST_S = 3600
+DST_S = 3600                 # another entry than events.csv may have another DST offset
 
 
 def zip_extended_mtime(info):
@@ -245,7 +246,8 @@ def zip_zone_offset(events_info, events_bytes):
     """The zone offset (seconds east of UTC) of the phone that wrote a logger zip, or None.
     events.csv's last line carries wall_ms (UTC) and its DOS entry time is that file's
     mtime in the phone's zone, a moment later, so their difference rounded to 15 min is the
-    offset. Accepted only when the remainder after rounding is at most ZONE_RESIDUAL_S and
+    offset. Accepted only when the remainder after rounding is from -ZONE_TRUNC_S (DOS
+    truncation) to ZONE_RESIDUAL_S (the file is written after its last line) and
     the offset within +-14 h: a snapshot zip (events written while it was zipped) or a copy
     tool that reset the mtime gives None rather than a confidently wrong offset."""
     dos = zip_dos_seconds(events_info)
@@ -261,7 +263,7 @@ def zip_zone_offset(events_info, events_bytes):
         return None
     diff = dos - wall
     off = round(diff / ZONE_STEP_S) * ZONE_STEP_S
-    if abs(diff - off) > ZONE_RESIDUAL_S or abs(off) > ZONE_MAX_S:
+    if not -ZONE_TRUNC_S <= diff - off <= ZONE_RESIDUAL_S or abs(off) > ZONE_MAX_S:
         return None
     return float(off)
 
@@ -269,10 +271,12 @@ def zip_zone_offset(events_info, events_bytes):
 def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
     """(mtime, uncertainty_s) of a zip entry for ordering refs.csv copies. With an extended
     timestamp: that UTC time, uncertainty 0. A DOS time corrected by the zip's zone offset
-    (zip_zone_offset): uncertainty 0, or DST_S when the entry's DOS time is more than
-    DST_FAR_S from events.csv's (a DST change may lie between them). Without an offset
-    (mtime_approx): the time read in this PC's zone, uncertainty APPROX_S. Two copies whose
-    times are within the larger uncertainty of the two are a tie (flagged wins)."""
+    (zip_zone_offset): uncertainty 0 for events.csv itself (`events_info`, the entry the
+    offset came from), DST_S for any other entry (Java converts each file's mtime with the
+    zone rules of that moment, so a DST change between it and events.csv, however near,
+    shifts it by an hour). Without an offset (mtime_approx): the time read in this PC's
+    zone, uncertainty APPROX_S. Each time is the interval mtime +- uncertainty; two copies
+    whose intervals overlap are a tie (flagged wins)."""
     ext = zip_extended_mtime(info)
     if ext is not None:
         return ext, 0.0
@@ -282,8 +286,8 @@ def zip_entry_stamp(info, zone_offset_s=None, events_info=None):
     dos = zip_dos_seconds(info)
     if dos is None:
         return None, 0.0
-    ev = zip_dos_seconds(events_info) if events_info is not None else None
-    unc = DST_S if ev is not None and abs(dos - ev) > DST_FAR_S else 0.0
+    same = events_info is not None and info.filename == events_info.filename
+    unc = 0.0 if same else DST_S
     return dos - zone_offset_s, unc
 
 

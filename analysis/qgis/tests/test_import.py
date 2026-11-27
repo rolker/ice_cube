@@ -724,8 +724,8 @@ class ImportTest(unittest.TestCase):
 class RefsCopyTimeTest(unittest.TestCase):
     """Ordering refs.csv copies from zips written on phones in other zones (#27 step 18):
     the 0x5455 UTC time, else the DOS time corrected by the zone offset from events.csv,
-    else (mtime_approx) a tie within 26 h; a 1 h DST allowance for an entry far from
-    events.csv in time. Ties are decided flagged and reported."""
+    else (mtime_approx) the PC-zone time within 26 h; a 1 h DST allowance for a corrected
+    entry other than events.csv. Overlapping intervals tie, decided flagged and reported."""
     T = 1_796_000_000.0     # a made-up moment in late 2026 (UTC)
 
     def setUp(self):
@@ -795,11 +795,20 @@ class RefsCopyTimeTest(unittest.TestCase):
         self.assertEqual((a[1:], b[1:]), ((self.T, 0.0), (self.T + 600, 0.0)))
         self.assertEqual(self.void([a, b]), 0)
 
+    def test_extended_timestamp_skips_events_csv(self):
+        z = synth.phone_zip(self.d / "x.zip", self.cleared, self.T, 3 * 3600, extended=True)
+        src = find_sessions([z])[0]
+        src.zone_offset = lambda: self.fail("events.csv read for a refs.csv with 0x5455")
+        try:
+            self.assertEqual(src.refs_csv_dated()[1:], (self.T, 0.0))
+        finally:
+            src.close()
+
     def test_dos_time_corrected_by_zone_offset(self):
         a = self.copy(self.flagged, self.T, 3 * 3600)
-        b = self.copy(self.cleared, self.T + 3600, -5 * 3600)
-        self.assertEqual(a[1:], (self.T, 0.0))
-        self.assertEqual(b[1:], (self.T + 3600, 0.0))
+        b = self.copy(self.cleared, self.T + 3 * 3600, -5 * 3600)
+        self.assertEqual(a[1:], (self.T, 3600))                # a possible DST change: 1 h
+        self.assertEqual(b[1:], (self.T + 3 * 3600, 3600))
         self.assertEqual(self.void([a, b]), 0)                 # read in the PC's zone, a would win
 
     def test_no_events_csv_is_a_tie_within_26_h_and_reported(self):
@@ -819,7 +828,7 @@ class RefsCopyTimeTest(unittest.TestCase):
 
     def test_mixed_extended_and_corrected_dos(self):
         a = self.copy(self.flagged, self.T, 3 * 3600, extended=True)
-        b = self.copy(self.cleared, self.T + 600, -5 * 3600)    # DOS only, corrected
+        b = self.copy(self.cleared, self.T + 7200, -5 * 3600)   # DOS only, corrected (+-1 h)
         self.assertEqual(self.void([a, b]), 0)
         self.gp.con.execute("DELETE FROM refs")
         c = self.copy(self.cleared, self.T + 600, -5 * 3600, with_events=False)   # DOS only, approx
@@ -827,32 +836,52 @@ class RefsCopyTimeTest(unittest.TestCase):
 
     def test_unflag_then_export_within_26_h_later_wins_and_rerun_keeps_it(self):
         flag = self.copy(self.flagged, self.T, -5 * 3600)
-        unflag = self.copy(self.cleared, self.T + 3600, -5 * 3600)
+        unflag = self.copy(self.cleared, self.T + 3 * 3600, -5 * 3600)   # past both 1 h allowances
         ties = []
         self.assertEqual(self.void([flag, unflag], ties), 0)
         self.assertEqual(ties, [])
         self.assertEqual(self.void([unflag, flag]), 0)         # a re-run decides as the first
         self.assertEqual(self.void([flag]), 0)                 # the older copy alone: no change
 
-    def test_dst_allowance_for_an_entry_far_from_events_csv(self):
+    def test_dst_allowance_for_every_corrected_entry_but_events_csv(self):
         # refs.csv last written 3 days before the export: its DOS time may carry another DST
         # offset, so it is uncertain by 1 h
         old = self.copy(self.cleared, self.T, -5 * 3600, refs_utc=self.T - 3 * 86400)
         self.assertEqual(old[1:], (self.T - 3 * 86400, 3600))
         near = self.copy(self.flagged, self.T - 3 * 86400 + 1800, -4 * 3600)
-        self.assertEqual(near[2], 0.0)
+        self.assertEqual(near[1:], (self.T - 3 * 86400 + 1800, 3600))
         ties = []
         self.assertEqual(self.void([near, old], ties), 1)      # 30 min apart: a tie, flagged
         self.assertEqual(ties, [("s1", 5, "flagged")])
         self.gp.con.execute("DELETE FROM refs")
-        newer = self.copy(self.cleared, self.T - 3 * 86400 + 7200, -4 * 3600)
-        self.assertEqual(self.void([near, newer]), 0)          # 2 h apart, both exact: later wins
+        newer = self.copy(self.cleared, self.T - 3 * 86400 + 4 * 3600, -4 * 3600)
+        self.assertEqual(self.void([near, newer]), 0)          # 3.5 h apart: past both, later wins
         # the stored flag keeps the rule: a stored copy uncertain by 1 h ties a copy 30 min off
         self.gp.con.execute("DELETE FROM refs")
         self.assertEqual(self.void([old]), 0)
         ties = []
         self.assertEqual(self.void([near], ties), 1)
         self.assertEqual(ties, [("s1", 5, "flagged")])
+
+    def test_dst_change_just_before_events_csv(self):
+        # fall 2026: refs.csv at 05:30 UTC (EDT, -4 h), events.csv at 06:30 UTC (EST, -5 h)
+        # share a DOS wall time; corrected by events.csv's -5 h, refs.csv reads an hour late,
+        # so it carries the 1 h allowance though it is only an hour from events.csv
+        ev_utc = 1793514600.0                                   # 2026-11-01 06:30 UTC
+        z = self.d / "dst.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            wall = int((ev_utc - 1) * 1000)
+            zf.writestr(zipfile.ZipInfo("2026-11-01_01-00-00/events.csv", time.gmtime(ev_utc - 5 * 3600)[:6]),
+                        f"elapsed_ns,wall_ms,event\n{synth.T0_NS},{wall},stop\n")
+            zf.writestr(zipfile.ZipInfo("refs.csv", time.gmtime(ev_utc - 3600 - 4 * 3600)[:6]), self.flagged)
+        with zipfile.ZipFile(z) as zf:
+            ev = zf.getinfo("2026-11-01_01-00-00/events.csv")
+            off = zip_zone_offset(ev, zf.read(ev))
+            self.assertEqual(off, -5 * 3600)
+            self.assertEqual(zip_entry_stamp(ev, off, ev), (ev_utc, 0.0))   # events.csv itself: exact
+            t, u = zip_entry_stamp(zf.getinfo("refs.csv"), off, ev)
+        self.assertEqual((t, u), (ev_utc, 3600))               # an hour late, within its 1 h
+        self.assertLessEqual(abs(t - (ev_utc - 3600)), u)
 
     def test_unknown_stored_time_ties_an_unknown_copy(self):
         """A stored flag of unknown time goes through _stamp_order too: an unknown-time copy
