@@ -376,7 +376,7 @@ PR A of two (Part of #27). Round 3 suggestion (refs flag count from this run onl
 No hosted reviews or PR comments yet (Copilot not requested; out of quota today). Rounds 1 and 2 of the local review are closed (all boxes ticked; three items deferred to PR B by the owner: MapView drawing, elapsedNs/UNDO window, poleCheck ordering and the moved-photo name). The one open item from round 3 is confirmed against the code: `import_refs_csv` sums `d["void"]` over this run's rows, and a row with no void column in this run gets `void=0` in `out` while the UPDATE (rightly) leaves the stored flag alone, so the returned count can understate. It only affects a summary count, not stored data; not a merge blocker.
 
 ### Findings
-- [ ] (suggestion, Local Review @ `3e9388d`) import_refs_csv's flagged count comes from this run's copies only; a later run with only pre-0.9.0 copies reports 0 flagged while the stored flag stays 1. Count flagged rows from the refs table for the imported keys, or label the summary count "in this run" — `analysis/qgis/import_sessions.py:362`
+- [x] (suggestion, Local Review @ `3e9388d`) import_refs_csv's flagged count comes from this run's copies only; a later run with only pre-0.9.0 copies reports 0 flagged while the stored flag stays 1. Count flagged rows from the refs table for the imported keys, or label the summary count "in this run" — `analysis/qgis/import_sessions.py:362`
 
 ### False positives
 

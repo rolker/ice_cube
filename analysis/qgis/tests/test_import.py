@@ -210,7 +210,8 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(void(), [(1, "moved")])
         self.assertEqual(imp.import_refs_csv(gp, [(flagged, 100.0), (pre09, 200.0)]), (1, 1))
         self.assertEqual(void(), [(1, "moved")])              # the newer copy has no void column
-        imp.import_refs_csv(gp, [(pre09, 400.0)])            # a later run with only the old copy
+        # a later run with only the old copy: the summary count still comes from the table
+        self.assertEqual(imp.import_refs_csv(gp, [(pre09, 400.0)]), (1, 1))
         self.assertEqual(void(), [(1, "moved")])              # keeps the stored flag
         self.assertEqual(imp.import_refs_csv(gp, [(cleared, 300.0), (flagged, 100.0)]), (1, 0))
         self.assertEqual(void(), [(0, None)])                 # unflagged since: newest wins
