@@ -450,3 +450,13 @@ Owner rule applied: "So flagged data gets deleted? I wonder if it should only be
 
 ### False positives
 - (Local Review @ eae8b68, codex) A points.csv whose void flag flips with an empty reason keeps its size, so the name+size re-import signature skips it — the directory signature includes events.csv's size, and Survey.voidCapture / unvoidCapture always append a "flag n=… reason=… via=…" / "unflag n=…" event (a Survey exists only with an open session, so the event is written); the reason is never empty either (VoidRule.reason returns "other"). A zip is rebuilt with that events.csv, so its size changes too.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-26 19:19 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (address at findings; finding 1's meaning decided by the owner)
+**After**: findings
+**Decision**: address
+
+Owner's answer on finding 1 (AskUserQuestion "What should flagging a capture do to the still-pole period around it?"): "Depends on reason (Recommended)" — 'accidental' flags only the capture; 'moved', 'bad pole placement' or 'other' also flag the stop around it (soundings emits that stop with use=0 and a reason naming the voided capture). Address findings 2-6 as suggested.
