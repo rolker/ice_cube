@@ -404,5 +404,5 @@ Cross-model: skipped (round-3 convergence check, per handoff). Claude lead read 
 **Must-fix**: 1 | **Suggestions**: 1
 
 ### Findings
-- [ ] (must-fix) A capture with raw epochs whose matched epoch is not fixed (`ep.stretch[k] < 0`, e.g. float or no position at the capture time) skips both the stretch flags and the logger's own `fix_suspect`/`suspect_reason`/`fix_age_s` fallback (`capture_fix_info` runs only when `k is None`), so a suspect fix=4 capture can stay use=1; fall back to the capture columns in that case — `analysis/qgis/soundings.py:841`
+- [x] (must-fix) A capture with raw epochs whose matched epoch is not fixed (`ep.stretch[k] < 0`, e.g. float or no position at the capture time) skips both the stretch flags and the logger's own `fix_suspect`/`suspect_reason`/`fix_age_s` fallback (`capture_fix_info` runs only when `k is None`), so a suspect fix=4 capture can stay use=1; fall back to the capture columns in that case — `analysis/qgis/soundings.py:841`
 - [ ] (suggestion) `within2s` accepts a negative GGA dt, so an out-of-order or backward-stepped GGA time would continue a stretch or float spell; the guard now runs on the receiver clock instead of the monotonic phone clock, so consider requiring `0 <= dt` (and the same in `fix_stretches`) or note the precondition — `logger/app/src/main/java/rink/icecube/logger/core/FixGuard.java:119`

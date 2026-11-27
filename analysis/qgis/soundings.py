@@ -710,8 +710,9 @@ def capture_suspect_flags(r, c):
 
 
 def capture_fix_info(r, c):
-    """For a capture with no raw epochs: the logger's own fix_age_s and fix_jump_m (so a young
-    capture still gets the settle sigma and flag) and suspect flags (capture_suspect_flags)."""
+    """For a capture with no raw epochs, or whose nearest raw epoch is in no fix stretch: the
+    logger's own fix_age_s and fix_jump_m (so a young capture still gets the settle sigma and
+    flag) and suspect flags (capture_suspect_flags)."""
     r["fix_age_s"], r["jump_m"] = c.get("fix_age_s"), c.get("fix_jump_m")
     capture_suspect_flags(r, c)
 
@@ -837,11 +838,16 @@ def logger_source(cfg, src, con, frame, history, log):
                 add_flag(r, "float")
             k = ep.index_at(t) if ep is not None and t else None
             gst_u = gst_h = None
+            # the logger's own columns stand in when no raw epoch is near, or the nearest one
+            # is in no fix stretch (float or no position at the capture time, #15)
+            own_info = k is None or ep.stretch[k] < 0
             if k is not None:
                 if ep.stretch[k] >= 0:
                     r["fix_age_s"], r["jump_m"] = ep.fix_age[k], ep.jump[k]
                     r["pass_id"] = pass_name(ses, ep.stretch[k], ep.fix_age[k], max_s)
                     add_suspect_flags(r, ep, k)
+                else:
+                    capture_fix_info(r, c)      # raw epoch not fixed: the logger's own columns
                 win = [j for j in ep.window(t - 1.0, t) if ep.gst_u[j] is not None]
                 if win:
                     gst_u = st.median(ep.gst_u[j] for j in win)
@@ -865,7 +871,7 @@ def logger_source(cfg, src, con, frame, history, log):
             r["tilt_deg"] = tilt
             if r["fix_age_s"] is not None and r["fix_age_s"] < settle_s:
                 add_flag(r, "settle_inflated")
-            elif k is None and c.get("fix_young"):
+            elif own_info and c.get("fix_young"):
                 add_flag(r, "fix_young")        # the logger's young limit is longer than settle_s
             if cls == "anchor":
                 site = sites.get((ses, c["n"]))

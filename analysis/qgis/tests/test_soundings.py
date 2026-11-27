@@ -653,6 +653,26 @@ class TestBuild(unittest.TestCase):
         self.assertNotIn("fix_young", snd.EXCLUDING)          # a trace, not excluding
         self.assertNotIn("fix_young", snd.flags_of(caps[3]))
 
+    def test_capture_on_a_float_epoch_uses_the_loggers_columns(self):
+        """#15: with raw epochs, a capture whose nearest epoch is in no fix stretch (n=2 at
+        20 s lands in the 20-25 s float spell) takes the logger's own fix_suspect,
+        suspect_reason, fix_age_s and fix_young, so a logger-suspect capture gets use 0."""
+        ses = synth.write_dir(self.d / "sessions", synth.session_v06())
+        gpkg = self._import(ses)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='float_spell', fix_age_s=150, "
+                    "fix_young=1 WHERE n=2")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg, session_paths=[str(ses)])
+        c = caps[2]
+        self.assertIn("float_spell", snd.flags_of(c))
+        self.assertIn("fix_young", snd.flags_of(c))
+        self.assertNotIn("no_fix_info", snd.flags_of(c))
+        self.assertAlmostEqual(c["fix_age_s"], 150.0)
+        self.assertEqual(c["use"], 0)
+        self.assertNotIn("float_spell", snd.flags_of(caps[1]))   # 10 s: fixed, the raw stretch decides
+
     def test_float_spell_rule_off_in_the_log(self):
         """#15: float_spell_s 0 or less logs the rule as off, not "float spell >= 0 s"."""
         gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
