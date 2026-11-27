@@ -31,6 +31,18 @@ public class VoidRuleTest {
         assertTrue(VoidRule.UNDO_ARM_MS < VoidRule.UNDO_WINDOW_MS);
     }
 
+    @Test public void undoArmDelay() {
+        long shown = 5000 * MS;
+        assertFalse(VoidRule.armed(shown, shown));                                  // the frame it appears
+        assertFalse(VoidRule.armed(shown, shown + VoidRule.UNDO_ARM_MS * MS - 1));  // a double tap
+        assertTrue(VoidRule.armed(shown, shown + VoidRule.UNDO_ARM_MS * MS));
+        assertFalse(VoidRule.armed(shown, shown - MS));                             // clock went backwards
+        // a ref's notice can appear late: the window still counts from the row's own time
+        long capture = 1000 * MS, appeared = capture + 7500 * MS;
+        assertTrue(VoidRule.armed(appeared, appeared + VoidRule.UNDO_ARM_MS * MS));
+        assertFalse(VoidRule.undoOpen(capture, appeared + VoidRule.UNDO_ARM_MS * MS));
+    }
+
     @Test public void reasonsAreSafeInCsvAndEvents() {
         assertEquals(VoidRule.ACCIDENTAL, VoidRule.REASONS.get(0));
         for (String r : VoidRule.REASONS) assertEquals(r, VoidRule.reason(r));

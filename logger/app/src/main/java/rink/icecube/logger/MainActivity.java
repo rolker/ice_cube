@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.text.InputType;
 import android.text.SpannableStringBuilder;
@@ -59,6 +60,7 @@ import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TrackPoint;
+import rink.icecube.logger.core.VoidRule;
 
 /**
  * The main screen: the local map, full screen, for a phone on a survey pole used with gloves.
@@ -102,7 +104,12 @@ public final class MainActivity extends Activity {
     private MapView map;
     private TextView info, warnBar, noticeBar;
     private TextView fixChip, gpsItem, casterItem, poleItem, recItem;
-    private Button modeB, markB, photoB, menuB, centerB, fitB;
+    private Button modeB, markB, photoB, menuB, centerB, fitB, undoB;
+    /** The notice bar and its UNDO button, side by side. */
+    private LinearLayout noticeRow;
+    /** The notice UNDO is shown for, and when it first showed (elapsedRealtime ns), for the arm delay. */
+    private Survey.Notice undoNotice;
+    private long undoShownNs;
     private FrameLayout mapFrame, drawer;
     private LinearLayout drawerItems;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -182,6 +189,19 @@ public final class MainActivity extends Activity {
         warnBar = bar(0xFFC62828);
         warnBar.setOnClickListener(v -> startActivity(new Intent(this, DetailsActivity.class)));
         noticeBar = bar(0xFF2E7D32);
+        undoB = smallButton("UNDO", v -> onUndo());
+        undoB.setTextSize(16);
+        undoB.setTypeface(Typeface.DEFAULT_BOLD);
+        undoB.setVisibility(View.GONE);
+        noticeRow = new LinearLayout(this);
+        noticeRow.setOrientation(LinearLayout.HORIZONTAL);
+        noticeRow.setBackgroundColor(STRIP_BG);
+        noticeRow.addView(noticeBar, new LinearLayout.LayoutParams(0, -1, 1));
+        LinearLayout.LayoutParams up = new LinearLayout.LayoutParams(Screen.dp(this, 88), -1);
+        up.setMargins(Screen.dp(this, 3), Screen.dp(this, 3), Screen.dp(this, 3), Screen.dp(this, 3));
+        noticeRow.addView(undoB, up);
+        undoB.setMinHeight(Screen.dp(this, 48));
+        undoB.setMinimumHeight(Screen.dp(this, 48));
 
         fixChip = chip(v -> startActivity(new Intent(this, DetailsActivity.class)));
         gpsItem = chip(v -> onGpsDot());
@@ -260,7 +280,7 @@ public final class MainActivity extends Activity {
      */
     private void arrange() {
         boolean land = Screen.landscape(this);
-        for (View v : new View[] {mapFrame, warnBar, noticeBar, fixChip, gpsItem, casterItem, poleItem, recItem,
+        for (View v : new View[] {mapFrame, warnBar, noticeRow, fixChip, gpsItem, casterItem, poleItem, recItem,
                 modeB, markB, photoB, menuB, drawer}) Screen.detach(v);
         showStatusBar(!land);
         int m = Screen.dp(this, 3);
@@ -280,7 +300,7 @@ public final class MainActivity extends Activity {
         left.setOrientation(LinearLayout.VERTICAL);
         left.addView(strip, new LinearLayout.LayoutParams(-1, -2));
         left.addView(warnBar, new LinearLayout.LayoutParams(-1, -2));
-        left.addView(noticeBar, new LinearLayout.LayoutParams(-1, -2));
+        left.addView(noticeRow, new LinearLayout.LayoutParams(-1, -2));
         left.addView(mapFrame, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout buttons = new LinearLayout(this);
@@ -497,6 +517,36 @@ public final class MainActivity extends Activity {
         }
         updateModeButtons();
         refresh();
+    }
+
+    /**
+     * UNDO beside the notice: shown while the notice is a capture's own (Notice.undoable),
+     * its row is not flagged and the 8 s window from the row's own time is open (one clock,
+     * elapsedRealtime, as Survey checks). A newer notice replaces it. The first frame that
+     * shows it starts the arm delay.
+     */
+    private void updateUndo(Survey.Notice nt) {
+        long now = SystemClock.elapsedRealtimeNanos();
+        boolean show = nt != null && nt.undoable && !nt.at.voided && VoidRule.undoOpen(nt.at.elapsedNs, now);
+        if (show && nt != undoNotice) {
+            undoNotice = nt;
+            undoShownNs = now;
+        } else if (!show) {
+            undoNotice = null;
+        }
+        undoB.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    /** A tap on UNDO: flags the notice's capture as accidental (ignored in the first 750 ms). */
+    private void onUndo() {
+        Survey sv = survey();
+        Survey.Notice nt = undoNotice;
+        if (sv == null || nt == null || sv.notice() != nt) return;
+        if (!VoidRule.armed(undoShownNs, SystemClock.elapsedRealtimeNanos())) return;
+        Survey.Outcome o = sv.voidCapture(nt.at.n, VoidRule.ACCIDENTAL, VoidRule.VIA_UNDO);
+        Feedback.play(this, o.ok ? Feedback.Cue.REF_CANCEL : Feedback.Cue.ERROR);
+        undoNotice = null;
+        handle(o);
     }
 
     private void confirmCancelTilt() {
@@ -984,6 +1034,8 @@ public final class MainActivity extends Activity {
         if (w != null) warnBar.setText(w);
         Survey.Notice nt = sv == null ? null : sv.notice();
         noticeBar.setVisibility(nt == null ? View.GONE : View.VISIBLE);
+        noticeRow.setVisibility(nt == null ? View.GONE : View.VISIBLE);
+        updateUndo(nt);
         if (nt != null) {
             MapOrigin o = shownOrigin;
             String at = o == null || nt.at == null ? null : o.readout(nt.at.lat, nt.at.lon, nt.at.hGround);

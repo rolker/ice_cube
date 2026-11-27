@@ -92,6 +92,14 @@ public final class PointRow {
     /** Surface, object and ref rows; not photo rows. */
     public boolean isCapture() { return !PHOTO.equals(cls); }
 
+    /** The map and notice letter of a class: S, O, R, or P for a photo row. */
+    public static String label(String cls) {
+        if (SURFACE.equals(cls)) return "S";
+        if (OBJECT.equals(cls)) return "O";
+        if (REF.equals(cls)) return "R";
+        return "P";
+    }
+
     /** A capture row that is not voided: what feeds the coverage, takes photos and counts. */
     public boolean isLive() { return isCapture() && !voided; }
 

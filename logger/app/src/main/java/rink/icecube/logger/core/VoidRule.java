@@ -40,6 +40,16 @@ public final class VoidRule {
     }
 
     /**
+     * True once UNDO has been on screen long enough to take a tap: shownNs is when it first
+     * showed, nowNs the tap (same clock). A double tap or a press already in progress when
+     * it appears falls inside {@link #UNDO_ARM_MS} and is ignored; a clock going backwards
+     * is not armed.
+     */
+    public static boolean armed(long shownNs, long nowNs) {
+        return nowNs - shownNs >= UNDO_ARM_MS * 1_000_000L;
+    }
+
+    /**
      * A reason fit for points.csv and an events.csv line: commas, semicolons, '=' and line
      * breaks become spaces, runs of spaces collapse, trimmed; empty becomes "other".
      */

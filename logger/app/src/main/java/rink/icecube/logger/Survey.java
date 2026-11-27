@@ -58,16 +58,21 @@ final class Survey {
     /**
      * A short message for the map, green (ok), amber (warn) or red, shown until untilMs
      * (uptime). at is the capture it reports, or null; the map adds its x/y/z in the map frame.
+     * undoable: the notice of a capture of its own (surface or object MARK, tilt end, ref
+     * end), which offers UNDO of at while {@link VoidRule#undoOpen} holds for at.elapsedNs
+     * (the same elapsedRealtime clock Survey checks again). A photo notice is never
+     * undoable, so UNDO never flags the capture a photo landed on.
      */
     static final class Notice {
         final String text;
-        final boolean ok, warn;
+        final boolean ok, warn, undoable;
         final long untilMs;
         final PointRow at;
         Notice(String text, boolean ok) { this(text, ok, false); }
-        Notice(String text, boolean ok, boolean warn) { this(text, ok, warn, null); }
-        Notice(String text, boolean ok, boolean warn, PointRow at) {
-            this.text = text; this.ok = ok; this.warn = warn; this.at = at; untilMs = SystemClock.uptimeMillis() + NOTICE_MS;
+        Notice(String text, boolean ok, boolean warn) { this(text, ok, warn, null, false); }
+        Notice(String text, boolean ok, boolean warn, PointRow at, boolean undoable) {
+            this.text = text; this.ok = ok; this.warn = warn; this.at = at; this.undoable = undoable && at != null;
+            untilMs = SystemClock.uptimeMillis() + NOTICE_MS;
         }
     }
 
@@ -310,10 +315,10 @@ final class Survey {
                 fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
         if (r.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
-            notice = new Notice(text + "  fix may be false (jumped " + jumpText(r.fixJump) + ")", false, true, r);
+            notice = new Notice(text + "  fix may be false (jumped " + jumpText(r.fixJump) + ")", false, true, r, true);
         } else {
             cue(mode == SurveyMode.SURFACE ? Feedback.Cue.SURFACE : Feedback.Cue.OBJECT);
-            notice = new Notice(text, r.fix == 4, false, r);
+            notice = new Notice(text, r.fix == 4, false, r, true);
         }
         return new Outcome(true, null);
     }
@@ -421,7 +426,7 @@ final class Survey {
         boolean warn = !r.warnings.isEmpty() || row.fixSuspect;
         if (row.fixSuspect) text += "  fix may be false (jumped " + jumpText(row.fixJump) + ")";
         else if (!r.warnings.isEmpty()) text += "  (accepted with warnings)";
-        notice = new Notice(text, !warn, warn, row);
+        notice = new Notice(text, !warn, warn, row, true);
         if (PointRow.REF.equals(row.cls)) {
             PointRow f = row;
             run(() -> poleCheck(f));
@@ -516,19 +521,19 @@ final class Survey {
             if (c == null) {
                 String text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
                         : "Ref R" + r.n + " saved: first visit to this mark";
-                notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r);
+                notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r, true);
                 poleWarning = null;
                 poleWarningN = 0;
             } else if (c.ok) {
                 poleWarning = null;
                 poleWarningN = 0;
-                notice = new Notice(c.describe() + sus, !r.fixSuspect, r.fixSuspect, r);
+                notice = new Notice(c.describe() + sus, !r.fixSuspect, r.fixSuspect, r, true);
                 if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
             } else {
                 String text = c.describe();
                 poleWarning = text + " (R" + r.n + "; check the pole height)";
                 poleWarningN = r.n;
-                notice = new Notice(text + sus, false, false, r);
+                notice = new Notice(text + sus, false, false, r, true);
                 cue(Feedback.Cue.POLE_ALARM);
             }
         }
@@ -646,7 +651,7 @@ final class Survey {
             target.photo = PhotoRule.add(target.photo, name);
             svc.event("photo file=photos/" + name + " bytes=" + p.file.length() + " attached to n=" + target.n);
             savePoints();
-            notice = new Notice("Photo on " + label(target.cls) + target.n, true, false, target);
+            notice = new Notice("Photo on " + label(target.cls) + target.n, true, false, target, false);
         } else {
             EpochAverage a = average(SystemClock.elapsedRealtimeNanos());
             PointRow r = PointRow.of(++counter, PointRow.PHOTO, p.pressNs, a, svc.poleHeight(), System.currentTimeMillis());
@@ -655,7 +660,7 @@ final class Survey {
             svc.event("photo file=photos/" + name + " bytes=" + p.file.length() + " own row n=" + r.n);
             svc.event("capture " + r.toCsv());
             savePoints();
-            notice = new Notice("Photo saved" + (a == null ? " (no fix)" : ""), a != null, false, r);
+            notice = new Notice("Photo saved" + (a == null ? " (no fix)" : ""), a != null, false, r, false);
         }
         cue(Feedback.Cue.PHOTO);
     }
@@ -680,14 +685,7 @@ final class Survey {
     int refsGeneration() { return refsGeneration; }
     int voidGeneration() { return voidGeneration; }
 
-    static String label(String cls) {
-        switch (cls) {
-            case PointRow.SURFACE: return "S";
-            case PointRow.OBJECT: return "O";
-            case PointRow.REF: return "R";
-            default: return "P";
-        }
-    }
+    static String label(String cls) { return PointRow.label(cls); }
 
     static String fixName(int q) {
         switch (q) {
