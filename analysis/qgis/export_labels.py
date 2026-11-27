@@ -93,8 +93,9 @@ def export(gpkg, out, classes=("surface", "object", "ref", "control"), labelled_
 
 def cell(r, k, has_void):
     """The CSV value of column k: empty for None, 0 for `void` from a gpkg imported before
-    0.9.0 (no void column: nothing was flagged)."""
-    if k == "void" and not has_void:
+    0.9.0 (no void column) or for a row with a NULL void (imported before the column was
+    added): nothing was flagged."""
+    if k == "void" and (not has_void or r[k] is None):
         return 0
     return "" if k not in r.keys() or r[k] is None else r[k]
 

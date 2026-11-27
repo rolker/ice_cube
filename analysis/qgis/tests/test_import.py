@@ -168,6 +168,13 @@ class ImportTest(unittest.TestCase):
         self.assertEqual((stats["voided"], stats["voided_included"]), (1, True))
         rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
         self.assertEqual((rows["2"]["void"], rows["2"]["void_reason"]), ("1", "moved"))
+        # a row whose void is NULL (imported before the column was added) exports void 0
+        gp = gw.GeoPackage(self.gpkg)
+        gp.con.execute("UPDATE captures SET void = NULL WHERE n = 1")
+        gp.close()
+        export_labels.export(self.gpkg, self.d / "l.csv", include_voided=True)
+        rows = {r["n"]: r for r in csv.DictReader((self.d / "l.csv").read_text().splitlines())}
+        self.assertEqual(rows["1"]["void"], "0")
 
     def test_read_refs_csv_keeps_void_past_a_short_header(self):
         """Headerless, or under a header the logger did not upgrade, a 0.9.0 row keeps its
