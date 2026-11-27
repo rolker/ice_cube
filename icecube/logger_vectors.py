@@ -119,13 +119,46 @@ STATUS = ("none", "no_data", "fringe", "disagree", "thin", "ok")
 
 
 class LiveNode:
-    __slots__ = ("i", "j", "store", "in_area", "quad")
+    __slots__ = ("i", "j", "store", "in_area", "quad", "plane")
 
     def __init__(self, i, j):
         self.i, self.j = i, j
         self.store = None
         self.in_area = False
         self.quad = 0
+        self.plane = None    # (code, pass-2 output or None, |g| or NaN) from the plane pass
+
+
+def _count_run(k_sigma, trace=None):
+    """The logger's rebuild of one node's entries (count promotion, no Eeg, no pass bias)."""
+    from . import nodes
+
+    def run(es):
+        if trace is not None:
+            nodes.rebuild(es, k_sigma, "count", trace)
+        return nodes._robust(es, k_sigma, 0.0, "count")
+    return run
+
+
+def plane_over(stores, k_sigma, slope, trace=None, gtrace=None):
+    """nodes.plane_pass over `stores`, a dict (i, j) -> nodes.NodeStore (the logger's
+    nodes with soundings), with PLANE_DEFAULTS, the constant slope allowance and no DEM.
+    Returns (i, j) -> (code, pass-2 output or None, |g| or NaN) for the tried nodes. The
+    pass-2 n_out includes the store's dropped entries; `trace`/`gtrace` as in
+    `_check_trace` and plane_pass."""
+    from . import nodes
+    if not stores:
+        return {}
+    i0 = min(i for i, _ in stores); j0 = min(j for _, j in stores)
+    nx = max(i for i, _ in stores) - i0 + 1; ny = max(j for _, j in stores) - j0 + 1
+    idx = {(j - j0) * nx + (i - i0): (i, j) for i, j in stores}
+    es = {q: stores[key]._all() for q, key in idx.items()}
+    out1 = {q: stores[key].outputs() for q, key in idx.items()}
+    dropped = {q: stores[key].n_dropped for q, key in idx.items() if stores[key].n_dropped}
+    tried = nodes.plane_pass(es, out1, nx, ny, PLANE_PARAMS["cell"], k_sigma, _count_run(k_sigma, trace),
+                             lambda a, b: slope, None, gtrace, dropped=dropped,
+                             **{k: v for k, v in nodes.PLANE_DEFAULTS.items()})
+    return {idx[q]: r for q, r in tried.items()}
 
 
 class LiveCoverage:
@@ -135,15 +168,27 @@ class LiveCoverage:
     bit (capture minus node, x >= 0 is bit 0, y >= 0 bit 1). Status: none (not in the
     area), no_data (no sounding, all four quadrants marked: an enclosed gap), fringe (no
     sounding, the area's edge), disagree (n_out > 0 and n_in < OUTVOTE * n_out), thin
-    (sqrt(1/W + wander^2) > target), ok."""
+    (sqrt(1/W + wander^2) > target), ok.
 
-    def __init__(self, cell, rad, reach, target=0.03, wander=0.015, k_sigma=3.0, slope=0.05, cap=None):
+    `plane` (issue #29): after each capture the plane pass is redone for the nodes within
+    one cell (Chebyshev) of a fed node, from the pass-1 state of their neighbours, as
+    Coverage.java does; status then reads the final values (`final`). The vectors' plane
+    expectations do not come from this ring but from a full recompute (`plane_over` over
+    every node after each capture); the ring is checked against it."""
+
+    def __init__(self, cell, rad, reach, target=0.03, wander=0.015, k_sigma=3.0, slope=0.05, cap=None,
+                 plane=False):
         from . import nodes
         self.cell, self.rad, self.reach, self.target, self.wander = cell, rad, reach, target, wander
         self.k_sigma, self.slope = k_sigma, slope
         self.cap = nodes.CAP if cap is None else cap
+        self.plane = plane
         self.nodes = {}
         self.trace = []
+        self.gtrace = []
+
+    def stores(self):
+        return {k: nd.store for k, nd in self.nodes.items() if nd.store is not None}
 
     def add(self, x, y, z, sz, sh, id):
         from . import nodes
@@ -151,6 +196,7 @@ class LiveCoverage:
         r = max(rad, reach)
         i0, i1 = math.ceil((x - r) / cell), math.floor((x + r) / cell)
         j0, j1 = math.ceil((y - r) / cell), math.floor((y + r) / cell)
+        fed = []
         for j in range(j0, j1 + 1):
             for i in range(i0, i1 + 1):
                 d = math.hypot(i * cell - x, j * cell - y)
@@ -165,10 +211,36 @@ class LiveCoverage:
                     s = self.slope * (d + sh)
                     if nd.store is None:
                         nd.store = nodes.NodeStore(self.k_sigma, self.cap)
-                    nd.store.add(z, sz * sz + s * s, id, self.trace)
+                    nd.store.add(z, sz * sz + s * s, id, self.trace, dx=x - i * cell, dy=y - j * cell,
+                                 sz2=sz * sz, sh=sh)
+                    fed.append((i, j))
                 if marks:
                     nd.in_area = True
                     nd.quad |= 1 << ((1 if x - i * cell >= 0 else 0) | (2 if y - j * cell >= 0 else 0))
+        if self.plane and fed:
+            self._ring(fed)
+
+    def _ring(self, fed):
+        """Redo the plane pass for the fed nodes and their 8 neighbours (the ring), each
+        from its neighbours' pass-1 state: plane_pass over the ring and its neighbours,
+        results kept for the ring only."""
+        ring = {(i + di, j + dj) for i, j in fed for di in (-1, 0, 1) for dj in (-1, 0, 1)}
+        near = {(i + di, j + dj) for i, j in ring for di in (-1, 0, 1) for dj in (-1, 0, 1)}
+        st = {k: self.nodes[k].store for k in near if k in self.nodes and self.nodes[k].store is not None}
+        res = plane_over(st, self.k_sigma, self.slope)
+        for k in ring:
+            if k in st:
+                self.nodes[k].plane = res.get(k)
+
+    def final(self, nd):
+        """The node's final outputs: dict(code, planar, gradient, z, sigma, w, n_in, n_out),
+        pass 1 unless the plane pass was accepted."""
+        from . import nodes
+        o = nd.store.outputs()
+        code, o2, g = nd.plane if nd.plane is not None else (nodes.PLANE_NOT_TRIED, None, float("nan"))
+        f = o2 if o2 is not None else o
+        return dict(code=code, planar=code == nodes.PLANE_ACCEPTED, gradient=g, z=f["z"], sigma=f["sigma"],
+                    w=f["w"], n_in=f["n_in"], n_out=f["n_out"])
 
     def status(self, nd):
         from . import nodes
@@ -176,10 +248,11 @@ class LiveCoverage:
             return "none"
         if nd.store is None:
             return "no_data" if nd.quad == 15 else "fringe"
-        o = nd.store.outputs()
+        o = self.final(nd) if self.plane else nd.store.outputs()
         if o["n_out"] > 0 and o["n_in"] < nodes.OUTVOTE * o["n_out"]:
             return "disagree"
-        ds = math.sqrt(1.0 / o["w"] + self.wander * self.wander)
+        var = o["sigma"] ** 2 if self.plane and o.get("planar") else 1.0 / o["w"]   # planar: 1/W' + d_bar'C_g d_bar
+        ds = math.sqrt(var + self.wander * self.wander)
         assert abs(ds - self.target) > 1e-9, ("status sigma on the target", nd.i, nd.j)
         return "thin" if ds > self.target else "ok"
 

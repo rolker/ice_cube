@@ -151,7 +151,9 @@ The surface does not depend on the order of the soundings. `robust=False` keeps 
 counts; n_out then holds that count) for comparing old runs.
 
 The Ice Cube Logger mirrors the rebuild (one pass, sb = 0, count promotion, at most CAP
-stored entries per node, see `NodeStore`) in logger/.../core/Coverage.java for its live
+stored entries per node, see `NodeStore`, whose fold keeps the geometry the plane pass
+needs) and the plane pass (constant slope allowance, no DEM gate; logger 0.10.0) in
+logger/.../core/Coverage.java and PlanePass.java for its live
 coverage overlay; when it changes, regenerate its test vectors with `python3 -m
 icecube.logger_vectors --out logger/app/src/test/resources/coverage_vectors.json` and
 port the change.
@@ -352,7 +354,16 @@ class NodeStore:
     first dropping the aggregate (its count to n_dropped) when it is not in the main;
     otherwise the oldest stored entry is dropped and counted in n_dropped. Then rebuild
     again. The aggregate enters the rebuild as one entry z = WZ/W, w = W, v = 1.0/W,
-    id -1, counting `count` members. n_dropped is part of n_out."""
+    id -1, counting `count` members. n_dropped is part of n_out.
+
+    Geometry (issue #29, for `plane_pass`). Each stored entry keeps dx, dy (sounding minus
+    node centre), sz^2 and sh. The aggregate keeps the moments WDX = sum w dx, WDY = sum
+    w dy, WS = sum w^2 sz^2 and WH = sum w^2 sh^2 of its members (zeroed with it when it
+    is dropped) and enters as the entry at (WDX/W, WDY/W) with sz^2 = WS/W^2 and
+    sh = sqrt(WH)/W: reduced to a plane it is then exactly the reduced weighted mean of its
+    members, with the exact variance of that mean (slope-free; the slope term cannot be
+    taken out of a fold, so it is no worse than pass 1). Pass-1 weights stay w = W,
+    v = 1/W."""
 
     def __init__(self, k_sigma=3.0, cap=CAP):
         self.k_sigma, self.cap = k_sigma, cap
@@ -360,20 +371,26 @@ class NodeStore:
         self.agg_w = 0.0
         self.agg_wz = 0.0
         self.agg_n = 0
+        self.agg_wdx = self.agg_wdy = self.agg_ws = self.agg_wh = 0.0
         self.n_dropped = 0
         self.state = None
 
     def _all(self):
+        """The stored entries in arrival order, then the aggregate (id -1) when it has members."""
         es = list(self.entries)
         if self.agg_n:
-            es.append(entry(self.agg_wz / self.agg_w, 1.0 / self.agg_w, -1, w=self.agg_w, cnt=self.agg_n))
+            W = self.agg_w
+            es.append(entry(self.agg_wz / W, 1.0 / W, -1, w=W, cnt=self.agg_n, dx=self.agg_wdx / W,
+                            dy=self.agg_wdy / W, sz2=self.agg_ws / (W * W), sh=math.sqrt(self.agg_wh) / W))
         return es
 
     def rebuild(self, trace=None):
         return rebuild(self._all(), self.k_sigma, "count", trace)
 
-    def add(self, z, v, id, trace=None):
-        self.entries.append(entry(z, v, id))
+    def add(self, z, v, id, trace=None, dx=0.0, dy=0.0, sz2=None, sh=0.0):
+        """Adds one entry (z, v, id; dx, dy, sz2, sh its geometry, see `entry`), folds past
+        the cap and rebuilds. Returns the rebuild."""
+        self.entries.append(entry(z, v, id, dx=dx, dy=dy, sz2=sz2, sh=sh))
         if len(self.entries) > self.cap:
             r = self.rebuild(trace)
             m = len(self.entries)
@@ -382,10 +399,16 @@ class NodeStore:
                 if self.agg_n and r.hyp_of[m] != r.main:
                     self.n_dropped += self.agg_n
                     self.agg_w, self.agg_wz, self.agg_n = 0.0, 0.0, 0
+                    self.agg_wdx = self.agg_wdy = self.agg_ws = self.agg_wh = 0.0
                 e = self.entries.pop(members[0])
-                self.agg_w += e[2]
-                self.agg_wz += e[2] * e[0]
+                w = e[2]
+                self.agg_w += w
+                self.agg_wz += w * e[0]
                 self.agg_n += 1
+                self.agg_wdx += w * e[7]
+                self.agg_wdy += w * e[8]
+                self.agg_ws += w * w * e[9]
+                self.agg_wh += w * w * e[10] * e[10]
             else:
                 self.entries.pop(0)
                 self.n_dropped += 1
@@ -397,14 +420,17 @@ class NodeStore:
         return len(self.entries) + self.agg_n + self.n_dropped
 
     def outputs(self):
-        """dict(z, sigma, n, n_in, n_out, n_alt, z_alt, strength, max_nr, w) of the last add."""
+        """dict(z, sigma, n, n_in, n_out, n_alt, z_alt, strength, max_nr, w, cx, cy) of the
+        last add; cx, cy the main's weighted centroid (the aggregate at (WDX/W, WDY/W))."""
         r = self.state
         h = r.hyps[r.main]
         n_alt, z_alt = r.alt()
         n_in = h.cnt
         n_out = self.n - n_in
+        es = self._all()
+        cx, cy = _centroid(es, h)
         return dict(z=h.z(), sigma=math.sqrt(1.0 / h.w), w=h.w, n=self.n, n_in=n_in, n_out=n_out,
-                    n_alt=n_alt, z_alt=z_alt, strength=strength(n_in, n_out), max_nr=r.max_nr(self._all()))
+                    n_alt=n_alt, z_alt=z_alt, strength=strength(n_in, n_out), max_nr=r.max_nr(es), cx=cx, cy=cy)
 
 
 #: `plane_pass` outcome per node (Surface.plane_code).
@@ -521,7 +547,8 @@ def reduce_to_plane(es, gx, gy, cov_g):
     return out
 
 
-def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, trace=None, skip=(), **prm):
+def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=None, trace=None, skip=(),
+               dropped=None, **prm):
     """The neighbourhood-gradient pass (issue #29) over pass-1 results.
 
     `stores`: node index (a*nx + b) -> entries; `out1`: node index -> pass-1 output dict
@@ -532,12 +559,20 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
     feeds a later fit). Returns node index -> (code, pass-2 output or None, |g| or NaN)
     for every tried node. `trace`, when a list, receives (name, value, threshold) for each
     continuous gate comparison (the vector generator's threshold guard). `skip`: node
-    indices neither tried nor used as neighbours (masked nodes)."""
+    indices neither tried nor used as neighbours (masked nodes). `dropped`: node index ->
+    entries a `NodeStore` dropped (counted in its n_out, absent from its entries), added to
+    the pass-2 n_out; None for none (the batch).
+
+    n_in is the output's "n_in" (the main's member count, an aggregate counting its cnt
+    members) where `run` gives one, else len(entries) - n_out (`_running`, which has none;
+    the two agree for unfolded entries)."""
     p = dict(PLANE_DEFAULTS, **{k: v for k, v in prm.items() if v is not None})
     planarity = k_sigma if p["planarity"] is None else float(p["planarity"])
-    # n_in as len(entries) - n_out: right for unfolded entries (batch); a folded aggregate
-    # (NodeStore, the logger) counts cnt members, so a port on aggregates sums cnt instead
-    red = {i: is_red(len(stores[i]) - o["n_out"], o["n_out"]) for i, o in out1.items()}
+    dropped = dropped or {}
+
+    def n_in(i, o):
+        return o["n_in"] if "n_in" in o else len(stores[i]) - o["n_out"]
+    red = {i: is_red(n_in(i, o), o["n_out"]) for i, o in out1.items()}
     res = {}
     for idx, o in out1.items():
         if not red[idx] or idx in skip:
@@ -550,7 +585,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
                 if (da == 0 and db == 0) or not (0 <= aa < ny and 0 <= bb < nx):
                     continue
                 j = aa * nx + bb
-                if j not in out1 or j in skip or len(stores[j]) - out1[j]["n_out"] < p["min_nin"]:
+                if j not in out1 or j in skip or n_in(j, out1[j]) < p["min_nin"]:
                     continue
                 o_j = out1[j]    # weight w, not 1/sigma^2: pass bias left out on purpose (docstring)
                 nbrs.append((db * cell + o_j.get("cx", 0.0), da * cell + o_j.get("cy", 0.0), o_j["z"], o_j["w"],
@@ -588,6 +623,8 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
                 continue
         es2 = reduce_to_plane(stores[idx], fit["gx"], fit["gy"], fit["cov_g"])
         o2 = run(es2)
+        if dropped.get(idx):
+            o2 = dict(o2, n_out=o2["n_out"] + dropped[idx])
         # the gradient error dg is common to every reduced entry (error -dg.d_i), so the
         # per-entry d_i'C_g d_i averages down as if independent; the main's mean carries
         # -dg.d_bar in full (d_bar its weighted centroid): add d_bar'C_g d_bar to sigma'^2.
@@ -595,7 +632,7 @@ def plane_pass(stores, out1, nx, ny, cell, k_sigma, run, allowance, raw_slope=No
         bx, by = o2["cx"], o2["cy"]
         vbar = bx * bx * cg[0, 0] + 2.0 * bx * by * cg[0, 1] + by * by * cg[1, 1]
         o2 = dict(o2, sigma=math.sqrt(o2["sigma"] ** 2 + max(float(vbar), 0.0)))
-        if is_red(len(es2) - o2["n_out"], o2["n_out"]) and not o2["n_out"] < o["n_out"]:
+        if is_red(n_in(idx, o2), o2["n_out"]) and not o2["n_out"] < o["n_out"]:
             res[idx] = (PLANE_NO_GAIN, None, g)
             continue
         # z' - a has error -dg.d_bar + (entry noise) - da, so its variance carries the
@@ -842,8 +879,9 @@ def _robust(es, k_sigma, eeg_limit, promote="weight"):
         if q > mr:
             mr = q
     cx, cy = _centroid(es, main)
-    return dict(z=main.z(), sigma=math.sqrt(main.var()), w=main.w, cx=cx, cy=cy, max_nr=mr, n_out=len(es) - main.cnt,
-                n_alt=n_alt, z_alt=z_alt, n_eeg=len(culled))
+    # counts by cnt: a folded aggregate (NodeStore) counts its members; 1 per batch entry
+    return dict(z=main.z(), sigma=math.sqrt(main.var()), w=main.w, cx=cx, cy=cy, max_nr=mr, n_in=main.cnt,
+                n_out=sum(e[4] for e in es) - main.cnt, n_alt=n_alt, z_alt=z_alt, n_eeg=len(culled))
 
 
 def _centroid(es, h):
