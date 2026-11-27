@@ -1045,3 +1045,25 @@ PR-mode round 1. Specialists: static (no project pre-commit config and no pre-co
 - [x] (suggestion) zip_zone_offset accepts a stale or reset events.csv mtime whenever its gap to the last line falls within -2..+120 s of a multiple of 15 min (about 1 in 7 random gaps), giving an offset wrong by k x 15 min with only the 1 h DST uncertainty; the docstring says such a case gives None. State the limit, or cap the accepted gap (e.g. require the offset to match the phone's zone column if one exists) — `analysis/qgis/logger_session.py:273`
 - [x] (suggestion) A 0x5455 time is floored to whole seconds with uncertainty 0, while a folder copy uses sub-second st_mtime with uncertainty 0, so two copies in the same second can misorder (a cleared folder copy at T.2 beats a flagged zip copy written at T.7). Give a 0x5455 time uncertainty 1 s (or centre +0.5 s, unc 0.5) — `analysis/qgis/logger_session.py:159`
 - [x] (suggestion) `undoDownNs` is cleared only in onUndo; a press that slides off UNDO leaves it set, and a later non-touch click (keyboard, accessibility) is timed at that old press and refused with the error cue. Reset it on ACTION_CANCEL and when a new UNDO is shown (safe side, rare) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:207`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-26 22:23 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #36 at `f435b62`
+**Addressed**: Local Review at `46796b3` (2026-11-26 22:12 -05:00)
+**Commits**: dd5e0ab, 216503a, c230eb4, 60d1ead, f435b62
+
+### Actions
+- [x] (must-fix, host-decided, owner may veto) An mtime_approx copy now stores its DOS date/time read as if UTC (zip_dos_seconds), uncertainty 26 h, so its time and copy id are the same on every PC and an upsert never changes them; zip_entry_time_key and the 4-tuple plumbing removed (redundant). Test imports one zip under TZ UTC0, JST-9 and EST5EDT with an exact copy 20 h after the stored time: same stored time, flag (tie, flagged), refs row and refs_copies rows each time (the old PC-zone reading in JST would clear it) — `analysis/qgis/logger_session.py` zip_entry_stamp, `analysis/qgis/import_sessions.py` _copy_id
+- [x] (suggestion) Seed from an older gpkg only `void = 1 OR void_copy_mtime IS NOT NULL`; test that an untimed void 0 is not seeded and a later surely-newer un-flag clears a seeded copy (timed: past 26 h, within is a tie; untimed: any known time) — `analysis/qgis/import_sessions.py` ensure_schema
+- [x] (suggestion) zip_zone_offset: the corrected events.csv mtime must be within -2..+10 s of its last wall_ms (was 120 s; the logger flushes every events.csv line, so its mtime is that line's), else None. A stale mtime still landing in that window of a 15 min multiple (about 1 in 75 random gaps) cannot be told from events.csv; documented as a limit in the docstring and logger/README.md. Test: stale gap 2x15 min + 60 s gives None, + 5 s is accepted (the limit) — `analysis/qgis/logger_session.py` zip_zone_offset
+- [x] (suggestion) A 0x5455 time carries a 1 s uncertainty (EXT_S); test a folder copy cleared at T+0.2 s ties a zipped flag at T+0.7 s (stored T), 2 s apart does not — `analysis/qgis/logger_session.py` zip_entry_stamp, refs_csv_dated
+- [x] (suggestion) undoDownNs reset on ACTION_CANCEL, on ACTION_UP outside the button plus touch slop, and when a new UNDO is shown with no press held (a held press keeps its earlier press-down, so it still cannot undo). No JVM test (MainActivity) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 156, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 94, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, app-debug.apk 22:21 (C: 112.6 GB free before)
+- Not pushed; the host owns the push.
