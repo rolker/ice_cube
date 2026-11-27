@@ -861,3 +861,26 @@ PR B only (PR A merged as #33). Checks: `python3 -m unittest discover -s analysi
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 144, OK (skipped=5); the three new importer tests fail on the previous code
 - `python3 -m unittest discover icecube/tests`: Ran 94, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 190 tests, 0 failures; APK `logger/app/build/outputs/apk/debug/app-debug.apk` (0.9.0, versionCode 13). C: had 112.8 GB free.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-26 21:36 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-27 at `29f67e2`
+**Base**: main
+**Depth**: Deep (reason: 1437 lines across 21 files, Android app plus QGIS importer: cross-layer; fix round classified on the whole diff)
+**Must-fix**: 2 | **Suggestions**: 5
+**Round**: 2 | **Ship**: continue — round 2: 2 must-fix include a design/correctness concern (not mechanical)
+
+PR B only. All seven round-1 items are fixed as described in the Implementation at eed240b (checked in the code and by the new tests). Checks: `python3 -m unittest discover -s analysis/qgis/tests` Ran 144, OK (skipped=5); `./gradlew --max-workers 4 testDebugUnitTest lintDebug` 190 tests, 0 failures, lint warnings only (SetTextI18n, existing pattern); C: 112.8 GB free. No Python linter installed (py_compile only). Both must-fix items concern zips without a 0x5455 timestamp (re-zipped copies, or void-column refs.csv from builds before 0.9.0); real 0.9.0 phone zips are exact. Owner rules held: flags stay flags; nothing deletes a row or file. Outside reviewers: Gemini and Codex (both completed); Claude adversarial subagent (no must-fix; raised the tie-merge and DST items as suggestions). Dropped: poleCheck voided guard (present, round 1), onUndo on an expired notice (error cue given, Survey says too late), the ms-vs-s ordering granularity between phone and importer (needs flag and un-flag within one second plus a partial write; errs to flagged).
+
+### Findings
+- [ ] (must-fix) Copy-time uncertainty arithmetic: `_stamp_order` ties within max(ua, ub), but independent errors add (two DST-uncertain copies 90 min apart can be in reverse order; 26 h vs 1 h mixes), and the tie merge stores (max t, max u), a bound wider than any input's (stored (T, 26 h) tied by (T+20 h, 0) becomes (T+20 h, 26 h), so an exact un-flag at T+30 h ties and the result depends on import order). Treat a copy time as an interval: tie when the intervals overlap (|d| <= ua + ub, or keep max only where a shared PC-zone error is the reason, and say so), and on a tie store the hull; decide the 26 h same-PC case explicitly (Codex, Gemini, Claude) — `analysis/qgis/import_sessions.py:376`, `:427`, `:460`
+- [ ] (must-fix) A DST change less than DST_FAR_S (12 h) from events.csv is still possible: Java converts each file's mtime with the zone rules at that moment, so a refs.csv written just across a transition gets a corrected time 1 h off with uncertainty 0 (e.g. fall 2026, ref 05:30 UTC and events 06:30 UTC share a DOS wall time). Give every corrected-DOS entry other than events.csv itself DST_S, or test whether a transition can lie between the two, with a test (Codex, Claude) — `analysis/qgis/logger_session.py:286`
+- [ ] (suggestion) Stored-flag UPDATE on a tie copies the incoming copy's `void_reason` even when the stored flag's copy is later (the in-run rule keeps the newest copy's reason); and a row stored from a pre-0.9.0 refs.csv (void 0, time NULL) is reported as a tie against a later unknown-time flagged copy though it had no void column (Gemini) — `analysis/qgis/import_sessions.py:457`, `:466`
+- [ ] (suggestion) UNDO arm delay is checked when the click completes, so a press that starts inside the 750 ms and ends after it undoes; check the arm at ACTION_DOWN (or require the press to start after arming), as the plan's "a press in progress cannot undo" means (Codex) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:554`
+- [ ] (suggestion) ShareZipTest reads entries with ZipInputStream (local headers); the importer reads the central directory's extra field: also check through java.util.zip.ZipFile or ZipFile's CEN extra (Gemini) — `logger/app/src/test/java/rink/icecube/logger/core/ShareZipTest.java:65`
+- [ ] (suggestion) `refs_csv_dated` reads and decodes events.csv for the zone offset even when refs.csv has a 0x5455 time; look for the extended timestamp first. Optionally make the zone residual one-sided (DOS truncates down by up to 2 s) to halve false offsets (Gemini, Claude) — `analysis/qgis/logger_session.py:156`, `:264`
+- [ ] (suggestion) Docs drift from the round-1 UNDO change: README says "a newer notice ends it" and taps in the first 750 ms "are ignored" (now a notice for the same capture keeps UNDO and an ignored tap plays the error cue); the javadoc above `undoAt` still describes the notice; ShareZip javadoc line 71 is 158 characters (reflow) — `logger/README.md:139`, `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:110`, `logger/app/src/main/java/rink/icecube/logger/core/ShareZip.java:71`
