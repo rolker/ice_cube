@@ -154,13 +154,25 @@ public final class AutoCapture {
         return Math.abs(poleM) * Math.sin(Math.toRadians(Math.min(90, Math.abs(plumbDeg))));
     }
 
+    /**
+     * The tip radius (m) to latch a Surface MARK with: poleM·sin of the measured lean when
+     * plumbDeg is known; with a calibrated axis but no gravity reading (plumbDeg NaN), poleM·sin
+     * of the plumb limit, the widest lean auto capture would accept; with no axis, the pole's
+     * full length (the tip could be anywhere within it).
+     */
+    public static double markTipRadiusM(double poleM, double plumbDeg, boolean calibrated, double plumbLimitDeg) {
+        if (!calibrated) return Math.abs(poleM);
+        double r = tipRadiusM(poleM, plumbDeg);
+        return Double.isNaN(r) ? tipRadiusM(poleM, plumbLimitDeg) : r;
+    }
+
     /** {@link #taken(double, double, double)} for a tip known at (e, n): a tilt set's or a calibration's. */
     public boolean taken(double e, double n) { return taken(e, n, 0); }
 
     /**
      * A capture was taken with its tip within tipRadiusM of (e, n): an auto capture (the fire's
-     * e, n, tipRadiusM), a Surface MARK (the antenna and poleM·sin θ, or the pole height when
-     * θ is unknown), a Surface tilt set's tip or a calibration's tip (radius 0). This stop
+     * e, n, tipRadiusM), a Surface MARK (the antenna and {@link #markTipRadiusM}), a Surface
+     * tilt set's tip or a calibration's tip (radius 0). This stop
      * counts as taken, so no auto capture follows until the tip moves away. If the stop is
      * still latched (this tip within the re-arm distance of the latched one) nothing changes,
      * so the first capture at a stop keeps the latch. Returns whether it latched here. A NaN

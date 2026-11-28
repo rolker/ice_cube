@@ -402,11 +402,12 @@ final class Survey {
         PointRow r = capture(mode, now, a, PointRow.SINGLE);
         if (mode == SurveyMode.SURFACE) {
             // the tip is within pole·sin(θ) of the averaged antenna, θ from the same second's
-            // gravity; with no axis or gravity, anywhere within the pole's length
+            // gravity; with no gravity, θ the plumb limit; with no axis, the pole's length
             double pole = svc.poleHeight();
-            double tipR = poleAxis == null ? Double.NaN
-                    : AutoCapture.tipRadiusM(pole, poleAxis.plumbDeg(svc.gravityMean(now - WINDOW_NS, now)));
-            autoTaken(r.lat, r.lon, r.hAnt, Double.isNaN(tipR) ? Math.abs(pole) : tipR, label(r.cls) + r.n, r.n);
+            double plumb = poleAxis == null ? Double.NaN
+                    : poleAxis.plumbDeg(svc.gravityMean(now - WINDOW_NS, now));
+            double tipR = AutoCapture.markTipRadiusM(pole, plumb, poleAxis != null, auto.plumbDeg());
+            autoTaken(r.lat, r.lon, r.hAnt, tipR, label(r.cls) + r.n, r.n);
         }
         return new Outcome(true, null);
     }

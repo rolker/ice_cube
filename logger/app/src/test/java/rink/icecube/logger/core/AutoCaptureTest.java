@@ -319,6 +319,18 @@ public class AutoCaptureTest {
         assertEquals(0.15, a.rearmM(), 1e-12);
     }
 
+    /** A MARK's latch radius: the measured lean, else the plumb limit, else the pole's length. */
+    @Test public void markTipRadiusFallsBackToThePlumbLimitWithoutGravity() {
+        assertEquals(off(1.5), AutoCapture.markTipRadiusM(POLE, 1.5, true, 2), 1e-12);
+        assertEquals(off(2), AutoCapture.markTipRadiusM(POLE, Double.NaN, true, 2), 1e-12);
+        assertEquals(POLE, AutoCapture.markTipRadiusM(POLE, Double.NaN, false, 2), 1e-12);
+        // latched at the plumb-limit radius, a 7 cm tip move re-arms (not 1.9 m)
+        AutoCapture a = auto();
+        assertTrue(a.taken(0, 0, AutoCapture.markTipRadiusM(POLE, Double.NaN, true, 2)));
+        feed(a, at(0, 0.07 + off(2), 0));   // stood plumb 7 cm past the latch's tip radius
+        assertFalse(a.latched());
+    }
+
     /** Epochs that stop while armed cue OFF once; their return cues ARMED after a second. */
     @Test public void stoppedEpochsCueOffOnce() {
         AutoCapture a = auto();
