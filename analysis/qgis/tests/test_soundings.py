@@ -279,7 +279,7 @@ class TestFrameAndSigma(unittest.TestCase):
                                                        + 0.015**2), places=6)
         b = snd.sigma_terms(sg, sd_u=0.002, age=12.0, fix_age=0.0, pole_m=1.6, on_mark=True)
         self.assertAlmostEqual(b["sigma_age"], 0.01)
-        self.assertAlmostEqual(b["sigma_settle"], 0.08)
+        self.assertAlmostEqual(b["sigma_settle"], sg["settle_extra"])
         self.assertEqual(b["sigma_ground"], 0.0)
         self.assertAlmostEqual(b["sigma_xy"], math.hypot(0.01, 1.6 * math.sin(math.radians(1))), places=6)
 
@@ -666,7 +666,7 @@ class TestBuild(unittest.TestCase):
         caps, _ = self._build_logger(gpkg)
         sg = snd.DEFAULTS["sigma"]
         self.assertAlmostEqual(caps[1]["fix_age_s"], 30.0)
-        self.assertAlmostEqual(caps[1]["sigma_settle"], sg["settle_extra"] * (1 - 30 / 120) ** 2, places=9)
+        self.assertAlmostEqual(caps[1]["sigma_settle"], sg["settle_extra"] * (1 - 30 / 120), places=9)
         self.assertIn("settle_inflated", snd.flags_of(caps[1]))
         self.assertNotIn("fix_young", snd.flags_of(caps[1]))
         self.assertEqual(caps[2]["sigma_settle"], 0.0)

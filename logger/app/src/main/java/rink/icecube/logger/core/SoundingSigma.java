@@ -8,7 +8,7 @@ package rink.icecube.logger.core;
  * <pre>
  * rtk      = max(FLOOR, sd_u)
  * age      = AGE_RATE * max(0, age_s - AGE_FREE_S)
- * settle   = SETTLE_EXTRA * (1 - fix_age_s / SETTLE_S)^2   when fix_age_s &lt; SETTLE_S
+ * settle   = SETTLE_EXTRA * (1 - fix_age_s / SETTLE_S)     when fix_age_s &lt; SETTLE_S
  * pole     = pole_m * (1 - cos(tilt)) + TIP_SINK
  * ground   = the Settings > Coverage ground sigma
  * sigma_z  = sqrt(rtk^2 + age^2 + settle^2 + pole^2 + ground^2)
@@ -33,7 +33,7 @@ package rink.icecube.logger.core;
  */
 public final class SoundingSigma {
     public static final double FLOOR = 0.01, FLOOR_H = 0.01, AGE_FREE_S = 2.0, AGE_RATE = 0.001,
-            SETTLE_EXTRA = 0.08, TIP_SINK = 0.01, TILT_BUBBLE_DEG = 1.0, SETTLE_S = 120.0;
+            SETTLE_EXTRA = 0.10, TIP_SINK = 0.01, TILT_BUBBLE_DEG = 1.0, SETTLE_S = 120.0;
 
     /** The terms of one budget, metres. */
     public static final class Terms {
@@ -54,8 +54,7 @@ public final class SoundingSigma {
         double a = AGE_RATE * Math.max(0.0, orZero(ageS) - AGE_FREE_S);
         double s = 0.0;
         if (!Double.isNaN(fixAgeS) && fixAgeS < SETTLE_S) {
-            double f = 1.0 - fixAgeS / SETTLE_S;
-            s = SETTLE_EXTRA * f * f;
+            s = SETTLE_EXTRA * (1.0 - fixAgeS / SETTLE_S);   // linear taper (#20 re-fit)
         }
         double tilt = Math.toRadians(tiltDeg), pole = orZero(poleM);
         double p = pole * (1.0 - Math.cos(tilt)) + TIP_SINK;

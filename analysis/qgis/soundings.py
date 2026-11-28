@@ -29,9 +29,12 @@ Per-sounding vertical sigma (m), all terms independent:
     sigma_z^2 = rtk^2 + age^2 + settle^2 + pole^2 + ground^2
     rtk    = max(floor, 1 s scatter, GST height sigma)
     age    = age_rate * max(0, correction age - age_free_s)
-    settle = settle_extra * (1 - fix_age / settle_s)^2 for a capture taken fix_age seconds
+    settle = settle_extra * (1 - fix_age / settle_s) for a capture taken fix_age seconds
              after its RTK fix started (logger captures only; SW Maps points and pole stops
-             inside settle_s are dropped instead)
+             inside settle_s are dropped instead). A linear taper from 10 cm (#20): on the
+             11-11, 11-15 and 11-21 captures the excess scatter over mature fixes stayed
+             about flat (4-5 cm robust) through the first minute and 2-4 cm up to 120 s;
+             the former 8 cm x (1 - t/settle_s)^2 fell off too fast
     pole   = pole_m * (1 - cos(tilt)) + tip_sink     (tilt: bubble, IMU-checked or unknown)
     A logger tilt capture (method tilt, logger 0.6) takes its tilt solution's sigmas
     instead: tilt_sd_u_m as the scatter and hypot(tilt_sd_e_m, tilt_sd_n_m)/sqrt 2 as the
@@ -109,7 +112,7 @@ DEFAULTS = {
     "anchor_dz_m": 0.10,
     "include_voided": False,   # true: captures flagged void in the logger are used like any other
     "sigma": {"floor": 0.01, "floor_h": 0.01, "age_free_s": 2.0, "age_rate": 0.001,
-              "settle_extra": 0.08, "tip_sink": 0.01, "ground": 0.015,
+              "settle_extra": 0.10, "tip_sink": 0.01, "ground": 0.015,
               "tilt_bubble_deg": 1.0, "tilt_imu_deg": 2.0, "tilt_unknown_deg": 5.0},
     "stops": {"window_s": 2.0, "max_h_m": 0.03, "max_sd_z_m": 0.012, "max_gap_s": 0.6,
               "imu_stable_deg": 0.5, "imu_plumb_deg": 2.0, "capture_margin_s": 1.0,
@@ -567,7 +570,7 @@ def sigma_terms(sg, *, sd_u=None, gst_u=None, sd_h=None, gst_h=None, age=None, f
     a = sg["age_rate"] * max(0.0, (age or 0.0) - sg["age_free_s"])
     s = 0.0
     if inflate_settle and fix_age is not None and fix_age < settle_s:
-        s = sg["settle_extra"] * (1.0 - fix_age / settle_s) ** 2
+        s = sg["settle_extra"] * (1.0 - fix_age / settle_s)
     tilt = math.radians(tilt_deg)
     pole = (pole_m or 0.0) * (1.0 - math.cos(tilt)) + (0.0 if on_mark else sg["tip_sink"])
     ground = 0.0 if on_mark else sg["ground"]

@@ -658,8 +658,9 @@ overlay and set in Settings > Coverage.
 - Per-capture sigmas: the budget of `analysis/qgis/soundings.py` (`sigma_terms`, the same
   constants), core/SoundingSigma:
   sz² = rtk² + age² + settle² + pole² + ground², with rtk = max(1 cm, `sd_u_m`), age =
-  1 mm/s beyond 2 s of correction age, settle = 8 cm (1 - fix_age/120 s)² for a capture
-  taken within 120 s of its fix starting (90 s until 0.10), pole = pole_m (1 - cos 1°) + 1 cm tip sink,
+  1 mm/s beyond 2 s of correction age, settle = 10 cm (1 - fix_age/120 s) for a capture
+  taken within 120 s of its fix starting (90 s until 0.10; 8 cm (1 - fix_age/120 s)² before
+  the #20 re-fit), pole = pole_m (1 - cos 1°) + 1 cm tip sink,
   ground the Coverage setting; sh = hypot(max(1 cm, hypot(`sd_e_m`, `sd_n_m`)/√2),
   pole_m sin 1°). A single capture takes a 1° bubble tilt, as soundings.py does. A tilt
   capture takes its own `tilt_sd_u_m` and hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2 with
