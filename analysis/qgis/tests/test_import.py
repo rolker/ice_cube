@@ -110,6 +110,18 @@ class ImportTest(unittest.TestCase):
                                 imp.LOCAL_SRS_ID), [("ICECUBE",)])
         self.assertEqual(self.q("PRAGMA integrity_check"), [("ok",)])
 
+    def test_base_from_sessions_reads_the_whole_ecef(self):
+        """The RTCM 1005 event's ecef=x;y;z is kept whole (it was cut at the first ';'), so
+        [site] base_from_sessions gives the base back."""
+        s = load_session(find_sessions([synth.write_dir(self.d / "in", synth.session_v05())])[0])
+        self.assertEqual(s.info["base_ecef"], "6378167.0;22.264;11.057")
+        import argparse
+        b = imp.resolve_base(argparse.Namespace(base=None, base_geojson=None),
+                             {"site": {"base_from_sessions": True}}, self.d, [], [s])
+        self.assertAlmostEqual(b.lat, synth.BASE[0], places=6)
+        self.assertAlmostEqual(b.lon, synth.BASE[1], places=6)
+        self.assertAlmostEqual(b.h, synth.BASE[2], delta=0.01)
+
     # -- idempotence
     def test_reimport_keeps_user_columns(self):
         files = synth.session_v05()

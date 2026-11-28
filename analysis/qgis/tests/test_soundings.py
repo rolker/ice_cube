@@ -279,7 +279,7 @@ class TestFrameAndSigma(unittest.TestCase):
                                                        + 0.015**2), places=6)
         b = snd.sigma_terms(sg, sd_u=0.002, age=12.0, fix_age=0.0, pole_m=1.6, on_mark=True)
         self.assertAlmostEqual(b["sigma_age"], 0.01)
-        self.assertAlmostEqual(b["sigma_settle"], 0.08)
+        self.assertAlmostEqual(b["sigma_settle"], sg["settle_extra"])
         self.assertEqual(b["sigma_ground"], 0.0)
         self.assertAlmostEqual(b["sigma_xy"], math.hypot(0.01, 1.6 * math.sin(math.radians(1))), places=6)
 
@@ -401,6 +401,23 @@ class TestBuild(unittest.TestCase):
         con = sqlite3.connect(gpkg)
         self.assertEqual(con.execute("SELECT count(*) FROM soundings").fetchone()[0], len(rows))
         con.close()
+
+    def test_build_on_a_gpkg_path_with_uri_characters(self):
+        """build opens the gpkg with a percent-escaped URI: '#', '?' or '%' in its path."""
+        ses = make_session(self.d / "sessions")
+        gpkg = self.d / "season.gpkg"
+        with contextlib.redirect_stdout(io.StringIO()):
+            imp.main([str(ses), "--gpkg", str(gpkg), "--base", *map(str, synth.BASE),
+                      "--origin", *map(str, synth.BASE), "--no-photos"])
+        odd = self.d / "a#b?c%d.gpkg"
+        odd.write_bytes(gpkg.read_bytes())
+        cfg = {"soundings": {"sources": [{"id": "logger", "type": "logger"}]}}
+        a = snd.build(cfg, self.d, gpkg=str(gpkg), log=lambda *a: None, write=False)
+        b = snd.build(cfg, self.d, gpkg=str(odd), log=lambda *a: None, write=False)
+        self.assertEqual([r["sid"] for r in a], [r["sid"] for r in b])
+        with self.assertRaises(SystemExit):                     # the gpkg is closed on this path too
+            snd.build({"soundings": {"sources": [{"id": "x", "type": "nope"}]}}, self.d,
+                      gpkg=str(odd), log=lambda *a: None, write=False)
 
     def test_voided_capture_flagged_not_used_unless_included(self):
         """A capture flagged void in the logger (#27) stays a row, flag void, use 0, and is
@@ -666,13 +683,26 @@ class TestBuild(unittest.TestCase):
         caps, _ = self._build_logger(gpkg)
         sg = snd.DEFAULTS["sigma"]
         self.assertAlmostEqual(caps[1]["fix_age_s"], 30.0)
-        self.assertAlmostEqual(caps[1]["sigma_settle"], sg["settle_extra"] * (1 - 30 / 120) ** 2, places=9)
+        self.assertAlmostEqual(caps[1]["sigma_settle"], sg["settle_extra"] * (1 - 30 / 120), places=9)
         self.assertIn("settle_inflated", snd.flags_of(caps[1]))
         self.assertNotIn("fix_young", snd.flags_of(caps[1]))
         self.assertEqual(caps[2]["sigma_settle"], 0.0)
         self.assertIn("fix_young", snd.flags_of(caps[2]))
         self.assertNotIn("fix_young", snd.EXCLUDING)          # a trace, not excluding
         self.assertNotIn("fix_young", snd.flags_of(caps[3]))
+
+    def test_no_raw_session_is_logged_and_gets_a_pass_per_capture(self):
+        """#20: a session read without raw epochs is named in the log (the points.csv-only
+        fallback), and each capture is its own pass; with session_paths it is not named."""
+        ses = synth.write_dir(self.d / "sessions", synth.session_v06())
+        gpkg = self._import(ses)
+        caps, logged = self._build_logger(gpkg)
+        self.assertIn(f"no raw epochs for session(s) {ses.name}", logged)
+        self.assertEqual(caps[1]["pass_id"], f"{ses.name}/c1")
+        self.assertEqual(len({c["pass_id"] for c in caps.values()}), len(caps))
+        caps, logged = self._build_logger(gpkg, session_paths=[str(ses)])
+        self.assertNotIn("no raw epochs", logged)
+        self.assertTrue(caps[1]["pass_id"].startswith(f"{ses.name}/s"))
 
     def test_capture_on_a_float_epoch_uses_the_loggers_columns(self):
         """#15: with raw epochs, a capture whose nearest epoch is in no fix stretch (n=2 at
@@ -791,7 +821,7 @@ class TestBuild(unittest.TestCase):
         logged = self._build_logger(gpkg)[1]
         self.assertEqual(logged.count("warning"), 1)
         self.assertIn("2026-12-02_10-00-00", logged)
-        self.assertNotIn("2026-12-01_10-00-00", logged.split("warning")[1])
+        self.assertNotIn("2026-12-01_10-00-00", logged.split("warning")[1].splitlines()[0])
 
     def test_anchor_sites_and_verification(self):
         r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731

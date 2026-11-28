@@ -143,6 +143,16 @@ Reference material is in `howto/`, the narrative in `story/`.
   `suspect_reason` and `fix_young`; soundings.py and the live overlay move their settle
   window from 90 to 120 s and flag `float_spell` beside `suspect_jump`. Height test, extra
   cues and a retune on past sessions are #39, #40 and #41.
+- 11-27: icecube reads logger sessions directly (#20): `reader = "logger_session"` takes a
+  session folder, zip or folder of them without the season gpkg, so a new session can be
+  checked before it joins the season. It runs soundings.py's own rules on a scratch gpkg
+  (sigma, fix stretches as passes, the #15 flags, voids), so there is no third copy of
+  them. The session import now keeps the whole RTCM 1005 position of the base event
+  (`base_from_sessions` read only its first number). Settle term re-fit on the 11-11, 11-15
+  and 11-21 captures against mature-fix neighbours: the excess scatter stays near 5 cm
+  through the first minute and 2-4 cm up to 120 s, flatter than 8 cm x (1 - t/120)^2, so it
+  is now 10 cm x (1 - t/120) in soundings.py and the logger overlay; the 120 s drop rule
+  is unchanged. Robust nodes were delivered by #24/#29.
 - 11-27: logger 0.12.0 (#23, PR A): the pole check compares a ref with a robust reference
   from the mark's earlier visits (one: that visit; two: their mean, doubtful when they
   differ by more than the tolerance; three or more: the median), not the most recent one,

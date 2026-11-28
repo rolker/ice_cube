@@ -630,7 +630,8 @@ def load_session(src: SessionSource) -> Session:
         elif text.startswith("base station=") and "base_station" not in info:
             kv = _kv(text)
             info["base_station"] = kv.get("station")
-            info["base_ecef"] = kv.get("ecef")
+            m = re.search(r"\becef=(\S+)", text)   # x;y;z (the logger's commas become ';')
+            info["base_ecef"] = m.group(1) if m else None
             info["base_type"] = kv.get("type")
         elif text.startswith("layer base check"):
             info["layer_base_check"] = text

@@ -29,9 +29,12 @@ Per-sounding vertical sigma (m), all terms independent:
     sigma_z^2 = rtk^2 + age^2 + settle^2 + pole^2 + ground^2
     rtk    = max(floor, 1 s scatter, GST height sigma)
     age    = age_rate * max(0, correction age - age_free_s)
-    settle = settle_extra * (1 - fix_age / settle_s)^2 for a capture taken fix_age seconds
+    settle = settle_extra * (1 - fix_age / settle_s) for a capture taken fix_age seconds
              after its RTK fix started (logger captures only; SW Maps points and pole stops
-             inside settle_s are dropped instead)
+             inside settle_s are dropped instead). A linear taper from 10 cm (#20): on the
+             11-11, 11-15 and 11-21 captures the excess scatter over mature fixes stayed
+             about flat (4-5 cm robust) through the first minute and 2-4 cm up to 120 s;
+             the former 8 cm x (1 - t/settle_s)^2 fell off too fast
     pole   = pole_m * (1 - cos(tilt)) + tip_sink     (tilt: bubble, IMU-checked or unknown)
     A logger tilt capture (method tilt, logger 0.6) takes its tilt solution's sigmas
     instead: tilt_sd_u_m as the scatter and hypot(tilt_sd_e_m, tilt_sd_n_m)/sqrt 2 as the
@@ -109,7 +112,7 @@ DEFAULTS = {
     "anchor_dz_m": 0.10,
     "include_voided": False,   # true: captures flagged void in the logger are used like any other
     "sigma": {"floor": 0.01, "floor_h": 0.01, "age_free_s": 2.0, "age_rate": 0.001,
-              "settle_extra": 0.08, "tip_sink": 0.01, "ground": 0.015,
+              "settle_extra": 0.10, "tip_sink": 0.01, "ground": 0.015,
               "tilt_bubble_deg": 1.0, "tilt_imu_deg": 2.0, "tilt_unknown_deg": 5.0},
     "stops": {"window_s": 2.0, "max_h_m": 0.03, "max_sd_z_m": 0.012, "max_gap_s": 0.6,
               "imu_stable_deg": 0.5, "imu_plumb_deg": 2.0, "capture_margin_s": 1.0,
@@ -567,7 +570,7 @@ def sigma_terms(sg, *, sd_u=None, gst_u=None, sd_h=None, gst_h=None, age=None, f
     a = sg["age_rate"] * max(0.0, (age or 0.0) - sg["age_free_s"])
     s = 0.0
     if inflate_settle and fix_age is not None and fix_age < settle_s:
-        s = sg["settle_extra"] * (1.0 - fix_age / settle_s) ** 2
+        s = sg["settle_extra"] * (1.0 - fix_age / settle_s)
     tilt = math.radians(tilt_deg)
     pole = (pole_m or 0.0) * (1.0 - math.cos(tilt)) + (0.0 if on_mark else sg["tip_sink"])
     ground = 0.0 if on_mark else sg["ground"]
@@ -725,7 +728,17 @@ def capture_fix_info(r, c):
 
 
 def logger_source(cfg, src, con, frame, history, log):
-    """Captures from the gpkg plus pole stops from the raw sessions."""
+    """Captures from the gpkg plus pole stops from the raw sessions (the session sources
+    opened from session_paths are closed on every path)."""
+    opened = []
+    try:
+        return _logger_source(cfg, src, con, frame, history, log, opened)
+    finally:
+        for s in opened:
+            s.close()
+
+
+def _logger_source(cfg, src, con, frame, history, log, opened):
     sg, sp = cfg["sigma"], cfg["stops"]
     settle_s, max_s = cfg["settle_s"], cfg["max_pass_s"]
     prior, cprior = float(src.get("prior_m", 0.015)), float(src.get("common_prior_m", 0.0))
@@ -791,13 +804,17 @@ def logger_source(cfg, src, con, frame, history, log):
     starts = dict(con.execute("SELECT session, start_utc FROM sessions"))
     raws = {}
     if src.get("session_paths"):
-        for s in find_sessions([Path(p) for p in src["session_paths"]]):
+        opened += find_sessions([Path(p) for p in src["session_paths"]])
+        for s in opened:
             raws[s.name] = s
     rows = []
     by_session = {}
     for c in caps:
         by_session.setdefault(c["session"], []).append(c)
     names = set(by_session) | (set(raws) & set(sessions) if sessions else set(raws))
+    with_caps = {s for s in by_session
+                 if any(c["class"] in ("surface", "ref", "control", "object") for c in by_session[s])}
+    no_raw = [s for s in sorted(with_caps) if s not in raws]
     for ses in sorted(names):
         clist = sorted(by_session.get(ses, []), key=lambda c: c["n"])
         raw = raws.get(ses)
@@ -821,6 +838,8 @@ def logger_source(cfg, src, con, frame, history, log):
                 return poles[max(k, 0)][1]
             localise(ep, frame, history, pole_at)
             fix_stretches(ep, cfg["suspect_jump_m"], station=src.get("station"), float_spell_s=cfg["float_spell_s"])
+            if not len(ep) and ses in with_caps:
+                no_raw.append(ses)              # a session without GGA in gps.ubx: the same fallback
         # captures
         for c in clist:
             if c["class"] not in ("surface", "ref", "control", "object"):
@@ -920,6 +939,10 @@ def logger_source(cfg, src, con, frame, history, log):
             log(f"  {ses}: pole stops at captures voided (not as accidental): {n_vs}, "
                 "kept with flag void_stop, use 0")
         rows += srows
+    if no_raw:
+        log(f"  no raw epochs for session(s) {', '.join(sorted(no_raw))}: their captures take the "
+            "logger's own fix_age_s and suspect columns (settle sigma from fix_age_s), one pass per "
+            "capture, no pole stops; give the session folders or zips in session_paths for fix stretches")
     return rows
 
 
@@ -1414,7 +1437,17 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
     if not gpkg:
         raise SystemExit("no gpkg: give --gpkg or [soundings].gpkg / [season].gpkg")
     gpkg = ab(gpkg)
-    con = sqlite3.connect(f"file:{gpkg}?mode=ro", uri=True)
+    # read-only, percent-escaped ('#', '?' or '%' in the path), closed on every path
+    con = sqlite3.connect(Path(gpkg).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        rows = _build_rows(cfg, sc, con, ab, log)
+    finally:
+        con.close()
+    return _finish_build(cfg, sc, rows, gpkg, csv_out, ab, log, write)
+
+
+def _build_rows(cfg, sc, con, ab, log):
+    """The rows of every [[soundings.sources]] entry, read with the open season gpkg `con`."""
     meta = gpkg_meta(con)
     if not meta.get("origin_lat"):
         raise SystemExit("the gpkg has no local frame origin (icecube_meta origin_*): import with [site.origin]")
@@ -1441,7 +1474,13 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
         else:
             raise SystemExit(f"unknown source type {src['type']!r}")
         rows += got
-    con.close()
+    return rows, frame
+
+
+def _finish_build(cfg, sc, built, gpkg, csv_out, ab, log, write):
+    """Corrections, use, anchors, the suspect check and outliers over the built rows; then
+    write the table (and CSV) as build was asked."""
+    rows, frame = built
     if sc.get("corrections_csv"):
         p = Path(ab(sc["corrections_csv"]))
         if p.is_file():
