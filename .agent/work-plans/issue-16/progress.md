@@ -182,3 +182,25 @@ Record and stop; auto-stop at 60 s with its cue; the permission prompt on first 
 
 - Speech-to-text (owner question pending).
 - No map mark for a capture that has notes (only own rows show the camera).
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 22:36 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-16 at `979b59c`
+**Base**: main
+**Depth**: Standard (reason: 26 files, +1157 -168, app and importer together)
+**Must-fix**: 1 | **Suggestions**: 5
+**Round**: 1 | **Ship**: continue — round 1: 1 must-fix; first round always re-reviews after fixes
+
+Verified: importer unittest 178 OK (5 skipped); Gradle testDebugUnitTest 37 suites, 0 failures (C: 109 GB free); no audio tracked, `*.m4a` ignored. No Python or Java linter installed (static analysis not run). Outside reviewers: gemini and codex completed; a fresh Claude adversarial agent also ran.
+
+### Findings
+- [ ] (must-fix) Finish a note that is still recording before the session stops (REC confirm, `Control.stopAll`) and before a share/snapshot zip. As it stands the note gets no row and no events.csv line, and a snapshot zip holds a partial .m4a. The importer then attaches the orphan by the n in its file name, and for a note planned as its own row that is `counter+1`, which a MARK during the recording may have taken, so it lands on the wrong capture. Fix: call `finishNote(false)` in onRec's stop action and before `Sharer.share`. (codex, gemini, Claude adversarial) — `logger/app/src/main/java/rink/icecube/logger/MainActivity.java:944`
+- [ ] (suggestion) The name-collision loop builds each candidate from the previous one (`_2_3.m4a`), and `NOTE_RE` allows only one `_\d+`. Build every candidate from the base name. It is reachable when the GPS tod stalls. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:1110`
+- [ ] (suggestion) Race at the 60 s cap: a STOP tap or onPause after the recorder has stopped itself, but before MAX_DURATION_REACHED is delivered, makes `stop()` throw with `capped` still false. The full note is then deleted. Treat `elapsedMs() >= MAX_MS` as capped. — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:88`
+- [ ] (suggestion) There is no `OnErrorListener`. If recording fails midway (mic taken, media server died), STOP keeps counting until it is tapped. Finish the note (as failed) on error. — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:52`
+- [ ] (suggestion) VOICE_TIP puts `@project_folder` and the path into a `file:///` href without encoding. A Drive path with a space ("My Drive") should be checked by hand: does the link open in the Windows QGIS map tip? — `analysis/qgis/build_project.py:154`
+- [ ] (suggestion) The docstring says the `voice` column lists `notes/<file>.m4a`, but points.csv holds bare file names. — `analysis/qgis/logger_session.py:7`
