@@ -419,7 +419,8 @@ photo a click; pole check OK two rising beeps; pole check failed an alternating 
 an amber pole check (a cue or a doubtful reference, 0.12.0) the low error buzz;
 a capture in a suspect fix stretch a fast warble ending low; a capture, lean or ref from a
 young fix two even middle tones with two long pulses (0.11.0; one that is both suspect and
-young plays only the suspect cue, a ref too); tilt start three rising
+young plays only the suspect cue, a ref too; a suspect or young ref with an amber pole
+check plays only its fix cue, not the error buzz as well); tilt start three rising
 tones, each lean two short beeps, tilt saved a rising three-tone; errors (no fix, no
 session, mode change during a ref, a refused lean) a low buzz. Sounds use the media
 volume, so silent mode does not mute them.

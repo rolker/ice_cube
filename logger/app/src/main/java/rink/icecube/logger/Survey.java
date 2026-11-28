@@ -587,7 +587,8 @@ final class Survey {
                 poleWarningN = 0;
                 boolean amber = fixAmber || colour == PoleCheck.Colour.AMBER;
                 notice = new Notice(text, !amber, amber, r, true);
-                if (colour == PoleCheck.Colour.AMBER) cue(Feedback.Cue.ERROR);
+                // one cue: a suspect or young ref already has its fix cue, which says more
+                if (colour == PoleCheck.Colour.AMBER && !fixAmber) cue(Feedback.Cue.ERROR);
                 else if (!amber && c != null) cue(Feedback.Cue.POLE_OK);
             }
         }
