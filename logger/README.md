@@ -521,7 +521,8 @@ visits to the same mark. This is the one reference rule (0.12.0, #23); other tex
 - **Off-centre cue**: the horizontal distance from the new ref to the median east/north
   position of the visits (to the one visit, with one) over the off-centre limit
   (default 2 cm): "pole may be off the mark centre (2.5 cm); re-shoot". It uses earlier
-  visits only, so it can differ from an offset computed afterwards from all visits.
+  visits only, so it can differ from an offset computed afterwards from all visits, and
+  needs no ground height on the new ref.
 - **Pole moved cue**: a held ref (Ref mode occupation) whose own `sd_u` is over the pole
   moved limit (default 1.5 cm): "pole moved during the ref (sd 3.1 cm); re-shoot". It
   compares with nothing, so it also shows on a first visit. Not for a tilt ref: its sd_u is
@@ -540,7 +541,8 @@ The notice:
 - green: "pole check OK (±0.8 cm vs median of 3 visits; +0.2 cm vs last visit)", or
   "vs 1 earlier visit", with two rising beeps.
 - first visit (or no ground height): "first visit to this mark", no check (the pole
-  moved cue can still make it amber).
+  moved cue can still make it amber; without a ground height the earlier visits within
+  0.30 m still give the off-centre cue).
 
 A young or suspect ref (see False-fix guard) shows its fix text in the same notice; the
 more severe colour wins (red over amber over green). Cues are appended after the check

@@ -124,25 +124,39 @@ public final class PoleCheck {
         List<PointRow> m = matches(now, earlier);
         if (m.isEmpty()) return null;
         int k = m.size();
-        double[] h = new double[k], east = new double[k], north = new double[k];
-        LocalFrame f = frame(now);
-        double[] enu = new double[3];
+        double[] h = new double[k];
         double sum = 0;
         for (int i = 0; i < k; i++) {
-            PointRow r = m.get(i);
-            h[i] = r.hGround;
-            sum += r.hGround;
-            f.toEnu(r.lat, r.lon, f.h0, enu);
-            east[i] = enu[0];
-            north[i] = enu[1];
+            h[i] = m.get(i).hGround;
+            sum += h[i];
         }
         RefKind kind = k == 1 ? RefKind.SINGLE : k == 2 ? RefKind.PAIR : RefKind.MEDIAN;
         double reference = median(h);   // 1: the visit, 2: the mean
         double spread = spread(h);
-        double place = Math.hypot(median(east), median(north));
+        double place = placeOffset(now, m);
         PointRow last = m.get(k - 1);
         return new PoleCheck(k, kind, reference, now.hGround - reference, now.hGround - last.hGround,
                 now.hGround - sum / k, spread, place, tolerance, last);
+    }
+
+    /**
+     * Horizontal distance (m) from now to the median east/north of the visits (from
+     * {@link #matches}); NaN with no visits. It needs no ground height on now, so the
+     * off-centre cue works on a ref without one too.
+     */
+    public static double placeOffset(PointRow now, List<PointRow> visits) {
+        int k = visits.size();
+        if (k == 0 || !now.hasPosition()) return Double.NaN;
+        double[] east = new double[k], north = new double[k];
+        LocalFrame f = frame(now);
+        double[] enu = new double[3];
+        for (int i = 0; i < k; i++) {
+            PointRow r = visits.get(i);
+            f.toEnu(r.lat, r.lon, f.h0, enu);
+            east[i] = enu[0];
+            north[i] = enu[1];
+        }
+        return Math.hypot(median(east), median(north));
     }
 
     /**
@@ -205,7 +219,20 @@ public final class PoleCheck {
          * tilt ref's sd_u is the RMS of the per-lean scatters, which the tilt gates already judge.
          */
         public static Cues of(PointRow now, PoleCheck c, double placeLimit, double steadyLimit) {
-            double place = c == null ? Double.NaN : c.placeOffset;
+            return of(now, c, c == null ? Double.NaN : c.placeOffset, placeLimit, steadyLimit);
+        }
+
+        /**
+         * As {@link #of(PointRow, PoleCheck, double, double)}, with the earlier refs: when
+         * there is no check (the new ref has no ground height) the placement cue still uses
+         * the earlier visits' median position. A first visit has none, so no placement cue.
+         */
+        public static Cues of(PointRow now, List<PointRow> earlier, PoleCheck c, double placeLimit, double steadyLimit) {
+            double place = c != null ? c.placeOffset : placeOffset(now, matches(now, earlier));
+            return of(now, c, place, placeLimit, steadyLimit);
+        }
+
+        private static Cues of(PointRow now, PoleCheck c, double place, double placeLimit, double steadyLimit) {
             double sd = PointRow.OCCUPATION.equals(now.method) ? now.sdU : Double.NaN;
             boolean off = placeLimit > 0 && place > placeLimit + 1e-9;
             boolean moved = steadyLimit > 0 && sd > steadyLimit + 1e-9;

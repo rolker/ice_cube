@@ -536,7 +536,7 @@ final class Survey {
         List<PointRow> earlier = RefsStore.readAll(svc);
         SharedPreferences p = Settings.prefs(svc);
         PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(p));
-        PoleCheck.Cues q = PoleCheck.Cues.of(r, c, Settings.placeM(p), Settings.steadyM(p));
+        PoleCheck.Cues q = PoleCheck.Cues.of(r, earlier, c, Settings.placeM(p), Settings.steadyM(p));
         PoleCheck.Colour colour = PoleCheck.colour(c, q);
         try {
             File f = RefsStore.append(svc, r);

@@ -218,6 +218,26 @@ public class PoleCheckTest {
         assertEquals(0.025, one.placeOffset, 5e-4);
     }
 
+    @Test public void placementCueWithoutAGroundHeight() {
+        // the new ref has no ground height, so no check, but the earlier visits still place the mark
+        List<PointRow> earlier = Arrays.asList(ref(0, 0, 50.0), ref(0.002, 0, 50.0), ref(-0.002, 0.001, 50.0));
+        PointRow noH = ref(0, 0.025, 50.0);
+        noH.hGround = Double.NaN;
+        assertNull(PoleCheck.check(noH, earlier, 0.03));
+        PoleCheck.Cues q = PoleCheck.Cues.of(noH, earlier, null, 0.02, 0.015);
+        assertEquals(0.025, q.placeOffset, 5e-4);
+        assertTrue(q.offMark);
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(null, q));
+        PointRow near = ref(0, 0.005, 50.0);
+        near.hGround = Double.NaN;
+        assertFalse(PoleCheck.Cues.of(near, earlier, null, 0.02, 0.015).offMark);
+        // a first visit (no earlier ref within 0.30 m): no offset
+        assertTrue(Double.isNaN(PoleCheck.Cues.of(noH, Arrays.asList(ref(1, 0, 50.0)), null, 0.02, 0.015).placeOffset));
+        // with a check, the check's offset is used
+        PoleCheck c = PoleCheck.check(ref(0, 0.025, 50.0), earlier, 0.03);
+        assertEquals(c.placeOffset, PoleCheck.Cues.of(ref(0, 0.025, 50.0), earlier, c, 0.02, 0.015).placeOffset, 0);
+    }
+
     @Test public void steadinessCueForHeldRefsOnly() {
         PointRow moved = held(50.0, 0.031);
         PoleCheck.Cues q = PoleCheck.Cues.of(moved, null, 0.02, 0.015);   // first visit: still cued
