@@ -329,3 +329,18 @@ Cross-model: codex completed (EXIT=0). 1187 changed lines, 19 files (Deep by siz
 **Decision**: address
 
 Reject a non-finite ground height in matches() (line 93) and in check() for the new ref (line 122), with a test.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:43 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #43 at `d2e0296`
+**Addressed**: Integrated Review at `10f661e` (2026-11-27 19:42 -05:00)
+**Commits**: d2e0296
+
+### Actions
+- [x] Non-finite ground height rejected: `!Double.isFinite(r.hGround)` in `matches()` and `!Double.isFinite(now.hGround)` in `check()`, javadoc updated, new test `infiniteGroundHeightIsNoHeight` — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:93`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL; 252 tests, 0 failures, 0 errors (PoleCheckTest 26/26). C: had 109 GB free.
