@@ -94,7 +94,21 @@ No change to the design picture (project has no design document). The reference 
 | `matches` (#15) | stays the one reference-set filter; PR B adds a kind filter | Yes (A) / outline (B) |
 | refs.csv columns | PR B only | PR B |
 
-## Open Questions
+## Decisions (host, owner may veto; from the Plan Review and Checkpoint)
+
+1. Doubtful two-visit reference: a failed check against two earlier visits that differ by more than the tolerance is amber ("shoot again"), plays the existing error buzz (not the alarm) and does not set the warnings bar. A passing check against such a pair is amber too, naming the disagreement.
+2. Placement (2 cm) and steadiness (1.5 cm) limits are settings, 0 = off.
+3. (PR B) A mark's kind is fixed at its first shot; correction means voiding and re-shooting.
+4. An earlier visit that failed its own check stays in the reference (the median handles one bad visit).
+5. #15's merged names re-checked (main 42d5955): `PoleCheck.matches` skips `voided` and `fixYoung == 1`; refs.csv/points.csv columns as #15's plan; `Feedback.Cue` has no separate warning cue, so "the existing warning cue" is `ERROR` (the low buzz). No adaptation needed beyond that.
+6. The steadiness cue covers held (occupation) refs only, not tilt refs.
+7. A pass against a single earlier visit is green with "1 earlier visit" in the text.
+8. #15's young/suspect amber and the pole-check result share one notice; the more severe colour wins.
+9. Even-count median = mean of the middle two, written in the README.
+10. Replay expectations: 127 red, 72 amber (placement), 128 and 329 not failing (see the Implementation entry for the result).
+11. Event line (found while implementing): `analysis/qgis/logger_session.py` takes the text before `; diff_last_m=` as the message and `ok=false` as red, so `diff_last_m` stays the first key and `ok` means "not a red fail"; the new keys follow. No processing-side change.
+
+## Open Questions (superseded by Decisions above)
 
 1. Doubtful two-visit reference: amber (shoot again) instead of a red alarm when the two earlier visits disagree by more than the tolerance. Confirm, or fail red as for a single visit.
 2. Placement and steadiness limits as settings (2 cm, 1.5 cm, 0 = off) versus fixed constants; plan assumes settings, matching the tolerance.
