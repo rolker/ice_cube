@@ -1,11 +1,12 @@
-# Ice Cube Logger 0.11.0
+# Ice Cube Logger 0.12.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
 is a local map with your own GeoJSON layers (no basemap, no network) where you capture
 surface, object and reference points with large glove-friendly buttons or the volume
-keys, and take photos. Reference points are averaged and checked against earlier visits
-(the pole check). A false-fix guard warns about captures from a young RTK fix and flags
+keys, and take photos. Reference points are averaged and checked against a robust
+reference from earlier visits (the pole check), with cues for a pole off the mark centre
+or moving during the ref. A false-fix guard warns about captures from a young RTK fix and flags
 fixes that began with a suspicious jump or right after a long float spell, and a tilt capture finds the pole tip from
 several leans when the pole cannot stand plumb (a house corner, a fence post). A live
 coverage overlay shows where the surface still needs captures (red, amber, clear). It checks
@@ -24,7 +25,7 @@ folder in Android Studio and press Run.
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
 The first line of the screen (and the last line of the MENU panel) shows the app version,
-e.g. "Ice Cube Logger 0.11.0 (build 15)".
+e.g. "Ice Cube Logger 0.12.0 (build 16)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
@@ -48,6 +49,8 @@ e.g. "Ice Cube Logger 0.11.0 (build 15)".
   - Ref duration: seconds of RTK fixed epochs averaged for a Ref capture, 10 to 300,
     default 30.
   - Pole check tolerance: cm, 0.5 to 20, default 3. See Refs and the pole check.
+  - Pole check cues (0.12.0, see Refs and the pole check): off-centre cue, cm, 0 to 20,
+    default 2.0; pole moved cue, cm, 0 to 20, default 1.5. 0 turns a cue off.
   - False-fix guard (see False-fix guard): Fix young limit, s, 0 to 300, default 120 (0
     turns the warning off); Fix jump warning, m, 0.1 to 10, default 1.0; Fix after float
     spell, s, 0 to 300, default 20 (0 turns the rule off). The young limit applies at once,
@@ -132,7 +135,8 @@ button (at least 48 dp tall):
 
 Under the strip, only when present: a red bar with warnings (frame mismatch, base moved,
 layers don't match base, failed pole check, GPS or caster link lost, GPS silent; tap it
-for Details), and for 10 s after a capture, ref or pole check a green (or red) notice,
+for Details), and for 10 s after a capture, ref or pole check a green (or red) notice
+(amber for a pole check cue or doubtful reference, see Refs and the pole check),
 e.g. `S12  FIXED  5 ep  ±0.4 cm`; amber with dark text when the capture is flagged, e.g.
 `S12  FIXED  5 ep  ±0.4 cm  fix may be false (jumped 2.2 m)`. A notice about a capture has
 a second line with its ground position in the map frame (see Map), e.g. `G x 12.345 y -3.210 z -0.452`.
@@ -227,7 +231,7 @@ with `void` = 1 and a `void_reason`, and readers leave it out (see below). Two w
   it. When the copies disagree (a rewrite that reached only some of them), a reader takes
   a ref's flag from the newest copy by file time whose row has a void value, and flagged
   when copies of that time disagree; the QGIS importer reads the copies it is given by the
-  same rule, so the phone and the gpkg agree. A flagged ref is never a "last visit" for
+  same rule, so the phone and the gpkg agree. A flagged ref is never a visit for
   the pole check and is not drawn among the earlier refs; its pole-check notice and
   warning are cleared. The rewrite keeps the row's `photo` column as it was appended: refs.csv photo names are never updated after the
   append (not for a photo attached later, not for a move), and `points.csv` is the record
@@ -299,7 +303,7 @@ the stretches of RTK fixed GGA epochs:
   pulses (YOUNG), and the row has `fix_young` 1. Until 0.10 the app refused captures for
   the (10 s) settle time instead; field data showed 10 s was far too short, and a refusal
   that long would stall the survey. A ref counts every fixed epoch; it is young if any of them was (its ring adds
-  `(fix young)`), and a young ref is never used as the earlier visit of a pole check (it is
+  `(fix young)`), and a young ref is never one of the earlier visits of a pole check (it is
   itself checked and shown). A tilt lean is kept and marked; the tilt row is young if any
   used lean was. The fix chip says `FIX young 47s`.
 - Every capture row carries `fix_age_s` (seconds from the stretch start to the last
@@ -412,6 +416,7 @@ pattern: mode change 1, 2 or 3 beeps (surface, object, ref); surface capture a s
 pip; object capture a two-tone pip; ref start a long low tone; ref paused a long middle
 tone; ref resumed a short one; ref end a rising three-tone; ref cancelled a falling two;
 photo a click; pole check OK two rising beeps; pole check failed an alternating alarm;
+an amber pole check (a cue or a doubtful reference, 0.12.0) the low error buzz;
 a capture in a suspect fix stretch a fast warble ending low; a capture, lean or ref from a
 young fix two even middle tones with two long pulses (0.11.0; one that is both suspect and
 young plays only the suspect cue, a ref too); tilt start three rising
@@ -483,7 +488,8 @@ n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,
 Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix` (until
 0.10 also `: fix settling N s`), `fix stretch start jump=…`, the tilt events (see Tilt capture),
 `ref start n=… duration_s=… pole_height=… quality=…`, `ref paused …`, `ref resumed …`,
-`ref end n=… epochs=… pauses=… young=0|1`, `ref cancelled …`, `pole check n=…: …`, `photo file=…
+`ref end n=… epochs=… pauses=… young=0|1`, `ref cancelled …`, `pole check n=…: …` (see Refs
+and the pole check), `photo file=…
 attached to n=…` or `own row n=…`, `photo cancelled: …`; from 0.9.0 `flag n=…`, `unflag
 n=…` and `photo moved n=…` (see Flagged captures).
 
@@ -491,13 +497,52 @@ n=…` and `photo moved n=…` (see Flagged captures).
 Every ref is also appended to `refs.csv` in the storage root
 (`Documents/IceCubeLogger/refs.csv`, or the app media folder's, like sessions): the
 session folder name, then the points.csv columns. It is kept across sessions. At the end
-of a ref the app looks for earlier refs within 0.30 m horizontally. If there are any, it
-shows the ground height difference to the most recent one and to the mean of all of them:
-- |difference to the most recent| over the tolerance (Settings, default 3 cm): a red
-  "pole check: +4.2 cm vs last visit" in the warnings bar (until the next ref) and an
-  alarm sound. Usually the pole height setting is wrong, or the pole sank.
-- otherwise a green "pole check OK (±0.8 cm vs last visit)".
-- first visit (or no ground height): "first visit to this mark", no check.
+of a ref the app checks its ground height against a reference formed from the earlier
+visits to the same mark. This is the one reference rule (0.12.0, #23); other text points here:
+
+- **Visits**: earlier refs in `refs.csv` within 0.30 m horizontally that have a ground
+  height, are not flagged (`void` 1) and were not taken from a young fix (`fix_young` 1).
+  An older row without these columns counts. A visit that itself failed its check still
+  counts (refs.csv does not store check results; the median handles one bad visit).
+- **Reference**: 1 visit: that visit ("vs 1 earlier visit"). 2 visits: their mean; if
+  they differ from each other by more than the tolerance the reference is *doubtful*.
+  3 or more: the median of their ground heights (with an even count, the mean of the
+  middle two), so one bad earlier visit does not fail the next good one.
+- **Check**: |new - reference| at most the tolerance (Settings, default 3 cm) passes. The
+  difference to the most recent visit is shown as information when there are two or more
+  visits ("; -2.0 cm vs last visit").
+- **Off-centre cue**: the horizontal distance from the new ref to the median east/north
+  position of the visits (to the one visit, with one) over the off-centre limit
+  (default 2 cm): "pole may be off the mark centre (2.5 cm); re-shoot". It uses earlier
+  visits only, so it can differ from an offset computed afterwards from all visits.
+- **Pole moved cue**: a held ref (Ref mode occupation) whose own `sd_u` is over the pole
+  moved limit (default 1.5 cm): "pole moved during the ref (sd 3.1 cm); re-shoot". It
+  compares with nothing, so it also shows on a first visit. Not for a tilt ref: its sd_u is
+  the RMS of the per-lean scatters, which the tilt gates judge.
+
+The notice:
+- red, failed: "pole check: +4.2 cm vs median of 3 visits; -0.5 cm vs last visit", with
+  the alarm sound and the same text in the warnings bar (until the next ref). Usually the
+  pole height setting is wrong, the pole sank, or the shot was bad.
+- amber, a cue or a doubtful reference: a failed check against a doubtful pair reads
+  "pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm; shoot again" (neither
+  earlier visit can be called bad); a passing one names the disagreement too. Amber plays
+  the error buzz, not the alarm, and sets no warnings bar.
+- green: "pole check OK (±0.8 cm vs median of 3 visits; +0.2 cm vs last visit)", or
+  "vs 1 earlier visit", with two rising beeps.
+- first visit (or no ground height): "first visit to this mark", no check (the pole
+  moved cue can still make it amber).
+
+A young or suspect ref (see False-fix guard) shows its fix text in the same notice; the
+more severe colour wins (red over amber over green). Cues are appended after the check
+text, separated by "; ".
+
+The `pole check n=…` event line: the notice text, then `diff_last_m`, `diff_mean_m`,
+`visits`, `last` (session/n), `ok`, and from 0.12.0 `diff_ref_m`, `ref_kind`
+(single|pair|median), `within_tol`, `doubtful`, `place_cm`, `sd_u_cm` (`none` when not
+applicable) and `colour`. `ok` is false only for a red, failed check (a doubtful pair
+outside the tolerance logs `ok=true within_tol=false doubtful=true`), which is what the
+QGIS importer colours red; until 0.11 `ok` was the check against the most recent visit.
 
 From 0.6 its rows carry the ten new points.csv columns; the first time 0.6 appends to an
 older `refs.csv` it rewrites the header line to the new one (rows unchanged), so the older

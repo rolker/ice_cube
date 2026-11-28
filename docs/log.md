@@ -143,3 +143,13 @@ Reference material is in `howto/`, the narrative in `story/`.
   `suspect_reason` and `fix_young`; soundings.py and the live overlay move their settle
   window from 90 to 120 s and flag `float_spell` beside `suspect_jump`. Height test, extra
   cues and a retune on past sessions are #39, #40 and #41.
+- 11-27: logger 0.12.0 (#23, PR A): the pole check compares a ref with a robust reference
+  from the mark's earlier visits (one: that visit; two: their mean, doubtful when they
+  differ by more than the tolerance; three or more: the median), not the most recent one,
+  so one bad visit no longer fails the next good one. Two amber re-shoot cues: the pole
+  off the mark centre (over 2 cm from the visits' median position) and the pole moving
+  during a held ref (sd_u over 1.5 cm). Replayed on the 11-11, -15 and -21 refs: on 11-21
+  the bad ref still fails red and the two false alarms after a bad or high visit pass
+  (one amber off-centre); the ref that was off the mark reads within the tolerance and
+  under the 2 cm cue against its earlier visits only (it was 2.5 cm off against all
+  visits). Two refs newly fail, each just over 3 cm from a median that spans three days.
