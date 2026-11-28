@@ -265,6 +265,14 @@ class TestLoggerSessionReader(unittest.TestCase):
         _, err = self.read(self.d / "in" / NAME, base=synth.BASE)
         self.assertNotIn("first RTCM 1005", err)
 
+    def test_a_callers_log_still_gets_the_stderr_echo(self):
+        ses = synth.write_dir(self.d / "in", session_files())
+        got = []
+        _, err = quiet(io.read_logger_session, ses, SITE, "", log=got.append)
+        self.assertTrue(any("first RTCM 1005" in line for line in got), got)
+        self.assertTrue(any(line.startswith("local frame:") for line in got), got)
+        self.assertIn("logger: warning: no base or base_from_gpkg", err)    # no empty prefix
+
     def test_z0_is_subtracted(self):
         ses = synth.write_dir(self.d / "in", session_files())
         a, _ = self.read(ses)

@@ -696,6 +696,8 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
 
     Rows with use = 1 of the given kinds (default captures only; "stop" adds pole stops) and
     classes are kept; a capture voided in the logger is left out unless include_voided.
+    `log`, a callable, gets every log line of the build; its warnings (and "no raw epochs")
+    go to stderr either way, prefixed by the survey id (else "logger").
     Returns Points as read_soundings does (pass ids from the rows' pass labels)."""
     import argparse
     import sys
@@ -705,6 +707,7 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     if site.origin_geodetic is None:
         raise ValueError("reader logger_session needs an ENU [site] origin (origin_geodetic or "
                          "origin_from_gpkg); a UTM-only site has none")
+    tag = survey or "logger"
     base_dir = Path(base_dir).resolve() if base_dir is not None else Path.cwd()
     ab = lambda p: Path(p) if Path(p).is_absolute() else base_dir / p  # noqa: E731
     path = ab(path)
@@ -712,10 +715,9 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     if base is None and base_from_gpkg and season_base is None:
         raise ValueError(f"base_from_gpkg: {Path(base_from_gpkg).name}: no base_lat/lon/h in icecube_meta")
     if base_history and base is None and not base_from_gpkg:
-        raise ValueError(f"survey {survey}: base_history needs the current base as base or "
+        raise ValueError(f"survey {tag}: base_history needs the current base as base or "
                          "base_from_gpkg; the first RTCM 1005 of the sessions would make the "
                          "session's own base the current one")
-    tag = survey or "logger"
     if base is not None:
         try:
             base = tuple(float(v) for v in base)
@@ -724,7 +726,12 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
         if len(base) != 3 or not all(math.isfinite(v) for v in base):
             raise ValueError(f"survey {tag}: base must be three finite numbers [lat, lon, h]")
     lines = []
-    log = log or lines.append
+
+    def log_line(line):
+        """soundings.build's log: kept for the stderr echo below, and passed on to `log`."""
+        lines.append(line)
+        if log is not None:
+            log(line)
     found = imp.find_sessions([path])
     try:
         if sessions is not None:
@@ -765,11 +772,11 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                     stub = argparse.Namespace(base=None, base_geojson=None)
                     f = imp.resolve_base(stub, {"site": {"base_from_sessions": True}}, Path(tmp), [], parsed)
                     if f is None:
-                        raise ValueError(f"survey {survey}: no base position (give base or base_from_gpkg; "
+                        raise ValueError(f"survey {tag}: no base position (give base or base_from_gpkg; "
                                          "the sessions logged no RTCM 1005)")
                     b = (f.lat, f.lon, f.h)
-                    print(f"{survey}: warning: no base or base_from_gpkg; the first RTCM 1005 logged in "
-                          "the sessions is taken as the current base", file=sys.stderr)
+                    log_line("warning: no base or base_from_gpkg; the first RTCM 1005 logged in "
+                             "the sessions is taken as the current base")
                 imp.set_meta(gp, origin_name=o.name, origin_lat=f"{o.lat:.10f}", origin_lon=f"{o.lon:.10f}",
                              origin_h=f"{o.h:.5f}", base_lat=f"{b[0]:.10f}", base_lon=f"{b[1]:.10f}",
                              base_h=f"{b[2]:.5f}")
@@ -782,13 +789,13 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
             sc = {"include_voided": bool(include_voided), "sources": [src_cfg]}
             if base_history:
                 sc["base_history"] = str(ab(base_history))
-            rows = snd.build({"soundings": sc}, base_dir, gpkg=str(gpkg), log=log, write=False)
+            rows = snd.build({"soundings": sc}, base_dir, gpkg=str(gpkg), log=log_line, write=False)
     finally:
         for s in found:
             s.close()
     for line in lines:
         if "warning" in line or "no raw epochs" in line:
-            print(f"{survey}: {line.strip()}", file=sys.stderr)
+            print(f"{tag}: {line.strip()}", file=sys.stderr)
     for r in rows:
         if r.get("anchor"):
             r["anchor"] = season_names.get(r["anchor"], f"{tag}:{r['anchor']}")
