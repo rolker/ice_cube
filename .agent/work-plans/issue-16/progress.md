@@ -287,3 +287,11 @@ Verified: all five round-2 items are in the code. Orphan rule is `<=` on the sec
 
 ### Findings
 None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 23:04 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push round 3 approved; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
