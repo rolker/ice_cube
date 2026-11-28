@@ -110,9 +110,13 @@ def session_v06(name="2026-12-01_10-00-00"):
     return session_v05(name, app="0.6", points=[POINTS_HDR_06] + captures_v06())
 
 
-def session_v05(name="2026-12-01_10-00-00", extra_rows=(), app="0.5", points=None):
+POLE_CHECK_V05 = ("pole check n=3: pole check OK (±0.4 cm vs last visit; -1.0 cm vs mean of 2 visits); "
+                  "diff_last_m=-0.0040 diff_mean_m=-0.0100 visits=2 last=2026-11-30_09-00-00/5 ok=true")
+
+
+def session_v05(name="2026-12-01_10-00-00", extra_rows=(), app="0.5", points=None, pole_check=POLE_CHECK_V05):
     """{relative path: bytes} of a 0.5 session folder (`points`: other points.csv lines,
-    header first)."""
+    header first; `pole_check`: the events.csv pole check line for ref 3, e.g. a 0.12.0 one)."""
     ubx, chunks = write_ubx(walk(60, fix_at=lambda s: 5 if 20 <= s < 25 else 4))
     ev = events([(5, "gps connected bluetooth Test-Rover secure gps_offset=0"),
                  (6, "caster start mount=TEST01 log_corrections=true"),
@@ -121,8 +125,7 @@ def session_v05(name="2026-12-01_10-00-00", extra_rows=(), app="0.5", points=Non
                  (9, "pole_height=1.800 changed"),
                  (10, "photo file=photos/photo_2_20261201T100010Z.jpg bytes=68 attached to n=2"),
                  (30, "ref end n=3 epochs=30 pauses=1"),
-                 (31, "pole check n=3: pole check OK (±0.4 cm vs last visit; -1.0 cm vs mean of 2 visits); "
-                      "diff_last_m=-0.0040 diff_mean_m=-0.0100 visits=2 last=2026-11-30_09-00-00/5 ok=true"),
+                 (31, pole_check),
                  (32, "photo file=photos/photo_4_20261201T100030Z.jpg bytes=68 own row n=4"),
                  (40, "caster lost: error: test; retry in 5 s")], app=app)
     pts = "\n".join((points or [POINTS_HDR] + captures_v05()) + list(extra_rows)) + "\n"

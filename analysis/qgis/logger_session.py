@@ -667,7 +667,9 @@ def load_session(src: SessionSource) -> Session:
                     "pole_check": msg, "diff_last_m": _f(kv.get("diff_last_m")),
                     "diff_mean_m": _f(kv.get("diff_mean_m")), "visits": _i(kv.get("visits")),
                     "last_visit": kv.get("last"),
-                    "pole_ok": None if ok is None else int(ok == "true")})
+                    "pole_ok": None if ok is None else int(ok == "true"),
+                    # logger 0.12.0 (#23): the check's own difference and its notice colour
+                    "diff_ref_m": _f(kv.get("diff_ref_m")), "colour": kv.get("colour")})
     info["frame"] = " | ".join(frames) or None
     info["pole_heights"] = ", ".join(poles) or None
     info["gps_lost"] = gps_lost
