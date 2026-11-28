@@ -140,3 +140,38 @@ A sound, well-reused plan that matches the owner's decisions and the host's answ
 **Decision**: proceed
 
 Implementation held until #15 merges (then rebase on main, re-check #15's names and columns). Settle during implementation the Plan Review at 75b4165's items: add PointRow.AUTO to Coverage.feeds with a CoverageTest case and docs; cues only on condition changes; stillness by max deviation/range over the hold window; calibration only on RTK-fixed epochs and not during a tilt set or ref; a MARK while latched counts as that stop's capture; the shared capture path carries #15's new columns.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:59 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Branch**: feature/issue-35 at be243bf
+
+Implemented the plan plus the newest Checkpoint's items, on main with #15 (PR #42) and #23 PR A (PR #43) merged in. Logger 0.13.0 (build 17).
+
+Merged names re-checked against the plan: #15's `FixGuard.young(nowNs)` / `young(stretch, nowNs)`, `Stretch.suspect` / `reason`, `Feedback.Cue.YOUNG` / `SUSPECT`, and the PointRow columns `fix_start, float_spell_s, suspect_reason, fix_young` (via `setStretch`) are as the plan assumed; no adaptation needed. #23's PoleCheck and its cues are untouched (auto capture is Surface only, so no ref path changes). Version: main was 0.12.0 / 16, so 0.13.0 / 17 as the dispatch said (not the plan's 0.12.0).
+
+Commits:
+- `08477d5` PointRow.AUTO; Coverage.feeds takes auto rows and now requires `Double.isFinite(hGround)` (the #23 cold-read gap), with CoverageTest cases (auto feeds; NaN and both infinities do not) and a PointRowTest round trip.
+- `1c113c2` core/AutoCapture (pure state machine) + AutoCaptureTest (14 cases).
+- `d08732d` core/PoleCalibration + PoleAxis + PoleCalibrationTest (9 cases).
+- `99f81ae` settings (Limit.AUTO_PLUMB_DEG / AUTO_HOLD_S / AUTO_STILL_CM, boolean auto_capture default on) and Feedback cues (AUTO_ARMED, AUTO_OFF, CAL_START, CAL_PHASE, CAL_DONE).
+- `cfbb7ee` Survey / LoggerService / MainActivity wiring.
+- `be243bf` version, README, docs/log.md.
+
+How the Plan Review items were settled:
+- Re-arm: horizontal move over 3x the still limit from the capture (boundary test 5.9 vs 6.1 cm), or the pole past the plumb limit.
+- `AUTO: calibrate to enable (tap)` when uncalibrated; auto capture on by default.
+- Stillness: max horizontal deviation from the window mean (not an sd), window from the first good epoch, fires once it spans the hold time with at least 2 epochs (3 at 1 Hz and 2 s). Rate-agnostic; the rover's rate was not pinned (README cites 4 Hz in one place, the tests use 1 Hz).
+- Cues: the armed state is debounced 1 s and cued only when the fix caused the change (no fix, young, suspect); mode, tilt, ref, calibration and the setting have their own cues; plumb/still never cue.
+- Calibration takes only RTK fixed epochs; young and suspect are accepted (relative geometry of one short spell). It is refused during a tilt set or ref, and MARK, tilt start and ref start are refused during it (no MARK-as-finish).
+- A Surface MARK counts as the stop's capture (`AutoCapture.taken`).
+- The shared `Survey.capture()` path is used by MARK (single) and auto, so auto rows carry #15's columns, cue and notice.
+
+Deviations from the plan's file list: no ImuLogger change (the existing `gravityMean(from, to)` is enough); no Session change (the axis lives in Survey, which is already per session); no MapView overlay: the calibration and the arming state show on one large AUTO bar under the notice (56 dp, 18 sp, tap to calibrate or stop), plus MENU > Calibrate pole / Recalibrate pole / Stop pole calibration and Back to stop. The calibration's twist phase is timed and counted only; `PoleAxis.extras` is the empty #38 extension point.
+
+Tests: `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 279 tests, 0 failures; APK `logger/app/build/outputs/apk/debug/app-debug.apk` (0.13.0, versionCode 17). C: had 109 GB free. Not installed on the phone.
+
+Needs a phone check before merge: the plumb sign (a plumb pole should read about 0°, a 5° lean about 5°, on the AUTO line's `hold plumb` readout); the calibration feel (3 / 10 / 8 s phases, the 2 cm still restart, the 1° residual and 180° coverage gates, the 100 ms GGA latency guess for the gravity window, the 0.5 m/s swing gate); the cue tones; and the AUTO line's layout in both orientations.
+
+Deferred: mentioning `auto` in `analysis/qgis/soundings.py`'s `capture_sigma_inputs` docstring (that file belongs to the #20 work in flight; its rule already gives an auto row the single-capture sigma, which is right). No `test_soundings` case added for the same reason.
