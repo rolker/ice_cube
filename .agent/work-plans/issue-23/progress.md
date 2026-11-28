@@ -280,3 +280,11 @@ Verified: all five round-2 items addressed as stated. Radius test is `!(d <= MAT
 
 ### Findings
 - [ ] No issues found. LGTM.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 19:39 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push round 3 approved; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
