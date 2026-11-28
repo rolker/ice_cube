@@ -497,6 +497,19 @@ class ImportTest(unittest.TestCase):
             (1, 4, None), (2, 5, f"notes/{name}/{mid}"), (3, 4, f"notes/{name}/{after}")])
         self.assertTrue((self.gpkg.parent / "notes" / name / mid).is_file())
 
+    def test_orphan_note_whose_event_names_a_missing_row_is_linked_on_the_track(self):
+        """A note whose event says n=9 when points.csv has no row 9 (a snapshot made before
+        the row was written) has no n, so orphan_voice links it on its track line."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        note = "note_9_20261201T100022Z.m4a"
+        files[f"{name}/notes/{note}"] = synth.M4A
+        files[f"{name}/events.csv"] += (
+            f"{synth.T0_NS + 23_000_000_000},{int(synth.START.timestamp() * 1000) + 23_000},"
+            f"note file=notes/{note} bytes={len(synth.M4A)} duration_s=1.0 own row n=9\n").encode()
+        run(synth.write_zip(self.d / "m9.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertEqual(self.q("SELECT voice FROM tracks WHERE seg=2"), [(f"notes/{name}/{note}",)])
+
     def test_unsafe_zip_entry_names_are_never_extracted(self):
         """A photos/ or notes/ entry whose name is not one plain path part (a backslash, a
         .. part, a drive letter, an absolute path) is left out, so extraction stays under

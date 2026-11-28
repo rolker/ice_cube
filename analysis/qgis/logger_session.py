@@ -638,7 +638,8 @@ def _attachments(src, ev, captures, folder, word, name_re, key):
     voice_files) lists it is the only source of its n and whether it is attached (a flag in
     0.9.0 moves photos, and from 0.14.0 notes, to another row, so the number in the file name
     and the original "<word> file=..." event can be stale; the file is never renamed). The
-    event, then the name, only for an orphan file. The name's n is used only when that capture
+    event, then the name, only for an orphan file; an event naming a row points.csv lacks
+    (a snapshot taken before the row was written) gives no n. The name's n is used only when that capture
     was taken no later than the file's second (the same 1 Hz second counts: PHOTO or NOTE
     pressed within a second of MARK): a file planned as a row of its own is named after the
     next row number, which a capture made while it was being taken (a MARK during a voice
@@ -668,7 +669,7 @@ def _attachments(src, ev, captures, folder, word, name_re, key):
         row = by_file.get(name)
         if row is not None:
             n, kind = row["n"], "own row" if row["class"] == "photo" else "capture"
-        elif name in attach:
+        elif name in attach and attach[name][0] in caps:
             n, kind = attach[name]
         elif m and not_later(int(m.group(1)), utc):
             n, kind = int(m.group(1)), None
