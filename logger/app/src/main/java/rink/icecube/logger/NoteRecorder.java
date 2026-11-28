@@ -25,9 +25,9 @@ final class NoteRecorder {
     /** The cap was reached: the recorder stopped itself (asynchronously) and wrote the file. */
     private volatile boolean capped;
 
-    private NoteRecorder(MediaRecorder rec) {
+    private NoteRecorder(MediaRecorder rec, long startMs) {
         this.rec = rec;
-        startMs = SystemClock.elapsedRealtime();
+        this.startMs = startMs;
     }
 
     /**
@@ -41,6 +41,7 @@ final class NoteRecorder {
     static NoteRecorder start(Context c, File f, Runnable atMax, Runnable onError) throws IOException {
         MediaRecorder r = Build.VERSION.SDK_INT >= 31 ? new MediaRecorder(c) : new MediaRecorder();
         NoteRecorder[] self = new NoteRecorder[1];
+        long startMs;
         try {
             r.setAudioSource(MediaRecorder.AudioSource.MIC);
             r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
@@ -51,7 +52,8 @@ final class NoteRecorder {
             r.setMaxDuration(NoteRule.MAX_MS);
             r.setOutputFile(f.getAbsolutePath());
             r.setOnInfoListener((mr, what, extra) -> {
-                if (what != MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED || self[0] == null) return;
+                if (what != MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED
+                        || self[0] == null || self[0].stopped) return;
                 self[0].capped = true;
                 atMax.run();
             });
@@ -60,12 +62,15 @@ final class NoteRecorder {
                 onError.run();
             });
             r.prepare();
+            // taken before start() returns, so elapsedMs() never reads shorter than the
+            // recording: a STOP just before the cap's info event still counts as full
+            startMs = SystemClock.elapsedRealtime();
             r.start();
         } catch (IOException | RuntimeException e) {
             r.release();
             throw e;
         }
-        self[0] = new NoteRecorder(r);
+        self[0] = new NoteRecorder(r, startMs);
         return self[0];
     }
 
