@@ -184,3 +184,39 @@ All seven earlier findings are resolved in the plan and the main-branch claims c
 **Decision**: proceed
 
 Implementation held until #15 merges (soundings.py overlap), then rebase on main. Settle during implementation the Plan Review at ce6621a's items: base from the session's base_ecef or resolve_base via a stub, clear error if none; import_session(extract_photos=False) into a temporary directory removed afterwards (disk budget); pass_rule.from_file via setdefault; scratch origin from site.origin_geodetic.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:23 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Branch**: feature/issue-20 at 7d9be12
+
+### Step 1: #15 names re-checked (main 42d5955)
+
+All plan names hold: points.csv `fix_start`, `float_spell_s`, `suspect_reason`, `fix_young` (`import_sessions.LOGGER_11`), `SCHEMA_VERSION` 5, flag `float_spell` in `fix_stretches`/`EXCLUDING`, `DEFAULTS["settle_s"]` 120, `soundings.build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True)`. Adaptations:
+- The points.csv-only fallback was already delivered by #15 (`capture_fix_info`: per-capture `fix_age_s` gives the settle sigma, suspect columns give the flags, pass `<session>/c<n>`). Only the logged warning was missing: added (worded "no raw epochs for session(s) ...", not "warning", which the tilt-column tests count); a session whose gps.ubx has no GGA counts too.
+- The season gpkg base comes from a survey key `base_from_gpkg` (read_survey sees only the survey table, not `[season]`).
+
+### Commits
+
+- `643c9ff` soundings: name sessions read without raw epochs in the log (+ test)
+- `28461cb` soundings: count a session without GGA as read without raw epochs
+- `4ba080b` logger_session: keep the whole RTCM 1005 ecef (bug found here: `_kv` stopped at ';', so `base_from_sessions` raised an unpack error; + test)
+- `f2dc975` icecube: reader `logger_session` (scratch gpkg in a TemporaryDirectory, `import_session(extract_photos=False)`, `soundings.build(write=False)` with one generated logger source and `session_paths`; ENU `[site]` required; base from `base`, `base_from_gpkg`, or the sessions' 1005, clear error if none; `base_history` passed through; kinds captures-only by default; `include_voided`; `pass_rule.from_file` via setdefault; `read_soundings` split into `_keep_rows` + `_points_from_rows`); example toml, how-to; `icecube/tests/test_logger_session.py` (10 tests, synthetic, including an end-to-end `cli run` next to the season table of the same session: growth 0)
+- `b36f82b` settle re-fit: `settle = 10 cm x (1 - t/120 s)` (was 8 cm x (1 - t/120)^2) in `sigma_terms`, `DEFAULTS`, `SoundingSigma.java`; vectors regenerated; how-to row, logger README coverage text
+- `7d9be12` docs/log.md entry
+
+### Settle re-fit (relative numbers)
+
+11-11, 11-15, 11-21 sessions offline via soundings.build on a scratch gpkg (scratch removed). Residual of each usable ground capture against a plane through mature captures (fix age >= 150 s) within 1 m; 571 residuals. Mature robust sd 3.2 cm. Excess robust sd over that: 0-60 s 5.1 cm (n 39), 60-120 s 2.6 cm (n 34), 90-150 s 5.7 cm (n 26). Fit of A (1 - t/120)^p: A 9.5 cm, p 0.75 (bootstrap p 0.25-1.5, A 6-14 cm); linear with A 10 cm is as good (log-likelihood within 0.4), old p 2 clearly worse. Fits the plan's size limit (one function, one Java method); drop rule unchanged at 120 s. The 120-150 s bin still shows excess (n 10) that a 120 s window cannot carry; that would need a settle_s change (drop rule, out of scope).
+
+### Tests
+
+- `python3 -m unittest discover -s analysis/qgis/tests`: OK (172 + 2 new, 5 skipped)
+- `python3 -m unittest discover icecube/tests`: 112 OK
+- `./gradlew testDebugUnitTest --max-workers 4`: 233 tests, 0 failures (C: 109 GB free)
+
+### Deferred / for the owner
+
+- Logger app version not bumped for the SoundingSigma change (the #23 agent is in logger/ in parallel); bump at merge time if wanted.
+- A direct `logger_source` on parsed sessions (no scratch sqlite) stays for later, as planned.
