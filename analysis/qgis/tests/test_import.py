@@ -24,8 +24,8 @@ import export_labels  # noqa: E402
 import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
-from logger_session import (_i, find_sessions, load_session, zip_entry_mtime, zip_entry_stamp,  # noqa: E402
-                            zip_zone_offset)
+from logger_session import (_i, find_sessions, load_session, safe_file_name, zip_entry_mtime,  # noqa: E402
+                            zip_entry_stamp, zip_zone_offset)
 
 
 def run(*argv):
@@ -367,6 +367,212 @@ class ImportTest(unittest.TestCase):
         caps = {c["n"]: c for c in s.captures}
         self.assertEqual(caps[2]["photo_files"], [])            # the event's capture does not take it back
         self.assertEqual(caps[5]["photo_files"], ["photo_2_20261201T100010Z.jpg"])
+
+    # -- 0.14.0 voice notes (#16)
+    def test_voice_notes_import(self):
+        """The voice column reaches captures (paths and count), the photos of its row and
+        refs; a photo-class row holding only a note is an own row in captures (not in the
+        photos table, which is one row per photo file); notes are copied to notes/<session>/
+        beside photos/, none with --no-photos. Placeholder bytes made at run time."""
+        name = "2026-12-01_10-00-00"
+        files = synth.with_notes(synth.session_v05())
+        z = synth.write_zip(self.d / "n.zip", files)
+        out = run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("2 voice notes (2 extracted)", out)
+        self.assertEqual(self.q("SELECT n, class, voice, voice_count, photo_count FROM captures ORDER BY n"), [
+            (1, "surface", None, 0, 0), (2, "object", f"notes/{name}/{synth.NOTE_2}", 1, 1),
+            (3, "ref", None, 0, 0), (4, "photo", None, 0, 1), (5, "photo", f"notes/{name}/{synth.NOTE_5}", 1, 0)])
+        self.assertEqual(self.q("SELECT name, voice FROM photos ORDER BY name"), [
+            ("photo_2_20261201T100010Z.jpg", f"notes/{name}/{synth.NOTE_2}"), ("photo_4_20261201T100030Z.jpg", None)])
+        self.assertEqual(self.q("SELECT voice FROM refs WHERE session=?", name), [(None,)])
+        self.assertEqual(self.q("SELECT n_notes, n_photos, n_photo FROM sessions"), [(2, 2, 2)])
+        for f in (synth.NOTE_2, synth.NOTE_5):
+            p = self.gpkg.parent / "notes" / name / f
+            self.assertEqual(p.read_bytes(), synth.M4A)
+        shutil.rmtree(self.gpkg.parent / "notes")
+        run(z, "--gpkg", self.gpkg, "--base", *self.base, "--force", "--no-photos")
+        self.assertFalse((self.gpkg.parent / "notes").exists())
+        # a session from before 0.14.0 has no voice column: no notes, NULL voice
+        s = load_session(find_sessions([synth.write_dir(self.d / "old", synth.session_v05())])[0])
+        self.assertEqual((s.notes, s.info["n_notes"]), ([], 0))
+        self.assertTrue(all(c["voice_files"] == [] for c in s.captures))
+
+    def test_moved_note_takes_n_from_the_voice_column(self):
+        """A flag moved capture 2's note to capture 1 (0.14.0): the file name and the event
+        still say n=2; the voice column decides. An orphan note (no row lists it) goes by
+        its event."""
+        files = synth.with_notes(synth.session_v05())
+        key = "2026-12-01_10-00-00/points.csv"
+        lines = files[key].decode().splitlines()
+        lines[1] += synth.NOTE_2                      # row n=1 now lists it
+        lines[2] = lines[2][:-len(synth.NOTE_2)]      # row n=2 no longer does
+        lines[5] = lines[5][:-len(synth.NOTE_5)]      # the own row lost its file: an orphan
+        files[key] = ("\n".join(lines) + "\n").encode()
+        src = find_sessions([synth.write_zip(self.d / "m.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: x for x in s.notes}
+        self.assertEqual((p[synth.NOTE_2]["n"], p[synth.NOTE_2]["attached"]), (1, "capture"))
+        self.assertEqual((p[synth.NOTE_5]["n"], p[synth.NOTE_5]["attached"]), (5, "own row"))
+        self.assertEqual(p[synth.NOTE_2]["utc"], "2026-12-01T10:00:12Z")
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual(caps[2]["voice_files"], [])
+        self.assertEqual(caps[5]["voice_files"], [synth.NOTE_5])   # the orphan goes back to its event's row
+
+    def test_orphan_note_without_event_never_takes_a_later_capture(self):
+        """An orphan note with no events.csv line (a share zip made while it recorded) goes
+        by the n in its file name only when that capture is no later than the note; a capture
+        made later that took the number (a MARK during a note planned as its own row) does
+        not get it: the note is an own row with no n."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        key = f"{name}/points.csv"
+        lines = files[key].decode().splitlines()
+        lines[2] = lines[2][:-len(synth.NOTE_2)]      # row n=2 (10:00:20) does not list it
+        lines[5] = lines[5][:-len(synth.NOTE_5)]      # nor does row n=5
+        files[key] = ("\n".join(lines) + "\n").encode()
+        ev = f"{name}/events.csv"
+        files[ev] = b"\n".join(l for l in files[ev].split(b"\n") if b"note file=" not in l)
+        late = "note_5_20261201T100044Z.m4a"         # pressed before row 5 (10:00:45) was taken
+        early = "note_3_20261201T100035Z.m4a"        # row 3 (10:00:30) is older: its own
+        files[f"{name}/notes/{late}"] = synth.M4A
+        files[f"{name}/notes/{early}"] = synth.M4A
+        src = find_sessions([synth.write_zip(self.d / "o.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: (x["n"], x["attached"]) for x in s.notes}
+        self.assertEqual(p[synth.NOTE_2], (None, "own row"))   # row 2 is later than 10:00:12
+        self.assertEqual(p[synth.NOTE_5], (5, "own row"))      # same second as row 5: its own
+        self.assertEqual(p[late], (None, "own row"))
+        self.assertEqual(p[early], (3, "capture"))
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual((caps[2]["voice_files"], caps[5]["voice_files"], caps[3]["voice_files"]),
+                         ([], [synth.NOTE_5], [early]))
+
+    def test_orphan_photo_in_the_capture_second_takes_its_n(self):
+        """An orphan photo with no event, taken in the same second as the capture its name
+        gives (PHOTO pressed under 1 s after MARK, one 1 Hz epoch), attaches to that capture
+        as it did before 0.14.0; one taken the second before does not."""
+        files = synth.session_v05()
+        name = "2026-12-01_10-00-00"
+        same = "photo_3_20261201T100030Z.jpg"        # row 3 is 10:00:30
+        before = "photo_4_20261201T100039Z.jpg"      # row 4 (10:00:40) is later
+        files[f"{name}/photos/{same}"] = synth.JPEG
+        files[f"{name}/photos/{before}"] = synth.JPEG
+        src = find_sessions([synth.write_zip(self.d / "ps.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: (x["n"], x["attached"]) for x in s.photos}
+        self.assertEqual(p[same], (3, "capture"))
+        self.assertEqual(p[before], (None, "own row"))
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual(caps[3]["photo_files"], [same])
+
+    def test_orphan_note_in_the_capture_second_takes_its_n(self):
+        """An orphan note with no event, pressed in the same second as the capture its name
+        gives, attaches to that capture."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        same = "note_3_20261201T100030Z.m4a"         # row 3 is 10:00:30
+        files[f"{name}/notes/{same}"] = synth.M4A
+        src = find_sessions([synth.write_zip(self.d / "ns.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: (x["n"], x["attached"]) for x in s.notes}
+        self.assertEqual(p[same], (3, "capture"))
+        self.assertEqual({c["n"]: c for c in s.captures}[3]["voice_files"], [same])
+
+    def test_orphan_note_with_no_capture_is_linked_on_its_track_line(self):
+        """A voice note that resolves to no capture is linked from the track line recorded
+        at its time (or the nearest line in time) and named in the session's remarks."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        mid = "note_9_20261201T100022Z.m4a"          # no capture 9; the float line (20-25 s)
+        after = "note_8_20261201T100500Z.m4a"        # after the track: its last line
+        files[f"{name}/notes/{mid}"] = synth.M4A
+        files[f"{name}/notes/{after}"] = synth.M4A
+        out = run(synth.write_zip(self.d / "t.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("2 voice note(s) with no capture, linked on the track: " + after + ", " + mid, out)
+        self.assertEqual(self.q("SELECT seg, fix, voice FROM tracks ORDER BY seg"), [
+            (1, 4, None), (2, 5, f"notes/{name}/{mid}"), (3, 4, f"notes/{name}/{after}")])
+        self.assertTrue((self.gpkg.parent / "notes" / name / mid).is_file())
+
+    def test_orphan_note_whose_event_names_a_missing_row_is_linked_on_the_track(self):
+        """A note whose event says n=9 when points.csv has no row 9 (a snapshot made before
+        the row was written) has no n, so orphan_voice links it on its track line."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        note = "note_9_20261201T100022Z.m4a"
+        files[f"{name}/notes/{note}"] = synth.M4A
+        files[f"{name}/events.csv"] += (
+            f"{synth.T0_NS + 23_000_000_000},{int(synth.START.timestamp() * 1000) + 23_000},"
+            f"note file=notes/{note} bytes={len(synth.M4A)} duration_s=1.0 own row n=9\n").encode()
+        run(synth.write_zip(self.d / "m9.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertEqual(self.q("SELECT voice FROM tracks WHERE seg=2"), [(f"notes/{name}/{note}",)])
+
+    def test_orphan_note_with_no_track_is_reported_not_linked(self):
+        """With no track lines (no GGA logged) an orphan note has nowhere to go: the remark
+        says so instead of "linked on the track"."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        note = "note_9_20261201T100022Z.m4a"
+        files[f"{name}/notes/{note}"] = synth.M4A
+        files[f"{name}/gps.ubx"] = b""
+        files[f"{name}/gps_chunks.csv"] = b"elapsed_ns,byte_offset,length\n"
+        out = run(synth.write_zip(self.d / "nt.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("1 voice note(s) with no capture, not linked (no track): " + note, out)
+        self.assertEqual(self.q("SELECT count(*) FROM tracks"), [(0,)])
+
+    def test_unsafe_zip_entry_names_are_never_extracted(self):
+        """A photos/ or notes/ entry whose name is not one plain path part (a backslash, a
+        .. part, a drive letter, an absolute path) is left out, so extraction stays under
+        photos/<session>/ and notes/<session>/ on Windows too."""
+        for ok in ("photo_2_20261201T100010Z.jpg", "a..b.m4a"):
+            self.assertTrue(safe_file_name(ok), ok)
+        for bad in ("", ".", "..", "..\\x.jpg", "sub\\x.jpg", "C:x.jpg", "\\x.jpg", "a/b", "x\x00.jpg"):
+            self.assertFalse(safe_file_name(bad), repr(bad))
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        bad = ["..\\..\\evil_2_20261201T100010Z.jpg", "C:evil.jpg", "..", "\\abs.jpg"]
+        for b in bad:
+            files[f"{name}/photos/{b}"] = synth.JPEG
+            files[f"{name}/notes/{b.replace('.jpg', '.m4a')}"] = synth.M4A
+        root = self.gpkg.parent
+        out = run(synth.write_zip(self.d / "bad.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("2 voice notes (2 extracted)", out)
+        self.assertEqual(sorted(p.name for p in (root / "photos" / name).iterdir()),
+                         ["photo_2_20261201T100010Z.jpg", "photo_4_20261201T100030Z.jpg"])
+        self.assertEqual(sorted(p.name for p in (root / "notes" / name).iterdir()), [synth.NOTE_2, synth.NOTE_5])
+        self.assertEqual([p for p in self.d.rglob("*") if "evil" in p.name or "abs" in p.name], [])
+        src = find_sessions([self.d / "bad.zip"])[0]
+        with self.assertRaises(ValueError):
+            src.extract_note("..\\x.m4a", root / "x.m4a")
+        src.close()
+
+    def test_unsafe_session_names_are_skipped(self):
+        """A zip entry `../events.csv` (or `./events.csv`, `a/../events.csv`) names its
+        session `..` or `.`: that session is skipped, so no note or photo is written outside
+        photos/ and notes/ (e.g. beside the gpkg); the good session still imports."""
+        name = "2026-12-01_10-00-00"
+        files = synth.with_notes(synth.session_v05())
+        for pre in ("..", ".", "a/.."):
+            for k, v in list(files.items()):
+                if k.startswith(name + "/"):
+                    files[pre + k[len(name):]] = v
+        z = synth.write_zip(self.d / "evil.zip", files)
+        self.assertEqual([s.name for s in find_sessions([z])], [name])
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        root = self.gpkg.parent
+        self.assertEqual(sorted(p.name for p in root.iterdir() if p.is_dir()), ["notes", "photos"])
+        self.assertEqual(sorted(p.name for p in (root / "notes").iterdir()), [name])
+        self.assertEqual(sorted(p.name for p in (root / "photos").iterdir()), [name])
+        self.assertEqual([p for p in self.d.rglob("*.m4a") if p.parent.name != name], [])
+        self.assertEqual(self.q("SELECT session FROM sessions"), [(name,)])
+
+    def test_schema7_voice(self):
+        """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""
+        self.assertEqual(imp.SCHEMA_VERSION, 7)
+        self.assertEqual(imp.schema_min_app(6), (0, 14))
 
     def test_zip_entry_mtime_utc_and_zero_date(self):
         """A zip entry's time for ordering refs.csv copies: the UTC extended timestamp when

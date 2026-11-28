@@ -10,15 +10,16 @@ The pipeline:
 1. The phone shares each session as `IceCubeLogger_<session>.zip` to your Drive season
    folder.
 2. **Import new sessions** reads every zip (and any extracted session folder) in that
-   folder into one GeoPackage per season, `<season>.gpkg`, and copies the photos next to
-   it. Sessions already imported are skipped; your labels and notes are kept.
+   folder into one GeoPackage per season, `<season>.gpkg`, and copies the photos (and,
+   from logger 0.14.0, the voice notes) next to it. Sessions already imported are skipped; your labels and notes are kept.
 3. **Build / refresh project** makes `<season>.qgz` with the layers styled, the map in
    local metres about the origin (monument G), and forms for labelling.
 4. You label captures in QGIS. **Export labels** writes the captures with labels to a
    CSV that icecube reads.
 
 Everything the import writes holds positions: the gpkg, the photos, the CSV and the .qgz
-(it carries the local CRS). Keep them in Drive or a local folder, never in this repository.
+(it carries the local CRS). The voice notes (`notes/`) may hold voices and names. Keep them
+all in Drive or a local folder, never in this repository.
 
 ## Install QGIS (Windows)
 
@@ -116,7 +117,10 @@ Toolbar: the ice cube button (Plugins > Ice Cube > Import new sessions).
 
 What it reads:
 - Logger 0.5 and later: `points.csv` (surface, object, ref, photo rows), photos,
-  `refs.csv` in the zip, pole checks from `events.csv`.
+  `refs.csv` in the zip, pole checks from `events.csv`. From 0.14.0 the `voice` column and
+  the voice notes in `notes/`, copied to `notes/<session>/` next to the gpkg (not with
+  `--no-photos`). Schema 7: a session from 0.14 or later imported by an older importer is
+  re-read for them; older sessions have none and are not re-read.
 - 0.3/0.4 sessions: each `control n=...` mark becomes a capture of class `control`, its
   position averaged from the GGA in `gps.ubx` over the last second before the mark (the
   0.5 Surface rule), ground = antenna minus the pole height logged with the mark.
@@ -169,8 +173,11 @@ Toolbar: the folder button opens `photos/` next to the gpkg in Explorer. In the 
 
 - Identify a capture or a photo: the form shows the picture.
 - Map tips: View > Show Map Tips, then hover over a capture or a camera: time, fix,
-  scatter, height, your note and the photo.
-- The project finds the photos by relative path wherever the folder goes.
+  scatter, height, your note, the photo, and a link per voice note (click to play it in
+  the system player). A voice note that belongs to no capture (its row is unknown) is
+  linked from the map tip of the track line recorded at its time, and named in the
+  session's `remarks`.
+- The project finds the photos and notes by relative path wherever the folder goes.
 
 ## Export labels for icecube
 
@@ -323,13 +330,13 @@ The parcels GeoJSON holds the location like the imagery: keep it private.
 
 | table | what | yours to edit |
 |---|---|---|
-| `captures` | one point per capture, key session + n; class, time, heights, fix, scatter, photo, x/y/z from G | `note`, `label` |
-| `photos` | one point per photo, at its capture | `note` |
-| `refs` | ref occupations, with pole-check result, visits, and `site` (refs within 0.30 m share a site number) | `note` |
-| `tracks` | the GGA track at 1 Hz, one line per stretch of the same fix quality | |
+| `captures` | one point per capture, key session + n; class, time, heights, fix, scatter, photo, `voice` (the row's voice notes, `notes/<session>/<file>.m4a` separated by `;`) and `voice_count`, x/y/z from G. A `photo` row may hold only a voice note | `note`, `label` |
+| `photos` | one point per photo, at its capture; `voice` the notes of that row | `note` |
+| `refs` | ref occupations, with pole-check result, visits, `site` (refs within 0.30 m share a site number) and `voice` | `note` |
+| `tracks` | the GGA track at 1 Hz, one line per stretch of the same fix quality; `voice` the voice notes with no capture, on the line recorded at their time | |
 | `track_points` | the 1 Hz epochs: fix, satellites, HDOP, correction age | |
 | `refs_copies` | every refs.csv copy's void flag per ref (content hash and time as its id): the importer decides each ref's flag from all copies seen, so the import order never matters | |
-| `sessions` | one row per session: times, app, link, caster mount, frame lines, base station, pole heights, counts, link losses, % fixed | `note` |
+| `sessions` | one row per session: times, app, link, caster mount, frame lines, base station, pole heights, counts (`n_notes`: voice notes), link losses, % fixed | `note` |
 | `layer_*` | your map-layer GeoJSON files, one table per file and geometry type | (replaced on import) |
 
 Point heights (Z) are ellipsoidal: the ground height for captures, photos and refs, the
@@ -373,7 +380,8 @@ or from the OSGeo4W Shell (QGIS's own Python) or any Windows Python 3.11+:
 Without arguments it reads `[season].input_dir`. You can also name zips or folders:
 `import_sessions.py "G:\My Drive\...\IceCubeLogger_2026-11-20_13-05-00.zip"`. Other
 options: `--gpkg`, `--season`, `--layers`, `--base-geojson`, `--origin LAT LON H` (with
-`--origin-name`), `--force` (re-read sessions that look unchanged), `--no-photos`; `--help`
+`--origin-name`), `--force` (re-read sessions that look unchanged), `--no-photos` (no
+photos or voice notes copied); `--help`
 lists them. **Close the project in QGIS first**: QGIS keeps the file open.
 
 ### Build the project from the Python console

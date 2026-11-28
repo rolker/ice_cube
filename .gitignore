@@ -57,6 +57,8 @@ analysis/out/
 *.jpg
 *.jpeg
 *.heic
+# Voice notes (logger 0.14.0) may hold voices and names: never commit them
+*.m4a
 
 # Secrets (NTRIP credentials, base position)
 .env

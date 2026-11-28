@@ -39,8 +39,10 @@ What it sets up:
   stroke/fill colours; tracks thin grey by fix quality.
 - Forms: on captures, photos, refs and sessions only `note` (and `label` on captures,
   with completion from the labels already used) are editable; the photo field shows
-  the picture. Map tips (View > Show Map Tips) show the capture and its photo, and the
-  void reason of a flagged capture or ref.
+  the picture. Map tips (View > Show Map Tips) show the capture and its photo, a link per
+  voice note (logger 0.14.0, `notes/<session>/<file>.m4a`; click to play it in the system
+  player), and the void reason of a flagged capture or ref; a track line's map tip links
+  the voice notes that belong to no capture, recorded on that line.
 
 Nothing site-specific is in this file: the CRS and paths come from the gpkg at run time.
 """
@@ -144,8 +146,66 @@ def form(layer, editable=("note",), photo_field=None, suggest=()):
     layer.setEditFormConfig(cfg)
 
 
-PHOTO_TIP = ('[% CASE WHEN "photo" IS NOT NULL THEN \'<br><img src="file:///\' || '
-             '@project_folder || \'/\' || "photo" || \'" width="320">\' ELSE \'\' END %]')
+# Characters a file path may hold that break a file:/// URL or the HTML attribute around
+# it ("My Drive", a '#' in a folder name), with their percent escapes. '%' comes first:
+# QGIS replace() with two arrays replaces in order, so an escape is never escaped again.
+URL_ESCAPES = (("%", "%25"), (" ", "%20"), ("#", "%23"), ("?", "%3F"), ("&", "%26"),
+               ('"', "%22"), ("'", "%27"), ("<", "%3C"), (">", "%3E"))
+
+
+def _qgis_str(s):
+    """s as a QGIS expression string literal."""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def file_url_expr(path_expr):
+    """A QGIS expression for the file:/// URL of path_expr (an expression for a path with
+    '/' separators, e.g. @project_folder || '/' || "photo"), percent-encoded by URL_ESCAPES."""
+    before = ", ".join(_qgis_str(a) for a, _ in URL_ESCAPES)
+    after = ", ".join(_qgis_str(b) for _, b in URL_ESCAPES)
+    return f"'file:///' || replace({path_expr}, array({before}), array({after}))"
+
+
+def file_url(path):
+    """What file_url_expr evaluates to for path: for tests and for a reader."""
+    for a, b in URL_ESCAPES:
+        path = path.replace(a, b)
+    return "file:///" + path
+
+
+# text put into a map tip's HTML: '&' first, as with URL_ESCAPES, so an escape is never escaped again
+HTML_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
+
+
+def html_text_expr(expr):
+    """A QGIS expression for expr with & < > escaped (HTML_ESCAPES), so it shows as text."""
+    before = ", ".join(_qgis_str(a) for a, _ in HTML_ESCAPES)
+    after = ", ".join(_qgis_str(b) for _, b in HTML_ESCAPES)
+    return f"replace({expr}, array({before}), array({after}))"
+
+
+def html_text(text):
+    """What html_text_expr evaluates to for text: for tests and for a reader."""
+    for a, b in HTML_ESCAPES:
+        text = text.replace(a, b)
+    return text
+
+
+PHOTO_TIP = ('[% CASE WHEN "photo" IS NOT NULL THEN \'<br><img src="\' || '
+             + file_url_expr('@project_folder || \'/\' || "photo"') + ' || \'" width="320">\' ELSE \'\' END %]')
+
+
+# voice notes (logger 0.14.0): one file:/// link per path in "voice" (';' separated), for
+# the system player, the file name as the link text (HTML-escaped); a gpkg imported before schema 7 has no voice column and gets no links
+VOICE_TIP = ('[% CASE WHEN "voice" IS NOT NULL THEN \'<br>voice: \' || array_to_string(array_foreach('
+             'string_to_array("voice", \';\'), \'<a href="\' || '
+             + file_url_expr("@project_folder || '/' || @element")
+             + ' || \'">\' || ' + html_text_expr("regexp_replace(@element, '^.*/', '')")
+             + ' || \'</a>\'), \' \') ELSE \'\' END %]')
+
+
+def voice_tip(lyr):
+    return VOICE_TIP if has(lyr, "voice") else ''
 
 
 def add(project, group, layer, visible=True):
@@ -182,13 +242,14 @@ def style_captures(lyr):
         'fix [% "fix" %], [% "n_epochs" %] epochs, sd up [% format_number("sd_u_m" * 100, 1) %] cm'
         '[% CASE WHEN "x_m" IS NOT NULL THEN \'<br>x \' || format_number("x_m", 3) || \' y \' || '
         'format_number("y_m", 3) || \' z \' || format_number("z_m", 3) || \' m\' ELSE \'\' END %]'
-        + (VOID_TIP if voided else '') + '<br>[% coalesce("note", \'\') %]' + PHOTO_TIP)
+        + (VOID_TIP if voided else '') + '<br>[% coalesce("note", \'\') %]' + voice_tip(lyr) + PHOTO_TIP)
     form(lyr, editable=("note", "label"), photo_field="photo", suggest=("label",))
 
 
 def style_photos(lyr):
     lyr.setRenderer(QgsSingleSymbolRenderer(camera_marker()))
-    lyr.setMapTipTemplate('<b>[% "name" %]</b><br>[% "session" %] n=[% "n" %] [% "utc" %]' + PHOTO_TIP)
+    lyr.setMapTipTemplate('<b>[% "name" %]</b><br>[% "session" %] n=[% "n" %] [% "utc" %]' + voice_tip(lyr)
+                          + PHOTO_TIP)
     lyr.setDisplayExpression('"name"')
     form(lyr, editable=("note",), photo_field="photo")
 
@@ -210,7 +271,7 @@ def style_refs(lyr):
                 f'format_number({diff} * 100, 1) || \' cm\' ELSE \'\' END', 7.5)
     lyr.setMapTipTemplate('<b>R[% "n" %]</b> site [% "site" %] [% "session" %]<br>[% "utc" %], '
                           '[% "n_epochs" %] epochs, pole [% "pole_m" %] m<br>[% coalesce("pole_check", \'\') %]'
-                          + (VOID_TIP if voided else ''))
+                          + (VOID_TIP if voided else '') + voice_tip(lyr))
     form(lyr, editable=("note",))
 
 
@@ -224,6 +285,9 @@ def style_tracks(lyr, points=False):
                                               "line_style": style})
         cats.append(QgsRendererCategory(k, sym, label))
     lyr.setRenderer(QgsCategorizedSymbolRenderer("fix", cats))
+    if not points:   # voice notes with no capture (0.14.0) are linked on their track line
+        lyr.setMapTipTemplate('<b>[% "session" %]</b> line [% "seg" %], fix [% "fix" %]<br>'
+                              '[% "start_utc" %] to [% "end_utc" %]' + voice_tip(lyr))
 
 
 def style_parcels(lyr):

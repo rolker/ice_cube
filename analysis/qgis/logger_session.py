@@ -3,7 +3,10 @@
 Standard library only. Formats handled:
 - 0.5 and later: `points.csv` holds the captures (surface, object, ref, photo). From
   0.9.0 a row can be flagged as bad (`void` = 1, `void_reason`); it is kept, with `void`
-  True in its dict, and counted (`n_voided`). No `void` column means not voided.
+  True in its dict, and counted (`n_voided`). No `void` column means not voided. From
+  0.14.0 (#16) the `voice` column lists a row's voice notes: bare file names (the files
+  are in `notes/`), ';' separated, handled like photos: a flag moves them, and a
+  photo-class row may hold only a note. No `voice` column means no notes.
 - 0.3 / 0.4: no points.csv; `control n=<k> pole_height=<m> ...` events mark control
   points. Their positions are rebuilt from the GGA sentences in `gps.ubx` at the mark's
   phone time (gps_chunks.csv maps byte offsets to phone time) with the 0.5 Surface rule:
@@ -37,6 +40,7 @@ from pathlib import Path
 from local_frame import enu_scatter
 
 PHOTO_RE = re.compile(r"photo_(\d+)_(\d{8}T\d{6}Z)\.jpe?g$", re.I)
+NOTE_RE = re.compile(r"note_(\d+)_(\d{8}T\d{6}Z)(?:_\d+)?\.m4a$", re.I)   # logger 0.14.0 voice notes
 GGA_RE = re.compile(rb"\$G[A-Z]GGA,[^$\r\n\xb5]*\*([0-9A-Fa-f]{2})")
 QUALITY_RANK = {4: 0, 5: 1, 2: 2, 1: 3}    # best first; others are not positions
 
@@ -87,31 +91,52 @@ class SessionSource:
         p = self.path / rel
         return p.stat().st_size if p.is_file() else None
 
-    def photo_names(self):
+    def file_names(self, folder):
+        """Names of the files in the session's `folder` (photos, notes), sorted; only names
+        that are one safe path part (safe_file_name), so extracting one never leaves the
+        target folder."""
         if self.is_zip:
-            pre = self.zip_prefix + "photos/"
+            pre = self.zip_prefix + folder + "/"
             return sorted(n[len(pre):] for n in self._z().namelist()
-                          if n.startswith(pre) and len(n) > len(pre) and "/" not in n[len(pre):])
-        d = self.path / "photos"
-        return sorted(p.name for p in d.iterdir() if p.is_file()) if d.is_dir() else []
+                          if n.startswith(pre) and safe_file_name(n[len(pre):]))
+        d = self.path / folder
+        return sorted(p.name for p in d.iterdir() if p.is_file() and safe_file_name(p.name)) if d.is_dir() else []
 
-    def extract_photo(self, name, dest: Path):
-        """Copy photos/<name> to dest unless a file of the same size is already there."""
-        size = self.size("photos/" + name)
+    def photo_names(self):
+        return self.file_names("photos")
+
+    def note_names(self):
+        """The voice notes (logger 0.14.0) in notes/."""
+        return self.file_names("notes")
+
+    def extract_file(self, folder, name, dest: Path):
+        """Copy <folder>/<name> to dest unless a file of the same size is already there.
+        Refuses (ValueError) a name that is not one safe path part (safe_file_name)."""
+        if not safe_file_name(name):
+            raise ValueError(f"unsafe file name in {folder}/: {name!r}")
+        size = self.size(folder + "/" + name)
         if dest.is_file() and dest.stat().st_size == size:
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".part")
         if self.is_zip:
-            with self._z().open(self.zip_prefix + "photos/" + name) as src, open(tmp, "wb") as out:
+            with self._z().open(self.zip_prefix + folder + "/" + name) as src, open(tmp, "wb") as out:
                 while chunk := src.read(1 << 20):
                     out.write(chunk)
         else:
-            with open(self.path / "photos" / name, "rb") as src, open(tmp, "wb") as out:
+            with open(self.path / folder / name, "rb") as src, open(tmp, "wb") as out:
                 while chunk := src.read(1 << 20):
                     out.write(chunk)
         os.replace(tmp, dest)
         return True
+
+    def extract_photo(self, name, dest: Path):
+        """Copy photos/<name> to dest unless a file of the same size is already there."""
+        return self.extract_file("photos", name, dest)
+
+    def extract_note(self, name, dest: Path):
+        """Copy notes/<name> to dest unless a file of the same size is already there."""
+        return self.extract_file("notes", name, dest)
 
     def refs_csv(self):
         """Text of the refs.csv shipped with this session (zip top level, or the folder's
@@ -187,7 +212,8 @@ class SessionSource:
         if self.is_zip:
             return f"zip:{self.path.name}:{self.path.stat().st_size}"
         parts = [str(self.size(f)) for f in ("events.csv", "points.csv", "gps.ubx")]
-        return "dir:" + ":".join(parts) + f":{len(self.photo_names())}"
+        return "dir:" + ":".join(parts) + f":{len(self.photo_names())}" + (
+            f":{len(self.note_names())}" if self.note_names() else "")   # unchanged for a folder without notes
 
     def label(self):
         return self.path.name + (f"!{self.zip_prefix}" if self.is_zip else "")
@@ -199,6 +225,7 @@ ZONE_RESIDUAL_S = 10         # events.csv's entry time this close after its last
 ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
 ZONE_CLOCK_S = 0.05          # a file mtime (coarse kernel clock) may be a few ms behind wall_ms
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
+TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line (import_sessions.track_lines)
 APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
 DST_S = 3600                 # another entry than events.csv may have another DST offset
 EXT_S = 1.0                  # a 0x5455 time is whole seconds (floored), a file mtime is not
@@ -325,7 +352,9 @@ def _sessions_in_zip(path):
         if n.endswith("events.csv"):
             prefix = n[: -len("events.csv")]
             if prefix and prefix.endswith("/"):
-                out.append(SessionSource(path, prefix.rstrip("/").split("/")[-1], prefix))
+                name = prefix.rstrip("/").split("/")[-1]
+                if safe_file_name(name):   # `../events.csv` would name the session ..
+                    out.append(SessionSource(path, name, prefix))
     return out
 
 
@@ -333,7 +362,10 @@ def find_sessions(paths):
     """Session sources under the given zips and folders (recursively). A session found
     more than once (a zip and its extracted folder, a snapshot and the final zip) is
     returned once: the non-snapshot copy, then the one with the larger events.csv; the
-    others are kept in its `others` (their refs.csv still counts, refs_csv_copies)."""
+    others are kept in its `others` (their refs.csv still counts, refs_csv_copies). A
+    session whose name is not one safe path part (safe_file_name: a zip entry
+    `../events.csv` names it `..`) is skipped, since the name becomes a folder under
+    photos/ and notes/."""
     found = []
     for p in map(Path, paths):
         if p.is_file():
@@ -341,7 +373,8 @@ def find_sessions(paths):
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 if "events.csv" in files:
-                    found.append(SessionSource(Path(root), Path(root).name))
+                    if safe_file_name(Path(root).name):
+                        found.append(SessionSource(Path(root), Path(root).name))
                     dirs[:] = []
                     continue
                 dirs.sort()
@@ -422,7 +455,8 @@ def read_points(text):
     flagged) and `void_reason`; False and None in older files. From 0.11.0 (#15) fix_start
     (float, single, none, fixed-jump, gap), float_spell_s, suspect_reason (jump,
     float_spell or jump;float_spell) and fix_young (1/0); None in older files and when
-    unknown, never 0."""
+    unknown, never 0. From 0.14.0 (#16) `voice_files`, the voice notes in the `voice`
+    column (empty in older files)."""
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         if not r.get("n"):
@@ -435,6 +469,7 @@ def read_points(text):
             "n_epochs": _i(r.get("n_epochs")), "sd_e_m": _f(r.get("sd_e_m")),
             "sd_n_m": _f(r.get("sd_n_m")), "sd_u_m": _f(r.get("sd_u_m")), "age_s": _f(r.get("age_s")),
             "photo_files": [p for p in (r.get("photo") or "").split(";") if p],
+            "voice_files": [p for p in (r.get("voice") or "").strip().split(";") if p],
             "note": r.get("note") or None,
             "void": (r.get("void") or "").strip() == "1", "void_reason": r.get("void_reason") or None,
             "method": (r.get("method") or "").strip() or None,   # PointRow.java trims too
@@ -449,12 +484,12 @@ def read_points(text):
 
 # refs.csv columns as the logger writes them from 0.9.0 (PointRow.REFS_HEADER): rows from
 # before 0.6 have the first 18, rows from 0.6 to 0.8 the first 28, rows from 0.9.0 the first
-# 30, rows from 0.11.0 all 34.
+# 30, rows from 0.11.0 the first 34, rows from 0.14.0 all 35.
 REFS_COLUMNS = ["session", "n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
                 "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note",
                 "fix_age_s", "fix_jump_m", "fix_suspect", "method", "tilt_n", "tilt_rms_m", "tilt_cover_deg",
                 "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m", "void", "void_reason",
-                "fix_start", "float_spell_s", "suspect_reason", "fix_young"]
+                "fix_start", "float_spell_s", "suspect_reason", "fix_young", "voice"]
 
 
 def read_refs_csv(text):
@@ -575,6 +610,14 @@ def read_chunks(src):
 
 # ----------------------------------------------------------------------------- session
 
+def safe_file_name(name):
+    """Whether name is a single plain path part on any system: not empty, not . or .., no
+    / or \\, no drive letter or other ':' and no control characters, so <dir>/<name> stays
+    inside <dir> on Windows as well as Linux (a zip entry name is untrusted)."""
+    return (bool(name) and name not in (".", "..") and not any(ch in name for ch in "/\\:")
+            and all(ord(ch) >= 32 for ch in name))
+
+
 @dataclass
 class Session:
     name: str
@@ -582,9 +625,66 @@ class Session:
     info: dict = field(default_factory=dict)       # one sessions-table row
     captures: list = field(default_factory=list)   # dicts, keyed by n (voided ones too, `void` True)
     photos: list = field(default_factory=list)     # dicts: n, name, utc, attached, bytes
+    notes: list = field(default_factory=list)      # voice notes (0.14.0), the same dicts
+    notes_extracted: int = 0                       # set by import_sessions.import_session
     refs: dict = field(default_factory=dict)       # n -> pole-check / ref-event fields
     track: list = field(default_factory=list)      # 1 Hz epochs: utc, t, lat, lon, h, fix, ...
     remarks: list = field(default_factory=list)
+
+
+def _attachments(src, ev, captures, folder, word, name_re, key):
+    """The files in the session's `folder` (photos, or notes from 0.14.0) as dicts n, name,
+    utc, attached ("capture" or "own row"), bytes; a file no row lists is added to the row
+    its event or name gives. A file's row: the points.csv row whose `key` column (photo_files,
+    voice_files) lists it is the only source of its n and whether it is attached (a flag in
+    0.9.0 moves photos, and from 0.14.0 notes, to another row, so the number in the file name
+    and the original "<word> file=..." event can be stale; the file is never renamed). The
+    event, then the name, only for an orphan file; an event naming a row points.csv lacks
+    (a snapshot taken before the row was written) gives no n. The name's n is used only when that capture
+    was taken no later than the file's second (the same 1 Hz second counts: PHOTO or NOTE
+    pressed within a second of MARK): a file planned as a row of its own is named after the
+    next row number, which a capture made while it was being taken (a MARK during a voice
+    note) may have used. Otherwise an orphan with no event is an own row with no n. A photo-class row holding only a note is an own row like a photo's."""
+    attach = {}
+    for _, _, text in ev:
+        m = re.match(word + r" file=" + folder + r"/(\S+) .*?(attached to|own row) n=(\d+)", text)
+        if m:
+            attach[m.group(1)] = (int(m.group(3)), "capture" if m.group(2) == "attached to" else "own row")
+    by_file = {}
+    for c in captures:
+        for p in c[key]:
+            by_file[p] = c
+    caps = {c["n"]: c for c in captures}
+
+    def not_later(n, utc):
+        """Whether capture n exists and was taken no later than utc's second."""
+        c = caps.get(n)
+        return c is not None and utc is not None and bool(c.get("utc")) and c["utc"][:19] <= utc[:19]
+
+    out = []
+    for name in src.file_names(folder):
+        m = name_re.match(name)
+        utc = None
+        if m:
+            utc = datetime.strptime(m.group(2), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
+        row = by_file.get(name)
+        if row is not None:
+            n, kind = row["n"], "own row" if row["class"] == "photo" else "capture"
+        elif name in attach and attach[name][0] in caps:
+            n, kind = attach[name]
+        elif m and not_later(int(m.group(1)), utc):
+            n, kind = int(m.group(1)), None
+        else:
+            n, kind = None, "own row"
+        out.append({"n": n, "name": name, "utc": utc, "attached": kind,
+                    "bytes": src.size(folder + "/" + name)})
+    for p in out:
+        c = caps.get(p["n"])
+        if c is not None and p["name"] not in c[key]:
+            c[key].append(p["name"])
+        if p["attached"] is None and c is not None:
+            p["attached"] = "own row" if c["class"] == "photo" else "capture"
+    return out
 
 
 def _kv(text):
@@ -719,7 +819,7 @@ def load_session(src: SessionSource) -> Session:
             j = bisect.bisect_right([a if a is not None else -1 for a in arrival], t_ns)
             avg = average_epochs([g for _, g in epochs[max(0, j - 40):j]])
             row = {"n": n, "class": "control", "elapsed_ns": t_ns, "pole_m": pole,
-                   "photo_files": [], "note": None, "source": "control event + GGA"}
+                   "photo_files": [], "voice_files": [], "note": None, "source": "control event + GGA"}
             if avg:
                 t = utc_of_tod(avg.pop("tod"), start)
                 row.update(avg, utc=iso(t))
@@ -732,40 +832,16 @@ def load_session(src: SessionSource) -> Session:
     if controls_unnumbered:
         s.remarks.append(f"{controls_unnumbered} unnumbered control marks (0.2 format) not imported")
 
-    # photos
-    attach = {}
-    for _, _, text in ev:
-        m = re.match(r"photo file=photos/(\S+) .*?(attached to|own row) n=(\d+)", text)
-        if m:
-            attach[m.group(1)] = (int(m.group(3)), "capture" if m.group(2) == "attached to" else "own row")
-    # A photo's row: the points.csv row whose photo column lists the file is the only source
-    # of its n and whether it is attached (a flag in 0.9.0 moves photos to another row, so
-    # the number in the file name and the original "photo file=..." event can be stale; the
-    # file is never renamed). The event, then the name, only for an orphan file.
-    by_file = {}
-    for c in s.captures:
-        for p in c["photo_files"]:
-            by_file[p] = c
-    for name in src.photo_names():
-        m = PHOTO_RE.match(name)
-        utc = None
-        if m:
-            utc = datetime.strptime(m.group(2), "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
-        row = by_file.get(name)
-        if row is not None:
-            n, kind = row["n"], "own row" if row["class"] == "photo" else "capture"
-        else:
-            n = (attach.get(name) or (None,))[0] or (int(m.group(1)) if m else None)
-            kind = (attach.get(name) or (None, None))[1]
-        s.photos.append({"n": n, "name": name, "utc": utc, "attached": kind,
-                         "bytes": src.size("photos/" + name)})
-    caps = {c["n"]: c for c in s.captures}
-    for p in s.photos:
-        c = caps.get(p["n"])
-        if c is not None and p["name"] not in c["photo_files"]:
-            c["photo_files"].append(p["name"])
-        if p["attached"] is None and c is not None:
-            p["attached"] = "own row" if c["class"] == "photo" else "capture"
+    # photos and (0.14.0) voice notes
+    s.photos = _attachments(src, ev, s.captures, "photos", "photo", PHOTO_RE, "photo_files")
+    s.notes = _attachments(src, ev, s.captures, "notes", "note", NOTE_RE, "voice_files")
+    orphans = [p["name"] for p in s.notes if p["n"] is None]
+    if orphans:
+        # a track line needs two epochs at most TRACK_GAP_S apart (track_lines); else orphan_voice has nowhere to link
+        has_line = any(b["t"] - a["t"] <= TRACK_GAP_S for a, b in zip(s.track, s.track[1:]))
+        s.remarks.append(f"{len(orphans)} voice note(s) with no capture, "
+                         + ("linked on the track: " if has_line else "not linked (no track): ")
+                         + ", ".join(orphans))
 
     counts = {}
     for c in s.captures:
@@ -779,6 +855,7 @@ def load_session(src: SessionSource) -> Session:
     for k in ("surface", "object", "ref", "photo", "control"):
         info[f"n_{k}"] = counts.get(k, 0)
     info["n_photos"] = len(s.photos)
+    info["n_notes"] = len(s.notes)
     info["n_track_points"] = len(s.track)
     info["remarks"] = "; ".join(s.remarks) or None
     return s

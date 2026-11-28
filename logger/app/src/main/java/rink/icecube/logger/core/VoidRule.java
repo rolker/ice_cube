@@ -12,10 +12,11 @@ import java.util.Map;
  * and where a voided capture's photos go. Nothing is deleted: a voided row keeps its
  * number and stays in points.csv with void=1; events.csv records each flag and unflag.
  *
- * Photos. A voided row's photos move (only the photo column changes, the files stay) to the
- * nearest earlier live capture (surface, object or ref, lower n, not voided), with no time
- * limit, because the user has said the capture was a mistake. With none, they go to a new
- * photo row at the voided row's position. Unflagging does not move them back.
+ * Photos and voice notes. A voided row's photos and notes (0.14.0, #16) move together (only
+ * the photo and voice columns change, the files stay) to the nearest earlier live capture
+ * (surface, object or ref, lower n, not voided), with no time limit, because the user has
+ * said the capture was a mistake. With none, they go to a new photo row at the voided row's
+ * position. Unflagging does not move them back.
  */
 public final class VoidRule {
     /** UNDO is offered for this long after a capture (its notice stays up longer). */
@@ -129,7 +130,7 @@ public final class VoidRule {
 
     /**
      * The map glyph of a row: PHOTO for any photo row (a row a flag moved photos to keeps its
-     * camera), FLAGGED for a voided capture (a grey cross, never its class symbol or camera),
+     * camera, and so does a row holding only a voice note: an own row of either), FLAGGED for a voided capture (a grey cross, never its class symbol or camera),
      * LIVE otherwise.
      */
     public static Glyph glyph(PointRow r) {
@@ -145,9 +146,10 @@ public final class VoidRule {
     }
 
     /**
-     * A new photo row (class photo, number n) holding the photos of a voided row, at its
-     * position: the position, height, fix and spread fields are copied; method, tilt and
-     * guard fields are left empty.
+     * A new photo row (class photo, number n) holding the photos and voice notes of a voided
+     * row, at its position: the position, height, fix and spread fields are copied; method,
+     * tilt and guard fields are left empty. Its note says what it holds: "photos of voided
+     * n=5", "notes of voided n=5" or "photos and notes of voided n=5".
      */
     public static PointRow photoRowFor(PointRow voided, int n) {
         PointRow r = new PointRow();
@@ -159,8 +161,28 @@ public final class VoidRule {
         r.fix = voided.fix; r.nEpochs = voided.nEpochs;
         r.sdE = voided.sdE; r.sdN = voided.sdN; r.sdU = voided.sdU; r.age = voided.age;
         r.photo = voided.photo;
-        r.note = "photos of voided n=" + voided.n;
+        r.voice = voided.voice;
+        boolean p = !voided.photo.isEmpty(), v = !voided.voice.isEmpty();
+        r.note = (p && v ? "photos and notes" : v ? "notes" : "photos") + " of voided n=" + voided.n;
         return r;
+    }
+
+    /** Appends the photos and voice notes of from to to's columns and empties from's. */
+    public static void moveAttachments(PointRow from, PointRow to) {
+        for (String f : from.photo.split(";")) if (!f.isEmpty()) to.photo = PhotoRule.add(to.photo, f);
+        for (String f : from.voice.split(";")) if (!f.isEmpty()) to.voice = NoteRule.add(to.voice, f);
+        from.photo = "";
+        from.voice = "";
+    }
+
+    /**
+     * The events.csv line for a move of voided row n's photos and notes to row to (own: a new
+     * row of their own): "photo moved n=5 to=3 photos=a.jpg", with " notes=b.m4a" when it had
+     * notes, or "note moved n=5 to=3 notes=b.m4a" when it had notes only (one line either way).
+     */
+    public static String moveEvent(int n, int to, boolean own, String photos, String notes) {
+        String head = (photos.isEmpty() ? "note" : "photo") + " moved n=" + n + " to=" + to + (own ? " own row" : "");
+        return head + (photos.isEmpty() ? "" : " photos=" + photos) + (notes.isEmpty() ? "" : " notes=" + notes);
     }
 
     /** One refs.csv copy: its rows in file order and the file's modification time (ms). */

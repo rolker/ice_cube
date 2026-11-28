@@ -123,6 +123,48 @@ public class VoidRuleTest {
         assertEquals("", p.method);
         assertFalse(p.voided);
         assertFalse(p.isLive());
+        assertEquals("photos of voided n=7", p.note);   // the importer's soundings.py matches it exactly
+        assertEquals("", p.voice);
+    }
+
+    /** 0.14.0 (#16): a voided row's voice notes move with its photos, by the same rule. */
+    @Test public void notesMoveWithPhotos() {
+        PointRow s1 = row(1, PointRow.SURFACE), o2 = row(2, PointRow.OBJECT);
+        s1.photo = "p0.jpg"; s1.voice = "n0.m4a";
+        o2.photo = "a.jpg"; o2.voice = "x.m4a;y.m4a"; o2.voided = true;
+        List<PointRow> rows = Arrays.asList(s1, o2);
+        PointRow to = VoidRule.photoTarget(rows, 2);
+        assertSame(s1, to);
+        VoidRule.moveAttachments(o2, to);
+        assertEquals("p0.jpg;a.jpg", s1.photo);
+        assertEquals("n0.m4a;x.m4a;y.m4a", s1.voice);
+        assertEquals("", o2.photo);
+        assertEquals("", o2.voice);
+        assertEquals("photo moved n=2 to=1 photos=a.jpg notes=x.m4a;y.m4a",
+                VoidRule.moveEvent(2, 1, false, "a.jpg", "x.m4a;y.m4a"));
+        assertEquals("photo moved n=2 to=1 photos=a.jpg", VoidRule.moveEvent(2, 1, false, "a.jpg", ""));
+        assertEquals("note moved n=2 to=5 own row notes=x.m4a", VoidRule.moveEvent(2, 5, true, "", "x.m4a"));
+    }
+
+    /** A note-only own row: class photo, camera glyph, not counted, its note names what it holds. */
+    @Test public void noteOnlyOwnRow() {
+        PointRow v = row(3, PointRow.SURFACE);
+        v.voice = "n.m4a"; v.voided = true; v.lat = 1; v.lon = 2;
+        PointRow own = VoidRule.photoRowFor(v, 8);
+        assertEquals(PointRow.PHOTO, own.cls);
+        assertEquals("", own.photo);
+        assertEquals("n.m4a", own.voice);
+        assertEquals("notes of voided n=3", own.note);
+        assertEquals(VoidRule.Glyph.PHOTO, VoidRule.glyph(own));
+        assertEquals(0, VoidRule.liveCount(Arrays.asList(v, own)));
+        assertNull(VoidRule.lastLive(Arrays.asList(v, own)));
+        v.photo = "a.jpg";
+        assertEquals("photos and notes of voided n=3", VoidRule.photoRowFor(v, 8).note);
+        // a NOTE pressed with no live capture makes the same kind of row (Survey.noteTaken)
+        PointRow pressed = row(9, PointRow.PHOTO);
+        pressed.voice = "note_9_x.m4a";
+        assertEquals(VoidRule.Glyph.PHOTO, VoidRule.glyph(pressed));
+        assertFalse(pressed.isCapture());
     }
 
     @Test public void refsCsvRowsRewrittenInPlace() {
