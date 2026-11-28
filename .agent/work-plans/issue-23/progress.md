@@ -217,3 +217,28 @@ Open owner question (not a finding): the multi-day median can flag a ref after r
 ### Checks
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 249 tests, 0 failures (C: 109.4 GB free before)
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 172 tests, OK (skipped=5)
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 19:35 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-23 at `a08f0c5`
+**Base**: main
+**Depth**: Standard (reason: whole-branch diff ~950 lines over 16 code/doc files, behaviour change in the pole check; fix round classified on the whole diff)
+**Must-fix**: 1 | **Suggestions**: 4
+**Round**: 2 | **Ship**: recommended — round 2: 1 mechanical must-fix (prev 1), not rising; fix and ship rather than another full round
+
+Verified: `./gradlew testDebugUnitTest --max-workers 4` passes (C: 109.4 GB free); `python3 -m unittest discover -s analysis/qgis/tests` 172 OK (5 skipped); all round-1 items checked as addressed; `COVERAGE_FIRST` is `indexOf` (Gemini's Settings item is a non-issue); `VoidRule.liveRefs` reconciles void flags across copies before `matches`, and `readAll` runs before the new ref is appended (Gemini's dedup/self items are non-issues); `_kv` skips an empty `place_cm=` without swallowing the next key. No Python linter installed (ruff/flake8 absent): Python not linted. Merge with feature/issue-20 (`git merge-tree`): only `docs/log.md` conflicts (both append an entry; keep both); `logger_session.py` and `test_import.py` auto-merge.
+
+Reviewers: Claude adversarial subagent (no must-fix, 4 suggestions), Gemini (3 suggestions, 2 verified non-issues), Codex (1 must-fix, confirmed).
+
+Open owner question (not a finding): the multi-day median vs ground movement between sessions.
+
+### Findings
+- [ ] (must-fix) Radius test inverted to `hypot > MATCH_RADIUS_M ... continue`, which admits a NaN distance (e.g. an `Infinity`/non-finite coordinate parsed from refs.csv; `hasPosition` only rejects NaN); the old `<=` test rejected it. Use `!(d <= MATCH_RADIUS_M)` or check `Double.isFinite` — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:94`
+- [ ] (suggestion) `check()` javadoc still says earlier refs come "oldest first ... the last match is the most recent visit"; `matches` now sorts, so input order no longer matters — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:117`
+- [ ] (suggestion) `matches` javadoc says rows without a session "keep their given order", but the sort still orders them by n and puts them before every sessioned row (so one can never be `last`); fix the wording or use a constant secondary key for them — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:80`
+- [ ] (suggestion) README says `place_cm`/`sd_u_cm` are "on every line", but the `pole check n=…: result not shown (voided)` line carries no keys (the importer then resets that ref's `colour`/`diff_ref_m` to None, harmless as a voided ref draws grey); narrow to check and no-check lines — `logger/README.md:553`
+- [ ] (suggestion) Placement cue is never computed when the new ref has no ground height (`check` returns null before positions are used), though earlier visits within 0.30 m could judge it; document or compute the offset apart from the height check — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:117`
