@@ -359,3 +359,19 @@ Cross-model: skipped (convergence check, per handoff). Lead checked the fix: `ma
 
 ### Findings
 - [ ] No issues found. LGTM.
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-27 19:45 -0500
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #43 at `885c288`
+**Sources**: 1 (Local Review @ `59f1602`, covers `885c288` via bookkeeping; no hosted reviews, Copilot out of quota; no CI checks configured)
+**Cross-source confirmations**: 0
+**CI**: all-pass
+
+### Findings
+- [ ] No open findings. The convergence Local Review @ `59f1602` approved with 0 findings and confirms the fix (`d2e0296`) for the one suggestion from Local Review @ `b345296` (non-finite ground height), which the Integrated Review @ `10f661e` ruled on.
+
+### False positives
