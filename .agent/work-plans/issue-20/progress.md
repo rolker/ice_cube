@@ -323,3 +323,20 @@ Fix all 8 suggestions of the Local Review at 4586ad2: expose a station filter; m
 - [x] tests: the season-held session re-read after the mark moves keeps its stored site; pass_rule tests check the passes segment produces — `icecube/tests/test_logger_session.py` (c844e45)
 
 Tests: `python3 -m unittest discover -s analysis/qgis/tests` Ran 174, OK (skipped=5); `python3 -m unittest discover icecube/tests` Ran 126, OK. No edits to logger_session.py, import_sessions.py or build_project.py (#23 overlap kept to none). Not pushed.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 19:58 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-20 at `56f0949`
+**Base**: main
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 1
+**Round**: 3 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Scope: the 8 suggestions of the round 2 review (4586ad2), the fix diff 573bfd9..38030c0 and the merge of main (#23) at 56f0949. Cross-model: skipped (round-3 convergence check, per handoff); no Claude adversarial pass for this narrow check. All 8 suggestions are resolved as described: station passed to the logger source; season sites grouped single-link at anchor_radius_m and named sorted(group)[0], the same lexicographic rule assign_anchors uses; z0 only with an ENU site; base_dir resolved once and read_survey passes the raw path; base checked for 3 finite values; log_line feeds the caller's log and the stderr echo, 1005 warning through it, tag prefix; soundings.build splits into _build_rows/_finish_build with the escaped read-only URI closed in finally (no use of con after the close); tests added. Merge: #23 touched import_sessions/logger_session/build_project only by adding refs columns and parsing; nothing the reader calls changed signature; no conflict markers left. Verified: icecube/tests Ran 126 OK; analysis/qgis/tests Ran 175 OK (skipped=5); no Python linter installed (pyflakes, ruff absent), so static analysis was not run; the fix diff adds no coordinates.
+
+### Findings
+- [ ] (suggestion) The merge left a blank line between the #20 and #23 journal entries, which makes the bullet list loose where no other entry has one; drop it — `docs/log.md:156`
