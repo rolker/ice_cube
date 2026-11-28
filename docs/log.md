@@ -153,7 +153,6 @@ Reference material is in `howto/`, the narrative in `story/`.
   through the first minute and 2-4 cm up to 120 s, flatter than 8 cm x (1 - t/120)^2, so it
   is now 10 cm x (1 - t/120) in soundings.py and the logger overlay; the 120 s drop rule
   is unchanged. Robust nodes were delivered by #24/#29.
-
 - 11-27: logger 0.12.0 (#23, PR A): the pole check compares a ref with a robust reference
   from the mark's earlier visits (one: that visit; two: their mean, doubtful when they
   differ by more than the tolerance; three or more: the median), not the most recent one,
