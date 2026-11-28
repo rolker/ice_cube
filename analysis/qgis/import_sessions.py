@@ -30,7 +30,9 @@ out of the repo; `*.m4a` is gitignored). Tables:
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
   tracks        LineStringZ  1 Hz GGA track per session, split at gaps and fix changes,
-                        one `fix` value per line. Z = antenna height.
+                        one `fix` value per line. Z = antenna height. `voice` (0.14.0):
+                        the voice notes that belong to no capture (an orphan whose row is
+                        unknown), on the line recorded at the note's time or the nearest.
   track_points  PointZ  the 1 Hz epochs with fix, satellites, HDOP, correction age.
   sessions      table   one row per session: times, app, link, caster mount, frame
                         lines, base station, pole heights, counts, losses; `note` is yours.
@@ -161,7 +163,7 @@ SCHEMA = {
             [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R),
              ("diff_ref_m", R), ("colour", T), ("voice", T)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
-               ("n_vertices", I), ("duration_s", R)],
+               ("n_vertices", I), ("duration_s", R), ("voice", T)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
                      ("age_s", R), ("h_ant", R)] + ENU,
     "sessions": [("session", T), ("format", T), ("app", T), ("device", T), ("snapshot", I),
@@ -373,7 +375,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         "session": s.name, "utc": e["utc"], "fix": e["fix"], "nsat": e["nsat"], "hdop": e["hdop"],
         "age_s": e["age_s"], "h_ant": e["h"], "geom": point(e["lon"], e["lat"], e["h"])}
         for e in s.track])
-    gp.insert("tracks", track_lines(s.name, s.track))
+    gp.insert("tracks", orphan_voice(s.name, track_lines(s.name, s.track), s.notes))
 
     info = dict(s.info)
     info["imported_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -412,6 +414,29 @@ def track_lines(session, track):
         cur.append(e)
     flush()
     return out
+
+
+def orphan_voice(session, lines, notes):
+    """Set each track line's `voice` to the notes/<session>/ paths (';' separated) of the
+    voice notes with no capture (n None: an orphan whose row is unknown), each on the line
+    whose time span holds the note's time, else the line nearest in time, so the tracks
+    map tip links them. A note with no time goes on the first line. Returns lines."""
+    def ts(u):
+        return datetime.strptime(u[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    for ln in lines:
+        ln["voice"] = None
+    if not lines:
+        return lines
+    for p in notes:
+        if p["n"] is not None:
+            continue
+        best = lines[0]
+        if p["utc"]:
+            t = ts(p["utc"])
+            best = min(lines, key=lambda ln: max(ts(ln["start_utc"]) - t, t - ts(ln["end_utc"]), 0.0))
+        path = f"notes/{session}/{p['name']}"
+        best["voice"] = path if best["voice"] is None else best["voice"] + ";" + path
+    return lines
 
 
 def _stamp_order(a, b):

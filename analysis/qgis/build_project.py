@@ -41,7 +41,8 @@ What it sets up:
   with completion from the labels already used) are editable; the photo field shows
   the picture. Map tips (View > Show Map Tips) show the capture and its photo, a link per
   voice note (logger 0.14.0, `notes/<session>/<file>.m4a`; click to play it in the system
-  player), and the void reason of a flagged capture or ref.
+  player), and the void reason of a flagged capture or ref; a track line's map tip links
+  the voice notes that belong to no capture, recorded on that line.
 
 Nothing site-specific is in this file: the CRS and paths come from the gpkg at run time.
 """
@@ -265,6 +266,9 @@ def style_tracks(lyr, points=False):
                                               "line_style": style})
         cats.append(QgsRendererCategory(k, sym, label))
     lyr.setRenderer(QgsCategorizedSymbolRenderer("fix", cats))
+    if not points:   # voice notes with no capture (0.14.0) are linked on their track line
+        lyr.setMapTipTemplate('<b>[% "session" %]</b> line [% "seg" %], fix [% "fix" %]<br>'
+                              '[% "start_utc" %] to [% "end_utc" %]' + voice_tip(lyr))
 
 
 def style_parcels(lyr):

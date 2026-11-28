@@ -482,6 +482,21 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(p[same], (3, "capture"))
         self.assertEqual({c["n"]: c for c in s.captures}[3]["voice_files"], [same])
 
+    def test_orphan_note_with_no_capture_is_linked_on_its_track_line(self):
+        """A voice note that resolves to no capture is linked from the track line recorded
+        at its time (or the nearest line in time) and named in the session's remarks."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        mid = "note_9_20261201T100022Z.m4a"          # no capture 9; the float line (20-25 s)
+        after = "note_8_20261201T100500Z.m4a"        # after the track: its last line
+        files[f"{name}/notes/{mid}"] = synth.M4A
+        files[f"{name}/notes/{after}"] = synth.M4A
+        out = run(synth.write_zip(self.d / "t.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("2 voice note(s) with no capture, linked on the track: " + after + ", " + mid, out)
+        self.assertEqual(self.q("SELECT seg, fix, voice FROM tracks ORDER BY seg"), [
+            (1, 4, None), (2, 5, f"notes/{name}/{mid}"), (3, 4, f"notes/{name}/{after}")])
+        self.assertTrue((self.gpkg.parent / "notes" / name / mid).is_file())
+
     def test_schema7_voice(self):
         """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""
         self.assertEqual(imp.SCHEMA_VERSION, 7)

@@ -814,6 +814,10 @@ def load_session(src: SessionSource) -> Session:
     # photos and (0.14.0) voice notes
     s.photos = _attachments(src, ev, s.captures, "photos", "photo", PHOTO_RE, "photo_files")
     s.notes = _attachments(src, ev, s.captures, "notes", "note", NOTE_RE, "voice_files")
+    orphans = [p["name"] for p in s.notes if p["n"] is None]
+    if orphans:
+        s.remarks.append(f"{len(orphans)} voice note(s) with no capture, linked on the track: "
+                         + ", ".join(orphans))
 
     counts = {}
     for c in s.captures:

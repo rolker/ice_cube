@@ -174,7 +174,9 @@ Toolbar: the folder button opens `photos/` next to the gpkg in Explorer. In the 
 - Identify a capture or a photo: the form shows the picture.
 - Map tips: View > Show Map Tips, then hover over a capture or a camera: time, fix,
   scatter, height, your note, the photo, and a link per voice note (click to play it in
-  the system player).
+  the system player). A voice note that belongs to no capture (its row is unknown) is
+  linked from the map tip of the track line recorded at its time, and named in the
+  session's `remarks`.
 - The project finds the photos and notes by relative path wherever the folder goes.
 
 ## Export labels for icecube
@@ -331,7 +333,7 @@ The parcels GeoJSON holds the location like the imagery: keep it private.
 | `captures` | one point per capture, key session + n; class, time, heights, fix, scatter, photo, `voice` (the row's voice notes, `notes/<session>/<file>.m4a` separated by `;`) and `voice_count`, x/y/z from G. A `photo` row may hold only a voice note | `note`, `label` |
 | `photos` | one point per photo, at its capture; `voice` the notes of that row | `note` |
 | `refs` | ref occupations, with pole-check result, visits, `site` (refs within 0.30 m share a site number) and `voice` | `note` |
-| `tracks` | the GGA track at 1 Hz, one line per stretch of the same fix quality | |
+| `tracks` | the GGA track at 1 Hz, one line per stretch of the same fix quality; `voice` the voice notes with no capture, on the line recorded at their time | |
 | `track_points` | the 1 Hz epochs: fix, satellites, HDOP, correction age | |
 | `refs_copies` | every refs.csv copy's void flag per ref (content hash and time as its id): the importer decides each ref's flag from all copies seen, so the import order never matters | |
 | `sessions` | one row per session: times, app, link, caster mount, frame lines, base station, pole heights, counts (`n_notes`: voice notes), link losses, % fixed | `note` |
