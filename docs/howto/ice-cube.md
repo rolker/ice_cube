@@ -433,7 +433,8 @@ any distance and without the slope term; they are not gridded (a mark top is not
   source whose `session_paths` are the sessions, so sigma (settle term included), fix
   stretches as passes, the #15 flags (`suspect_jump`, `float_spell`) and void handling are
   the season table's rules. Keys: `sessions`, `kinds` (default `["capture"]`; add `"stop"`
-  for pole stops), `classes`, `include_voided`, and the base: `base = [lat, lon, h]`, else
+  for pole stops), `classes`, `include_voided`, `station` (the logger source's reference
+  station filter, as in the soundings config; default none), and the base: `base = [lat, lon, h]`, else
   `base_from_gpkg` (the base stored in the season gpkg, read-only), else the first RTCM 1005
   logged in the sessions (the run warns on stderr); `base_history` is the soundings
   base-history CSV and needs `base` or `base_from_gpkg`, since the session's own 1005 would

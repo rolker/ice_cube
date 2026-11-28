@@ -157,6 +157,7 @@ percentile = 99.0
 # sessions = ["2026-11-27_10-00-00"]   # only these (default: every session under path)
 # kinds = ["capture"]           # add "stop" for pole stops
 # include_voided = false        # captures flagged void in the logger stay out
+# # station = 7                 # reference station filter, as a soundings logger source's station
 # base = [0.0, 0.0, 0.0]        # current base lat, lon, h (placeholder); or:
 # # base_from_gpkg = "data/qgis/2026-2027.gpkg"   # the base stored there, and the season's
 # #                                               # ref sites as anchor names (read-only)

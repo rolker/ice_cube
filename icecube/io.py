@@ -636,7 +636,8 @@ def _season_sites(gp, frame, season_refs, radius):
 
 def read_logger_session(path, site: Site, survey="", frame="", date="", sessions=None,
                         kinds=("capture",), classes=("ground", "anchor"), include_voided=False,
-                        base=None, base_from_gpkg=None, base_history=None, base_dir=None, log=None):
+                        base=None, base_from_gpkg=None, base_history=None, base_dir=None, log=None,
+                        station=None):
     """Ice Cube Logger sessions straight from their folders or zips, without the season gpkg.
 
     `path` is a session folder, a session zip, or a folder of them (searched as the session
@@ -663,6 +664,10 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     (a ref at no season site, a control, a snap-joined point) is named `<survey>:<name>` so it
     never collides with or falsely ties to another survey's anchors. Without a season gpkg
     every anchor is named that way.
+
+    `station` (a reference station id) is the logger source's station filter in soundings.py:
+    a fixed epoch from another station is flagged other_station and ends a fix stretch. Give
+    the season config's value to get the season table's rows; default none, as there.
 
     Rows with use = 1 of the given kinds (default captures only; "stop" adds pole stops) and
     classes are kept; a capture voided in the logger is left out unless include_voided.
@@ -737,9 +742,10 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                 gp.commit()
             finally:
                 gp.close()
-            sc = {"include_voided": bool(include_voided),
-                  "sources": [{"id": tag, "type": "logger", "sessions": names,
-                               "session_paths": [str(path)]}]}
+            src_cfg = {"id": tag, "type": "logger", "sessions": names, "session_paths": [str(path)]}
+            if station is not None:
+                src_cfg["station"] = int(station)
+            sc = {"include_voided": bool(include_voided), "sources": [src_cfg]}
             if base_history:
                 sc["base_history"] = str(ab(base_history))
             rows = snd.build({"soundings": sc}, Path(base_dir) if base_dir is not None else Path.cwd(),
@@ -797,7 +803,8 @@ def read_survey(scfg: dict, site: Site, base_dir: Path | None = None) -> Points:
                                   classes=tuple(scfg.get("classes", ("ground", "anchor"))),
                                   include_voided=bool(scfg.get("include_voided", False)),
                                   base=scfg.get("base"), base_from_gpkg=scfg.get("base_from_gpkg"),
-                                  base_history=scfg.get("base_history"), base_dir=base_dir)
+                                  base_history=scfg.get("base_history"), base_dir=base_dir,
+                                  station=scfg.get("station"))
     elif reader == "dem":
         from .dem import read_dem_survey
         pts = read_dem_survey(scfg, path, site, base_dir)

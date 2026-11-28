@@ -196,6 +196,20 @@ class TestLoggerSessionReader(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.read(no_base)
 
+    def test_station_filter(self):
+        """`station` is the logger source's filter: the made-up GGA carry station 0."""
+        ses = synth.write_dir(self.d / "in", session_files())
+        a, _ = self.read(ses, base=synth.BASE)
+        b, _ = self.read(ses, base=synth.BASE, station=0)
+        self.assertEqual(list(a.remark), list(b.remark))
+        c, _ = self.read(ses, base=synth.BASE, station=5)   # no fix stretch: the logger's columns
+        self.assertNotEqual(list(a.remark), list(c.remark))
+        self.assertEqual(len(c.pass_names), len(c))                 # one pass per capture
+        synth.write_dir(self.d / "cfg", session_files())
+        d, _ = quiet(io.read_survey, {"id": "s1", "reader": "logger_session", "path": "cfg",
+                                      "base": list(synth.BASE), "station": 5}, SITE, self.d)
+        self.assertEqual(list(d.remark), list(c.remark))
+
     def test_utm_only_site_raises(self):
         ses = synth.write_dir(self.d / "in", session_files())
         with self.assertRaises(ValueError):
