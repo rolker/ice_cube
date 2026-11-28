@@ -411,3 +411,13 @@ None.
 
 ### False positives
 None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 22:16 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #45?": "Merge now" (before the phone check; anything it finds becomes a new issue).
