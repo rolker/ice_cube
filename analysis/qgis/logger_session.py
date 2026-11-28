@@ -351,7 +351,9 @@ def _sessions_in_zip(path):
         if n.endswith("events.csv"):
             prefix = n[: -len("events.csv")]
             if prefix and prefix.endswith("/"):
-                out.append(SessionSource(path, prefix.rstrip("/").split("/")[-1], prefix))
+                name = prefix.rstrip("/").split("/")[-1]
+                if safe_file_name(name):   # `../events.csv` would name the session ..
+                    out.append(SessionSource(path, name, prefix))
     return out
 
 
@@ -359,7 +361,10 @@ def find_sessions(paths):
     """Session sources under the given zips and folders (recursively). A session found
     more than once (a zip and its extracted folder, a snapshot and the final zip) is
     returned once: the non-snapshot copy, then the one with the larger events.csv; the
-    others are kept in its `others` (their refs.csv still counts, refs_csv_copies)."""
+    others are kept in its `others` (their refs.csv still counts, refs_csv_copies). A
+    session whose name is not one safe path part (safe_file_name: a zip entry
+    `../events.csv` names it `..`) is skipped, since the name becomes a folder under
+    photos/ and notes/."""
     found = []
     for p in map(Path, paths):
         if p.is_file():
@@ -367,7 +372,8 @@ def find_sessions(paths):
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 if "events.csv" in files:
-                    found.append(SessionSource(Path(root), Path(root).name))
+                    if safe_file_name(Path(root).name):
+                        found.append(SessionSource(Path(root), Path(root).name))
                     dirs[:] = []
                     continue
                 dirs.sort()

@@ -110,7 +110,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gpkg_writer import GeoPackage, gpkg_geometry, point, point_xyz  # noqa: E402
 from local_frame import LocalFrame, ecef_to_geodetic  # noqa: E402
-from logger_session import APPROX_S, app_version, find_sessions, load_session, read_refs_csv  # noqa: E402
+from logger_session import (APPROX_S, app_version, find_sessions, load_session, read_refs_csv,  # noqa: E402
+                            safe_file_name)
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
@@ -384,6 +385,8 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
 
     n_new = 0
     if extract_photos:
+        if not safe_file_name(s.name):   # find_sessions skips these; never write outside
+            raise ValueError(f"unsafe session name {s.name!r}")
         for p in s.photos:
             n_new += src.extract_photo(p["name"], photos_dir / s.name / p["name"])
         s.notes_extracted = sum(src.extract_note(p["name"], photos_dir.parent / "notes" / s.name / p["name"])

@@ -523,6 +523,26 @@ class ImportTest(unittest.TestCase):
             src.extract_note("..\\x.m4a", root / "x.m4a")
         src.close()
 
+    def test_unsafe_session_names_are_skipped(self):
+        """A zip entry `../events.csv` (or `./events.csv`, `a/../events.csv`) names its
+        session `..` or `.`: that session is skipped, so no note or photo is written outside
+        photos/ and notes/ (e.g. beside the gpkg); the good session still imports."""
+        name = "2026-12-01_10-00-00"
+        files = synth.with_notes(synth.session_v05())
+        for pre in ("..", ".", "a/.."):
+            for k, v in list(files.items()):
+                if k.startswith(name + "/"):
+                    files[pre + k[len(name):]] = v
+        z = synth.write_zip(self.d / "evil.zip", files)
+        self.assertEqual([s.name for s in find_sessions([z])], [name])
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        root = self.gpkg.parent
+        self.assertEqual(sorted(p.name for p in root.iterdir() if p.is_dir()), ["notes", "photos"])
+        self.assertEqual(sorted(p.name for p in (root / "notes").iterdir()), [name])
+        self.assertEqual(sorted(p.name for p in (root / "photos").iterdir()), [name])
+        self.assertEqual([p for p in self.d.rglob("*.m4a") if p.parent.name != name], [])
+        self.assertEqual(self.q("SELECT session FROM sessions"), [(name,)])
+
     def test_schema7_voice(self):
         """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""
         self.assertEqual(imp.SCHEMA_VERSION, 7)
