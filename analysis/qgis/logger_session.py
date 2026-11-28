@@ -4,9 +4,9 @@ Standard library only. Formats handled:
 - 0.5 and later: `points.csv` holds the captures (surface, object, ref, photo). From
   0.9.0 a row can be flagged as bad (`void` = 1, `void_reason`); it is kept, with `void`
   True in its dict, and counted (`n_voided`). No `void` column means not voided. From
-  0.14.0 (#16) the `voice` column lists a row's voice notes (`notes/<file>.m4a`, ';'
-  separated), handled like photos: a flag moves them, and a photo-class row may hold
-  only a note. No `voice` column means no notes.
+  0.14.0 (#16) the `voice` column lists a row's voice notes: bare file names (the files
+  are in `notes/`), ';' separated, handled like photos: a flag moves them, and a
+  photo-class row may hold only a note. No `voice` column means no notes.
 - 0.3 / 0.4: no points.csv; `control n=<k> pole_height=<m> ...` events mark control
   points. Their positions are rebuilt from the GGA sentences in `gps.ubx` at the mark's
   phone time (gps_chunks.csv maps byte offsets to phone time) with the 0.5 Surface rule:
