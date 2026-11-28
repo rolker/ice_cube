@@ -194,3 +194,26 @@ Open owner question (not a finding): the multi-day median can flag a ref after r
 - [x] (suggestion) On a red failure the persistent warnings bar omits the off-centre / pole-moved cue that may explain it; append `q.describe()` to `poleWarning` — `logger/app/src/main/java/rink/icecube/logger/Survey.java:579`
 - [x] (suggestion) An even count of 4+ visits split 2/2 by more than the tolerance gives a midpoint reference with no doubt flag (a good shot fails red); consider extending `doubtful` to the middle two, or note it in the README rule — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:55`
 - [x] (suggestion) Test gaps: both cues at once, placement median with 3+ visits and one off in east/north, doubtful pair plus a cue stays amber — `logger/app/src/test/java/rink/icecube/logger/core/PoleCheckTest.java`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:31 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-23 at `e51bb54`
+**Addressed**: Local Review (Pre-Push) at `144b0de` (2026-11-27 19:22 -05:00)
+**Commits**: 75dd6cc, f596462, a1a819e, 0e57fa8, 0a2d4d5, 746edba, e51bb54
+
+### Actions
+- [x] (must-fix) Visits deduplicated by (session, n) and ordered by session then n, so a ref in several refs.csv copies is one visit and `last` is the most recent; tests for the 50.00/50.07 duplicate (stays a doubtful pair, amber) and for copy order — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java` (`matches`)
+- [x] QGIS imports `diff_ref_m` and `colour` (importer schema 6, main is at 5; `SCHEMA_APP` 6: 0.12), labels refs with `coalesce(diff_ref_m, diff_last_m)` and draws amber rings — `analysis/qgis/logger_session.py`, `analysis/qgis/import_sessions.py`, `analysis/qgis/build_project.py`, `docs/howto/qgis.md`
+- [x] synth fixture takes a `pole_check` line; test with a 0.12.0 line (cue text, `ok=true doubtful=true`, trailing keys) and a first-visit line — `analysis/qgis/tests/synth.py`, `analysis/qgis/tests/test_import.py`
+- [x] Event line always carries `place_cm`, `sd_u_cm` and `colour` (empty value when n/a, was `none`); importer ends the message at the first `; key=` — `logger/app/src/main/java/rink/icecube/logger/Survey.java`, `logger/README.md`
+- [x] A suspect or young ref with an amber check plays only its fix cue (no error buzz too) — `Survey.java`, README Feedback
+- [x] Red warnings bar appends the cue text (`q.describe()`) — `Survey.java`, README
+- [x] Doubtful generalised: even count, middle two over the tolerance; odd count 3+, no neighbour of the median within it; `pairSpread` renamed `spread`; tests for a 2/2 split and 0/+5/+10 — `PoleCheck.java`, README rule
+- [x] Tests added: both cues at once, placement median with an east/north outlier, doubtful pair plus a cue stays amber — `PoleCheckTest.java`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 249 tests, 0 failures (C: 109.4 GB free before)
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 172 tests, OK (skipped=5)
