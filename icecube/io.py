@@ -605,6 +605,65 @@ def _read_season(path):
     return base, refs
 
 
+def _read_season_anchors(path):
+    """{(session, n): anchor} of the capture anchor rows (refs, controls, snap-joined ground
+    points) in a season GeoPackage's soundings table, read-only, leaving out rows voided there
+    (flag void:, which keep their ref's site<k> rather than the group's name); None when the
+    gpkg has no soundings table (soundings.py has not run on it)."""
+    import sqlite3
+    con = sqlite3.connect(_ro_uri(Path(path)), uri=True)
+    try:
+        cols = {r[1] for r in con.execute('PRAGMA table_info("soundings")')}
+        if not {"session", "n", "kind", "class", "anchor", "flags"} <= cols:
+            return None
+        rows = con.execute("SELECT session, n, anchor, flags FROM soundings WHERE kind = 'capture' "
+                           "AND class = 'anchor' AND anchor IS NOT NULL AND anchor != ''").fetchall()
+    finally:
+        con.close()
+    return {(ses, int(n)): str(a) for ses, n, a, flags in rows
+            if n is not None and not any(f.startswith("void:") for f in str(flags or "").split(","))}
+
+
+def _season_anchor_names(rows, tag, season_anchors, season_refs, scratch_sites):
+    """Name the anchor rows of a scratch build after the season's soundings table, in place.
+
+    A capture the season table holds (same session and n) takes its anchor name there, so a
+    control the season counted merges the same sites as in the season. Any other ref takes
+    the name the season table gives the refs of the season site it was put in here
+    (`scratch_sites`, {(session, n): site} after _season_sites: stored, else the seed rule;
+    the name most of that site's refs have, ties by name). A row still unnamed (a ref at no
+    named season site, a control or snap-joined point the season does not hold) takes the
+    season name its group here shares with the named rows when they all agree on one, as the
+    season table would name it; else, or with no named row in the group, `<tag>:<name>`, so
+    it never falsely ties to another survey's anchor. `season_refs` as _read_season gives
+    them; `season_anchors` as _read_season_anchors does."""
+    from collections import Counter
+    stored = {(ses, int(n)): int(site) for ses, n, _, _, site, void in season_refs
+              if site is not None and n is not None and (void or 0) != 1}
+    by_site = {}
+    for key, site in stored.items():
+        if key in season_anchors:
+            by_site.setdefault(site, Counter())[season_anchors[key]] += 1
+    site_name = {k: min(c, key=lambda a: (-c[a], a)) for k, c in by_site.items()}
+    named, groups = {}, {}
+    for i, r in enumerate(rows):
+        if not r.get("anchor"):
+            continue
+        key = (r["session"], int(r["n"])) if r.get("kind") == "capture" and r.get("n") is not None else None
+        if key in season_anchors:
+            named[i] = season_anchors[key]
+        elif key in scratch_sites and scratch_sites[key] in site_name:
+            named[i] = site_name[scratch_sites[key]]
+        groups.setdefault(r["anchor"], []).append(i)
+    for group, idx in groups.items():
+        agreed = {named[i] for i in idx if i in named}
+        for i in idx:
+            if i not in named:
+                named[i] = next(iter(agreed)) if len(agreed) == 1 else f"{tag}:{group}"
+    for i, name in named.items():
+        rows[i]["anchor"] = name
+
+
 def _season_sites(gp, frame, season_refs, radius, anchor_radius):
     """Give the scratch gpkg's refs the season's site numbers, read-only on the season: a ref
     the season holds (same session and n) takes its stored site; any other ref that is not
@@ -612,10 +671,13 @@ def _season_sites(gp, frame, season_refs, radius, anchor_radius):
     ref as update_local orders them, is within `radius` m horizontally, as update_local's
     rule would place it; a ref that matches none keeps no site.
 
-    Returns {site<k>: anchor name in the season table}. soundings.assign_anchors links refs
-    within `anchor_radius` m (single link) and names the group by its first site name, so two
-    season sites can share one anchor; the season's refs are grouped the same way here (by
-    their stored positions, refs only), so a ref at either site gets the season's name."""
+    Returns {site<k>: anchor name}, the fallback naming for a season gpkg without a soundings
+    table (with one, _season_anchor_names takes the names from it). soundings.assign_anchors
+    links anchors within `anchor_radius` m (single link) and names the group by its first site
+    name, so two season sites can share one anchor; the season's refs are grouped the same
+    way here (by their stored positions, refs only), so a ref at either site gets that name.
+    Controls are not in the refs table, so a merge the season makes through a control is
+    missed here."""
     stored, seeds, pos = {}, {}, []
     for ses, n, lat, lon, site, void in season_refs:
         if site is None or (void or 0) == 1:
@@ -682,13 +744,19 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     base-history CSV. Relative paths are taken from `base_dir` (default: the current
     directory).
 
-    Anchor names: with `base_from_gpkg`, a ref takes the season's site (the one the season
-    stores for it, else the season site update_local's rule would put it in), so it is named
-    as the season's soundings name that site (site<k>; when the season's anchor joining
-    merged sites, the merged group's name) and ties to them in the crossover; any other anchor
-    (a ref at no season site, a control, a snap-joined point) is named `<survey>:<name>` so it
-    never collides with or falsely ties to another survey's anchors. Without a season gpkg
-    every anchor is named that way.
+    Anchor names: with `base_from_gpkg`, the names come from the season's soundings table
+    (its anchor column): a capture it holds (same session and n: a ref, a control or a
+    snap-joined point) takes its name there; any other ref takes the season's site (the one
+    the season stores for it, else the season site update_local's rule would put it in) and
+    the name the season table gives that site's refs, so it ties to them in the crossover. A
+    control or snap-joined point the season does not hold, grouped here with season-named
+    anchors that agree on one name, takes that name, as the season table would; any other
+    anchor (a ref at no named season site, a control or point grouped with none) is named
+    `<survey>:<name>` so it never collides with or falsely ties to another survey's anchors.
+    A season gpkg without a soundings table falls back to grouping its refs table's refs
+    (_season_sites): a ref takes its season site's group name, and a control or snap-joined
+    point grouped here with one takes it too. Without a season gpkg every anchor is named
+    `<survey>:<name>`.
 
     `station` (a reference station id) is the logger source's station filter in soundings.py:
     a fixed epoch from another station is flagged other_station and ends a fix stretch. Give
@@ -712,6 +780,7 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     ab = lambda p: Path(p) if Path(p).is_absolute() else base_dir / p  # noqa: E731
     path = ab(path)
     season_base, season_refs = _read_season(ab(base_from_gpkg)) if base_from_gpkg else (None, None)
+    season_anchors = _read_season_anchors(ab(base_from_gpkg)) if base_from_gpkg else None
     if base is None and base_from_gpkg and season_base is None:
         raise ValueError(f"base_from_gpkg: {Path(base_from_gpkg).name}: no base_lat/lon/h in icecube_meta")
     if base_history and base is None and not base_from_gpkg:
@@ -764,6 +833,8 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                 season_names = (_season_sites(gp, o, season_refs, imp.REF_SITE_M,
                                               snd.DEFAULTS["anchor_radius_m"])
                                 if season_refs is not None else {})
+                scratch_sites = {(ses, int(n)): int(site) for ses, n, site in gp.con.execute(
+                    "SELECT session, n, site FROM refs WHERE site IS NOT NULL").fetchall()}
                 if base is not None:
                     b = base
                 elif season_base is not None:
@@ -796,9 +867,12 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     for line in lines:
         if "warning" in line or "no raw epochs" in line:
             print(f"{tag}: {line.strip()}", file=sys.stderr)
-    for r in rows:
-        if r.get("anchor"):
-            r["anchor"] = season_names.get(r["anchor"], f"{tag}:{r['anchor']}")
+    if season_anchors is not None:
+        _season_anchor_names(rows, tag, season_anchors, season_refs, scratch_sites)
+    else:
+        for r in rows:
+            if r.get("anchor"):
+                r["anchor"] = season_names.get(r["anchor"], f"{tag}:{r['anchor']}")
     rows = _keep_rows(rows, None, classes, kinds, True)
     pts = _points_from_rows(rows, survey, frame, date)
     pts.z = pts.z - site.z0

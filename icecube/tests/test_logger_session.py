@@ -366,6 +366,64 @@ class TestLoggerSessionReader(unittest.TestCase):
         self.assertEqual(names, {"site1": "site1", "site2": "site1"})
         con.close()
 
+    @staticmethod
+    def _anchor_rows(*specs):
+        """Scratch build rows: (session, n, scratch anchor name) captures of class anchor."""
+        return [{"session": ses, "n": n, "kind": "capture", "class": "anchor", "anchor": a}
+                for ses, n, a in specs]
+
+    def test_season_table_control_merges_two_sites(self):
+        """Season sites 1 and 2 are apart, but a control between them made the season's
+        assign_anchors link both into site1. Here the control is not in the sessions read, so
+        the scratch build keeps site1 and site2 apart; the names still follow the season
+        table, and a new ref put in site 2 by the seed rule is named site1 too."""
+        season_refs = [("a", 1, None, None, 1, 0), ("b", 1, None, None, 2, 0)]
+        season_anchors = {("a", 1): "site1", ("b", 1): "site1", ("k", 1): "site1"}  # k: control
+        rows = self._anchor_rows(("a", 1, "site1"), ("b", 1, "site2"), ("c", 1, "site2"))
+        io._season_anchor_names(rows, "s1", season_anchors, season_refs, {("c", 1): 2})
+        self.assertEqual([r["anchor"] for r in rows], ["site1", "site1", "site1"])
+
+    def test_season_ref_left_out_of_the_table_makes_no_tie(self):
+        """Season refs at sites 1 (a/1, m/1) and 2 (b/1); m/1 is in the refs table but not in
+        the season's soundings (its source filtered out), so the season named site1 and site2
+        apart. Here m/1 links them into one group: its rows keep their own season names, the
+        new ref c/1 (site 2 by the seed rule) is site2, not site1, and a control in the
+        merged group, with no single season name to share, stays the survey's own."""
+        season_refs = [("a", 1, None, None, 1, 0), ("m", 1, None, None, 1, 0),
+                       ("b", 1, None, None, 2, 0)]
+        season_anchors = {("a", 1): "site1", ("b", 1): "site2"}
+        rows = self._anchor_rows(("a", 1, "site1"), ("m", 1, "site1"), ("b", 1, "site1"),
+                                 ("c", 1, "site1"), ("k", 1, "site1"))
+        io._season_anchor_names(rows, "s1", season_anchors, season_refs,
+                                {("a", 1): 1, ("m", 1): 1, ("b", 1): 2, ("c", 1): 2})
+        self.assertEqual([r["anchor"] for r in rows], ["site1", "site1", "site2", "site2", "s1:site1"])
+
+    def test_season_table_names_controls_grouped_with_a_season_ref(self):
+        """A control the season does not hold, grouped here with a season-named ref, takes its
+        name (as the season table would); a group with no season-named row stays own."""
+        rows = self._anchor_rows(("a", 1, "site1"), ("k", 1, "site1"), ("k", 2, "site_2"))
+        io._season_anchor_names(rows, "s1", {("a", 1): "site1"}, [("a", 1, None, None, 1, 0)], {})
+        self.assertEqual([r["anchor"] for r in rows], ["site1", "site1", "s1:site_2"])
+
+    def test_anchor_names_from_the_season_soundings_table(self):
+        """With a soundings table in the season gpkg, the ref is named as the table names it;
+        without one, _read_season_anchors gives None and the refs-table fallback is used."""
+        first = test_soundings.make_session(self.d / "a")
+        gpkg = self._season(first)
+        self.assertIsNone(io._read_season_anchors(gpkg))
+        with contextlib.redirect_stdout(_io.StringIO()):
+            snd.build({"season": {"gpkg": str(gpkg)},
+                       "soundings": {"sources": [{"id": "logger", "type": "logger",
+                                                  "session_paths": [str(first)]}]}},
+                      self.d, log=lambda *a: None)
+        held = io._read_season_anchors(gpkg)
+        self.assertTrue(held)
+        pts, _ = self.read(first, base_from_gpkg=str(gpkg))
+        self.assertTrue(set(held.values()) <= set(pts.anchor), (held, set(pts.anchor)))
+        other = test_soundings.make_session(self.d / "b", name="2026-12-02_10-00-00")
+        pts, _ = self.read(other, base_from_gpkg=str(gpkg))        # not in the season: seed rule
+        self.assertTrue(set(held.values()) & set(pts.anchor), (held, set(pts.anchor)))
+
     def test_base_from_gpkg(self):
         ses = synth.write_dir(self.d / "in", session_files())
         gpkg = self._season(ses)
