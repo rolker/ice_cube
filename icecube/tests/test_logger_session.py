@@ -210,6 +210,12 @@ class TestLoggerSessionReader(unittest.TestCase):
                                       "base": list(synth.BASE), "station": 5}, SITE, self.d)
         self.assertEqual(list(d.remark), list(c.remark))
 
+    def test_base_must_be_three_finite_numbers(self):
+        ses = synth.write_dir(self.d / "in", session_files())
+        for bad in (synth.BASE[:2], (*synth.BASE[:2], float("nan")), ("a", "b", "c"), 5.0):
+            with self.assertRaisesRegex(ValueError, "survey s1: base must be three"):
+                self.read(ses, base=bad)
+
     def test_utm_only_site_raises(self):
         ses = synth.write_dir(self.d / "in", session_files())
         with self.assertRaises(ValueError):

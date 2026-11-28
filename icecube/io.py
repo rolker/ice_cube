@@ -716,6 +716,13 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                          "base_from_gpkg; the first RTCM 1005 of the sessions would make the "
                          "session's own base the current one")
     tag = survey or "logger"
+    if base is not None:
+        try:
+            base = tuple(float(v) for v in base)
+        except (TypeError, ValueError):
+            base = ()
+        if len(base) != 3 or not all(math.isfinite(v) for v in base):
+            raise ValueError(f"survey {tag}: base must be three finite numbers [lat, lon, h]")
     lines = []
     log = log or lines.append
     found = imp.find_sessions([path])
@@ -751,7 +758,7 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                                               snd.DEFAULTS["anchor_radius_m"])
                                 if season_refs is not None else {})
                 if base is not None:
-                    b = tuple(float(v) for v in base)
+                    b = base
                 elif season_base is not None:
                     b = season_base
                 else:
