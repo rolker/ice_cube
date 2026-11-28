@@ -728,7 +728,17 @@ def capture_fix_info(r, c):
 
 
 def logger_source(cfg, src, con, frame, history, log):
-    """Captures from the gpkg plus pole stops from the raw sessions."""
+    """Captures from the gpkg plus pole stops from the raw sessions (the session sources
+    opened from session_paths are closed on every path)."""
+    opened = []
+    try:
+        return _logger_source(cfg, src, con, frame, history, log, opened)
+    finally:
+        for s in opened:
+            s.close()
+
+
+def _logger_source(cfg, src, con, frame, history, log, opened):
     sg, sp = cfg["sigma"], cfg["stops"]
     settle_s, max_s = cfg["settle_s"], cfg["max_pass_s"]
     prior, cprior = float(src.get("prior_m", 0.015)), float(src.get("common_prior_m", 0.0))
@@ -794,7 +804,8 @@ def logger_source(cfg, src, con, frame, history, log):
     starts = dict(con.execute("SELECT session, start_utc FROM sessions"))
     raws = {}
     if src.get("session_paths"):
-        for s in find_sessions([Path(p) for p in src["session_paths"]]):
+        opened += find_sessions([Path(p) for p in src["session_paths"]])
+        for s in opened:
             raws[s.name] = s
     rows = []
     by_session = {}
