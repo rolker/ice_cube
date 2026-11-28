@@ -456,3 +456,13 @@ No open findings. The Codex cold read (Local Review @ `067a767`: one must-fix, o
 ### Findings
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 19:09 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #42?": "Merge (Recommended)". Issue 15 stays open for its follow-ups #39-#41 (PR body says "Part of #15").
