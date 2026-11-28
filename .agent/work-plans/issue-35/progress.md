@@ -201,4 +201,40 @@ Specialists: static analysis (no Java linter profile; `./gradlew testDebugUnitTe
 - [x] (suggestion) Calibration acceptance: `MIN_SAMPLES` counts the still sample, so 3 leans pass (the plan says 4 leans), and the twist phase is never checked for any twist. Make the comparisons NaN-safe (`!(residual <= MAX)`), since a NaN currently passes every gate. — `logger/app/src/main/java/rink/icecube/logger/core/PoleCalibration.java:174`
 - [x] (suggestion) The comment for the gravity window says ±150 ms about 100 ms before the epoch, but the upper 50 ms lies in the future at GGA arrival, so the window really used is about [-250, 0] ms. Fix the comment or the window. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:77`
 - [x] (suggestion) Wording: the DONE notice says "Auto capture on" even when the setting is off or the mode is not Surface; RESTART says "moved" when the cause was a lost fix or missing gravity; HOLDING's `%.0f` shows "0 / 1 s" for a 0.5 s hold. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:497`
-- [ ] (suggestion) Still owed before merge: the phone check of plumb sign, calibration feel, cues and layout listed in the Implementation entry. — `logger/README.md`
+- [x] (suggestion) Still owed before merge: the phone check of plumb sign, calibration feel, cues and layout listed in the Implementation entry. — `logger/README.md` (deferred: needs the owner's phone in the field; stays an owner check before merge (plumb sign, calibration feel incl. the new 90 deg twist minimum, cues, layout))
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 20:13 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-35 at `741120e`
+**Addressed**: Local Review (Pre-Push) at `085d8e9` (2026-11-27 20:04 -05:00)
+**Commits**: ea0daa4, 741120e
+
+Host-decided (owner may veto): one position latch. Every capture at a stop (MARK, auto,
+a finished Surface tilt set at its tip, an accepted calibration at its tip) latches auto
+capture there, only once the capture really happened. It clears only when the antenna is
+more than 3x the still limit (6 cm) horizontally from the latched position, or when the
+latched capture is undone. Refinement: the distance is read only on a plumb epoch, because
+a leaning antenna is not over its tip (a 15 deg lean on 1.8 m is 47 cm off it), so the
+first leaning epoch after a tilt set cannot clear the tip latch. Twist minimum: 90 deg
+about the fitted axis (gyro, range of the running angle); a phone with no gyro fails.
+
+### Actions
+- [x] (must-fix) Surface tilt set latches at its tip; no duplicate on standing up — `logger/app/src/main/java/rink/icecube/logger/Survey.java` (finishTilt, autoTaken)
+- [x] Accepted calibration latches at its tip (`PoleCalibration.tipGeodetic`) — `Survey.java` (calibrationChange)
+- [x] No plumb re-arm: tilt, lost plumb and NaN gravity never clear the latch — `logger/app/src/main/java/rink/icecube/logger/core/AutoCapture.java`
+- [x] A fire no longer latches; Survey calls `taken` after the 1 s average check, and the bar shows "ready" when not latched — `AutoCapture.java`, `Survey.java` (autoEpoch, autoView)
+- [x] UNDO of the latched capture resets the latch and label — `Survey.java` (voidCapture)
+- [x] Still phase restarts on an epoch gap > 2 s — `core/PoleCalibration.java`
+- [x] No-epoch timeout (5 s) via the service tick, with its notice; distinct failures for no GGA height, no gravity reading, no RTK fixed — `PoleCalibration.java`, `Survey.java` (onTick), `LoggerService.java`
+- [x] MIN_LEANS = 4 counts leans only; twist minimum 90 deg (gyro integral, new `ImuLogger.gyroIntegral`); NaN-safe gates — `PoleCalibration.java`, `ImuLogger.java`
+- [x] Gravity window now +-100 ms about 100 ms before the GGA (ends at arrival), comment fixed — `Survey.java:72`
+- [x] Wording: done notice respects the setting and mode, restart names its cause, HOLDING shows one decimal — `Survey.java`
+- [x] Phone check of plumb sign, calibration feel, cues and layout — `logger/README.md` (deferred: needs the owner's phone in the field; stays an owner check before merge, now including the 90 deg twist minimum)
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 294 tests, 0 failures; debug APK built (`logger/app/build/outputs/apk/debug/app-debug.apk`). C: had 110 GB free.
+- New tests: AutoCaptureTest (fire not latched until taken, reset clears latch, tilting does not re-arm, NaN gravity / position never clear, tip latch over a tilt set); PoleCalibrationTest (tip is the calibration point, gap restart, lost-fix cause, no-epoch timeout, missing height, no gravity, 3 leans refused, twist under 90 deg, back-and-forth twist, no gyro, NaN gates).
+- Not unit tested (Android): the Survey wiring, the service tick and the gyro ring; covered by the owner's phone check.
