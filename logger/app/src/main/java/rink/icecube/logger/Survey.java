@@ -549,7 +549,7 @@ final class Survey {
         // "; key=" as the message (importers before 0.12.0: before "; diff_last_m=", so
         // diff_last_m stays the first key of a check) and ok=false as a failed (red) check,
         // so ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
-        // place_cm, sd_u_cm and colour are on every line, a value left empty when not applicable.
+        // place_cm, sd_u_cm and colour are on every check and no-check line (not the voided one), a value left empty when not applicable.
         String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrEmpty(q.placeOffset),
                 cmOrEmpty(q.sdU), colour.name().toLowerCase(Locale.US));
         if (c != null) {
