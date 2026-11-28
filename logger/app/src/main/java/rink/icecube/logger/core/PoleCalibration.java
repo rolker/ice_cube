@@ -72,6 +72,7 @@ public final class PoleCalibration {
     private long lastEpochNs = Long.MIN_VALUE, lastStillNs = Long.MIN_VALUE;
     private String restartCause = "", stillBadCause = "";
     private final List<double[]> twistGyro = new ArrayList<>();
+    private final List<Double> leanSpeeds = new ArrayList<>();
     private double twist = Double.NaN;
     private PoleAxis result;
     private String failure = "";
@@ -98,6 +99,17 @@ public final class PoleCalibration {
     public int twistSamples() { return twistSamples; }
     /** Epochs skipped in the lean and twist phases (not fixed, no height or gravity, a swing). */
     public int skipped() { return skipped; }
+    /**
+     * The antenna speed (m/s) of each lean-phase epoch with a fixed predecessor, in order,
+     * those over {@link #MAX_SPEED_MPS} (skipped as swings) included: for retuning the gate
+     * from field runs. "none" when there are none.
+     */
+    public String leanSpeedsText() {
+        if (leanSpeeds.isEmpty()) return "none";
+        StringBuilder b = new StringBuilder();
+        for (double v : leanSpeeds) b.append(b.length() == 0 ? "" : ";").append(String.format(Locale.US, "%.2f", v));
+        return b.toString();
+    }
     /** After DONE or FAILED: the tip solve (null if none), the lean coverage and the fit residual (NaN if not reached). */
     public TiltSolver.Solution solution() { return solution; }
     public double coverageDeg() { return coverage; }
@@ -148,8 +160,10 @@ public final class PoleCalibration {
                     return Change.TWIST;
                 }
                 if (enu == null) { skip(bad); return Change.NONE; }
-                boolean swing = prevP != null && (t - prevNs) > 0
-                        && !(TiltSolver.norm(sub(enu, prevP)) / ((t - prevNs) / 1e9) <= MAX_SPEED_MPS);
+                double speed = prevP != null && (t - prevNs) > 0
+                        ? TiltSolver.norm(sub(enu, prevP)) / ((t - prevNs) / 1e9) : Double.NaN;
+                if (!Double.isNaN(speed)) leanSpeeds.add(speed);
+                boolean swing = !Double.isNaN(speed) && !(speed <= MAX_SPEED_MPS);
                 prevP = enu;
                 prevNs = t;
                 if (swing) { skipped++; return Change.NONE; }

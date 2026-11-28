@@ -554,9 +554,10 @@ final class Survey {
                 PoleAxis a = poleAxis;
                 // the axis is the phone's mounting on the pole (phone axes), not a position
                 svc.event(String.format(Locale.US, "pole axis calibrated set=%d residual_deg=%.2f samples=%d"
-                                + " twist_samples=%d twist_deg=%.0f skipped=%d cover_deg=%.0f rms_m=%.4f axis=%.4f;%.4f;%.4f",
+                                + " twist_samples=%d twist_deg=%.0f skipped=%d cover_deg=%.0f rms_m=%.4f axis=%.4f;%.4f;%.4f"
+                        + " lean_speeds_mps=%s",
                         calibrations, a.residualDeg, a.samples, a.twistSamples, c.twistDeg(), c.skipped(), a.coverageDeg,
-                        a.rmsM, a.axis[0], a.axis[1], a.axis[2]));
+                        a.rmsM, a.axis[0], a.axis[1], a.axis[2], c.leanSpeedsText()));
                 cue(Feedback.Cue.CAL_DONE);
                 SharedPreferences p = Settings.prefs(svc);
                 String then = !Settings.autoCapture(p) ? "Auto capture is off in Settings"
@@ -567,7 +568,8 @@ final class Survey {
                 break;
             case FAILED:
                 calibration = null;
-                svc.event("pole calibration failed set=" + calibrations + ": " + c.failure());
+                svc.event("pole calibration failed set=" + calibrations + " lean_speeds_mps=" + c.leanSpeedsText() + ": "
+                        + c.failure());
                 cue(Feedback.Cue.ERROR);
                 notice = new Notice("Calibration failed: " + c.failure(), false, true);
                 break;

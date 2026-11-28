@@ -152,6 +152,14 @@ public class PoleCalibrationTest {
         assertTrue(Double.isNaN(a.plumbDeg(null)));
     }
 
+    /** Every lean-phase epoch's speed goes to the events line, for retuning the swing gate. */
+    @Test public void leanSpeedsAreRecorded() {
+        assertEquals("none", new PoleCalibration(L, new TiltSet.Gates(), 0).leanSpeedsText());
+        String speeds = run(routine(null, 330)).leanSpeedsText();
+        assertEquals(speeds, 9, speeds.split(";").length);   // leans at 4-12 s, each after a fixed epoch
+        for (String v : speeds.split(";")) assertTrue(v, Double.parseDouble(v) <= PoleCalibration.MAX_SPEED_MPS);
+    }
+
     @Test public void phasesRunInOrder() {
         PoleCalibration c = new PoleCalibration(L, new TiltSet.Gates(), 0);
         List<Pose> poses = routine(null, 330);

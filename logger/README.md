@@ -439,8 +439,10 @@ cannot pass); otherwise it fails with the reason (the buzz and an amber notice) 
 capture stays off. No GPS epoch for 5 s (the rover gone) fails it too, so it never hangs. A young or suspect fix is fine here (only the shape of one short spell is used). MARK,
 tilt capture and refs are refused while it runs; Back or MENU > Stop pole calibration stops
 it. Recalibrating drops the old axis at the start. events.csv gets `pole calibration start`,
-`... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. twist_deg=.. axis=x;y;z`
-(phone axes: the mounting, not a position) or `pole calibration failed: ..`.
+`... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. twist_deg=.. axis=x;y;z
+lean_speeds_mps=..` (phone axes: the mounting, not a position) or `pole calibration failed
+lean_speeds_mps=..: ..`. `lean_speeds_mps` lists the antenna speed of every lean-phase epoch
+(those over the 0.5 m/s swing gate were skipped), so field runs can retune the gate.
 
 Then, at each GGA epoch, auto capture is armed when all of these hold, else the AUTO line
 names the first that does not: Auto capture on, Surface mode, no calibration running, the
