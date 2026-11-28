@@ -364,6 +364,46 @@ class BuildProjectTest(unittest.TestCase):
         self.assertTrue(self.bp.confirm_replace(self.project, str(self.qgz), ask=False))
 
 
+class MapTipUrlTest(unittest.TestCase):
+    """The photo and voice map tips percent-encode the file:/// path (a Drive folder is
+    "My Drive"; a folder name may hold '#'), so the link opens in the QGIS map tip."""
+
+    def setUp(self):
+        with fake_qgis():
+            self.bp = fresh("build_project", QGIS_DIR / "build_project.py")
+
+    def evaluate(self, expr, path):
+        """The URL expr gives for path, read the way QGIS reads it: the literal prefix and
+        the two arrays of replace(), applied in order."""
+        import re
+        m = re.fullmatch(r"'file:///' \|\| replace\((.*), array\((.*)\), array\((.*)\)\)", expr)
+        self.assertIsNotNone(m, expr)
+        lit = lambda t: [x.replace("''", "'") for x in re.findall(r"'((?:[^']|'')*)'", t)]
+        before, after = lit(m.group(2)), lit(m.group(3))
+        self.assertEqual(len(before), len(after))
+        for a, b in zip(before, after):
+            path = path.replace(a, b)
+        return "file:///" + path
+
+    def test_paths_are_percent_encoded(self):
+        from urllib.parse import quote
+        expr = self.bp.file_url_expr("@project_folder || '/' || @element")
+        for path in ("C:/Users/x/My Drive/rink/notes/s 1/note_5_20261201T100044Z.m4a",
+                     "C:/a#b/100% done?/it's & <this>.jpg", 'D:/q"uote/x.m4a', "/home/x/plain/n.m4a"):
+            want = "file:///" + quote(path, safe="/:")
+            self.assertEqual(self.evaluate(expr, path), want)
+            self.assertEqual(self.bp.file_url(path), want)
+        self.assertNotIn(" ", self.bp.file_url("C:/My Drive/x.m4a"))
+
+    def test_tips_use_the_encoded_url(self):
+        url = self.bp.file_url_expr("@project_folder || '/' || @element")
+        self.assertIn('<a href="\' || ' + url + " || '\">'", self.bp.VOICE_TIP)
+        self.assertIn(self.bp.file_url_expr("@project_folder || '/' || \"photo\""), self.bp.PHOTO_TIP)
+        for tip in (self.bp.VOICE_TIP, self.bp.PHOTO_TIP):   # one [% ... %] block each
+            self.assertTrue(tip.startswith("[% ") and tip.endswith(" %]"))
+            self.assertEqual(tip.count("%]"), 1)
+
+
 class ImageryGroupTest(unittest.TestCase):
     """The Imagery group: order, visibility and band setup, with qgis.* mocked."""
     setUp = BuildProjectTest.setUp

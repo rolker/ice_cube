@@ -145,15 +145,43 @@ def form(layer, editable=("note",), photo_field=None, suggest=()):
     layer.setEditFormConfig(cfg)
 
 
-PHOTO_TIP = ('[% CASE WHEN "photo" IS NOT NULL THEN \'<br><img src="file:///\' || '
-             '@project_folder || \'/\' || "photo" || \'" width="320">\' ELSE \'\' END %]')
+# Characters a file path may hold that break a file:/// URL or the HTML attribute around
+# it ("My Drive", a '#' in a folder name), with their percent escapes. '%' comes first:
+# QGIS replace() with two arrays replaces in order, so an escape is never escaped again.
+URL_ESCAPES = (("%", "%25"), (" ", "%20"), ("#", "%23"), ("?", "%3F"), ("&", "%26"),
+               ('"', "%22"), ("'", "%27"), ("<", "%3C"), (">", "%3E"))
+
+
+def _qgis_str(s):
+    """s as a QGIS expression string literal."""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def file_url_expr(path_expr):
+    """A QGIS expression for the file:/// URL of path_expr (an expression for a path with
+    '/' separators, e.g. @project_folder || '/' || "photo"), percent-encoded by URL_ESCAPES."""
+    before = ", ".join(_qgis_str(a) for a, _ in URL_ESCAPES)
+    after = ", ".join(_qgis_str(b) for _, b in URL_ESCAPES)
+    return f"'file:///' || replace({path_expr}, array({before}), array({after}))"
+
+
+def file_url(path):
+    """What file_url_expr evaluates to for path: for tests and for a reader."""
+    for a, b in URL_ESCAPES:
+        path = path.replace(a, b)
+    return "file:///" + path
+
+
+PHOTO_TIP = ('[% CASE WHEN "photo" IS NOT NULL THEN \'<br><img src="\' || '
+             + file_url_expr('@project_folder || \'/\' || "photo"') + ' || \'" width="320">\' ELSE \'\' END %]')
 
 
 # voice notes (logger 0.14.0): one file:/// link per path in "voice" (';' separated), for
 # the system player; a gpkg imported before schema 7 has no voice column and gets no links
 VOICE_TIP = ('[% CASE WHEN "voice" IS NOT NULL THEN \'<br>voice: \' || array_to_string(array_foreach('
-             'string_to_array("voice", \';\'), \'<a href="file:///\' || @project_folder || \'/\' || @element '
-             '|| \'">\' || regexp_replace(@element, \'^.*/\', \'\') || \'</a>\'), \' \') ELSE \'\' END %]')
+             'string_to_array("voice", \';\'), \'<a href="\' || '
+             + file_url_expr("@project_folder || '/' || @element")
+             + ' || \'">\' || regexp_replace(@element, \'^.*/\', \'\') || \'</a>\'), \' \') ELSE \'\' END %]')
 
 
 def voice_tip(lyr):
