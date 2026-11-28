@@ -37,9 +37,9 @@ public final class NoteRule {
     /** Whether a finished recording is kept: a non-empty file at least {@link #MIN_MS} long. */
     public static boolean keep(long bytes, long durationMs) { return bytes > 0 && durationMs >= MIN_MS; }
 
-    /** NOTE's second line while recording: "0:12 / 1:00". */
+    /** NOTE's second line while recording: "0:12/1:00" (short: five buttons share a portrait row). */
     public static String recordingText(long elapsedMs) {
         long s = Math.max(0, Math.min(elapsedMs, MAX_MS)) / 1000, m = MAX_MS / 1000;
-        return s / 60 + ":" + (s % 60 < 10 ? "0" : "") + s % 60 + " / " + m / 60 + ":" + (m % 60 < 10 ? "0" : "") + m % 60;
+        return s / 60 + ":" + (s % 60 < 10 ? "0" : "") + s % 60 + "/" + m / 60 + ":" + (m % 60 < 10 ? "0" : "") + m % 60;
     }
 }

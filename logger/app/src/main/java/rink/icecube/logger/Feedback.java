@@ -43,7 +43,14 @@ final class Feedback {
          */
         AUTO_ARMED, AUTO_OFF,
         /** 0.13.0 (#35): pole calibration started, next phase, accepted (failed or moved: ERROR). */
-        CAL_START, CAL_PHASE, CAL_DONE
+        CAL_START, CAL_PHASE, CAL_DONE,
+        /**
+         * 0.14.0 (#16): voice note recording started (one long low tone, so it is not spoken
+         * over), stopped and kept, and stopped by itself at the 60 s cap (three falling tones
+         * and a long buzz: the note was cut off). Recording starts with the
+         * start cue, so the note may begin with its tone.
+         */
+        NOTE_START, NOTE_END, NOTE_AUTO_STOP
     }
 
     private static final int BEEP = ToneGenerator.TONE_DTMF_5, HIGH = ToneGenerator.TONE_DTMF_D,
@@ -81,6 +88,9 @@ final class Feedback {
             case CAL_START: return new int[] {LOW, 200, 80, LOW, 200, 100};
             case CAL_PHASE: return new int[] {MID, 100, 60, MID, 100, 60, MID, 100, 100};
             case CAL_DONE: return new int[] {LOW, 120, 40, MID, 120, 40, HIGH2, 120, 40, HIGH, 350, 150};
+            case NOTE_START: return new int[] {LOW, 300, 50};
+            case NOTE_END: return new int[] {LOW, 100, 40, LOW, 100, 60};
+            case NOTE_AUTO_STOP: return new int[] {HIGH, 120, 40, MID, 120, 40, LOW, 350, 100};
             default: return new int[] {ToneGenerator.TONE_PROP_NACK, 450, 100};   // ERROR: low buzz
         }
     }
@@ -111,6 +121,9 @@ final class Feedback {
             case CAL_START: return new long[] {0, 200, 80, 200};
             case CAL_PHASE: return new long[] {0, 80, 60, 80, 60, 80};
             case CAL_DONE: return new long[] {0, 100, 60, 100, 60, 400};
+            case NOTE_START: return new long[] {0, 150};
+            case NOTE_END: return new long[] {0, 60, 60, 60};
+            case NOTE_AUTO_STOP: return new long[] {0, 100, 60, 100, 60, 500};
             default: return new long[] {0, 450};
         }
     }

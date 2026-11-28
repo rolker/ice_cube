@@ -48,11 +48,11 @@ public class NoteRuleTest {
     }
 
     @Test public void recordingLine() {
-        assertEquals("0:00 / 1:00", NoteRule.recordingText(0));
-        assertEquals("0:09 / 1:00", NoteRule.recordingText(9_999));
-        assertEquals("0:42 / 1:00", NoteRule.recordingText(42_000));
-        assertEquals("1:00 / 1:00", NoteRule.recordingText(75_000));   // capped
-        assertEquals("0:00 / 1:00", NoteRule.recordingText(-5));
+        assertEquals("0:00/1:00", NoteRule.recordingText(0));
+        assertEquals("0:09/1:00", NoteRule.recordingText(9_999));
+        assertEquals("0:42/1:00", NoteRule.recordingText(42_000));
+        assertEquals("1:00/1:00", NoteRule.recordingText(75_000));   // capped
+        assertEquals("0:00/1:00", NoteRule.recordingText(-5));
         assertEquals(60_000, NoteRule.MAX_MS);
         assertEquals(32_000, NoteRule.BITRATE);
     }

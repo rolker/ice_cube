@@ -22,6 +22,7 @@ import rink.icecube.logger.core.Epoch;
 import rink.icecube.logger.core.EpochAverage;
 import rink.icecube.logger.core.FixGuard;
 import rink.icecube.logger.core.LocalFrame;
+import rink.icecube.logger.core.NoteRule;
 import rink.icecube.logger.core.PhotoRule;
 import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.PoleAxis;
@@ -34,7 +35,7 @@ import rink.icecube.logger.core.TiltSolver;
 import rink.icecube.logger.core.VoidRule;
 
 /**
- * The captures of one session: MARK in Surface, Object or Ref mode and PHOTO, written to
+ * The captures of one session: MARK in Surface, Object or Ref mode, PHOTO and NOTE, written to
  * points.csv in the session folder (header line, one row per capture; rewritten whole on
  * each change, which is tiny) and as "capture ..." events in events.csv. Refs are also
  * appended to refs.csv and checked against earlier visits (the pole check).
@@ -58,12 +59,17 @@ import rink.icecube.logger.core.VoidRule;
  * sets and refs are refused while it runs, and it is refused while they run.
  *
  * Flagging ({@link #voidCapture}, {@link #unvoidCapture}, logger 0.9.0): a capture row is
- * marked void, never removed; its photos move (see {@link VoidRule}); the flag goes to
- * points.csv (rewritten), to events.csv (flag / unflag / photo moved, the audit trail) and,
+ * marked void, never removed; its photos and voice notes move (see {@link VoidRule}); the flag goes to
+ * points.csv (rewritten), to events.csv (flag / unflag / photo or note moved, the audit trail) and,
  * for a ref, to its row in every refs.csv. The phone never reopens a session, so refs.csv
  * is the only void state read back (by the pole check and the earlier-refs layer).
  *
- * GGA epochs arrive on the GPS thread through {@link #onEpoch}; MARK and PHOTO come from
+ * Voice notes ({@link NoteRule}, logger 0.14.0, #16): planNote at the NOTE press picks the
+ * file in notes/ and the capture by the photo rule, and the position for a row of its own
+ * (taken at the press: a note can outlast the epochs kept); noteTaken writes the voice
+ * column, or a photo-class row holding only the note.
+ *
+ * GGA epochs arrive on the GPS thread through {@link #onEpoch}; MARK, PHOTO and NOTE come from
  * the screen. Everything that touches the rows is synchronized; files are written on a
  * single background thread in order.
  */
@@ -196,8 +202,22 @@ final class Survey {
         PhotoPlan(File file, int attachN, long pressNs) { this.file = file; this.attachN = attachN; this.pressNs = pressNs; }
     }
 
+    /**
+     * A voice note being recorded: its file, the capture it goes onto (or -1 for a row of its
+     * own), the press time, and the average at the press (null: no position) for an own row.
+     */
+    static final class NotePlan {
+        final File file;
+        final int attachN;
+        final long pressNs;
+        final EpochAverage at;
+        NotePlan(File file, int attachN, long pressNs, EpochAverage at) {
+            this.file = file; this.attachN = attachN; this.pressNs = pressNs; this.at = at;
+        }
+    }
+
     private final LoggerService svc;
-    final File dir, photos;
+    final File dir, photos, notes;
     private final ArrayDeque<Epoch> epochs = new ArrayDeque<>();
     private final List<PointRow> rows = new ArrayList<>();
     private int counter, captures;
@@ -233,6 +253,7 @@ final class Survey {
         this.svc = svc;
         this.dir = dir;
         photos = new File(dir, "photos");
+        notes = new File(dir, "notes");
         guard = new FixGuard(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),
                 Settings.floatSpellNs(Settings.prefs(svc)));
         SharedPreferences p = Settings.prefs(svc);
@@ -945,7 +966,7 @@ final class Survey {
      * Flags capture n as bad. via is {@link VoidRule#VIA_UNDO} (refused once the undo window
      * since the capture has passed) or {@link VoidRule#VIA_LIST}. Refused for a photo row (a
      * photo row is not flagged), an already voided row, or while a ref occupation or a tilt
-     * set runs (their cancel is the undo). Its photos move (see {@link VoidRule}).
+     * set runs (their cancel is the undo). Its photos and voice notes move (see {@link VoidRule}).
      */
     synchronized Outcome voidCapture(int n, String reason, String via) {
         PointRow r = row(n);
@@ -960,7 +981,7 @@ final class Survey {
         r.voidReason = why;
         r.voided = true;
         svc.event("flag n=" + n + " reason=" + why.replace(' ', '_') + " via=" + via);
-        if (!r.photo.isEmpty()) movePhotos(r);
+        if (!r.photo.isEmpty() || !r.voice.isEmpty()) moveAttachments(r);
         recount();
         voidGeneration++;
         Notice cur = notice;
@@ -976,7 +997,7 @@ final class Survey {
         return new Outcome(true, label(r.cls) + n + " flagged: " + why);
     }
 
-    /** Clears the flag of capture n. Its photos stay where they were moved. */
+    /** Clears the flag of capture n. Its photos and notes stay where they were moved. */
     synchronized Outcome unvoidCapture(int n) {
         PointRow r = row(n);
         if (r == null || !r.voided) return new Outcome(false, "Capture " + n + " is not flagged");
@@ -990,19 +1011,22 @@ final class Survey {
         return new Outcome(true, label(r.cls) + n + " no longer flagged");
     }
 
-    /** Moves the photos of voided row v to the nearest earlier live capture, else to a new photo row. */
-    private void movePhotos(PointRow v) {
+    /**
+     * Moves the photos and voice notes of voided row v to the nearest earlier live capture,
+     * else to a new photo row; one events.csv line for both (VoidRule.moveEvent).
+     */
+    private void moveAttachments(PointRow v) {
         PointRow to = VoidRule.photoTarget(rows, v.n);
-        String files = v.photo;
+        String photoFiles = v.photo, noteFiles = v.voice;
         if (to != null) {
-            for (String f : files.split(";")) if (!f.isEmpty()) to.photo = PhotoRule.add(to.photo, f);
-            v.photo = "";
-            svc.event("photo moved n=" + v.n + " to=" + to.n + " photos=" + files);
+            VoidRule.moveAttachments(v, to);
+            svc.event(VoidRule.moveEvent(v.n, to.n, false, photoFiles, noteFiles));
         } else {
             PointRow own = VoidRule.photoRowFor(v, ++counter);
             v.photo = "";
+            v.voice = "";
             rows.add(own);
-            svc.event("photo moved n=" + v.n + " to=" + own.n + " own row photos=" + files);
+            svc.event(VoidRule.moveEvent(v.n, own.n, true, photoFiles, noteFiles));
             svc.event("capture " + own.toCsv());
         }
     }
@@ -1070,6 +1094,60 @@ final class Survey {
         svc.event("photo " + why + ": " + p.file.getName() + " not kept");
     }
 
+    // ---- NOTE ----
+
+    /**
+     * Chooses the file, the capture and the own-row position for a voice note about to be
+     * recorded (pressed now). Null if the folder cannot be made.
+     */
+    synchronized NotePlan planNote() {
+        long now = SystemClock.elapsedRealtimeNanos();
+        int attach = NoteRule.attachTo(lastCapture, now);
+        Epoch e = epochs.peekLast();
+        String utc = PointRow.utcCompact(e == null ? Double.NaN : e.tod, System.currentTimeMillis());
+        if (!notes.isDirectory() && !notes.mkdirs()) return null;
+        File f = new File(notes, NoteRule.fileName(attach > 0 ? attach : counter + 1, utc));
+        for (int i = 2; f.exists(); i++) f = new File(notes, f.getName().replace(".m4a", "") + "_" + i + ".m4a");
+        return new NotePlan(f, attach, now, average(now));   // the position, in case it ends in a row of its own
+    }
+
+    /**
+     * A note was recorded (durationMs long; auto: stopped at the 60 s cap). It goes onto the
+     * planned capture, or onto the photo rule's choice again if that was flagged meanwhile,
+     * else into a photo-class row of its own at the press position.
+     */
+    synchronized void noteTaken(NotePlan p, long durationMs, boolean auto) {
+        String name = p.file.getName();
+        int attachN = p.attachN;
+        if (attachN > 0 && (row(attachN) == null || row(attachN).voided)) attachN = NoteRule.attachTo(lastCapture, p.pressNs);
+        PointRow target = attachN > 0 ? row(attachN) : null;
+        String what = "note file=notes/" + name + " bytes=" + p.file.length()
+                + String.format(Locale.US, " duration_s=%.1f", durationMs / 1000.0) + (auto ? " auto_stop" : "");
+        if (target != null) {
+            target.voice = NoteRule.add(target.voice, name);
+            svc.event(what + " attached to n=" + target.n);
+            savePoints();
+            notice = new Notice("Note on " + label(target.cls) + target.n, true, false, target, false);
+        } else {
+            EpochAverage a = p.at;
+            PointRow r = PointRow.of(++counter, PointRow.PHOTO, p.pressNs, a, svc.poleHeight(), System.currentTimeMillis());
+            r.voice = name;
+            rows.add(r);
+            svc.event(what + " own row n=" + r.n);
+            svc.event("capture " + r.toCsv());
+            savePoints();
+            notice = new Notice("Note saved" + (a == null ? " (no fix)" : ""), a != null, false, r, false);
+        }
+        cue(auto ? Feedback.Cue.NOTE_AUTO_STOP : Feedback.Cue.NOTE_END);
+    }
+
+    /** The recording failed or was too short: the file is deleted and the event says why. */
+    void noteCancelled(NotePlan p, String why) {
+        //noinspection ResultOfMethodCallIgnored
+        p.file.delete();
+        svc.event("note " + why + ": " + p.file.getName() + " not kept");
+    }
+
     // ---- state for the screen ----
 
     synchronized PointRow[] rows() { return rows.toArray(new PointRow[0]); }
@@ -1079,6 +1157,8 @@ final class Survey {
     synchronized int flagged() { return VoidRule.flaggedCount(rows); }
     /** Where PHOTO would put a photo now: "S12 (14 s)" or "own row" (PhotoRule.targetText). */
     synchronized String photoTarget() { return PhotoRule.targetText(lastCapture, SystemClock.elapsedRealtimeNanos()); }
+    /** Where NOTE would put a note now (the same rule as PHOTO). */
+    synchronized String noteTarget() { return NoteRule.targetText(lastCapture, SystemClock.elapsedRealtimeNanos()); }
     synchronized RefView refView() {
         long now = SystemClock.elapsedRealtimeNanos();
         // the refYoung latch keeps "(fix young)" on the ring once the saved ref will be young

@@ -1,10 +1,12 @@
 package rink.icecube.logger;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -57,6 +59,7 @@ import rink.icecube.logger.core.Gga;
 import rink.icecube.logger.core.LinkState;
 import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.MapOrigin;
+import rink.icecube.logger.core.NoteRule;
 import rink.icecube.logger.core.NtripClient;
 import rink.icecube.logger.core.PointRow;
 import rink.icecube.logger.core.PoleHeight;
@@ -73,9 +76,13 @@ import rink.icecube.logger.core.VoidRule;
  *   recording dot with elapsed time and capture count (start, or stop after asking).
  * - Red warnings bar under the strip only when there is a warning (see Status.warnings),
  *   and a short green or red notice after a capture, a ref or a pole check.
- * - Four large buttons, a column on the right in landscape or a row at the bottom in
- *   portrait: MODE (Surface, Object, Ref), MARK, PHOTO and MENU (a panel from the right
+ * - Five large buttons, a column on the right in landscape or a row at the bottom in
+ *   portrait: MODE (Surface, Object, Ref), MARK, PHOTO, NOTE and MENU (a panel from the right
  *   with the links, session, pole height, layers, share, sessions, Details and Settings).
+ * - NOTE (0.14.0, #16): tap to start a voice note, tap again to stop (a cue and a vibration
+ *   each time; it stops by itself at 60 s with its own cue). The first tap asks for the
+ *   microphone. It records only while this screen is in front: leaving it (PHOTO's camera
+ *   included) stops and keeps the note. The note goes where a photo would at the press.
  * - Volume down = MARK, volume up = MODE while this screen is in front (Settings).
  * - Tilt capture: long-press MARK (or hold volume down, or MENU > Tilt capture) starts a set
  *   in the current mode; then MODE reads LEAN (and volume down, or a long-press of MARK,
@@ -100,13 +107,14 @@ import rink.icecube.logger.core.VoidRule;
  * It is also the launcher and USB_DEVICE_ATTACHED activity, with the autostart options.
  */
 public final class MainActivity extends Activity {
-    private static final int REQ_PHOTO = 21, REQ_IMPORT_LAYERS = 22;
+    private static final int REQ_PHOTO = 21, REQ_IMPORT_LAYERS = 22, REQ_AUDIO = 23;
+    private static final int NOTE_COLOR = 0xFF00695C, RECORDING_COLOR = 0xFFC62828;
     private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121, AMBER = 0xFFFFA000;
 
     private MapView map;
     private TextView info, warnBar, noticeBar, autoBar;
     private TextView fixChip, gpsItem, casterItem, poleItem, recItem;
-    private Button modeB, markB, photoB, menuB, centerB, fitB, undoB;
+    private Button modeB, markB, photoB, noteB, menuB, centerB, fitB, undoB;
     /** The notice bar and its UNDO button, side by side. */
     private LinearLayout noticeRow;
     /**
@@ -119,6 +127,14 @@ public final class MainActivity extends Activity {
     private long undoDownNs = -1;
     /** PHOTO's second line as last shown ("" for none). */
     private String photoTargetShown = "";
+    /** NOTE's text as last shown. */
+    private String noteShown = "";
+    /**
+     * The voice note being recorded and its plan (both null when none). Not kept across a
+     * recreation: rotation does not recreate this screen, and onPause ends a recording first.
+     */
+    private NoteRecorder noteRec;
+    private Survey.NotePlan notePlan;
     private FrameLayout mapFrame, drawer;
     private LinearLayout drawerItems;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -250,6 +266,9 @@ public final class MainActivity extends Activity {
         photoB = bigButton(v -> onPhoto());
         photoB.setText("PHOTO");
         style(photoB, MapView.PHOTO_COLOR, Color.WHITE);
+        noteB = bigButton(v -> onNote());
+        noteB.setText("NOTE");
+        style(noteB, NOTE_COLOR, Color.WHITE);
         menuB = bigButton(v -> openDrawer());
         menuB.setText("☰\nMENU");
         style(menuB, 0xFF546E7A, Color.WHITE);
@@ -297,6 +316,9 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         Control.permissionsAnswered(this);
+        if (code != REQ_AUDIO) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) toast("Microphone allowed: tap NOTE to record");
+        else toast("No microphone: NOTE needs it (Android settings > Apps > Ice Cube Logger > Permissions)");
     }
 
     /** Rotation does not recreate this screen (see Screen): the same views are rearranged. */
@@ -316,7 +338,7 @@ public final class MainActivity extends Activity {
     private void arrange() {
         boolean land = Screen.landscape(this);
         for (View v : new View[] {mapFrame, warnBar, noticeRow, autoBar, fixChip, gpsItem, casterItem, poleItem, recItem,
-                modeB, markB, photoB, menuB, drawer}) Screen.detach(v);
+                modeB, markB, photoB, noteB, menuB, drawer}) Screen.detach(v);
         showStatusBar(!land);
         int m = Screen.dp(this, 3);
 
@@ -343,7 +365,7 @@ public final class MainActivity extends Activity {
         buttons.setOrientation(land ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         buttons.setBackgroundColor(STRIP_BG);
         buttons.setPadding(m, m, m, m);
-        for (Button x : new Button[] {modeB, markB, photoB, menuB}) {
+        for (Button x : new Button[] {modeB, markB, photoB, noteB, menuB}) {
             LinearLayout.LayoutParams lp = land ? new LinearLayout.LayoutParams(-1, 0, 1)
                     : new LinearLayout.LayoutParams(0, Screen.dp(this, 76), 1);
             lp.setMargins(m, m, m, m);
@@ -741,6 +763,62 @@ public final class MainActivity extends Activity {
         }
     }
 
+    // ---- NOTE ----
+
+    /** Starts a voice note, or stops the one being recorded. */
+    private void onNote() {
+        if (noteRec != null) { finishNote(false); return; }
+        Survey sv = survey();
+        if (sv == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("No session: tap REC to start one");
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
+            return;
+        }
+        Survey.NotePlan p = sv.planNote();
+        try {
+            if (p == null || !p.file.createNewFile()) throw new IOException("cannot create the note file");
+            Feedback.play(this, Feedback.Cue.NOTE_START);
+            noteRec = NoteRecorder.start(this, p.file, () -> finishNote(true));
+            notePlan = p;
+        } catch (IOException | RuntimeException e) {
+            if (p != null) sv.noteCancelled(p, "failed to start (" + e.getClass().getSimpleName() + ")");
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("Note: " + (e.getMessage() != null ? e.getMessage() : "microphone unavailable"));
+        }
+    }
+
+    /**
+     * Stops the recording (auto: the 60 s cap) and keeps the note (onto its capture or a row
+     * of its own) or deletes a failed or too short file. A note whose session ended while it
+     * recorded stays in that session's notes/ folder, not in points.csv.
+     */
+    private void finishNote(boolean auto) {
+        NoteRecorder r = noteRec;
+        Survey.NotePlan p = notePlan;
+        noteRec = null;
+        notePlan = null;
+        if (r == null || p == null) return;
+        long ms = r.stop();
+        boolean keep = ms >= 0 && NoteRule.keep(p.file.length(), ms);
+        Survey sv = survey();
+        File dir = p.file.getParentFile();
+        if (sv == null || dir == null || !dir.equals(sv.notes)) {
+            if (!keep) { //noinspection ResultOfMethodCallIgnored
+                p.file.delete();
+            } else toast("Session had ended: note kept in its folder, not in points.csv");
+            return;
+        }
+        if (keep) sv.noteTaken(p, ms, auto);
+        else {
+            sv.noteCancelled(p, ms < 0 ? "failed" : "too short");
+            Feedback.play(this, Feedback.Cue.ERROR);
+        }
+    }
+
     @Override protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
         if (code == REQ_PHOTO) finishPhoto(result, null);
@@ -1057,6 +1135,7 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         ui.removeCallbacks(tick);
+        if (noteRec != null) finishNote(false);   // the microphone is used only while this screen is in front
     }
 
     /** Stops the coverage thread: cancels the work in flight and drops frames still on their way. */
@@ -1212,6 +1291,22 @@ public final class MainActivity extends Activity {
                 pb.setSpan(new RelativeSizeSpan(0.65f), 6, pb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 photoB.setText(pb);
             }
+        }
+
+        // NOTE: where a note would go, or the time recorded while it records
+        String nt2 = noteRec != null ? "STOP\n" + NoteRule.recordingText(noteRec.elapsedMs())
+                : sv == null ? "NOTE" : "NOTE\n→ " + sv.noteTarget();
+        if (!nt2.equals(noteShown)) {
+            boolean wasRec = noteShown.startsWith("STOP"), isRec = noteRec != null;
+            noteShown = nt2;
+            int cut = nt2.indexOf('\n');
+            if (cut < 0) noteB.setText(nt2);
+            else {
+                SpannableStringBuilder nb = new SpannableStringBuilder(nt2);
+                nb.setSpan(new RelativeSizeSpan(0.65f), cut + 1, nb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                noteB.setText(nb);
+            }
+            if (wasRec != isRec) style(noteB, isRec ? RECORDING_COLOR : NOTE_COLOR, Color.WHITE);
         }
 
         StringBuilder t = new StringBuilder();

@@ -100,7 +100,7 @@ final class Sharer {
 
     interface Progress { void update(long done, long total); }
 
-    /** The folder's files and those one level down (photos/), sorted by relative path. */
+    /** The folder's files and those one level down (photos/, notes/), sorted by relative path. */
     static java.util.List<String> filesIn(File dir) throws IOException {
         File[] top = dir.listFiles();
         if (top == null) throw new IOException("cannot read " + dir);
@@ -129,9 +129,9 @@ final class Sharer {
     }
 
     /**
-     * Writes cache/share/IceCubeLogger_<name>.zip with the folder's files (and photos/) under
+     * Writes cache/share/IceCubeLogger_<name>.zip with the folder's files (and photos/, notes/) under
      * <name>/, plus refs.csv from the storage root at the zip's top level when it exists.
-     * Photos and other compressed files are STORED, logs DEFLATED. Older zips are deleted.
+     * Photos, voice notes and other compressed files are STORED, logs DEFLATED. Older zips are deleted.
      */
     static File zip(Activity a, File dir, boolean snapshot, Progress progress) throws IOException {
         File out = ShareProvider.dir(a);
