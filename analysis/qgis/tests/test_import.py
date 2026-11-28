@@ -368,6 +368,62 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(caps[2]["photo_files"], [])            # the event's capture does not take it back
         self.assertEqual(caps[5]["photo_files"], ["photo_2_20261201T100010Z.jpg"])
 
+    # -- 0.14.0 voice notes (#16)
+    def test_voice_notes_import(self):
+        """The voice column reaches captures (paths and count), the photos of its row and
+        refs; a photo-class row holding only a note is an own row in captures (not in the
+        photos table, which is one row per photo file); notes are copied to notes/<session>/
+        beside photos/, none with --no-photos. Placeholder bytes made at run time."""
+        name = "2026-12-01_10-00-00"
+        files = synth.with_notes(synth.session_v05())
+        z = synth.write_zip(self.d / "n.zip", files)
+        out = run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("2 voice notes (2 extracted)", out)
+        self.assertEqual(self.q("SELECT n, class, voice, voice_count, photo_count FROM captures ORDER BY n"), [
+            (1, "surface", None, 0, 0), (2, "object", f"notes/{name}/{synth.NOTE_2}", 1, 1),
+            (3, "ref", None, 0, 0), (4, "photo", None, 0, 1), (5, "photo", f"notes/{name}/{synth.NOTE_5}", 1, 0)])
+        self.assertEqual(self.q("SELECT name, voice FROM photos ORDER BY name"), [
+            ("photo_2_20261201T100010Z.jpg", f"notes/{name}/{synth.NOTE_2}"), ("photo_4_20261201T100030Z.jpg", None)])
+        self.assertEqual(self.q("SELECT voice FROM refs WHERE session=?", name), [(None,)])
+        self.assertEqual(self.q("SELECT n_notes, n_photos, n_photo FROM sessions"), [(2, 2, 2)])
+        for f in (synth.NOTE_2, synth.NOTE_5):
+            p = self.gpkg.parent / "notes" / name / f
+            self.assertEqual(p.read_bytes(), synth.M4A)
+        shutil.rmtree(self.gpkg.parent / "notes")
+        run(z, "--gpkg", self.gpkg, "--base", *self.base, "--force", "--no-photos")
+        self.assertFalse((self.gpkg.parent / "notes").exists())
+        # a session from before 0.14.0 has no voice column: no notes, NULL voice
+        s = load_session(find_sessions([synth.write_dir(self.d / "old", synth.session_v05())])[0])
+        self.assertEqual((s.notes, s.info["n_notes"]), ([], 0))
+        self.assertTrue(all(c["voice_files"] == [] for c in s.captures))
+
+    def test_moved_note_takes_n_from_the_voice_column(self):
+        """A flag moved capture 2's note to capture 1 (0.14.0): the file name and the event
+        still say n=2; the voice column decides. An orphan note (no row lists it) goes by
+        its event."""
+        files = synth.with_notes(synth.session_v05())
+        key = "2026-12-01_10-00-00/points.csv"
+        lines = files[key].decode().splitlines()
+        lines[1] += synth.NOTE_2                      # row n=1 now lists it
+        lines[2] = lines[2][:-len(synth.NOTE_2)]      # row n=2 no longer does
+        lines[5] = lines[5][:-len(synth.NOTE_5)]      # the own row lost its file: an orphan
+        files[key] = ("\n".join(lines) + "\n").encode()
+        src = find_sessions([synth.write_zip(self.d / "m.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: x for x in s.notes}
+        self.assertEqual((p[synth.NOTE_2]["n"], p[synth.NOTE_2]["attached"]), (1, "capture"))
+        self.assertEqual((p[synth.NOTE_5]["n"], p[synth.NOTE_5]["attached"]), (5, "own row"))
+        self.assertEqual(p[synth.NOTE_2]["utc"], "2026-12-01T10:00:12Z")
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual(caps[2]["voice_files"], [])
+        self.assertEqual(caps[5]["voice_files"], [synth.NOTE_5])   # the orphan goes back to its event's row
+
+    def test_schema7_voice(self):
+        """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""
+        self.assertEqual(imp.SCHEMA_VERSION, 7)
+        self.assertEqual(imp.schema_min_app(6), (0, 14))
+
     def test_zip_entry_mtime_utc_and_zero_date(self):
         """A zip entry's time for ordering refs.csv copies: the UTC extended timestamp when
         present, the DOS local time otherwise, None for a zero DOS date."""

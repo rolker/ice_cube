@@ -149,6 +149,39 @@ def with_void(files, voided, name="2026-12-01_10-00-00"):
     return out
 
 
+M4A = b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 40   # stand-in voice note bytes (no audio), made at run time
+NOTE_2 = "note_2_20261201T100012Z.m4a"
+NOTE_5 = "note_5_20261201T100045Z.m4a"
+
+
+def with_notes(files, name="2026-12-01_10-00-00", app="0.14.0"):
+    """A copy of session files from logger 0.14.0 (#16): points.csv gains the voice column
+    (by name, last), capture n=2 a voice note, and a photo-class row n=5 holds only a note
+    (NOTE pressed with no capture in the window); notes/ holds both stand-in files and
+    events.csv their note lines."""
+    out = dict(files)
+    key = f"{name}/points.csv"
+    lines = out[key].decode().splitlines()
+    body = [lines[0] + ",voice"]
+    for line in lines[1:]:
+        n = int(line.split(",")[0])
+        body.append(line + "," + (NOTE_2 if n == 2 else ""))
+    lat, lon, h = offset(6.0, 2.0, 1.8)
+    extra = len(lines[0].split(",")) - 17   # empty cells for the columns after note
+    body.append(f"5,photo,{T0_NS + 45_000_000_000},2026-12-01T10:00:45.00Z,{lat:.9f},{lon:.9f},{h:.4f},1.800,"
+                f"{h - 1.8:.4f},4,5,0.0020,0.0020,0.0040,1.0,," + "," * extra + "," + NOTE_5)
+    out[key] = ("\n".join(body) + "\n").encode()
+    ev = f"{name}/events.csv"
+    out[ev] = out[ev].replace(b"app=0.5", b"app=" + app.encode()) + (
+        f"{T0_NS + 15_000_000_000},{int(START.timestamp() * 1000) + 15_000},"
+        f"note file=notes/{NOTE_2} bytes={len(M4A)} duration_s=3.2 attached to n=2\n"
+        f"{T0_NS + 50_000_000_000},{int(START.timestamp() * 1000) + 50_000},"
+        f"note file=notes/{NOTE_5} bytes={len(M4A)} duration_s=4.0 own row n=5\n").encode()
+    out[f"{name}/notes/{NOTE_2}"] = M4A
+    out[f"{name}/notes/{NOTE_5}"] = M4A
+    return out
+
+
 def refs_csv_void(void_earlier=True):
     """refs.csv with the void columns: the earlier session's ref flagged (or not)."""
     lat, lon, h = offset(0.1, 2.0, 1.8)

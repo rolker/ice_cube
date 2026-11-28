@@ -14,14 +14,19 @@ exists); command-line arguments take priority. Relative paths in the config are 
 to the config file.
 
 Output (all private: it holds positions): `<season>.gpkg` and, next to it,
-`photos/<session>/<file>.jpg` so QGIS shows photos by relative path. Tables:
+`photos/<session>/<file>.jpg` so QGIS shows photos by relative path, and the voice notes
+(logger 0.14.0) as `notes/<session>/<file>.m4a` (they may hold voices and names: keep them
+out of the repo; `*.m4a` is gitignored). Tables:
 
   captures      PointZ  one row per capture, key (session, n). Z = ground height.
                         `note` and `label` are yours: edited in QGIS, never overwritten.
                         Logger 0.6 columns (method, fix_suspect, tilt_*, ...) and 0.11.0
                         columns (fix_start, float_spell_s, suspect_reason, fix_young) are
-                        NULL for older sessions.
-  photos        PointZ  one row per photo file, key (session, name); `note` is yours.
+                        NULL for older sessions. `voice` (0.14.0): the row's voice notes,
+                        `notes/<session>/<file>.m4a` paths separated by ';', and
+                        `voice_count`; a class photo row may hold only a note (an own row).
+  photos        PointZ  one row per photo file, key (session, name); `note` is yours;
+                        `voice` the notes of the row the photo is on.
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
   tracks        LineStringZ  1 Hz GGA track per session, split at gaps and fix changes,
@@ -59,7 +64,8 @@ when copies whose times may be in either order disagree (the logger reads its co
 the same rule, VoidRule.liveRefs); a ref with no copy that has a `void` column has void
 NULL. A flag moves a capture's photos to another row (the files keep their names): a
 photo's `n` and `attached` come from the points.csv row whose photo column lists it, not
-from the number in its file name or its original event. A zip entry's time is its UTC
+from the number in its file name or its original event; voice notes (0.14.0) move and are
+placed the same way, by the voice column. A zip entry's time is its UTC
 extended timestamp (logger 0.9.0, whole seconds, so within 1 s), else its DOS time corrected by the zone offset
 found from the zip's events.csv (within 1 h: a DST change may lie between the entry and
 events.csv), else (mtime_approx) the DOS time read as if UTC (within 26 h: off by the writer's zone
@@ -78,7 +84,7 @@ skipped (--force re-reads it). Each sessions row records the schema_version it w
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
 session imported in full. A session from an app older than every schema step it missed
-needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4, 0.11 for 5, 0.12 for 6) has nothing to fill and is marked current without
+needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4, 0.11 for 5, 0.12 for 6, 0.14 for 7) has nothing to fill and is marked current without
 a re-read (one whose app version is unknown is re-read). Sessions still at an older schema
 after a run (not among the inputs, or seen only as a snapshot) are named in the log and
 re-read on a later run. Rows are matched by their keys and updated in place, so
@@ -106,13 +112,14 @@ from logger_session import APPROX_S, app_version, find_sessions, load_session, r
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 6     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+SCHEMA_VERSION = 7     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
                        # 4: captures and refs carry the logger 0.9.0 void flag (void, void_reason)
                        # 5: captures carry the logger 0.11.0 fix columns (fix_start, fix_young, ...)
                        # 6: refs carry the logger 0.12.0 pole check (diff_ref_m, colour)
+                       # 7: captures, photos and refs carry the logger 0.14.0 voice notes (voice)
 SCHEMA_TILT = 3        # the schema that brought the logger 0.6 columns: a session re-read at
                        # it or later holds whatever tilt values its source has
-SCHEMA_APP = {3: (0, 6), 4: (0, 9), 5: (0, 11), 6: (0, 12)}   # the oldest app whose sessions have data for each schema
+SCHEMA_APP = {3: (0, 6), 4: (0, 9), 5: (0, 11), 6: (0, 12), 7: (0, 14)}   # the oldest app whose sessions have data for each schema
                                       # step; add an entry with every SCHEMA_VERSION change
 
 
@@ -145,14 +152,14 @@ SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
                 [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06 + VOID
-                + LOGGER_11,
+                + LOGGER_11 + [("voice", T), ("voice_count", I)],
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
-               ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
+               ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T), ("voice", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
             [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R),
-             ("diff_ref_m", R), ("colour", T)],
+             ("diff_ref_m", R), ("colour", T), ("voice", T)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -162,7 +169,7 @@ SCHEMA = {
                  ("caster_mount", T), ("frame", T), ("base_station", T), ("base_type", T),
                  ("base_ecef", T), ("layer_base_check", T), ("pole_heights", T),
                  ("n_captures", I), ("n_surface", I), ("n_object", I), ("n_ref", I),
-                 ("n_photo", I), ("n_control", I), ("n_voided", I), ("n_photos", I), ("n_track_points", I),
+                 ("n_photo", I), ("n_control", I), ("n_voided", I), ("n_photos", I), ("n_notes", I), ("n_track_points", I),
                  ("pct_fixed", R), ("gga", I), ("gga_lost", I), ("gga_parsed", I), ("rawx", I),
                  ("rawx_lost", I), ("gps_lost", I), ("caster_lost", I), ("rtcm_crc_errors", I),
                  ("remarks", T), ("source", T), ("source_sig", T), ("imported_utc", T),
@@ -312,8 +319,11 @@ def _geom(lat, lon, h):
 
 
 def import_session(gp, src, s, photos_dir, extract_photos=True):
-    """Write one parsed session; returns the number of photos extracted."""
+    """Write one parsed session; returns the number of photos extracted. Voice notes go to
+    `notes/` beside `photos_dir` (their count in s.notes_extracted); extract_photos False
+    extracts neither."""
     rel = lambda name: f"photos/{s.name}/{name}"
+    voice = lambda c: ";".join(f"notes/{s.name}/{v}" for v in c.get("voice_files", [])) or None
     caps = []
     for c in s.captures:
         files = c["photo_files"]
@@ -329,6 +339,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
             **{k: c.get(k) for k, _ in LOGGER_06},
             **{k: c.get(k) for k, _ in LOGGER_11},
+            "voice": voice(c), "voice_count": len(c.get("voice_files", [])),
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
 
@@ -338,7 +349,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         c = capd.get(p["n"], {})
         rows.append({"session": s.name, "n": p["n"], "name": p["name"], "photo": rel(p["name"]),
                      "utc": p["utc"], "attached": p["attached"], "bytes": p["bytes"],
-                     "lat": c.get("lat"), "lon": c.get("lon"), "h_ground": c.get("h_ground"),
+                     "lat": c.get("lat"), "lon": c.get("lon"), "h_ground": c.get("h_ground"), "voice": voice(c),
                      "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ})
     gp.upsert("photos", rows, key=("session", "name"), preserve=USER_COLUMNS["photos"])
 
@@ -347,7 +358,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         if c["class"] != "ref":
             continue
         r = {k: c.get(k) for k, _ in MEAS}
-        r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
+        r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ, "voice": voice(c),
                   "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
         for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok",
@@ -373,6 +384,8 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
     if extract_photos:
         for p in s.photos:
             n_new += src.extract_photo(p["name"], photos_dir / s.name / p["name"])
+        s.notes_extracted = sum(src.extract_note(p["name"], photos_dir.parent / "notes" / s.name / p["name"])
+                                for p in s.notes)
     return n_new
 
 
@@ -715,7 +728,7 @@ def run(argv=None, log=print, progress=None):
                     help="local frame origin (ellipsoidal h), instead of [site.origin]")
     ap.add_argument("--origin-name", help="name of the --origin point (shown in the CRS name)")
     ap.add_argument("--force", action="store_true", help="re-read sessions even if unchanged")
-    ap.add_argument("--no-photos", action="store_true", help="do not extract photos")
+    ap.add_argument("--no-photos", action="store_true", help="do not extract photos or voice notes")
     args = ap.parse_args(argv)
     added, unchanged = [], []
 
@@ -784,11 +797,14 @@ def run(argv=None, log=print, progress=None):
             i = s.info
             added.append({"session": s.name, "captures": i["n_captures"], "voided": i["n_voided"],
                           "photos": i["n_photos"],
-                          "photos_extracted": k, "track_points": i["n_track_points"],
+                          "photos_extracted": k, "notes": i["n_notes"],
+                          "notes_extracted": s.notes_extracted, "track_points": i["n_track_points"],
                           "replaced": s.name in done})
             log(f"  {s.name}: {i['format']}, app {i.get('app')}, {i['n_captures']} captures"
                   + (f" ({i['n_voided']} flagged void)" if i["n_voided"] else "") + ", "
-                  f"{i['n_photos']} photos ({k} extracted), {i['n_track_points']} track epochs"
+                  f"{i['n_photos']} photos ({k} extracted), "
+                  + (f"{i['n_notes']} voice notes ({s.notes_extracted} extracted), " if i["n_notes"] else "")
+                  + f"{i['n_track_points']} track epochs"
                   + (f"; {i['remarks']}" if i.get("remarks") else ""))
             src.close()
             stale.discard(s.name)

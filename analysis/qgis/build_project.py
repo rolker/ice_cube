@@ -39,8 +39,9 @@ What it sets up:
   stroke/fill colours; tracks thin grey by fix quality.
 - Forms: on captures, photos, refs and sessions only `note` (and `label` on captures,
   with completion from the labels already used) are editable; the photo field shows
-  the picture. Map tips (View > Show Map Tips) show the capture and its photo, and the
-  void reason of a flagged capture or ref.
+  the picture. Map tips (View > Show Map Tips) show the capture and its photo, a link per
+  voice note (logger 0.14.0, `notes/<session>/<file>.m4a`; click to play it in the system
+  player), and the void reason of a flagged capture or ref.
 
 Nothing site-specific is in this file: the CRS and paths come from the gpkg at run time.
 """
@@ -148,6 +149,17 @@ PHOTO_TIP = ('[% CASE WHEN "photo" IS NOT NULL THEN \'<br><img src="file:///\' |
              '@project_folder || \'/\' || "photo" || \'" width="320">\' ELSE \'\' END %]')
 
 
+# voice notes (logger 0.14.0): one file:/// link per path in "voice" (';' separated), for
+# the system player; a gpkg imported before schema 7 has no voice column and gets no links
+VOICE_TIP = ('[% CASE WHEN "voice" IS NOT NULL THEN \'<br>voice: \' || array_to_string(array_foreach('
+             'string_to_array("voice", \';\'), \'<a href="file:///\' || @project_folder || \'/\' || @element '
+             '|| \'">\' || regexp_replace(@element, \'^.*/\', \'\') || \'</a>\'), \' \') ELSE \'\' END %]')
+
+
+def voice_tip(lyr):
+    return VOICE_TIP if has(lyr, "voice") else ''
+
+
 def add(project, group, layer, visible=True):
     project.addMapLayer(layer, False)
     node = group.addLayer(layer)
@@ -182,13 +194,14 @@ def style_captures(lyr):
         'fix [% "fix" %], [% "n_epochs" %] epochs, sd up [% format_number("sd_u_m" * 100, 1) %] cm'
         '[% CASE WHEN "x_m" IS NOT NULL THEN \'<br>x \' || format_number("x_m", 3) || \' y \' || '
         'format_number("y_m", 3) || \' z \' || format_number("z_m", 3) || \' m\' ELSE \'\' END %]'
-        + (VOID_TIP if voided else '') + '<br>[% coalesce("note", \'\') %]' + PHOTO_TIP)
+        + (VOID_TIP if voided else '') + '<br>[% coalesce("note", \'\') %]' + voice_tip(lyr) + PHOTO_TIP)
     form(lyr, editable=("note", "label"), photo_field="photo", suggest=("label",))
 
 
 def style_photos(lyr):
     lyr.setRenderer(QgsSingleSymbolRenderer(camera_marker()))
-    lyr.setMapTipTemplate('<b>[% "name" %]</b><br>[% "session" %] n=[% "n" %] [% "utc" %]' + PHOTO_TIP)
+    lyr.setMapTipTemplate('<b>[% "name" %]</b><br>[% "session" %] n=[% "n" %] [% "utc" %]' + voice_tip(lyr)
+                          + PHOTO_TIP)
     lyr.setDisplayExpression('"name"')
     form(lyr, editable=("note",), photo_field="photo")
 
@@ -210,7 +223,7 @@ def style_refs(lyr):
                 f'format_number({diff} * 100, 1) || \' cm\' ELSE \'\' END', 7.5)
     lyr.setMapTipTemplate('<b>R[% "n" %]</b> site [% "site" %] [% "session" %]<br>[% "utc" %], '
                           '[% "n_epochs" %] epochs, pole [% "pole_m" %] m<br>[% coalesce("pole_check", \'\') %]'
-                          + (VOID_TIP if voided else ''))
+                          + (VOID_TIP if voided else '') + voice_tip(lyr))
     form(lyr, editable=("note",))
 
 
