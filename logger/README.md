@@ -468,9 +468,13 @@ taken. Tips, not antennas, are compared: a pole leaning θ puts the antenna pole
 sin θ off its tip (6.3 cm at 2° on a 1.8 m pole), and without a heading the phone knows θ
 but not which way, so each tip is known within that radius of the antenna (a MARK uses the
 gravity of its 1 s average; an auto capture the largest lean of its hold; a solved tip is
-exact; no gravity reading means anywhere within the pole height). Nothing more is taken
+exact; a MARK with no gravity reading is taken as leaning up to the plumb limit, and one
+with no calibration anywhere within the pole height). Nothing more is taken
 until the tip has certainly moved more than 3 times the still limit (6 cm at the default)
-from the latched tip; then the full hold must pass again. Standing up after a tilt set,
+from the latched tip; then the full hold must pass again. Because each tip is only known
+within its radius, the antenna spacing that is sure to re-arm is up to 2 × pole height ×
+sin(plumb limit) + 3 × the still limit: about 19 cm at the defaults (2°, 2 cm, 1.8 m), 68 cm
+at a 10° plumb limit. Points closer together than that may need MARK. Standing up after a tilt set,
 swaying across the plumb cone, or an epoch with no gravity reading never clears it. So
 walk to the next point. To re-shoot the same point, UNDO the capture (that clears the
 latch) or press MARK.
