@@ -317,6 +317,19 @@ public class PoleCheckTest {
         assertNull(PoleCheck.check(ref(0, 50), Arrays.asList(earlierNoH), 0.03));
     }
 
+    @Test public void infiniteGroundHeightIsNoHeight() {
+        // Double.parseDouble reads "Infinity", so a corrupt refs.csv row can carry one
+        PointRow infNow = ref(0, 50);
+        infNow.hGround = Double.POSITIVE_INFINITY;
+        assertNull(PoleCheck.check(infNow, Arrays.asList(ref(0, 50)), 0.03));
+        PointRow infEarlier = ref(0, 50);
+        infEarlier.hGround = Double.NEGATIVE_INFINITY;
+        assertTrue(PoleCheck.matches(ref(0, 50), Arrays.asList(infEarlier)).isEmpty());
+        PoleCheck c = PoleCheck.check(ref(0, 50), Arrays.asList(infEarlier, ref(0.1, 50.01)), 0.03);
+        assertEquals(1, c.visits);
+        assertEquals(50.01, c.reference, 1e-9);
+    }
+
     @Test public void youngEarlierRefIsNeverAReference() {
         PointRow now = ref(0, 50.000);
         PointRow good = ref(0.02, 50.001), young = ref(0.01, 50.080);   // young: still settling, last in file order

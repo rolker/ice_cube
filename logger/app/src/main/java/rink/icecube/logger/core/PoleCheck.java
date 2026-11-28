@@ -90,7 +90,7 @@ public final class PoleCheck {
         double[] enu = new double[3];
         Set<String> seen = new HashSet<>();
         for (PointRow r : earlier) {
-            if (r == now || r.voided || r.fixYoung == 1 || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
+            if (r == now || r.voided || r.fixYoung == 1 || !r.hasPosition() || !Double.isFinite(r.hGround)) continue;
             f.toEnu(r.lat, r.lon, f.h0, enu);
             if (!(Math.hypot(enu[0], enu[1]) <= MATCH_RADIUS_M)) continue;   // a NaN distance is no match
             if (r.session != null && !r.session.isEmpty() && !seen.add(r.session + "/" + r.n)) continue;
@@ -117,10 +117,10 @@ public final class PoleCheck {
     /**
      * The check for a new ref against earlier refs, in any order: {@link #matches} sorts the
      * visits by session then n, so the last is the most recent visit. Null if the new ref
-     * has no ground height or no earlier ref matches.
+     * has no finite ground height or no earlier ref matches.
      */
     public static PoleCheck check(PointRow now, List<PointRow> earlier, double tolerance) {
-        if (Double.isNaN(now.hGround)) return null;
+        if (!Double.isFinite(now.hGround)) return null;
         List<PointRow> m = matches(now, earlier);
         if (m.isEmpty()) return null;
         int k = m.size();
