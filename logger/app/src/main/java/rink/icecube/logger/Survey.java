@@ -246,6 +246,16 @@ final class Survey {
         auto.setLimits(Settings.autoPlumbDeg(p), Settings.autoHoldS(p), Settings.autoStillM(p));
     }
 
+    /**
+     * The pole height setting changed. The calibrated axis is the phone's mount on the pole and
+     * stays, but if the phone was moved to change the height the axis is stale, so after a
+     * calibration this posts a notice saying so (no forced recalibration).
+     */
+    synchronized void poleHeightChanged() {
+        if (poleAxis == null) return;
+        notice = new Notice("Pole height changed: recalibrate if the phone moved in its mount", false, true);
+    }
+
     /** Settings changed: the young limit applies at once, the jump and float spell thresholds from the next stretch. */
     synchronized void applyGuardSettings() {
         guard.setLimits(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),

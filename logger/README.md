@@ -439,7 +439,9 @@ RMS fit residual of 1° or less, and a twist of 90° or more (a phone without a 
 cannot pass); otherwise it fails with the reason (the buzz and an amber notice) and auto
 capture stays off. No GPS epoch for 5 s (the rover gone) fails it too, so it never hangs. A young or suspect fix is fine here (only the shape of one short spell is used). MARK,
 tilt capture and refs are refused while it runs; Back or MENU > Stop pole calibration stops
-it. Recalibrating drops the old axis at the start. events.csv gets `pole calibration start`,
+it. Recalibrating drops the old axis at the start. Changing the pole height keeps the axis
+(it is the phone's mount, not the length) but, after a calibration, shows the notice
+`Pole height changed: recalibrate if the phone moved in its mount`. events.csv gets `pole calibration start`,
 `... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. twist_deg=.. axis=x;y;z
 lean_speeds_mps=..` (phone axes: the mounting, not a position) or `pole calibration failed
 lean_speeds_mps=..: ..`. `lean_speeds_mps` lists the antenna speed of every lean-phase epoch

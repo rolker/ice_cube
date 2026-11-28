@@ -132,6 +132,8 @@ public final class LoggerService extends Service {
             if (v != poleHeight) {
                 poleHeight = v;
                 event("pole_height=" + PoleHeight.format(v) + " changed");
+                Survey sv = survey;
+                if (sv != null) sv.poleHeightChanged();
             }
         } else if (Settings.FRAME.equals(key) || Settings.FRAME_EPOCH.equals(key)) {
             updateFrame();
