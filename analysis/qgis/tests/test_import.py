@@ -419,6 +419,36 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(caps[2]["voice_files"], [])
         self.assertEqual(caps[5]["voice_files"], [synth.NOTE_5])   # the orphan goes back to its event's row
 
+    def test_orphan_note_without_event_never_takes_a_later_capture(self):
+        """An orphan note with no events.csv line (a share zip made while it recorded) goes
+        by the n in its file name only when that capture is older than the note; a capture
+        made later that took the number (a MARK during a note planned as its own row) does
+        not get it: the note is an own row with no n."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        key = f"{name}/points.csv"
+        lines = files[key].decode().splitlines()
+        lines[2] = lines[2][:-len(synth.NOTE_2)]      # row n=2 (10:00:20) does not list it
+        lines[5] = lines[5][:-len(synth.NOTE_5)]      # nor does row n=5
+        files[key] = ("\n".join(lines) + "\n").encode()
+        ev = f"{name}/events.csv"
+        files[ev] = b"\n".join(l for l in files[ev].split(b"\n") if b"note file=" not in l)
+        late = "note_5_20261201T100044Z.m4a"         # pressed before row 5 (10:00:45) was taken
+        early = "note_3_20261201T100035Z.m4a"        # row 3 (10:00:30) is older: its own
+        files[f"{name}/notes/{late}"] = synth.M4A
+        files[f"{name}/notes/{early}"] = synth.M4A
+        src = find_sessions([synth.write_zip(self.d / "o.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: (x["n"], x["attached"]) for x in s.notes}
+        self.assertEqual(p[synth.NOTE_2], (None, "own row"))   # row 2 is later than 10:00:12
+        self.assertEqual(p[synth.NOTE_5], (None, "own row"))   # same second as row 5: not older
+        self.assertEqual(p[late], (None, "own row"))
+        self.assertEqual(p[early], (3, "capture"))
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual((caps[2]["voice_files"], caps[5]["voice_files"], caps[3]["voice_files"]),
+                         ([], [], [early]))
+
     def test_schema7_voice(self):
         """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""
         self.assertEqual(imp.SCHEMA_VERSION, 7)

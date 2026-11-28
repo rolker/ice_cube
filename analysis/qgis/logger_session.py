@@ -619,8 +619,11 @@ def _attachments(src, ev, captures, folder, word, name_re, key):
     voice_files) lists it is the only source of its n and whether it is attached (a flag in
     0.9.0 moves photos, and from 0.14.0 notes, to another row, so the number in the file name
     and the original "<word> file=..." event can be stale; the file is never renamed). The
-    event, then the name, only for an orphan file. A photo-class row holding only a note is an
-    own row like a photo's."""
+    event, then the name, only for an orphan file. The name's n is used only when that capture
+    was taken in an earlier second than the file's time: a file planned as a row of its own is
+    named after the next row number, which a capture made while it was being taken (a MARK
+    during a voice note) may have used. Otherwise an orphan with no event is an own row with
+    no n. A photo-class row holding only a note is an own row like a photo's."""
     attach = {}
     for _, _, text in ev:
         m = re.match(word + r" file=" + folder + r"/(\S+) .*?(attached to|own row) n=(\d+)", text)
@@ -630,6 +633,13 @@ def _attachments(src, ev, captures, folder, word, name_re, key):
     for c in captures:
         for p in c[key]:
             by_file[p] = c
+    caps = {c["n"]: c for c in captures}
+
+    def earlier(n, utc):
+        """Whether capture n exists and was taken in an earlier second than utc."""
+        c = caps.get(n)
+        return c is not None and utc is not None and bool(c.get("utc")) and c["utc"][:19] < utc[:19]
+
     out = []
     for name in src.file_names(folder):
         m = name_re.match(name)
@@ -639,12 +649,14 @@ def _attachments(src, ev, captures, folder, word, name_re, key):
         row = by_file.get(name)
         if row is not None:
             n, kind = row["n"], "own row" if row["class"] == "photo" else "capture"
+        elif name in attach:
+            n, kind = attach[name]
+        elif m and earlier(int(m.group(1)), utc):
+            n, kind = int(m.group(1)), None
         else:
-            n = (attach.get(name) or (None,))[0] or (int(m.group(1)) if m else None)
-            kind = (attach.get(name) or (None, None))[1]
+            n, kind = None, "own row"
         out.append({"n": n, "name": name, "utc": utc, "attached": kind,
                     "bytes": src.size(folder + "/" + name)})
-    caps = {c["n"]: c for c in captures}
     for p in out:
         c = caps.get(p["n"])
         if c is not None and p["name"] not in c[key]:

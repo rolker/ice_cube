@@ -941,7 +941,11 @@ public final class MainActivity extends Activity {
         LoggerService s = Control.live();
         if (s != null && s.sessionOpen()) {
             confirm("Stop the session?", "Stops recording and disconnects the GPS and the caster.", "Stop",
-                    () -> Control.stopAll(this));
+                    () -> {
+                        // the note gets its row and events.csv line while the session is open
+                        if (noteRec != null) finishNote(false);
+                        Control.stopAll(this);
+                    });
         } else Control.startSession(this);
     }
 
@@ -1017,6 +1021,7 @@ public final class MainActivity extends Activity {
         item((coverageOn ? "☑" : "☐") + " Coverage overlay", this::toggleCoverage);
         item("Share last session", () -> {
             List<File> all = Storage.sessions(this);
+            if (noteRec != null) finishNote(false);   // the zip gets the whole note, not a partial .m4a
             if (all.isEmpty()) toast("No sessions yet"); else Sharer.share(this, all.get(0));
         });
         item("Sessions", () -> startActivity(new Intent(this, SessionsActivity.class)));
