@@ -175,3 +175,30 @@ Tests: `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: 279 tests, 0
 Needs a phone check before merge: the plumb sign (a plumb pole should read about 0°, a 5° lean about 5°, on the AUTO line's `hold plumb` readout); the calibration feel (3 / 10 / 8 s phases, the 2 cm still restart, the 1° residual and 180° coverage gates, the 100 ms GGA latency guess for the gravity window, the 0.5 m/s swing gate); the cue tones; and the AUTO line's layout in both orientations.
 
 Deferred: mentioning `auto` in `analysis/qgis/soundings.py`'s `capture_sigma_inputs` docstring (that file belongs to the #20 work in flight; its rule already gives an auto row the single-capture sigma, which is right). No `test_soundings` case added for the same reason.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 20:04 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-35 at `085d8e9`
+**Base**: main
+**Depth**: Standard (reason: ~1500 lines over 20 logger files, new core state machines; no security or cross-layer trigger)
+**Must-fix**: 1 | **Suggestions**: 10
+**Round**: 1 | **Ship**: continue — round 1: 1 must-fix; first round always re-reviews after fixes
+
+Specialists: static analysis (no Java linter profile; `./gradlew testDebugUnitTest --max-workers 4`: 279 tests, 0 failures), governance (public repo: tests synthetic and relative, the calibration event logs only phone-axis mounting geometry; pass), plan drift (deviations documented in the Implementation entry), Claude adversarial, cross-model gemini and codex (both complete). Clean areas, confirmed by more than one reviewer: gate order and window clearing (nothing fires during a tilt set, ref or calibration), young/suspect gating, a Surface MARK while latched, the cue debounce, plumb sign (TYPE_GRAVITY is an up vector and fitAxis starts from the mean gravity), lock order (Survey then ImuLogger, never reversed), and auto rows going through the shared `capture()` path, so they carry #15's columns and feed Coverage. False positives dropped: gemini's NPE in `autoEnu` (`Epoch.fixed()` implies finite lat/lon) and its `COVERAGE_FIRST` concern (it is computed with indexOf).
+
+### Findings
+- [ ] (must-fix) A finished Surface tilt set does not count as the stop's capture: `finishTilt` never latches auto, so when the pole is stood up on the same tip auto writes a duplicate Surface row (and a duplicate Coverage node) 2 s later. Latch at the tilt tip's horizontal position, and re-arm only on a move away, because a plumb re-arm would clear the latch on the first leaning epoch. Same path for `finishTilt(true)`. Found by the lead and the Claude adversarial pass. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:678`
+- [ ] (suggestion) An accepted calibration runs `auto.reset()`, so auto can capture the calibration point about 2 s after DONE if the user pauses plumb. Latch there with the same move-away-only rule. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:513`
+- [ ] (suggestion) The plumb re-arm has no hysteresis, and a NaN plumb reading (a gravity gap) also unlatches, so drifting from 1.9° to 2.1° at a stop can give a duplicate. Unlatch on a finite tilt clearly over the limit (for example 2x), or only after it lasts. — `logger/app/src/main/java/rink/icecube/logger/core/AutoCapture.java:150`
+- [ ] (suggestion) The latch is set before `average(now)` is checked, so a skipped capture (no RTK-fixed 1 s average) leaves the stop "taken" and the bar green with a stale label. Reset the latch on that skip. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:479`
+- [ ] (suggestion) UNDO (void) of an auto capture leaves the latch and the "taken" label in place; reset when the voided row is the latched one. — `logger/app/src/main/java/rink/icecube/logger/Survey.java` (`voidCapture`)
+- [ ] (suggestion) The calibration's still phase has no epoch-gap check: two fixed epochs on either side of a GPS stall can complete it. Restart it on a gap, as AutoCapture does. — `logger/app/src/main/java/rink/icecube/logger/core/PoleCalibration.java:145`
+- [ ] (suggestion) The calibration advances only on epochs: with no GGA it never times out and the bar freezes at "3 s" while MARK, tilt and ref stay refused. Add a wall-clock timeout or a GPS-gone notice. Also a NaN height or no gravity sensor fails as "could not hold still", which hides the real cause. — `logger/app/src/main/java/rink/icecube/logger/core/PoleCalibration.java:94`
+- [ ] (suggestion) Calibration acceptance: `MIN_SAMPLES` counts the still sample, so 3 leans pass (the plan says 4 leans), and the twist phase is never checked for any twist. Make the comparisons NaN-safe (`!(residual <= MAX)`), since a NaN currently passes every gate. — `logger/app/src/main/java/rink/icecube/logger/core/PoleCalibration.java:174`
+- [ ] (suggestion) The comment for the gravity window says ±150 ms about 100 ms before the epoch, but the upper 50 ms lies in the future at GGA arrival, so the window really used is about [-250, 0] ms. Fix the comment or the window. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:77`
+- [ ] (suggestion) Wording: the DONE notice says "Auto capture on" even when the setting is off or the mode is not Surface; RESTART says "moved" when the cause was a lost fix or missing gravity; HOLDING's `%.0f` shows "0 / 1 s" for a 0.5 s hold. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:497`
+- [ ] (suggestion) Still owed before merge: the phone check of plumb sign, calibration feel, cues and layout listed in the Implementation entry. — `logger/README.md`
