@@ -470,6 +470,29 @@ class ImportTest(unittest.TestCase):
                                 "(method IS NOT NULL OR fix_suspect IS NOT NULL OR tilt_sd_u_m IS NOT NULL)"),
                          [(0,)])
 
+    def test_v11_columns(self):
+        """0.11.0 points.csv fix columns (#15) reach the captures table; older sessions leave
+        them NULL (unknown, never 0)."""
+        name = "2026-12-01_10-00-00"
+        files = synth.with_void(synth.session_v06(name), {})
+        key = f"{name}/points.csv"
+        lines = files[key].decode().splitlines()
+        extra = {1: "float,45.0,float_spell,1", 5: "single,,,0"}
+        body = [lines[0] + ",fix_start,float_spell_s,suspect_reason,fix_young"]
+        body += [line + "," + extra.get(int(line.split(",")[0]), ",,,") for line in lines[1:]]
+        files[key] = ("\n".join(body) + "\n").encode()
+        z = synth.write_zip(self.d / "s.zip", files)
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        rows = self.q("SELECT n, fix_start, float_spell_s, suspect_reason, fix_young FROM captures ORDER BY n")
+        self.assertEqual(rows[0], (1, "float", 45.0, "float_spell", 1))
+        self.assertEqual(rows[1][1:], (None, None, None, None))
+        self.assertEqual(rows[4], (5, "single", None, None, 0))
+        z6 = synth.write_zip(self.d / "s6.zip", synth.session_v06("2026-12-02_10-00-00"))
+        run(z6, "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertEqual(self.q("SELECT count(*) FROM captures WHERE session='2026-12-02_10-00-00' AND "
+                                "(fix_start IS NOT NULL OR fix_young IS NOT NULL OR suspect_reason IS NOT NULL)"),
+                         [(0,)])
+
     def _as_schema2(self):
         """Make the gpkg look like one written before schema 3: no 0.6 columns."""
         con = gw.connect(self.gpkg)

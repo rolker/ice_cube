@@ -13,8 +13,9 @@ import java.util.List;
  * is not counted, and counting resumes at the next fixed epoch. Only fixed epochs are
  * averaged. Feed epochs in time order.
  *
- * A fixed epoch can also be marked not usable (the false-fix guard: the fix is still
- * settling); it is then treated like a fix drop, not counted and not averaged.
+ * A fixed epoch can also be marked not usable; it is then treated like a fix drop, not
+ * counted and not averaged. (Until 0.10 the false-fix guard did this while the fix settled;
+ * from 0.11.0, #15, Survey counts every fixed epoch and marks a young ref instead.)
  */
 public final class RefOccupation {
     public static final long PAUSE_NS = 2_000_000_000L;
@@ -35,7 +36,7 @@ public final class RefOccupation {
 
     public Change onEpoch(Epoch e) { return onEpoch(e, true); }
 
-    /** usable false: a fixed epoch that must not count (fix settling). */
+    /** usable false: a fixed epoch that must not count. */
     public Change onEpoch(Epoch e, boolean usable) {
         if (done || e == null || e.elapsedNs < lastCountNs) return Change.NONE;
         if (e.fixed() && usable) {

@@ -74,6 +74,139 @@ class TestStretchesAndStops(unittest.TestCase):
         self.assertAlmostEqual(ep.fix_age[second + 8], 2.0, places=2)
         self.assertEqual(ep.stretch[ep.t.index(min(t for t in ep.t if t - ep.t[0] >= 12.5))], -1)
 
+    def test_float_spell_parity_with_logger_fixguard(self):
+        """#15, the logger FixGuardTest cases in local metres: a fix after 60 s of float with a
+        0.48 m step is suspect by float spell (case A); after 5 s of float it is not; after
+        single epochs the 2.2 m step has no jump (case C); a step inside a fix is a jump."""
+        def run(track, **kw):
+            ep = epochs_from(track)
+            snd.fix_stretches(ep, suspect_jump_m=1.0, **kw)
+            return ep, ep.stretch.index(0)
+        flt = lambda t0, s, e=0.0, n=0.0, u=1.8: [(t0 + k / 4, e, n, u, 5) for k in range(int(s * 4))]  # noqa: E731
+        fix = lambda t0, s, e=0.0, n=0.0, u=1.8: [(t0 + k / 4, e, n, u, 4) for k in range(int(s * 4))]  # noqa: E731
+        ep, i = run(flt(0, 60) + fix(60, 5, n=0.48))
+        self.assertAlmostEqual(ep.jump[i], 0.48, delta=0.01)
+        self.assertTrue(ep.suspect[i])
+        self.assertEqual(ep.suspect_why[i], "float_spell")
+        self.assertAlmostEqual(ep.float_spell[i], 60.0, delta=0.01)
+        ep, i = run(flt(0, 60) + fix(60, 5, n=0.48), float_spell_s=0)      # rule off
+        self.assertFalse(ep.suspect[i])
+        ep, i = run(flt(0, 60) + fix(60, 5, n=0.48), float_spell_s=-5)     # negative: off, as in Java
+        self.assertFalse(ep.suspect[i])
+        ep, i = run(flt(0, 5) + fix(5, 5, n=0.48))
+        self.assertFalse(ep.suspect[i])
+        self.assertAlmostEqual(ep.float_spell[i], 5.0, delta=0.01)
+        ep, i = run(flt(0, 60) + fix(60, 5, n=1.5))
+        self.assertEqual(ep.suspect_why[i], "jump;float_spell")
+        ep, i = run([(k / 4, 0.0, 0.0, 1.8, 1) for k in range(12)] + fix(3, 5, e=1.2, n=1.5, u=0.8))
+        self.assertIsNone(ep.jump[i])
+        self.assertFalse(ep.suspect[i])
+        self.assertIsNone(ep.float_spell[i])
+        ep, _ = run(flt(0, 2) + fix(2, 5) + fix(7, 5, n=1.2))              # 1.2 m step between fixed epochs
+        j = ep.stretch.index(1)
+        self.assertAlmostEqual(ep.jump[j], 1.2, delta=0.01)
+        self.assertEqual(ep.suspect_why[j], "jump")
+
+    def test_dropout_parity_with_logger_fixguard(self):
+        """#15, FixGuardTest shortDropoutInsideAFixKeepsTheStretch and
+        floatSpellCarriesOverAShortDropout: a dropout (no position, single or DGPS) of 2 s or
+        less inside a fix keeps the stretch, a longer one ends it, a float epoch always ends
+        it; a float spell carries over a dropout of 2 s or less before the fix."""
+        def run(track):
+            ep = epochs_from(track)
+            for k, (_, _, _, _, f) in enumerate(track):
+                if f == 0:                                     # no position
+                    ep.x[k] = ep.y[k] = ep.za[k] = ep.z[k] = None
+            snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0)
+            return ep
+        seg = lambda t0, s, q, e=0.0, n=0.0: [(t0 + k / 4, e, n, 1.8, q) for k in range(int(s * 4))]  # noqa: E731
+        for q in (0, 1, 2):
+            # fix 2..7.25 s, 7 dropout epochs, fix again 2 s after the last fixed epoch
+            tr = seg(0, 2, 5) + seg(2, 5.25, 4) + seg(7.25, 1.75, q, e=3.0) + seg(9, 1, 4, e=0.1)
+            tr += seg(10, 3, q, e=3.0) + seg(13, 1, 4, e=0.1)   # 3.25 s since the last fix: new
+            ep = run(tr)
+            i = ep.t.index(min(t for t in ep.t if t - ep.t[0] >= 9 - 1e-6))
+            self.assertEqual(ep.stretch[i], 0, q)
+            self.assertAlmostEqual(ep.fix_age[i], 7.0, delta=0.01)
+            self.assertEqual(max(ep.stretch), 1, q)
+        ep = run(seg(0, 0.25, 5) + seg(0.25, 0.25, 4) + seg(0.5, 0.25, 0) + seg(0.75, 0.25, 4, n=1.2))
+        self.assertEqual(max(ep.stretch), 1)                 # a jump inside the fix across a dropout
+        j = ep.stretch.index(1)
+        self.assertAlmostEqual(ep.jump[j], 1.2, delta=0.01)
+        self.assertEqual(ep.suspect_why[j], "jump")
+        ep = run(seg(0, 0.25, 4) + seg(0.25, 0.25, 5) + seg(0.5, 0.25, 4))
+        self.assertEqual(max(ep.stretch), 1)                 # one float epoch ends it
+        for q in (0, 1, 2):                                  # 2026-11-21 shape, one-epoch dropout
+            ep = run(seg(0, 60, 5) + seg(60, 0.25, q, e=3.0) + seg(60.25, 2, 4, n=0.48))
+            i = ep.stretch.index(0)
+            self.assertEqual(ep.suspect_why[i], "float_spell", q)
+            self.assertAlmostEqual(ep.float_spell[i], 60.25, delta=0.01)
+        ep = run(seg(0, 60, 5) + seg(60, 3, 1, e=3.0) + seg(63, 2, 4, n=0.48))
+        self.assertFalse(ep.suspect[ep.stretch.index(0)])     # over 2 s: the spell is over
+        for q in (0, 1, 2):                                  # the jump carries over a one-epoch dropout too
+            ep = run(seg(0, 60, 5) + seg(60, 0.25, q, e=3.0) + seg(60.25, 2, 4, n=0.48))
+            self.assertAlmostEqual(ep.jump[ep.stretch.index(0)], 0.48, delta=0.01)
+
+    def test_backward_time_step_parity_with_logger_fixguard(self):
+        """#15, FixGuardTest backwardGgaTimeStepStartsAStretch: a fixed epoch whose GGA time
+        steps back from the last fixed epoch starts a stretch (the next one continues it), and
+        a fix that steps back from the last float epoch ends the float spell."""
+        fix = lambda t0, s: [(t0 + k / 4, 0.0, 0.0, 1.8, 4) for k in range(int(s * 4))]  # noqa: E731
+        flt = lambda t0, s: [(t0 + k / 4, 0.0, 0.0, 1.8, 5) for k in range(int(s * 4))]  # noqa: E731
+        ep = epochs_from(fix(0, 3))
+        ep.t[8] = ep.t[7] - 0.5                              # 1.75 s, then 1.25 s
+        snd.fix_stretches(ep, suspect_jump_m=1.0)
+        self.assertEqual(ep.stretch[7], 0)
+        self.assertEqual(ep.stretch[8], 1)
+        self.assertEqual(ep.stretch[9], 1)                   # 2.25 s: 1 s after it, same stretch
+        ep = epochs_from(flt(0, 30) + fix(30, 2))
+        i = len(flt(0, 30))
+        ep.t[i] = ep.t[i - 1] - 0.25
+        snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0)
+        self.assertEqual(ep.stretch[i], 0)
+        self.assertIsNone(ep.float_spell[i])
+        self.assertIsNone(ep.jump[i])
+        self.assertFalse(ep.suspect[i])
+
+    def test_jump_carries_over_a_short_dropout(self):
+        """#15, FixGuardTest startJumpCarriesOverAShortDropout: the start jump is measured from
+        the last float or fixed epoch across a dropout (no position, single or DGPS) of 2 s or
+        less; a float spell under 20 s with a 1.5 m step is flagged by the jump."""
+        def run(track):
+            ep = epochs_from(track)
+            for k, (_, _, _, _, f) in enumerate(track):
+                if f == 0:
+                    ep.x[k] = ep.y[k] = ep.za[k] = ep.z[k] = None
+            snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0)
+            return ep, ep.stretch.index(0)
+        seg = lambda t0, s, q, e=0.0, n=0.0: [(t0 + k / 4, e, n, 1.8, q) for k in range(int(s * 4))]  # noqa: E731
+        for q in (0, 1, 2):
+            ep, i = run(seg(0, 10, 5) + seg(10, 0.25, q, e=3.0) + seg(10.25, 2, 4, n=1.5))
+            self.assertAlmostEqual(ep.jump[i], 1.5, delta=0.01)
+            self.assertEqual(ep.suspect_why[i], "jump", q)
+            ep, i = run(seg(0, 10, 5) + seg(10, 1.75, q, e=3.0) + seg(11.75, 2, 4, n=1.5))   # 2 s exactly
+            self.assertAlmostEqual(ep.jump[i], 1.5, delta=0.01)
+            ep, i = run(seg(0, 10, 5) + seg(10, 3, q, e=3.0) + seg(13, 2, 4, n=1.5))         # over 2 s
+            self.assertIsNone(ep.jump[i])
+            self.assertFalse(ep.suspect[i])
+
+    def test_other_station_fix_ends_the_stretch(self):
+        """#15: with a station filter, a fixed epoch from another station ends the stretch, the
+        float spell and the jump origin, so an A-B-A switch within 2 s is a new stretch with
+        an unknown jump, not a continued one."""
+        seg = lambda t0, s, q, e=0.0, n=0.0: [(t0 + k / 4, e, n, 1.8, q) for k in range(int(s * 4))]  # noqa: E731
+        tr = seg(0, 30, 5) + seg(30, 5, 4) + seg(35, 0.5, 4, n=2.0) + seg(35.5, 5, 4, n=0.1)
+        ep = epochs_from(tr)
+        for k, (t, *_rest) in enumerate(tr):
+            ep.station[k] = 7 if 35 <= t < 35.5 else 3
+        snd.fix_stretches(ep, suspect_jump_m=1.0, float_spell_s=20.0, station=3)
+        self.assertEqual(max(ep.stretch), 1)
+        self.assertTrue(ep.suspect[ep.stretch.index(0)])     # after 30 s of float
+        j = ep.stretch.index(1)
+        self.assertIsNone(ep.jump[j])
+        self.assertIsNone(ep.float_spell[j])
+        self.assertFalse(ep.suspect[j])
+
     def test_stops(self):
         tr, s = [], 0.0
         for k in range(20):                      # still 5 s, 3 mm wobble
@@ -487,6 +620,92 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(caps[1]["tilt_deg"], sg["tilt_bubble_deg"])
         self.assertNotIn("warning", logged)
 
+    def test_no_raw_capture_uses_the_loggers_suspect_flags(self):
+        """#15: with no session_paths a capture's own fix_suspect/suspect_reason give its
+        flags, so a logger float-spell capture gets use 0; fix_suspect with no reason (logger
+        0.6 to 0.10) is a jump."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        caps, _ = self._build_logger(gpkg)
+        self.assertEqual(caps[1]["use"], 1)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='float_spell' WHERE n=1")
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason=NULL WHERE n=2")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg)
+        self.assertIn("float_spell", snd.flags_of(caps[1]))
+        self.assertNotIn("suspect_jump", snd.flags_of(caps[1]))
+        self.assertEqual(caps[1]["use"], 0)
+        self.assertIn("suspect_jump", snd.flags_of(caps[2]))
+
+    def test_no_raw_unknown_suspect_reason_is_suspect(self):
+        """#15: fix_suspect 1 with a reason this script does not know (a newer logger) is
+        flagged fix_suspect and excluded; a known reason next to it keeps its own flag."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='height' WHERE n=1")
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='float_spell;height' WHERE n=2")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg)
+        self.assertEqual(set(snd.flags_of(caps[1])) & {"fix_suspect", "suspect_jump", "float_spell"}, {"fix_suspect"})
+        self.assertEqual(caps[1]["use"], 0)
+        self.assertEqual(set(snd.flags_of(caps[2])) & {"fix_suspect", "suspect_jump", "float_spell"},
+                         {"fix_suspect", "float_spell"})
+
+    def test_no_raw_capture_uses_the_loggers_fix_age(self):
+        """#15: with no session_paths a capture's own fix_age_s gives the settle sigma and
+        flag; fix_young 1 past settle_s (a longer logger limit) leaves a fix_young trace."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_age_s=30, fix_young=1 WHERE n=1")
+        con.execute("UPDATE captures SET fix_age_s=150, fix_young=1 WHERE n=2")
+        con.execute("UPDATE captures SET fix_age_s=150, fix_young=0 WHERE n=3")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg)
+        sg = snd.DEFAULTS["sigma"]
+        self.assertAlmostEqual(caps[1]["fix_age_s"], 30.0)
+        self.assertAlmostEqual(caps[1]["sigma_settle"], sg["settle_extra"] * (1 - 30 / 120) ** 2, places=9)
+        self.assertIn("settle_inflated", snd.flags_of(caps[1]))
+        self.assertNotIn("fix_young", snd.flags_of(caps[1]))
+        self.assertEqual(caps[2]["sigma_settle"], 0.0)
+        self.assertIn("fix_young", snd.flags_of(caps[2]))
+        self.assertNotIn("fix_young", snd.EXCLUDING)          # a trace, not excluding
+        self.assertNotIn("fix_young", snd.flags_of(caps[3]))
+
+    def test_capture_on_a_float_epoch_uses_the_loggers_columns(self):
+        """#15: with raw epochs, a capture whose nearest epoch is in no fix stretch (n=2 at
+        20 s lands in the 20-25 s float spell) takes the logger's own fix_suspect,
+        suspect_reason, fix_age_s and fix_young, so a logger-suspect capture gets use 0."""
+        ses = synth.write_dir(self.d / "sessions", synth.session_v06())
+        gpkg = self._import(ses)
+        con = gw.connect(gpkg)
+        con.execute("UPDATE captures SET fix_suspect=1, suspect_reason='float_spell', fix_age_s=150, "
+                    "fix_young=1 WHERE n=2")
+        con.commit()
+        con.close()
+        caps, _ = self._build_logger(gpkg, session_paths=[str(ses)])
+        c = caps[2]
+        self.assertIn("float_spell", snd.flags_of(c))
+        self.assertIn("fix_young", snd.flags_of(c))
+        self.assertNotIn("no_fix_info", snd.flags_of(c))
+        self.assertAlmostEqual(c["fix_age_s"], 150.0)
+        self.assertEqual(c["use"], 0)
+        self.assertNotIn("float_spell", snd.flags_of(caps[1]))   # 10 s: fixed, the raw stretch decides
+
+    def test_float_spell_rule_off_in_the_log(self):
+        """#15: float_spell_s 0 or less logs the rule as off, not "float spell >= 0 s"."""
+        gpkg = self._import(synth.write_zip(self.d / "s.zip", synth.session_v06()))
+        for v in (0, -5):
+            logged = []
+            cfg = {"season": {"gpkg": str(gpkg)},
+                   "soundings": {"float_spell_s": v, "sources": [{"id": "logger", "type": "logger"}]}}
+            snd.build(cfg, self.d, log=lambda *a: logged.append(" ".join(map(str, a))), write=False)
+            text = "\n".join(logged)
+            self.assertIn("or float spell rule off)", text)
+            self.assertNotIn("float spell >=", text)
+
     def test_tilt_capture_gst_floors(self):
         """With GST (1.5 cm height sigma) above the tilt sd_u the GST term wins."""
         ses = make_session(self.d / "sessions", tilt_sd=(0.004, 0.004, 0.005))
@@ -589,6 +808,22 @@ class TestBuild(unittest.TestCase):
         ok, bad = snd.verify_suspect(rows)
         self.assertEqual((ok, bad), (1, 0))
         self.assertIn("suspect_verified", rows[3]["flags"])
+
+    def test_float_spell_pass_can_be_verified(self):
+        """#15: verify_suspect clears float_spell like suspect_jump; both become suspect_verified."""
+        r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731
+        rows = [r(sid="a1", **{"class": "anchor"}, x_m=0.0, y_m=0.0, z_m=1.00, pass_id="p1", anchor="site1"),
+                r(sid="a3", **{"class": "anchor"}, x_m=0.05, y_m=0.05, z_m=1.01, pass_id="p4",
+                  flags="suspect_jump,float_spell")]
+        for x in rows:
+            snd.finish_use(x)
+        self.assertEqual(rows[1]["use"], 0)
+        snd.assign_anchors(rows, 0.3, 0.1, 0.1, ground_sigma=0.015)
+        ok, bad = snd.verify_suspect(rows)
+        self.assertEqual((ok, bad), (1, 0))
+        self.assertEqual(rows[1]["flags"], "suspect_verified")
+        snd.finish_use(rows[1])
+        self.assertEqual(rows[1]["use"], 1)
 
     def test_anchor_join_removes_configured_ground_sigma(self):
         sg = snd._merge(snd.DEFAULTS["sigma"], {"ground": 0.05})        # not the default 0.015
