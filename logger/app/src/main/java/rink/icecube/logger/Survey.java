@@ -1,5 +1,6 @@
 package rink.icecube.logger;
 
+import android.content.SharedPreferences;
 import android.os.SystemClock;
 
 import java.io.File;
@@ -34,9 +35,11 @@ import rink.icecube.logger.core.VoidRule;
  * each change, which is tiny) and as "capture ..." events in events.csv. Refs are also
  * appended to refs.csv and checked against earlier visits (the pole check).
  *
- * The false-fix guard ({@link FixGuard}) follows the RTK fixed stretches: captures, ref
- * counting and tilt leans are held back while a new fix settles, and rows from a stretch
- * that began with a large jump are flagged (fix_suspect) with an amber notice.
+ * The false-fix guard ({@link FixGuard}) follows the RTK fixed stretches: captures, refs
+ * and tilt leans from a young fix go ahead with an amber notice and the YOUNG cue and are
+ * marked (fix_young; logger 0.11.0, #15: until then they were held back), and rows from a
+ * stretch that began with a large jump or right after a long float spell are flagged
+ * (fix_suspect, suspect_reason) with an amber notice.
  *
  * Tilt capture ({@link TiltSet}): startTilt, then lean() per lean, finishTilt (MARK) or
  * cancelTilt; every lean goes to tilt_obs.csv.
@@ -76,12 +79,17 @@ final class Survey {
         }
     }
 
-    /** The fix chip's guard state: settling seconds left (0: not settling), and a suspect stretch's jump. */
+    /**
+     * The fix chip's guard state: the young fix's age in whole seconds (-1: not young), and
+     * whether the stretch is suspect, by its jump (else after a float spell), and the jump.
+     */
     static final class FixState {
-        final int settleS;
-        final boolean suspect;
+        final int youngS;
+        final boolean suspect, byJump;
         final double jump;
-        FixState(int settleS, boolean suspect, double jump) { this.settleS = settleS; this.suspect = suspect; this.jump = jump; }
+        FixState(int youngS, boolean suspect, boolean byJump, double jump) {
+            this.youngS = youngS; this.suspect = suspect; this.byJump = byJump; this.jump = jump;
+        }
     }
 
     /** What the map's tilt overlay shows. Arrays per lean; azimuths and tilts NaN before 3 leans. */
@@ -92,8 +100,8 @@ final class Survey {
         final boolean[] imuBad;
         final double coverage, rms, maxImu, nowAzimuth, nowTilt, pole;
         final double[] sd;
-        final int settleS;
-        TiltView(TiltSet t, double nowAzimuth, double nowTilt, int settleS) {
+        final int youngS;
+        TiltView(TiltSet t, double nowAzimuth, double nowTilt, int youngS) {
             List<TiltSet.Lean> ls = t.leans();
             cls = t.cls;
             pole = t.pole;
@@ -112,7 +120,7 @@ final class Survey {
             maxImu = r == null ? Double.NaN : r.maxImuDeg;
             this.nowAzimuth = nowAzimuth;
             this.nowTilt = nowTilt;
-            this.settleS = settleS;
+            this.youngS = youngS;
         }
     }
 
@@ -121,10 +129,11 @@ final class Survey {
         final double remainingS, progress;
         final int epochs, durationS;
         final boolean paused;
-        final boolean settling;
-        RefView(RefOccupation r, int durationS, long nowNs, boolean settling) {
+        /** The ref will be marked young: a counted epoch was young (the latch), or the fix is young now. */
+        final boolean young;
+        RefView(RefOccupation r, int durationS, long nowNs, boolean young) {
             remainingS = r.remainingSeconds(); progress = r.progress(); epochs = r.epochs();
-            this.durationS = durationS; this.settling = settling; paused = r.pausedAt(nowNs) || settling;
+            this.durationS = durationS; this.young = young; paused = r.pausedAt(nowNs);
         }
     }
 
@@ -167,7 +176,7 @@ final class Survey {
     private volatile int poleWarningN;
     private final FixGuard guard;
     private double refJump = Double.NaN;
-    private boolean refSuspect;
+    private boolean refSuspect, refYoung, refWhyJump, refWhySpell;
     private TiltSet tilt;
     private int tiltSets;
 
@@ -175,13 +184,15 @@ final class Survey {
         this.svc = svc;
         this.dir = dir;
         photos = new File(dir, "photos");
-        guard = new FixGuard(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)));
+        guard = new FixGuard(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),
+                Settings.floatSpellNs(Settings.prefs(svc)));
         writePoints(new ArrayList<String>());   // points.csv with its header from the start
     }
 
-    /** Settings changed: the settle time applies at once, the jump threshold from the next stretch. */
+    /** Settings changed: the young limit applies at once, the jump and float spell thresholds from the next stretch. */
     synchronized void applyGuardSettings() {
-        guard.setLimits(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)));
+        guard.setLimits(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),
+                Settings.floatSpellNs(Settings.prefs(svc)));
     }
 
     // ---- GPS epochs ----
@@ -195,24 +206,26 @@ final class Survey {
             if (st != null) svc.event(st.eventText());
             RefOccupation r = ref;
             if (r == null) return;
-            boolean settling = guard.settling(e.elapsedNs);
-            if (e.fixed() && !settling) {
+            // every fixed epoch counts (0.11.0, #15: young epochs are no longer paused); the
+            // ref is young if any counted epoch was (worst case, as for tilt rows). Latch only
+            // for an epoch RefOccupation counted (not one stamped before the ref start, #15)
+            int counted = r.epochs();
+            RefOccupation.Change change = r.onEpoch(e);
+            if (r.epochs() > counted) {
                 FixGuard.Stretch cur = guard.current();
                 if (cur != null) {
                     if (!Double.isNaN(cur.jump)) refJump = Double.isNaN(refJump) ? cur.jump : Math.max(refJump, cur.jump);
                     refSuspect |= cur.suspect;
+                    refWhyJump |= cur.reason.contains(FixGuard.REASON_JUMP);
+                    refWhySpell |= cur.reason.contains(FixGuard.REASON_FLOAT_SPELL);
+                    refYoung |= guard.young(e.elapsedNs);
                 }
             }
-            switch (r.onEpoch(e, !settling)) {
+            switch (change) {
                 case PAUSED:
-                    if (e.fixed() && settling) {
-                        svc.event(String.format(Locale.US, "ref paused: fix settling, %.0f s to go", r.remainingSeconds()));
-                        notice = new Notice("Ref paused: fix settling", false);
-                    } else {
-                        svc.event(String.format(Locale.US, "ref paused: not RTK fixed for 2 s (quality %d), %.0f s to go",
-                                e.quality, r.remainingSeconds()));
-                        notice = new Notice("Ref paused: not RTK fixed", false);
-                    }
+                    svc.event(String.format(Locale.US, "ref paused: not RTK fixed for 2 s (quality %d), %.0f s to go",
+                            e.quality, r.remainingSeconds()));
+                    notice = new Notice("Ref paused: not RTK fixed", false);
                     cue(Feedback.Cue.REF_PAUSED);
                     break;
                 case RESUMED:
@@ -225,13 +238,18 @@ final class Survey {
                     PointRow finished = PointRow.of(++counter, PointRow.REF, e.elapsedNs, r.average(), refPole,
                             System.currentTimeMillis());
                     finished.method = PointRow.OCCUPATION;
-                    FixGuard.Stretch cur = guard.current();
-                    finished.fixAge = cur == null ? Double.NaN : cur.ageSeconds(e.elapsedNs);
+                    // fix_age_s, fix_start, float_spell_s: the last epoch's stretch; jump, suspect
+                    // and young: worst over the counted epochs
+                    finished.setStretch(guard.current(), e.elapsedNs, refYoung);
                     finished.fixJump = refJump;
                     finished.fixSuspect = refSuspect;
+                    finished.suspectReason = reasons(refWhyJump, refWhySpell);
+                    finished.fixYoung = refYoung ? 1 : 0;
                     addRow(finished);
-                    svc.event(String.format(Locale.US, "ref end n=%d epochs=%d pauses=%d", finished.n, r.epochs(), r.pauses()));
-                    cue(Feedback.Cue.REF_END);
+                    svc.event(String.format(Locale.US, "ref end n=%d epochs=%d pauses=%d young=%d", finished.n, r.epochs(),
+                            r.pauses(), finished.fixYoung));
+                    // one fix cue: SUSPECT (from the pole check) wins over YOUNG, as for MARK
+                    cue(refYoung && !refSuspect ? Feedback.Cue.YOUNG : Feedback.Cue.REF_END);
                     // Queued under the lock, like finishTilt: a voidCapture right after this
                     // epoch then queues its refs.csv rewrite after the append, never before
                     // (which would find no row and log a false error). The rewrite of a row
@@ -266,13 +284,34 @@ final class Survey {
     /** The stretch an RTK fixed average belongs to (the latest one), or null if a is not fixed. */
     private FixGuard.Stretch stretchOf(EpochAverage a) { return a != null && a.quality == 4 ? guard.last() : null; }
 
-    /** Seconds of settling left for a capture from stretch s at now (0 if none). */
-    private int settleLeft(FixGuard.Stretch s, long now) {
-        if (s == null || !guard.settling(s, now)) return 0;
-        return Math.max(1, (int) Math.ceil((guard.settleNs() - (now - s.startNs)) / 1e9));
+    private static String jumpText(double j) { return Double.isNaN(j) ? "?" : String.format(Locale.US, "%.1f m", j); }
+
+    /** "jump", "float_spell", "jump;float_spell" or "". */
+    private static String reasons(boolean jump, boolean spell) {
+        return jump && spell ? FixGuard.REASON_JUMP + ";" + FixGuard.REASON_FLOAT_SPELL
+                : jump ? FixGuard.REASON_JUMP : spell ? FixGuard.REASON_FLOAT_SPELL : "";
     }
 
-    private static String jumpText(double j) { return Double.isNaN(j) ? "?" : String.format(Locale.US, "%.1f m", j); }
+    /** The amber notice text for a suspect fix: why, and the jump if that is a reason. */
+    private static String suspectText(PointRow r) {
+        if (FixGuard.REASON_FLOAT_SPELL.equals(r.suspectReason)) {
+            return "  fix may be false (after a long float spell)";
+        }
+        return "  fix may be false (jumped " + jumpText(r.fixJump) + ")";
+    }
+
+    /**
+     * "  fix young: 95 s" for a young row, else "". An occupation ref is young if any counted
+     * epoch was, while its fix_age_s is the last epoch's (often past the limit), so it reads
+     * "  fix young during the ref" without seconds; so does any row whose age is unknown or
+     * not under the young limit.
+     */
+    private String youngText(PointRow r) {
+        if (r.fixYoung != 1) return "";
+        if (PointRow.OCCUPATION.equals(r.method)) return "  fix young during the ref";
+        return Double.isNaN(r.fixAge) || r.fixAge * 1e9 >= guard.youngNs() ? "  fix young"
+                : String.format(Locale.US, "  fix young: %.0f s", Math.floor(r.fixAge));
+    }
 
     synchronized Outcome mark(SurveyMode mode) {
         long now = SystemClock.elapsedRealtimeNanos();
@@ -285,17 +324,11 @@ final class Survey {
             return new Outcome(false, "No fix: nothing captured");
         }
         FixGuard.Stretch s = stretchOf(a);
-        int left = settleLeft(s, now);
-        if (left > 0) {
-            cue(Feedback.Cue.ERROR);
-            svc.event("capture refused class=" + mode.key + ": fix settling " + left + " s");
-            return new Outcome(false, "fix settling: " + left + " s");
-        }
         if (mode == SurveyMode.REF) {
             refSeconds = Settings.refSeconds(Settings.prefs(svc));
             refPole = svc.poleHeight();
             refJump = Double.NaN;
-            refSuspect = false;
+            refSuspect = refYoung = refWhyJump = refWhySpell = false;
             ref = new RefOccupation(now, refSeconds * 1_000_000_000L);
             svc.event(String.format(Locale.US, "ref start n=%d duration_s=%d pole_height=%.3f quality=%d",
                     counter + 1, refSeconds, refPole, a.quality));
@@ -306,18 +339,17 @@ final class Survey {
         }
         PointRow r = PointRow.of(counter + 1, mode.key, now, a, svc.poleHeight(), System.currentTimeMillis());
         r.method = PointRow.SINGLE;
-        if (s != null) {
-            r.fixAge = s.ageSeconds(a.lastNs);
-            r.fixJump = s.jump;
-            r.fixSuspect = s.suspect;
-        }
+        r.setStretch(s, a.lastNs, guard.young(s, a.lastNs));   // young at the time fix_age_s is taken
         counter++;
         addRow(r);
         String text = String.format(Locale.US, "%s%d  %s  %d ep  ±%.1f cm", label(r.cls), r.n,
                 fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
         if (r.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
-            notice = new Notice(text + "  fix may be false (jumped " + jumpText(r.fixJump) + ")", false, true, r, true);
+            notice = new Notice(text + suspectText(r) + youngText(r), false, true, r, true);
+        } else if (r.fixYoung == 1) {
+            cue(Feedback.Cue.YOUNG);
+            notice = new Notice(text + youngText(r), false, true, r, true);
         } else {
             cue(mode == SurveyMode.SURFACE ? Feedback.Cue.SURFACE : Feedback.Cue.OBJECT);
             notice = new Notice(text, r.fix == 4, false, r, true);
@@ -352,27 +384,28 @@ final class Survey {
         long now = SystemClock.elapsedRealtimeNanos();
         EpochAverage a = average(now);
         FixGuard.Stretch s = stretchOf(a);
-        int left = settleLeft(s, now);
-        if (left > 0) {
-            cue(Feedback.Cue.ERROR);
-            svc.event("tilt lean refused set=" + tiltSets + ": fix settling " + left + " s");
-            return new Outcome(false, "fix settling: " + left + " s");
-        }
+        boolean young = a != null && guard.young(s, a.lastNs);   // at the time the lean's fix_age_s is taken
         double[] g = svc.gravityMean(now - WINDOW_NS, now);
         double[] g3 = g == null ? null : new double[] {g[0], g[1], g[2]};
-        TiltSet.Added added = t.add(a, g3, g == null ? 0 : (int) g[3], s, now, System.currentTimeMillis());
+        TiltSet.Added added = t.add(a, g3, g == null ? 0 : (int) g[3], s, young, now, System.currentTimeMillis());
         if (!added.ok) {
             cue(Feedback.Cue.ERROR);
             svc.event("tilt lean refused set=" + tiltSets + ": " + added.text);
             return new Outcome(false, added.text);
         }
         TiltSet.Lean l = added.lean;
-        svc.event(String.format(Locale.US, "tilt lean set=%d k=%d n_epochs=%d sd_h_m=%.4f tilt_deg=%.1f grav=%s",
+        svc.event(String.format(Locale.US, "tilt lean set=%d k=%d n_epochs=%d sd_h_m=%.4f tilt_deg=%.1f grav=%s young=%d",
                 tiltSets, l.k, l.avg.n, Math.hypot(l.avg.sdE, l.avg.sdN), l.tiltDeg,
-                g3 == null ? "none" : String.format(Locale.US, "%.3f;%.3f;%.3f", g3[0], g3[1], g3[2])));
+                g3 == null ? "none" : String.format(Locale.US, "%.3f;%.3f;%.3f", g3[0], g3[1], g3[2]), l.young ? 1 : 0));
+        String youngNote = l.young ? String.format(Locale.US, "  fix young: %.0f s", Math.floor(l.fixAge)) : "";
         if (l.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
-            notice = new Notice(added.text + "  fix may be false (jumped " + jumpText(l.fixJump) + ")", false, true);
+            String why = l.stretch != null && FixGuard.REASON_FLOAT_SPELL.equals(l.stretch.reason)
+                    ? "  fix may be false (after a long float spell)" : "  fix may be false (jumped " + jumpText(l.fixJump) + ")";
+            notice = new Notice(added.text + why + youngNote, false, true);
+        } else if (l.young) {
+            cue(Feedback.Cue.YOUNG);
+            notice = new Notice(added.text + youngNote, false, true);
         } else {
             cue(Feedback.Cue.LEAN);
             notice = new Notice(added.text, true);
@@ -425,16 +458,19 @@ final class Survey {
         writeTiltObs(t.obsRows(set, row.n));
         String text = String.format(Locale.US, "%s%d tilt  %d leans  rms %.1f cm  cover %.0f°  σ %.1f cm", label(row.cls),
                 row.n, r.used.size(), s.rms * 100, s.coverageDeg, s.maxSd() * 100);
-        boolean warn = !r.warnings.isEmpty() || row.fixSuspect;
-        if (row.fixSuspect) text += "  fix may be false (jumped " + jumpText(row.fixJump) + ")";
+        boolean warn = !r.warnings.isEmpty() || row.fixSuspect || row.fixYoung == 1;
+        if (row.fixSuspect) text += suspectText(row);
         else if (!r.warnings.isEmpty()) text += "  (accepted with warnings)";
+        text += youngText(row);
         notice = new Notice(text, !warn, warn, row, true);
         if (PointRow.REF.equals(row.cls)) {
             PointRow f = row;
             run(() -> poleCheck(f));
         }
-        // a suspect ref gets its SUSPECT cue from the pole check
-        cue(row.fixSuspect && !PointRow.REF.equals(row.cls) ? Feedback.Cue.SUSPECT : Feedback.Cue.TILT_END);
+        // a suspect or young ref gets its SUSPECT or YOUNG cue from the pole check
+        boolean isRef = PointRow.REF.equals(row.cls);
+        cue(row.fixSuspect && !isRef ? Feedback.Cue.SUSPECT : row.fixYoung == 1 && !isRef ? Feedback.Cue.YOUNG
+                : Feedback.Cue.TILT_END);
         return new Outcome(true, drops.length() > 0 ? "Tilt: " + drops + ", re-solved with " + r.used.size() : null);
     }
 
@@ -464,14 +500,15 @@ final class Survey {
             az = TiltSolver.azimuth(v[0], v[1]);
             tl = TiltSolver.angleDeg(v, new double[] {0, 0, 1});
         }
-        return new TiltView(t, az, tl, guard.settleRemainingSeconds(now));
+        return new TiltView(t, az, tl, guard.youngAgeSeconds(now));
     }
 
     /** The guard's state for the fix chip, at now. */
     synchronized FixState fixState() {
         long now = SystemClock.elapsedRealtimeNanos();
         FixGuard.Stretch c = guard.current();
-        return new FixState(guard.settleRemainingSeconds(now), c != null && c.suspect, c == null ? Double.NaN : c.jump);
+        return new FixState(guard.youngAgeSeconds(now), c != null && c.suspect,
+                c != null && c.reason.contains(FixGuard.REASON_JUMP), c == null ? Double.NaN : c.jump);
     }
 
     private Outcome cancelRef(String why) {
@@ -497,7 +534,10 @@ final class Survey {
     private void poleCheck(PointRow r) {
         r.session = dir.getName();
         List<PointRow> earlier = RefsStore.readAll(svc);
-        PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(Settings.prefs(svc)));
+        SharedPreferences p = Settings.prefs(svc);
+        PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(p));
+        PoleCheck.Cues q = PoleCheck.Cues.of(r, earlier, c, Settings.placeM(p), Settings.steadyM(p));
+        PoleCheck.Colour colour = PoleCheck.colour(c, q);
         try {
             File f = RefsStore.append(svc, r);
             svc.event("ref n=" + r.n + " appended to " + f);
@@ -505,11 +545,21 @@ final class Survey {
             svc.event("ref n=" + r.n + " not appended to refs.csv: " + e.getMessage());
         }
         refsGeneration++;
+        // The importer (analysis/qgis/logger_session.py) takes the text before the first
+        // "; key=" as the message (importers before 0.12.0: before "; diff_last_m=", so
+        // diff_last_m stays the first key of a check) and ok=false as a failed (red) check,
+        // so ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
+        // place_cm, sd_u_cm and colour are on every check and no-check line (not the voided one), a value left empty when not applicable.
+        String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrEmpty(q.placeOffset),
+                cmOrEmpty(q.sdU), colour.name().toLowerCase(Locale.US));
         if (c != null) {
-            svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
-                    r.n, c.describe(), c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
+            svc.event(String.format(Locale.US, "pole check n=%d: %s%s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d"
+                            + " ok=%b diff_ref_m=%.4f ref_kind=%s within_tol=%b doubtful=%b %s", r.n, c.describe(), q.describe(),
+                    c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, !c.failed(), c.diffRef,
+                    c.refKind.name().toLowerCase(Locale.US), c.ok, c.doubtful, cues));
         } else {
-            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
+            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m")
+                    + q.describe() + "; " + cues);
         }
         // Check and set under the lock: a voidCapture between the check and the update
         // would otherwise leave a notice, warning or alarm on a flagged ref.
@@ -518,28 +568,37 @@ final class Survey {
                 svc.event("pole check n=" + r.n + ": result not shown (voided)");
                 return;
             }
-            String sus = r.fixSuspect ? "  fix may be false (jumped " + jumpText(r.fixJump) + ")" : "";
+            // a young ref is checked and shown, but never a reference for later checks (PoleCheck).
+            // One notice lists every reason; the more severe colour wins (red over amber over green).
+            boolean young = r.fixYoung == 1, fixAmber = r.fixSuspect || young;
+            String sus = (r.fixSuspect ? suspectText(r) : "") + youngText(r);
             if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
-            if (c == null) {
-                String text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
-                        : "Ref R" + r.n + " saved: first visit to this mark";
-                notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r, true);
-                poleWarning = null;
-                poleWarningN = 0;
-            } else if (c.ok) {
-                poleWarning = null;
-                poleWarningN = 0;
-                notice = new Notice(c.describe() + sus, !r.fixSuspect, r.fixSuspect, r, true);
-                if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
-            } else {
-                String text = c.describe();
-                poleWarning = text + " (R" + r.n + "; check the pole height)";
+            else if (young && PointRow.TILT.equals(r.method)) cue(Feedback.Cue.YOUNG);   // occupation: at ref end
+            String text = c != null ? c.describe() : Double.isNaN(r.hGround) ? "Ref R" + r.n
+                    + " saved (no ground height: no pole check)" : "Ref R" + r.n + " saved: first visit to this mark";
+            text += q.describe() + sus;
+            if (colour == PoleCheck.Colour.RED) {
+                // the cues (off-centre, pole moved) may explain the failure, so they stay with it
+                poleWarning = c.describe() + q.describe() + " (R" + r.n + "; check the pole height)";
                 poleWarningN = r.n;
-                notice = new Notice(text + sus, false, false, r, true);
+                notice = new Notice(text, false, false, r, true);
                 cue(Feedback.Cue.POLE_ALARM);
+            } else {
+                // amber (doubtful reference, off-centre, pole moved) is a re-shoot hint: the
+                // error buzz, no alarm and no warnings bar
+                poleWarning = null;
+                poleWarningN = 0;
+                boolean amber = fixAmber || colour == PoleCheck.Colour.AMBER;
+                notice = new Notice(text, !amber, amber, r, true);
+                // one cue: a suspect or young ref already has its fix cue, which says more
+                if (colour == PoleCheck.Colour.AMBER && !fixAmber) cue(Feedback.Cue.ERROR);
+                else if (!amber && c != null) cue(Feedback.Cue.POLE_OK);
             }
         }
     }
+
+    /** "2.5" (cm, one decimal) or "" for NaN, for the pole check event line. */
+    private static String cmOrEmpty(double m) { return Double.isNaN(m) ? "" : String.format(Locale.US, "%.1f", m * 100); }
 
     // ---- flag (void) ----
 
@@ -684,7 +743,8 @@ final class Survey {
     synchronized String photoTarget() { return PhotoRule.targetText(lastCapture, SystemClock.elapsedRealtimeNanos()); }
     synchronized RefView refView() {
         long now = SystemClock.elapsedRealtimeNanos();
-        return ref == null ? null : new RefView(ref, refSeconds, now, guard.settling(now));
+        // the refYoung latch keeps "(fix young)" on the ring once the saved ref will be young
+        return ref == null ? null : new RefView(ref, refSeconds, now, refYoung || guard.young(now));
     }
     synchronized boolean refRunning() { return ref != null; }
     Notice notice() { Notice n = notice; return n != null && SystemClock.uptimeMillis() < n.untilMs ? n : null; }

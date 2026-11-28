@@ -174,14 +174,20 @@ public final class SettingsActivity extends Activity {
                 p.getString(Settings.REF_SECONDS, String.valueOf(SurveyLimits.REF_SECONDS_DEFAULT)), InputType.TYPE_CLASS_NUMBER);
         refError = error(c);
         refSeconds.addTextChangedListener(watcher(() -> refError.setText(problem(true))));
-        poleTolerance = field(c, "Pole check tolerance, cm (0.5 to 20): ground height difference to the last visit",
+        poleTolerance = field(c, "Pole check tolerance, cm (0.5 to 20): ground height difference to the reference"
+                        + " (the earlier visits' median; see README, Refs and the pole check)",
                 p.getString(Settings.POLE_TOLERANCE_CM, "3"), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
         toleranceError = error(c);
         poleTolerance.addTextChangedListener(watcher(() -> toleranceError.setText(problem(false))));
-        label(c, "False-fix guard: after a new RTK fix (or a jump inside one) captures wait for the settle time;"
-                + " a fix that began with a jump over the warning is flagged (amber, fix_suspect).");
         for (int i = 0; i < Settings.COVERAGE_FIRST; i++) {
-            if (i == 2) label(c, "Tilt capture gates (see README, Tilt capture): leans outside the tilt range are refused;"
+            if (Settings.LIMIT_KEYS[i].equals(Settings.PLACE_CM)) label(c, "Pole check cues (amber, re-shoot; 0: off):"
+                    + " off-centre when the ref is this far from the earlier visits' median position; pole moved when a"
+                    + " held ref's sd_u is over this (not for tilt refs).");
+            if (Settings.LIMIT_KEYS[i].equals(Settings.SETTLE_S)) label(c, "False-fix guard: captures from a fix younger"
+                    + " than the young limit are taken with an amber warning (fix_young); a fix that began with a jump over"
+                    + " the warning, or right after a float spell at least the float spell limit long (0: off), is flagged"
+                    + " (amber, fix_suspect).");
+            if (Settings.LIMIT_KEYS[i].equals(Settings.TILT_COVER_DEG)) label(c, "Tilt capture gates (see README, Tilt capture): leans outside the tilt range are refused;"
                     + " the others warn before saving.");
             limitField(c, p, i);
         }

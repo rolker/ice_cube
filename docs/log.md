@@ -132,3 +132,24 @@ Reference material is in `howto/`, the narrative in `story/`.
   result and earlier vector is unchanged. The pass is redone for about 25 nodes per
   capture: a 5000-capture bank rebuild takes about 2x as long, and the store about 2x
   the memory.
+- 11-27: logger 0.11.0 (#15, first PR): the false-fix guard retuned on the field misses.
+  A fix right after a float spell of 20 s or more is suspect, whatever its jump (11-21: a
+  false fix jumped only 0.48 m after a long float spell). The start jump counts only from a
+  float or fixed epoch, so the first fix after single epochs (a 2.3 m step at session
+  start) is no longer flagged. Settling became a young-fix warning: captures, leans and
+  refs go ahead with an amber notice and a YOUNG cue for 120 s (11-26: a re-fix still read
+  6 to 9 cm high at 95 to 113 s), the row records `fix_young`, and a young ref is never the
+  earlier visit of a pole check. points.csv gains `fix_start`, `float_spell_s`,
+  `suspect_reason` and `fix_young`; soundings.py and the live overlay move their settle
+  window from 90 to 120 s and flag `float_spell` beside `suspect_jump`. Height test, extra
+  cues and a retune on past sessions are #39, #40 and #41.
+- 11-27: logger 0.12.0 (#23, PR A): the pole check compares a ref with a robust reference
+  from the mark's earlier visits (one: that visit; two: their mean, doubtful when they
+  differ by more than the tolerance; three or more: the median), not the most recent one,
+  so one bad visit no longer fails the next good one. Two amber re-shoot cues: the pole
+  off the mark centre (over 2 cm from the visits' median position) and the pole moving
+  during a held ref (sd_u over 1.5 cm). Replayed on the 11-11, -15 and -21 refs: on 11-21
+  the bad ref still fails red and the two false alarms after a bad or high visit pass
+  (one amber off-centre); the ref that was off the mark reads within the tolerance and
+  under the 2 cm cue against its earlier visits only (it was 2.5 cm off against all
+  visits). Two refs newly fail, each just over 3 cm from a median that spans three days.

@@ -11,6 +11,7 @@ import rink.icecube.logger.core.Coverage;
 import rink.icecube.logger.core.Limit;
 import rink.icecube.logger.core.PoleHeight;
 import rink.icecube.logger.core.ReferenceFrame;
+import rink.icecube.logger.core.SettleMigration;
 import rink.icecube.logger.core.SurveyLimits;
 import rink.icecube.logger.core.SurveyMode;
 import rink.icecube.logger.core.TiltSet;
@@ -35,7 +36,12 @@ final class Settings {
     static final String SHOW_EARLIER_REFS = "show_earlier_refs";   // default off
     static final String LABEL_CAPTURES = "label_captures";         // default on
     // 0.6, all text checked by a core.Limit: false-fix guard and tilt capture gates
-    static final String SETTLE_S = "fix_settle_s", JUMP_M = "fix_jump_m";
+    // 0.11.0 (#15): fix_settle_s is the young-fix warning limit (key kept); fix_settle_migrated
+    // marks the one-time move of a stored 10 to 120 (core.SettleMigration); a float spell limit
+    static final String SETTLE_S = "fix_settle_s", JUMP_M = "fix_jump_m", FLOAT_SPELL_S = "fix_float_spell_s";
+    // 0.12.0 (#23): pole check cues, text checked by Limit.PLACE_CM and Limit.STEADY_CM
+    static final String PLACE_CM = "pole_place_cm", STEADY_CM = "pole_steady_cm";
+    static final String SETTLE_MIGRATED = "fix_settle_migrated";
     static final String TILT_COVER_DEG = "tilt_cover_deg", TILT_RMS_CM = "tilt_rms_cm", TILT_MIN_DEG = "tilt_min_deg",
             TILT_MAX_DEG = "tilt_max_deg", TILT_SIGMA_CM = "tilt_sigma_cm", TILT_IMU_DEG = "tilt_imu_deg",
             LEAN_SCATTER_CM = "lean_scatter_cm";
@@ -46,10 +52,10 @@ final class Settings {
             COV_RADIUS_M = "coverage_radius_m", COV_REACH_M = "coverage_reach_m",
             COV_GROUND_CM = "coverage_ground_cm", COV_WANDER_CM = "coverage_wander_cm";
     /** The numeric settings: key and its limit, in Settings screen order (Survey, then Coverage from COVERAGE_FIRST). */
-    static final String[] LIMIT_KEYS = {SETTLE_S, JUMP_M, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
+    static final String[] LIMIT_KEYS = {PLACE_CM, STEADY_CM, SETTLE_S, JUMP_M, FLOAT_SPELL_S, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
             TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM,
             COV_TARGET_CM, COV_CELL_M, COV_RADIUS_M, COV_REACH_M, COV_GROUND_CM, COV_WANDER_CM};
-    static final Limit[] LIMITS = {Limit.SETTLE_S, Limit.JUMP_M, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
+    static final Limit[] LIMITS = {Limit.PLACE_CM, Limit.STEADY_CM, Limit.SETTLE_S, Limit.JUMP_M, Limit.FLOAT_SPELL_S, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
             Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM,
             Limit.COV_TARGET_CM, Limit.COV_CELL_M, Limit.COV_RADIUS_M, Limit.COV_REACH_M, Limit.COV_GROUND_CM,
             Limit.COV_WANDER_CM};
@@ -58,7 +64,37 @@ final class Settings {
 
     private Settings() { }
 
-    static SharedPreferences prefs(Context c) { return c.getSharedPreferences("settings", Context.MODE_PRIVATE); }
+    private static volatile boolean settleChecked;
+
+    /** The settings, with the one-time settle migration (see migrateSettle) run on the first read. */
+    static SharedPreferences prefs(Context c) {
+        SharedPreferences p = c.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        if (!settleChecked) {
+            // the flag is set only after the migration, under a lock, so a concurrent first
+            // read (service and Settings screen) waits rather than seeing the old 10
+            synchronized (Settings.class) {
+                if (!settleChecked) {
+                    migrateSettle(p);
+                    settleChecked = true;
+                }
+            }
+        }
+        return p;
+    }
+
+    /**
+     * 0.11.0 (#15): a stored fix_settle_s of 10 (the old default) becomes 120, once; the
+     * marker pref then keeps a 10 chosen later. Runs wherever the settings are first read
+     * (service or Settings screen), so neither ever shows the old value.
+     */
+    private static void migrateSettle(SharedPreferences p) {
+        if (p.getBoolean(SETTLE_MIGRATED, false)) return;
+        String stored = p.getString(SETTLE_S, null);
+        String moved = SettleMigration.migrate(stored, false);
+        SharedPreferences.Editor e = p.edit();
+        if (moved != null && !moved.equals(stored)) e.putString(SETTLE_S, moved);
+        e.putBoolean(SETTLE_MIGRATED, true).apply();
+    }
 
     static boolean bluetooth(SharedPreferences p) { return BLUETOOTH.equals(p.getString(TRANSPORT, BLUETOOTH)); }
 
@@ -72,7 +108,7 @@ final class Settings {
     /** Connect caster when the GPS connects (key caster_at_launch, the 0.8.0 "Connect caster at app launch"). */
     static boolean casterWithGps(SharedPreferences p) { return p.getBoolean(CASTER_AT_LAUNCH, false); }
 
-    /** "Ice Cube Logger 0.8.1 (build 12)" */
+    /** "Ice Cube Logger 0.11.0 (build 15)" */
     static String versionLine() {
         return "Ice Cube Logger " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")";
     }
@@ -123,8 +159,13 @@ final class Settings {
 
     static double limit(SharedPreferences p, String key, Limit l) { return l.orDefault(p.getString(key, l.format(l.def))); }
 
+    /** Pole check placement and steadiness cue limits in metres (0: cue off). */
+    static double placeM(SharedPreferences p) { return limit(p, PLACE_CM, Limit.PLACE_CM) / 100; }
+    static double steadyM(SharedPreferences p) { return limit(p, STEADY_CM, Limit.STEADY_CM) / 100; }
+
     static long settleNs(SharedPreferences p) { return Math.round(limit(p, SETTLE_S, Limit.SETTLE_S) * 1e9); }
     static double jumpM(SharedPreferences p) { return limit(p, JUMP_M, Limit.JUMP_M); }
+    static long floatSpellNs(SharedPreferences p) { return Math.round(limit(p, FLOAT_SPELL_S, Limit.FLOAT_SPELL_S) * 1e9); }
 
     static boolean coverageOn(SharedPreferences p) { return p.getBoolean(COVERAGE_ON, true); }
 

@@ -9,8 +9,15 @@ import java.util.Locale;
  * (Settings > Coverage).
  */
 public final class Limit {
-    public static final Limit SETTLE_S = new Limit("Fix settle time", "s", 0, 60, 10, 0);
+    /** 0.11.0 (#15): a warning, no longer a hold (was "Fix settle time", 0 to 60 s, default 10). */
+    public static final Limit SETTLE_S = new Limit("Fix young limit", "s", 0, 300, 120, 0);
     public static final Limit JUMP_M = new Limit("Fix jump warning", "m", 0.1, 10, 1.0, 2);
+    /** 0.11.0 (#15): a fix after a float spell this long is suspect (0: rule off). */
+    public static final Limit FLOAT_SPELL_S = new Limit("Fix after float spell", "s", 0, 300, 20, 0);
+    /** 0.12.0 (#23): pole check cues (0: off). Placement: offset from the earlier visits' median position. */
+    public static final Limit PLACE_CM = new Limit("Pole check: off-centre cue", "cm", 0, 20, 2, 1);
+    /** 0.12.0 (#23): a held ref whose sd_u is over this cues "pole moved during the ref". */
+    public static final Limit STEADY_CM = new Limit("Pole check: pole moved cue", "cm", 0, 20, 1.5, 1);
     public static final Limit TILT_COVER_DEG = new Limit("Tilt: minimum coverage", "°", 0, 360, 180, 0);
     public static final Limit TILT_RMS_CM = new Limit("Tilt: maximum RMS", "cm", 0.1, 20, 2, 1);
     public static final Limit TILT_MIN_DEG = new Limit("Tilt: minimum lean", "°", 0, 30, 5, 1);
