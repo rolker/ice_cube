@@ -1106,8 +1106,9 @@ final class Survey {
         Epoch e = epochs.peekLast();
         String utc = PointRow.utcCompact(e == null ? Double.NaN : e.tod, System.currentTimeMillis());
         if (!notes.isDirectory() && !notes.mkdirs()) return null;
-        File f = new File(notes, NoteRule.fileName(attach > 0 ? attach : counter + 1, utc));
-        for (int i = 2; f.exists(); i++) f = new File(notes, f.getName().replace(".m4a", "") + "_" + i + ".m4a");
+        int n = attach > 0 ? attach : counter + 1;
+        File f = new File(notes, NoteRule.fileName(n, utc));
+        for (int i = 2; f.exists(); i++) f = new File(notes, NoteRule.fileName(n, utc, i));
         return new NotePlan(f, attach, now, average(now));   // the position, in case it ends in a row of its own
     }
 

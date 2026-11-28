@@ -31,6 +31,15 @@ public final class NoteRule {
      */
     public static String fileName(int n, String utcCompact) { return "note_" + n + "_" + utcCompact + ".m4a"; }
 
+    /**
+     * The k-th candidate (k >= 2) when {@link #fileName} is taken (the GPS time stalled):
+     * note_<n>_<utc>_<k>.m4a, always built from the base name, so a name never carries
+     * more than one _k (the importer's pattern allows exactly one).
+     */
+    public static String fileName(int n, String utcCompact, int k) {
+        return "note_" + n + "_" + utcCompact + "_" + k + ".m4a";
+    }
+
     /** The voice column after adding a file name. */
     public static String add(String voice, String name) { return PhotoRule.add(voice, name); }
 

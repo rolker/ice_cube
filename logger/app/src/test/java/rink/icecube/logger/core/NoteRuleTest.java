@@ -56,4 +56,14 @@ public class NoteRuleTest {
         assertEquals(60_000, NoteRule.MAX_MS);
         assertEquals(32_000, NoteRule.BITRATE);
     }
+
+    @Test public void duplicateNamesCarryOneSuffix() {
+        assertEquals("note_7_20261111T140322Z_2.m4a", NoteRule.fileName(7, "20261111T140322Z", 2));
+        assertEquals("note_7_20261111T140322Z_3.m4a", NoteRule.fileName(7, "20261111T140322Z", 3));
+        java.util.regex.Pattern importer =   // analysis/qgis/logger_session.py NOTE_RE
+                java.util.regex.Pattern.compile("note_(\\d+)_(\\d{8}T\\d{6}Z)(?:_\\d+)?\\.m4a$");
+        for (int k = 2; k < 6; k++) {
+            assertTrue(importer.matcher(NoteRule.fileName(7, "20261111T140322Z", k)).matches());
+        }
+    }
 }
