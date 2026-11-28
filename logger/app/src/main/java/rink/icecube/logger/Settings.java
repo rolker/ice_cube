@@ -113,7 +113,7 @@ final class Settings {
     /** Connect caster when the GPS connects (key caster_at_launch, the 0.8.0 "Connect caster at app launch"). */
     static boolean casterWithGps(SharedPreferences p) { return p.getBoolean(CASTER_AT_LAUNCH, false); }
 
-    /** "Ice Cube Logger 0.11.0 (build 15)" */
+    /** "Ice Cube Logger 0.13.0 (build 17)" */
     static String versionLine() {
         return "Ice Cube Logger " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")";
     }

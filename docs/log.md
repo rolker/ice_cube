@@ -153,3 +153,11 @@ Reference material is in `howto/`, the narrative in `story/`.
   (one amber off-centre); the ref that was off the mark reads within the tolerance and
   under the 2 cm cue against its earlier visits only (it was 2.5 cm off against all
   visits). Two refs newly fail, each just over 3 cm from a median that spans three days.
+- 11-27: logger 0.13.0 (#35): auto capture in Surface mode. A per-session pole calibration
+  (hold still 3 s, lean all round 10 s, two slow twists) finds the pole's axis in phone
+  axes with the tilt capture's sphere solve and IMU fit; then a point is captured when the
+  pole has been within 2° of plumb and within 2 cm of still for 2 s on an RTK fix that is
+  neither young nor suspect. One capture per stop (re-armed after a 6 cm move or a tilt),
+  off during tilt sets and refs, the screen says what it waits for. Rows get `method`
+  `auto`; the coverage overlay takes them like MARK. Plumb sign and calibration feel still
+  need a phone check.

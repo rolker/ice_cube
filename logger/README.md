@@ -1,4 +1,4 @@
-# Ice Cube Logger 0.12.0
+# Ice Cube Logger 0.13.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
@@ -8,7 +8,9 @@ keys, and take photos. Reference points are averaged and checked against a robus
 reference from earlier visits (the pole check), with cues for a pole off the mark centre
 or moving during the ref. A false-fix guard warns about captures from a young RTK fix and flags
 fixes that began with a suspicious jump or right after a long float spell, and a tilt capture finds the pole tip from
-several leans when the pole cannot stand plumb (a house corner, a fence post). A live
+several leans when the pole cannot stand plumb (a house corner, a fence post). Auto
+capture takes a surface point by itself when the pole is held plumb and still, after a
+quick pole calibration each session. A live
 coverage overlay shows where the surface still needs captures (red, amber, clear). It checks
 the reference frame and base position, and shares a session as a zip. It works in portrait or landscape, and the screen can be locked to how the
 phone sits on the pole.
@@ -25,7 +27,7 @@ folder in Android Studio and press Run.
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
 The first line of the screen (and the last line of the MENU panel) shows the app version,
-e.g. "Ice Cube Logger 0.12.0 (build 16)".
+e.g. "Ice Cube Logger 0.13.0 (build 17)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
@@ -62,6 +64,10 @@ e.g. "Ice Cube Logger 0.12.0 (build 16)".
     default 35; maximum sigma 0.1 to 50 cm, default 5; IMU disagreement 0.5 to 20°,
     default 3; lean scatter 0.2 to 20 cm, default 2. A value out of range is not saved and
     the screen says why. They apply to the next tilt capture.
+  - Auto capture (0.13.0, see Auto capture): on or off (default on; it does nothing until
+    the pole is calibrated in the session), plumb limit 0.5 to 10°, default 2; hold time
+    0.5 to 30 s, default 2; still limit 0.2 to 20 cm, default 2. They apply from the next
+    epoch.
   - Volume keys: Mark / Mode (default on): on the map, volume down = MARK, volume up =
     MODE; during a tilt capture down = LEAN, up = finish; hold down about 1 s to start a
     tilt capture. The keys then do not change the volume while the map is in front.
@@ -153,6 +159,14 @@ it landed on; an accidental capture whose photo went to it (a MARK a few seconds
 another) is flagged from Recent captures. The info box says `2 flagged` when a session has
 flagged captures.
 
+Under the notice, in Surface mode while Auto capture is on (0.13.0): the AUTO line, large
+(56 dp), saying what auto capture is waiting for (see Auto capture): blue `AUTO: calibrate
+to enable (tap)` (a tap starts the pole calibration) and, during one, `CALIBRATE 2/3: lean
+slowly all round  7 s` (a tap offers to stop it); amber `AUTO: off, fix young 40 s`, `off,
+not RTK fixed` or `off, fix may be false`; grey `off during the tilt set` or `off during the
+ref`; teal `ready, hold plumb  3.4°`, `ready, hold still` or `holding  1 / 2 s`; green `S12
+taken, move to the next point`.
+
 Four large buttons, a column on the right edge in landscape, a row along the bottom in
 portrait (each at least 64 dp):
 - MODE: Surface → Object → Ref → Surface. It shows the mode name in the mode's colour
@@ -166,6 +180,7 @@ portrait (each at least 64 dp):
   `→ S12 (14 s)` (the latest capture not flagged, and its age, within 60 s) or `→ own row`.
 - ☰ MENU: a panel from the right: Connect/Disconnect GPS and caster (with their state),
   Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs),
+  Calibrate pole (Recalibrate pole once done, Stop pole calibration while one runs; see Auto capture),
   Recent captures… (see Flagged captures), Layers… (a checkbox per layer file, applied at once, and Import…, see Map layers),
   Coverage overlay (☑ on / ☐ off, remembered, on by default; see Coverage),
   Share last session, Sessions, Details, Settings. Back or a tap outside closes it.
@@ -391,6 +406,60 @@ sd_h_m=… tilt_deg=… grav=x;y;z young=0|1`, `tilt lean refused set=…: …`,
 used=… rms_m=… cover_deg=… sd_m=e;n;u imu_max_deg=… warnings=… dropped …`, `tilt cancelled
 by user set=… leans=…`.
 
+### Auto capture
+0.13.0 (#35). In Surface mode the logger can capture by itself when the pole is held plumb
+and still, so no button press is needed with gloves on. Object and Ref captures stay on
+MARK, and MARK works as before in Surface mode too.
+
+Calibrate first, once per session (the phone is never square to the pole, so "plumb" needs
+the pole's axis in phone axes; it is kept for the session only, since the phone may sit
+differently next time). Tap the blue AUTO line, or MENU > Calibrate pole, with RTK fixed,
+then with the tip on one point all the way through:
+1. Hold the pole still, 3 s (`CALIBRATE 1/3`). Moving more than the lean scatter (Tilt
+   gates, 2 cm) or losing the fix starts it again with the buzz; no 3 s still within 30 s fails.
+2. Three beeps: lean slowly all round the tip, as in a tilt set, 10 s (`CALIBRATE 2/3`).
+   Every RTK fixed epoch is a sample (antenna position, gravity about it); a swing over
+   0.5 m/s is skipped.
+3. Three beeps: twist the pole slowly about itself, twice, 8 s (`CALIBRATE 3/3`). These
+   samples are counted only (for a later lever-arm calibration, #38).
+
+The still sample and the leans are then solved like a tilt set: the tip, each sample's tilt,
+and the axis that best explains the tilts from the gravity vectors (the tilt capture's IMU
+fit). Accepted (rising four-tone, `Pole calibrated: 10 samples, 0.4° RMS. Auto capture on`)
+with at least 4 samples, the tip RMS within the tilt RMS gate (2 cm), leans of 5° or more
+covering at least the tilt coverage gate (180°), and an RMS fit residual of 1° or less;
+otherwise it fails with the reason (the buzz and an amber notice) and auto capture stays
+off. A young or suspect fix is fine here (only the shape of one short spell is used). MARK,
+tilt capture and refs are refused while it runs; Back or MENU > Stop pole calibration stops
+it. Recalibrating drops the old axis at the start. events.csv gets `pole calibration start`,
+`... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. axis=x;y;z`
+(phone axes: the mounting, not a position) or `pole calibration failed: ..`.
+
+Then, at each GGA epoch, auto capture is armed when all of these hold, else the AUTO line
+names the first that does not: Auto capture on, Surface mode, no calibration running, the
+pole calibrated, no tilt set, no ref, RTK fixed, the fix not young and not suspect (see
+False-fix guard; MARK still captures on a young fix, with its amber warning). Armed, it
+captures once the pole has been plumb (within the plumb limit: the phone's gravity over the
+last 0.5 s against the pole axis) and still (every antenna position within the still limit
+of their mean, horizontally) at every epoch for the hold time (2 s, so 3 epochs at 1 Hz).
+A tilt, a move or a gap of more than 2 s between epochs starts the hold again. The capture
+is the same as a Surface MARK (the last 1 s average, the same columns, the surface pip,
+an undoable notice `S12 auto  FIXED ...`), with `method` `auto`, and events.csv adds
+`auto capture n=.. plumb_deg=.. held_s=.. spread_cm=.. epochs=..`.
+
+One capture per stop: after it (or after a Surface MARK, which counts as the stop's
+capture), nothing more is taken until the antenna has moved more than 3 times the still
+limit (6 cm at the default) from it, or the pole has tilted past the plumb limit; then the
+full hold must pass again. So walk to the next point, or tilt the pole and stand it again
+to re-shoot the same point.
+
+Cues: the capture plays the surface pip. Auto capture becoming armed or off is cued only
+when the fix caused it (lost, young, suspect; a rising or falling pair), after the change
+has lasted 1 s, so a one-epoch dropout is silent; mode changes, tilt sets, refs and the
+calibration have their own cues, and the plumb and still states never cue. events.csv:
+`auto capture armed`, `auto capture off: no_fix`, and the settings at session start
+(`auto_capture=on plumb_deg=2.0 hold_s=2.0 still_cm=2.0`).
+
 ### tilt_obs.csv
 Every lean of every tilt set in the session, so a set can be re-solved later (another pole
 height, other gates, a different solver). Appended when a set is finished or cancelled;
@@ -421,7 +490,11 @@ a capture in a suspect fix stretch a fast warble ending low; a capture, lean or 
 young fix two even middle tones with two long pulses (0.11.0; one that is both suspect and
 young plays only the suspect cue, a ref too; a suspect or young ref with an amber pole
 check plays only its fix cue, not the error buzz as well); tilt start three rising
-tones, each lean two short beeps, tilt saved a rising three-tone; errors (no fix, no
+tones, each lean two short beeps, tilt saved a rising three-tone; an auto capture the
+surface capture pip (0.13.0); auto capture armed again after the fix came back (or grew
+old enough) a rising pair, off because of the fix a falling pair; pole calibration start
+two low tones, each next phase three middle beeps, accepted a rising four-tone, a failed
+calibration or moving during its still phase the low buzz; errors (no fix, no
 session, mode change during a ref, a refused lean) a low buzz. Sounds use the media
 volume, so silent mode does not mute them.
 
@@ -457,7 +530,7 @@ not append-only. `events.csv` is the append-only record.
 | `fix_age_s` | 0.6: seconds from the start of the RTK fixed stretch to the last averaged epoch (see False-fix guard); empty when not fixed |
 | `fix_jump_m` | 0.6: the position jump at that stretch's start, m (3D); empty when not fixed or unknown |
 | `fix_suspect` | 0.6: 1 if the stretch is suspect (a jump over the warning threshold; from 0.11.0 also right after a long float spell), else 0 |
-| `method` | 0.6: `single` (one 1 s average), `ref` (a ref occupation) or `tilt` (a tilt capture); empty for photo rows |
+| `method` | 0.6: `single` (one 1 s average), `ref` (a ref occupation) or `tilt` (a tilt capture); 0.13.0: `auto` (an auto capture: the same 1 s average as `single`, taken when the pole was held plumb and still); empty for photo rows |
 | `tilt_n` | 0.6, tilt only: leans used in the solution |
 | `tilt_rms_m` | 0.6, tilt only: RMS of the sphere residuals, m |
 | `tilt_cover_deg` | 0.6, tilt only: azimuth coverage of the used leans, degrees |
@@ -659,7 +732,7 @@ overlay and set in Settings > Coverage.
 - Grid: nodes every grid spacing (default 0.5 m) in the map frame, anchored at the map
   origin.
 - What feeds it: this session's Surface captures with RTK fixed (fix 4) and not
-  `fix_suspect`, single or tilt, not flagged (void); not float, object, ref or photo rows. Earlier sessions
+  `fix_suspect`, single, auto (0.13.0) or tilt, with a finite ground height, not flagged (void); not float, object, ref or photo rows. Earlier sessions
   are not loaded. Each capture is fed once as it arrives; the overlay is rebuilt from the
   session's captures when the map origin changes, a new session starts, or a Coverage
   setting changes.
