@@ -288,3 +288,18 @@ Verified: all five round-2 items addressed as stated. Radius test is `!(d <= MAT
 **Decided-by**: host (pre-push round 3 approved; orchestrator table allows publish)
 **After**: publish
 **Decision**: publish
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 19:41 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #43 at `b345296`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 0 | **Suggestions**: 1
+
+Cross-model: codex completed (EXIT=0). 1187 changed lines, 19 files (Deep by size). Lead checked the finding against the code.
+
+### Findings
+- [ ] (suggestion) matches() rejects only a NaN ground height; PointRow.dbl() uses Double.parseDouble, which accepts "Infinity", so a corrupt refs.csv row could enter the reference (the writer never emits one); reject non-finite hGround as hasPosition now does — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:93`
