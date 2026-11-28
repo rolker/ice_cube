@@ -603,20 +603,27 @@ def _read_season(path):
     return base, refs
 
 
-def _season_sites(gp, frame, season_refs, radius):
+def _season_sites(gp, frame, season_refs, radius, anchor_radius):
     """Give the scratch gpkg's refs the season's site numbers, read-only on the season: a ref
     the season holds (same session and n) takes its stored site; any other ref that is not
     flagged void takes the first season site (in site order) whose seed, the site's earliest
     ref as update_local orders them, is within `radius` m horizontally, as update_local's
-    rule would place it; a ref that matches none keeps no site. Returns the season's anchor
-    names (site<k>)."""
-    stored, seeds = {}, {}
+    rule would place it; a ref that matches none keeps no site.
+
+    Returns {site<k>: anchor name in the season table}. soundings.assign_anchors links refs
+    within `anchor_radius` m (single link) and names the group by its first site name, so two
+    season sites can share one anchor; the season's refs are grouped the same way here (by
+    their stored positions, refs only), so a ref at either site gets the season's name."""
+    stored, seeds, pos = {}, {}, []
     for ses, n, lat, lon, site, void in season_refs:
         if site is None or (void or 0) == 1:
             continue
         stored[(ses, n)] = int(site)
-        if int(site) not in seeds and lat is not None:
-            seeds[int(site)] = frame.enu(lat, lon, 0.0)[:2]
+        if lat is not None:
+            e, nn, _ = frame.enu(lat, lon, 0.0)
+            pos.append((f"site{int(site)}", e, nn))
+            if int(site) not in seeds:
+                seeds[int(site)] = (e, nn)
     order = sorted(seeds)
     upd = []
     for fid, ses, n, lat, lon, void in gp.con.execute(
@@ -631,7 +638,21 @@ def _season_sites(gp, frame, season_refs, radius):
             site = next((k for k in order if math.hypot(e - seeds[k][0], nn - seeds[k][1]) <= radius), None)
         upd.append((site, fid))
     gp.con.executemany("UPDATE refs SET site=? WHERE fid=?", upd)
-    return {f"site{k}" for k in set(stored.values())}
+    parent = {name: name for name in {f"site{k}" for k in stored.values()}}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    for i in range(len(pos)):
+        for j in range(i + 1, len(pos)):
+            if math.hypot(pos[i][1] - pos[j][1], pos[i][2] - pos[j][2]) <= anchor_radius:
+                parent[find(pos[i][0])] = find(pos[j][0])
+    groups = {}
+    for name in parent:
+        groups.setdefault(find(name), []).append(name)
+    return {name: sorted(g)[0] for g in groups.values() for name in g}
 
 
 def read_logger_session(path, site: Site, survey="", frame="", date="", sessions=None,
@@ -660,7 +681,8 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
 
     Anchor names: with `base_from_gpkg`, a ref takes the season's site (the one the season
     stores for it, else the season site update_local's rule would put it in), so it is named
-    site<k> like the season's soundings and ties to them in the crossover; any other anchor
+    as the season's soundings name that site (site<k>; when the season's anchor joining
+    merged sites, the merged group's name) and ties to them in the crossover; any other anchor
     (a ref at no season site, a control, a snap-joined point) is named `<survey>:<name>` so it
     never collides with or falsely ties to another survey's anchors. Without a season gpkg
     every anchor is named that way.
@@ -721,8 +743,9 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                     parsed.append(s)
                     src.close()
                 imp.import_refs_csv(gp, refs_texts)
-                season_names = (_season_sites(gp, o, season_refs, imp.REF_SITE_M)
-                                if season_refs is not None else set())
+                season_names = (_season_sites(gp, o, season_refs, imp.REF_SITE_M,
+                                              snd.DEFAULTS["anchor_radius_m"])
+                                if season_refs is not None else {})
                 if base is not None:
                     b = tuple(float(v) for v in base)
                 elif season_base is not None:
@@ -757,8 +780,8 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
         if "warning" in line or "no raw epochs" in line:
             print(f"{survey}: {line.strip()}", file=sys.stderr)
     for r in rows:
-        if r.get("anchor") and r["anchor"] not in season_names:
-            r["anchor"] = f"{tag}:{r['anchor']}"
+        if r.get("anchor"):
+            r["anchor"] = season_names.get(r["anchor"], f"{tag}:{r['anchor']}")
     rows = _keep_rows(rows, None, classes, kinds, True)
     pts = _points_from_rows(rows, survey, frame, date)
     pts.z = pts.z - site.z0

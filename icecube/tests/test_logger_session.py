@@ -313,6 +313,23 @@ class TestLoggerSessionReader(unittest.TestCase):
         self.assertTrue(names)
         self.assertTrue(all(a.startswith("s1:") for a in names), names)
 
+    def test_merged_season_sites_map_to_the_season_anchor(self):
+        """Season refs at 0, 0.25 and 0.45 m east: update_local makes sites 1 (seed at 0) and
+        2 (seed at 0.45), assign_anchors links all three into one anchor, site1. A new ref at
+        0.50 m takes site 2 by the seed rule and is named site1, as in the season table."""
+        import types
+        from local_frame import LocalFrame
+        frame = LocalFrame(*synth.BASE, name="origin")
+        ll = lambda e: synth.offset(e, 0.0)[:2]                     # noqa: E731
+        season = [("a", 1, *ll(0.0), 1, 0), ("a", 2, *ll(0.25), 1, 0), ("b", 1, *ll(0.45), 2, 0)]
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE refs (fid INTEGER PRIMARY KEY, session, n, lat, lon, void, site)")
+        con.execute("INSERT INTO refs (session, n, lat, lon, void) VALUES ('c', 1, ?, ?, 0)", ll(0.50))
+        names = io._season_sites(types.SimpleNamespace(con=con), frame, season, 0.30, 0.30)
+        self.assertEqual(con.execute("SELECT site FROM refs").fetchone()[0], 2)
+        self.assertEqual(names, {"site1": "site1", "site2": "site1"})
+        con.close()
+
     def test_base_from_gpkg(self):
         ses = synth.write_dir(self.d / "in", session_files())
         gpkg = self._season(ses)

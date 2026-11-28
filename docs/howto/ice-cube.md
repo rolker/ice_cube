@@ -444,7 +444,8 @@ any distance and without the slope term; they are not gridded (a mark top is not
   `pass_rule.from_file = true`; a `pass_rule` you write is used as written. Anchor names:
   with `base_from_gpkg` a ref takes the season's site (stored for a session the season
   holds, else the site the session import's 0.30 m rule would give it), so it is `site<k>`
-  and ties to the season's soundings in the crossover; every other anchor is named
+  (or, where the season's anchor joining links several sites into one anchor, that anchor's
+  name) and ties to the season's soundings in the crossover; every other anchor is named
   `<survey id>:<name>` so it never ties to another survey's anchors by accident.
   Differences from the season table: anchor joining and the suspect check see only these
   sessions, so a suspect pass that season data would verify stays out, and a ref joins
