@@ -245,3 +245,26 @@ Logger version: leaving versionName at 0.11.0 is acceptable. SoundingSigma feeds
 - [x] (suggestion) The fallback to the first RTCM 1005 makes that session's own base the "current" base, so base_history shifts toward it. That is wrong for a session logged under an older base. Warn, or require base/base_from_gpkg, when base_history is set — `icecube/io.py:398-401`
 - [x] (suggestion) site.z0 is not subtracted (other readers do it via Site.local; read_soundings has the same gap). Apply it or document it — `icecube/io.py:424-425`
 - [x] (suggestion) Untested: a gps.ubx with no GGA (the no_raw append branch), base_from_gpkg, base_history, kinds with "stop" — `icecube/tests/test_logger_session.py`, `analysis/qgis/tests/test_soundings.py:677`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:38 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-20 at `c77969c`
+**Addressed**: Local Review (Pre-Push) at `74a0894` (2026-11-27 19:28 -05:00)
+**Commits**: 0fb046a, c77969c
+
+### Actions
+- [x] (must-fix) Anchor names, per the host decision: with base_from_gpkg the scratch refs take the season's sites read-only (_season_sites: the stored site for a session the season holds, else update_local's seed rule within REF_SITE_M), named site<k>; every other anchor is <survey>:<name>; tested with ref captures (no season, season-held, seed-matched, unmatched) — `icecube/io.py` (_season_sites, read_logger_session)
+- [x] (suggestion) Sources closed on every path: try/finally in read_logger_session; logger_source now a wrapper that closes its session_paths sources (only those lines touched in soundings.py, no pole-check parsing) — `icecube/io.py`, `analysis/qgis/soundings.py:730`
+- [x] (suggestion) base_from_gpkg read first (_read_season) with ValueErrors for a missing file, a non-gpkg file and a partial base; read-only URI escaped via Path.as_uri (_ro_uri, used by every gpkg reader in io.py); tested incl. a path with # ? % — `icecube/io.py`
+- [x] (suggestion) pass_rule: from_file = true only when the survey has no pass_rule at all; tested — `icecube/io.py` (read_survey)
+- [x] (suggestion) base_history without base or base_from_gpkg is a ValueError; the 1005 fallback warns on stderr; tested — `icecube/io.py`
+- [x] (suggestion) site.z0 subtracted in read_logger_session and read_soundings; tested. No existing result changes: the example and the only private config with a soundings survey have no or zero z0 — `icecube/io.py`, `icecube/tests/test_topo.py`
+- [x] (suggestion) Tests added: gps.ubx with no GGA, base_from_gpkg, base_history, kinds with stop (a 4 Hz session with a ref stand and a plumb stop) — `icecube/tests/test_logger_session.py`
+
+### Checks
+- python3 -m unittest discover -s analysis/qgis/tests: Ran 173 tests, OK (skipped=5)
+- python3 -m unittest discover icecube/tests: Ran 121 tests, OK
+- Docs: docs/howto/ice-cube.md and icecube.example.toml updated for the above.
