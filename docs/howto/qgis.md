@@ -141,8 +141,9 @@ The status bar's CRS button then shows that name, not "Unknown CRS" or EPSG:4326
 
 What you see: captures by class (surface cyan dots, object magenta squares, ref dark
 rings, photo brown cameras, control orange triangles) labelled S12, O13, R14 plus your
-label; refs as rings, red where the pole check failed, with the height difference to the
-last visit; monuments green (measured) or orange rings (predicted) with their
+label; refs as rings, red where the pole check failed, amber for a re-shoot hint (logger
+0.12.0), with the check's height difference (to the earlier visits' reference; to the last
+visit before 0.12.0); monuments green (measured) or orange rings (predicted) with their
 uncertainty; boundary, rink, sheds and other layers in the colours of their GeoJSON;
 tracks as thin grey lines (solid fixed, dashed float). No web basemap: the Imagery group
 at the bottom holds the local orthophoto copies, if any (see Imagery). The track points

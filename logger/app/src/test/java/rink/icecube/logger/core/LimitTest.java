@@ -18,6 +18,16 @@ public class LimitTest {
         assertEquals(5, Limit.TILT_SIGMA_CM.def, 0);
         assertEquals(3, Limit.TILT_IMU_DEG.def, 0);
         assertEquals(2, Limit.LEAN_SCATTER_CM.def, 0);
+        assertEquals(2, Limit.PLACE_CM.def, 0);      // 0.12.0 (#23)
+        assertEquals(1.5, Limit.STEADY_CM.def, 0);
+    }
+
+    @Test public void poleCueLimitsAcceptZeroAsOff() {
+        assertEquals(0, Limit.PLACE_CM.parse("0"), 0);
+        assertEquals(0, Limit.STEADY_CM.parse("0"), 0);
+        assertEquals(1.5, Limit.STEADY_CM.parse("1.5"), 0);
+        assertEquals("must be 0.0 to 20.0 cm", problem(Limit.PLACE_CM, "21"));
+        assertEquals("enter a number, up to 1 decimal", problem(Limit.STEADY_CM, "1.25"));
     }
 
     @Test public void coverageDefaultsMatchCoverageParams() {

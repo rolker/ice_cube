@@ -660,13 +660,17 @@ def load_session(src: SessionSource) -> Session:
             if m:
                 body = m.group(2)
                 kv = _kv(body)
-                msg = body.split("; diff_last_m=")[0].replace(";", ",").strip()
+                # the message ends at the first "; key=" (diff_last_m for a check; from
+                # logger 0.12.0 place_cm on a line with no check)
+                msg = re.split(r"; \w+=", body, maxsplit=1)[0].replace(";", ",").strip()
                 ok = kv.get("ok")
                 s.refs.setdefault(int(m.group(1)), {}).update({
                     "pole_check": msg, "diff_last_m": _f(kv.get("diff_last_m")),
                     "diff_mean_m": _f(kv.get("diff_mean_m")), "visits": _i(kv.get("visits")),
                     "last_visit": kv.get("last"),
-                    "pole_ok": None if ok is None else int(ok == "true")})
+                    "pole_ok": None if ok is None else int(ok == "true"),
+                    # logger 0.12.0 (#23): the check's own difference and its notice colour
+                    "diff_ref_m": _f(kv.get("diff_ref_m")), "colour": kv.get("colour")})
     info["frame"] = " | ".join(frames) or None
     info["pole_heights"] = ", ".join(poles) or None
     info["gps_lost"] = gps_lost

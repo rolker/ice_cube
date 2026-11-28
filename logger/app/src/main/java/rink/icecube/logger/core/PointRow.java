@@ -97,7 +97,8 @@ public final class PointRow {
         return r;
     }
 
-    public boolean hasPosition() { return !Double.isNaN(lat) && !Double.isNaN(lon); }
+    /** Lat and lon are both finite: NaN (empty) and a non-finite value parsed from a file are no position. */
+    public boolean hasPosition() { return Double.isFinite(lat) && Double.isFinite(lon); }
 
     /** Surface, object and ref rows; not photo rows. */
     public boolean isCapture() { return !PHOTO.equals(cls); }
