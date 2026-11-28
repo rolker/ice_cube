@@ -194,8 +194,9 @@ public final class SettingsActivity extends Activity {
                         Settings.autoCapture(p));
                 label(c, "Auto capture needs the pole calibrated once per session (MENU > Calibrate pole) and an RTK"
                         + " fix that is neither young nor suspect; it is off during tilt sets and refs. One capture per"
-                        + " stop: it waits until the antenna has moved 3 times the still limit, or the pole has tilted"
-                        + " past the plumb limit (see README, Auto capture).");
+                        + " stop: it waits until the pole's tip has moved 3 times the still limit from the last"
+                        + " capture's tip; tilting or standing the pole up on the same point does not count"
+                        + " (see README, Auto capture).");
             }
             limitField(c, p, i);
         }
