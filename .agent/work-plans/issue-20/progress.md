@@ -364,3 +364,20 @@ Codex ran (EXIT=0) on the PR diff alone (work-plan files excluded by the script;
 ### Findings
 - [x] (must-fix) `_season_sites` rebuilds the season's anchor names from the season gpkg's refs table alone (non-void refs, stored positions), but the season's names come from `soundings.assign_anchors` over the rows actually in its soundings table, controls included and source filters applied. A control bridging two sites in the season (season merges them, here they stay apart: missed tie), or a ref outside the season table bridging sites here (here merged, season not: this survey's ref tied to another site's anchor) makes the names disagree. Consider taking the names from the season's soundings table (its anchor column, matched by session and n) where it exists — `icecube/io.py:321`
 - [x] (suggestion) The final rename maps any anchor named `site<k>` to the season name, so a control or snap-joined ground point grouped with a season ref also takes it; that matches what the season table itself would do (same group, same name), but the docstring says controls and snap-joined points are always `<survey>:<name>`. Align the docstring (or the code) — `icecube/io.py:398`, `icecube/io.py:512`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 20:10 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #44 at `614be3e`
+**Addressed**: Local Review at `bf8639c` (2026-11-27 20:04 -05:00)
+**Commits**: 614be3e
+
+### Actions
+- [x] (must-fix) Anchor names now come from the season gpkg's soundings table when it has one: `_read_season_anchors` reads its capture anchor rows by (session, n), `_season_anchor_names` names each row from it, a ref the season does not hold by its seed-rule site's season name, and an unnamed control/snapped point by its group's single agreed season name, else `<survey>:<name>`; the refs-table grouping (`_season_sites`) is the fallback when there is no table. Tests: control merging two sites in the season, ref left out of the season table (no false tie), control grouped with a season ref, and an end-to-end read against a built season table — `icecube/io.py`, `icecube/tests/test_logger_session.py`
+- [x] (suggestion) Docstrings of `read_logger_session` and `_season_sites` now say a control or snap-joined point grouped with a season-named anchor takes that name, as the code does — `icecube/io.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 175 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 130 tests, OK
