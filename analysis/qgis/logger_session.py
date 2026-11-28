@@ -225,6 +225,7 @@ ZONE_RESIDUAL_S = 10         # events.csv's entry time this close after its last
 ZONE_TRUNC_S = 2             # a DOS time is truncated down to 2 s, so it may read that much early
 ZONE_CLOCK_S = 0.05          # a file mtime (coarse kernel clock) may be a few ms behind wall_ms
 ZONE_MAX_S = 14 * 3600       # the largest zone offsets
+TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line (import_sessions.track_lines)
 APPROX_S = 26 * 3600         # a DOS time read as if UTC is off by the writer's zone (+-14 h), DST and slack
 DST_S = 3600                 # another entry than events.csv may have another DST offset
 EXT_S = 1.0                  # a 0x5455 time is whole seconds (floored), a file mtime is not
@@ -836,7 +837,10 @@ def load_session(src: SessionSource) -> Session:
     s.notes = _attachments(src, ev, s.captures, "notes", "note", NOTE_RE, "voice_files")
     orphans = [p["name"] for p in s.notes if p["n"] is None]
     if orphans:
-        s.remarks.append(f"{len(orphans)} voice note(s) with no capture, linked on the track: "
+        # a track line needs two epochs at most TRACK_GAP_S apart (track_lines); else orphan_voice has nowhere to link
+        has_line = any(b["t"] - a["t"] <= TRACK_GAP_S for a, b in zip(s.track, s.track[1:]))
+        s.remarks.append(f"{len(orphans)} voice note(s) with no capture, "
+                         + ("linked on the track: " if has_line else "not linked (no track): ")
                          + ", ".join(orphans))
 
     counts = {}

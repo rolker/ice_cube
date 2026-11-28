@@ -510,6 +510,19 @@ class ImportTest(unittest.TestCase):
         run(synth.write_zip(self.d / "m9.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
         self.assertEqual(self.q("SELECT voice FROM tracks WHERE seg=2"), [(f"notes/{name}/{note}",)])
 
+    def test_orphan_note_with_no_track_is_reported_not_linked(self):
+        """With no track lines (no GGA logged) an orphan note has nowhere to go: the remark
+        says so instead of "linked on the track"."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        note = "note_9_20261201T100022Z.m4a"
+        files[f"{name}/notes/{note}"] = synth.M4A
+        files[f"{name}/gps.ubx"] = b""
+        files[f"{name}/gps_chunks.csv"] = b"elapsed_ns,byte_offset,length\n"
+        out = run(synth.write_zip(self.d / "nt.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("1 voice note(s) with no capture, not linked (no track): " + note, out)
+        self.assertEqual(self.q("SELECT count(*) FROM tracks"), [(0,)])
+
     def test_unsafe_zip_entry_names_are_never_extracted(self):
         """A photos/ or notes/ entry whose name is not one plain path part (a backslash, a
         .. part, a drive letter, an absolute path) is left out, so extraction stays under

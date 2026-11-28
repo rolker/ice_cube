@@ -110,8 +110,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from gpkg_writer import GeoPackage, gpkg_geometry, point, point_xyz  # noqa: E402
 from local_frame import LocalFrame, ecef_to_geodetic  # noqa: E402
-from logger_session import (APPROX_S, app_version, find_sessions, load_session, read_refs_csv,  # noqa: E402
-                            safe_file_name)
+from logger_session import (APPROX_S, TRACK_GAP_S, app_version, find_sessions, load_session,  # noqa: E402
+                            read_refs_csv, safe_file_name)
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
@@ -135,7 +135,6 @@ def schema_min_app(schema):
 
 USER_COLUMNS = {"captures": ("note", "label"), "photos": ("note",), "refs": ("note",),
                 "sessions": ("note",)}
-TRACK_GAP_S = 3.0      # a gap longer than this starts a new track line
 REF_SITE_M = 0.30      # refs this close horizontally are the same mark (as the app's check)
 
 R, I, T = "REAL", "INTEGER", "TEXT"
