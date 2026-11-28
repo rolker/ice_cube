@@ -334,3 +334,20 @@ Cold read: Codex only (EXIT=0), title/URL/diff; no earlier review entries read. 
 - `python3 -m unittest discover icecube/tests`: Ran 130 tests, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: passed; APK `logger/app/build/outputs/apk/debug/app-debug.apk` (C: 109.1 GB free before)
 - Not checked here: the 60 s note playback is a phone check.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 23:15 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #46 at `3211783`
+**Depth**: Deep (reason: round 2 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the cold read's four findings (Local Review at `adbe9f8`, entry commit 5b92ee8) and the fix diff 5b92ee8..3211783, read in full. Cross-model: skipped (convergence check, per handoff).
+
+Verified: all four are in the code. A session name failing safe_file_name is skipped in both _sessions_in_zip and find_sessions' folder walk, and import_session raises before extracting one; the test covers `..`, `.` and `a/..` and checks nothing lands outside photos/ and notes/. NoteRecorder keeps a capped note on a failed stop only when the file is non-empty after release (the caller still applies NoteRule.keep and deletes otherwise); the README adds the 60 s phone check, which stays a phone check. An attach event whose n is not in points.csv falls through to the name rule, whose not_later also needs the capture, so it ends n None and orphan_voice links it (test). The remark's has_line test matches track_lines' gap rule; TRACK_GAP_S now lives in logger_session and is imported back. `python3 -m unittest discover -s analysis/qgis/tests`: 189 OK (5 skipped). Gradle not re-run; the implementation entry ran it on this code.
+
+### Findings
+None.
