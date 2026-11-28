@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from icecube import cli, io
+from icecube import cli, io, passes
 
 QGIS = Path(__file__).resolve().parents[2] / "analysis" / "qgis"
 sys.path.insert(0, str(QGIS))
@@ -227,9 +227,14 @@ class TestLoggerSessionReader(unittest.TestCase):
         pts, _ = quiet(io.read_survey, scfg, SITE, self.d)
         self.assertTrue(scfg["pass_rule"]["from_file"])
         self.assertEqual(len(pts), 3)
+        seg, infos = passes.segment(pts, scfg["pass_rule"])
+        self.assertEqual([i.n for i in infos], [2, 1])             # the fix stretches A and C
+        self.assertEqual(list(seg.pass_id), [0, 0, 1])
         scfg = {"id": "s1", "reader": "logger_session", "path": "in", "pass_rule": {"from_file": False}}
-        quiet(io.read_survey, scfg, SITE, self.d)
+        pts, _ = quiet(io.read_survey, scfg, SITE, self.d)
         self.assertFalse(scfg["pass_rule"]["from_file"])          # a user value wins
+        seg, infos = passes.segment(pts, scfg["pass_rule"])
+        self.assertEqual([i.n for i in infos], [1, 1, 1])          # gap_s 120: 150 s and 470 s gaps
 
     def test_relative_base_dir_is_joined_once(self):
         import os
@@ -245,9 +250,12 @@ class TestLoggerSessionReader(unittest.TestCase):
 
     def test_pass_rule_written_by_the_user_is_kept_whole(self):
         synth.write_dir(self.d / "in", session_files())
-        scfg = {"id": "s1", "reader": "logger_session", "path": "in", "pass_rule": {"gap_s": 5.0}}
-        quiet(io.read_survey, scfg, SITE, self.d)
-        self.assertEqual(scfg["pass_rule"], {"gap_s": 5.0})
+        scfg = {"id": "s1", "reader": "logger_session", "path": "in",
+                "pass_rule": {"gap_s": 1000.0, "jump_m": None}}
+        pts, _ = quiet(io.read_survey, scfg, SITE, self.d)
+        self.assertEqual(scfg["pass_rule"], {"gap_s": 1000.0, "jump_m": None})
+        seg, infos = passes.segment(pts, scfg["pass_rule"])
+        self.assertEqual([i.n for i in infos], [3])                # one pass: the file's are not used
 
     def test_gps_ubx_without_gga_falls_back_to_the_loggers_columns(self):
         files = session_files()
@@ -338,6 +346,8 @@ class TestLoggerSessionReader(unittest.TestCase):
         names = {a for a in pts.anchor if a}
         self.assertTrue(names)
         self.assertTrue(all(a.startswith("s1:") for a in names), names)
+        pts, _ = self.read(first, base_from_gpkg=str(gpkg))        # held by the season: stored site
+        self.assertIn(f"site{site}", set(pts.anchor))
 
     def test_merged_season_sites_map_to_the_season_anchor(self):
         """Season refs at 0, 0.25 and 0.45 m east: update_local makes sites 1 (seed at 0) and
