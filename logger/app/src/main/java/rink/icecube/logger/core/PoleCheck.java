@@ -70,7 +70,7 @@ public final class PoleCheck {
 
     /**
      * Earlier refs within MATCH_RADIUS_M of now that have a ground height, are not voided and
-     * were not taken while the fix was young, in the given order. A voided ref is never a
+     * were not taken while the fix was young, ordered as below. A voided ref is never a
      * visit, so never part of the reference either (#27). A young ref (fix_young 1, logger
      * 0.11.0, #15) may still be settling by centimetres, so it is never a reference either;
      * it is itself checked against older refs. A row without the column (young unknown)
@@ -80,7 +80,8 @@ public final class PoleCheck {
      * (session, n) may come once per copy; only its first copy counts. The matches are
      * ordered by session then n (session folder names are start times), so the last one is
      * the most recent visit whatever order the copies were read in. Rows without a session
-     * keep their given order and are not merged.
+     * are not merged; they sort before every row with one, by n (equal n keep their given
+     * order), so one is the last visit only when no match has a session.
      */
     public static List<PointRow> matches(PointRow now, List<PointRow> earlier) {
         List<PointRow> out = new ArrayList<>();
@@ -95,7 +96,7 @@ public final class PoleCheck {
             if (r.session != null && !r.session.isEmpty() && !seen.add(r.session + "/" + r.n)) continue;
             out.add(r);
         }
-        // stable: rows with equal keys (no session) keep their order
+        // stable: rows with equal keys keep their order
         out.sort(Comparator.comparing((PointRow r) -> r.session == null ? "" : r.session).thenComparingInt(r -> r.n));
         return out;
     }
@@ -114,9 +115,9 @@ public final class PoleCheck {
     }
 
     /**
-     * The check for a new ref against earlier refs (oldest first, e.g. refs.csv order; the
-     * last match is the most recent visit). Null if the new ref has no ground height or no
-     * earlier ref matches.
+     * The check for a new ref against earlier refs, in any order: {@link #matches} sorts the
+     * visits by session then n, so the last is the most recent visit. Null if the new ref
+     * has no ground height or no earlier ref matches.
      */
     public static PoleCheck check(PointRow now, List<PointRow> earlier, double tolerance) {
         if (Double.isNaN(now.hGround)) return null;
