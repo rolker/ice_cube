@@ -20,13 +20,15 @@ import rink.icecube.logger.core.NoteRule;
  */
 final class NoteRecorder {
     private final MediaRecorder rec;
+    private final File file;
     private final long startMs;
     private boolean stopped;
     /** The cap was reached: the recorder stopped itself (asynchronously) and wrote the file. */
     private volatile boolean capped;
 
-    private NoteRecorder(MediaRecorder rec, long startMs) {
+    private NoteRecorder(MediaRecorder rec, File file, long startMs) {
         this.rec = rec;
+        this.file = file;
         this.startMs = startMs;
     }
 
@@ -70,7 +72,7 @@ final class NoteRecorder {
             r.release();
             throw e;
         }
-        self[0] = new NoteRecorder(r, startMs);
+        self[0] = new NoteRecorder(r, f, startMs);
         return self[0];
     }
 
@@ -80,9 +82,11 @@ final class NoteRecorder {
     /**
      * Stops and releases the recorder; returns the note's length in ms (capped at the
      * maximum), or -1 when the recorder had nothing to write (stop failed, as for a very
-     * short note; at or past the cap a failed stop is the recorder having stopped itself,
-     * and the length stands, even before the cap's info event has arrived). The caller
-     * decides whether the file is kept (NoteRule.keep). Once only.
+     * short note). At or past the cap a failed stop is the recorder having stopped itself
+     * (asynchronously: the cap's info event may not have arrived yet); the length then
+     * stands only when the file is non-empty once the recorder is released, which waits for
+     * it to finish writing. The caller decides whether the file is kept (NoteRule.keep,
+     * which reads the file's length after this returns) and deletes it otherwise. Once only.
      */
     long stop() {
         if (stopped) return -1;
@@ -98,6 +102,6 @@ final class NoteRecorder {
         } finally {
             rec.release();
         }
-        return ok || full ? ms : -1;
+        return ok || (full && file.length() > 0) ? ms : -1;
     }
 }

@@ -717,6 +717,10 @@ stops and keeps the note. A flagged capture's notes move with its photos (see Fl
 captures). There is no speech-to-text: the audio is the record, and the `note` column
 stays for typing later.
 
+Phone check (the JVM tests cannot record audio): a short note and a stopped note play
+back; a note left to run plays all 60 s after the cap stopped it (and one stopped by
+STOP just at the cap), and the importer links it; a double tap leaves no file.
+
 Voice notes may hold voices and names (and so does the shared zip). Like photos they belong
 with the session data in Drive and must never go into the public repo (`*.m4a` is
 gitignored).
