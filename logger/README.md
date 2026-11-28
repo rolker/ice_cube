@@ -447,11 +447,14 @@ is the same as a Surface MARK (the last 1 s average, the same columns, the surfa
 an undoable notice `S12 auto  FIXED ...`), with `method` `auto`, and events.csv adds
 `auto capture n=.. plumb_deg=.. held_s=.. spread_cm=.. epochs=..`.
 
-One capture per stop: after it (or after a Surface MARK, which counts as the stop's
-capture), nothing more is taken until the antenna has moved more than 3 times the still
-limit (6 cm at the default) from it, or the pole has tilted past the plumb limit; then the
-full hold must pass again. So walk to the next point, or tilt the pole and stand it again
-to re-shoot the same point.
+One capture per stop: every capture at a stop latches it at that position: an auto capture
+(once it is really taken, after its 1 s average), a Surface MARK, a finished Surface tilt
+set (at its tip, so standing the pole up on the tip afterwards takes nothing) and an
+accepted calibration (at its tip). Nothing more is taken until the antenna, read while the
+pole is plumb, is more than 3 times the still limit (6 cm at the default) from the latched
+position; then the full hold must pass again. Tilting, losing plumb or a gap in the gravity
+readings never clears it: a leaning antenna is not over its tip. So walk to the next point.
+To re-shoot the same point, UNDO the capture (that clears the latch) or press MARK.
 
 Cues: the capture plays the surface pip. Auto capture becoming armed or off is cued only
 when the fix caused it (lost, young, suspect; a rising or falling pair), after the change

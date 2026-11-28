@@ -20,9 +20,16 @@ import java.util.List;
  * epoch; so does a gap of more than {@link #GAP_S} between epochs. Once the window spans holdS
  * (and has 2 epochs or more) it fires: one capture.
  *
- * One capture per stop: after a capture (auto, or a manual Surface MARK reported through
- * {@link #taken}) it is latched until the antenna has moved more than {@link #REARM_FACTOR}
- * times scatterM horizontally from that capture, or the pole tilts past plumbDeg; then the
+ * One capture per stop: every capture at a stop is reported through {@link #taken} (the
+ * caller does this once the capture really happened: an auto capture after its 1 s average,
+ * a Surface MARK, a finished Surface tilt set at its tip, an accepted pole calibration at its
+ * tip), which latches the stop at that position. A fire does not latch by itself, so a
+ * capture the caller had to skip leaves nothing taken. The latch clears only when the
+ * antenna has moved more than {@link #REARM_FACTOR} times scatterM horizontally from the
+ * latched position (or on {@link #reset}, for an undone capture), read at a plumb epoch: a
+ * plumb antenna is over its tip, while a leaning one is not (a 15° lean on a 1.8 m pole puts
+ * it 47 cm off the tip), so tilting, losing plumb or a NaN gravity reading never clears it,
+ * and a pole leaning about one point (a tilt set, a calibration) never re-shoots it. Then the
  * full hold must pass again.
  *
  * Cues: the armed state (every gate met) is debounced, so it changes only once the new state
@@ -82,10 +89,12 @@ public final class AutoCapture {
         /** At a fire: the window's largest horizontal deviation from its mean (m), and its epochs. */
         public final double spreadM;
         public final int epochs;
+        /** At a fire: the window's mean horizontal position (the place to pass to {@link #taken}); else NaN. */
+        public final double e, n;
         public final Cue cue;
-        Decision(boolean fire, Why why, double heldS, double spreadM, int epochs, Cue cue) {
+        Decision(boolean fire, Why why, double heldS, double spreadM, int epochs, double e, double n, Cue cue) {
             this.fire = fire; this.why = why; this.heldS = heldS; this.spreadM = spreadM; this.epochs = epochs;
-            this.cue = cue;
+            this.e = e; this.n = n; this.cue = cue;
         }
     }
 
@@ -120,8 +129,9 @@ public final class AutoCapture {
     public Why last() { return last; }
 
     /**
-     * A capture was taken at (e, n) another way (a Surface MARK): this stop counts as taken,
-     * so no auto capture follows at the same point. A NaN position is ignored.
+     * A capture was taken at (e, n): an auto capture (the fire's e, n), a Surface MARK, a
+     * Surface tilt set's tip or a calibration's tip. This stop counts as taken, so no auto
+     * capture follows until the antenna moves away. A NaN position is ignored.
      */
     public void taken(double e, double n) {
         if (Double.isNaN(e) || Double.isNaN(n)) return;
@@ -131,7 +141,7 @@ public final class AutoCapture {
         window.clear();
     }
 
-    /** Forgets the hold window and the latch (a new calibration, for example). */
+    /** Forgets the hold window and the latch (a new calibration, or the latched capture undone). */
     public void reset() {
         window.clear();
         latched = false;
@@ -146,11 +156,15 @@ public final class AutoCapture {
             window.clear();
             return decide(in, why, false, 0, 0, 0);
         }
-        boolean plumb = !Double.isNaN(in.plumbDeg) && in.plumbDeg <= plumbDeg;
+        boolean plumb = in.plumbDeg <= plumbDeg;   // false for NaN
         if (latched) {
-            boolean away = Double.isNaN(in.e) || Math.hypot(in.e - latchE, in.n - latchN) > rearmM();
-            if (away || !plumb) latched = false;
-            else return decide(in, Why.CAPTURED, false, 0, 0, 0);
+            // only a plumb antenna clearly away clears it: never a tilt, a NaN gravity or a NaN position
+            boolean away = plumb && Math.hypot(in.e - latchE, in.n - latchN) > rearmM();
+            if (!away) {
+                window.clear();
+                return decide(in, Why.CAPTURED, false, 0, 0, 0);
+            }
+            latched = false;
         }
         if (!plumb || Double.isNaN(in.e) || Double.isNaN(in.n)) {
             window.clear();
@@ -158,7 +172,7 @@ public final class AutoCapture {
         }
         window.add(new double[] {in.tNs / 1e9, in.e, in.n});
         double spread = spread();
-        if (spread > scatterM) {
+        if (!(spread <= scatterM)) {
             window.clear();
             window.add(new double[] {in.tNs / 1e9, in.e, in.n});
             return decide(in, Why.MOVING, false, 0, 0, 0);
@@ -168,10 +182,8 @@ public final class AutoCapture {
             double[] m = mean();
             int n = window.size();
             window.clear();
-            latched = true;
-            latchE = m[0];
-            latchN = m[1];
-            return decide(in, Why.CAPTURED, true, held, spread, n);
+            last = Why.CAPTURED;
+            return new Decision(true, Why.CAPTURED, held, spread, n, m[0], m[1], cue(in.tNs, Why.CAPTURED));
         }
         return decide(in, Why.HOLDING, false, held, 0, 0);
     }
@@ -192,7 +204,7 @@ public final class AutoCapture {
 
     private Decision decide(Input in, Why why, boolean fire, double held, double spread, int n) {
         last = why;
-        return new Decision(fire, why, held, spread, n, cue(in.tNs, why));
+        return new Decision(fire, why, held, spread, n, Double.NaN, Double.NaN, cue(in.tNs, why));
     }
 
     /** Debounces the armed state; the cue for a change, if the fix caused it. */

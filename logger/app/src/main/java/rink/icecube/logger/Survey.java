@@ -51,7 +51,9 @@ import rink.icecube.logger.core.VoidRule;
  * Auto capture ({@link AutoCapture}, logger 0.13.0, #35): every epoch goes to the arming
  * state machine with the pole's angle from plumb (phone gravity against the pole axis this
  * session's {@link PoleCalibration} found); when it fires, the capture takes the same path as
- * a Surface MARK ({@link #capture}), method auto. A Surface MARK counts as that stop's capture.
+ * a Surface MARK ({@link #capture}), method auto. Every capture at a stop (auto, a Surface MARK,
+ * a Surface tilt set's tip, an accepted calibration's tip) latches it, until the pole moves
+ * away (see AutoCapture); undoing the latched capture clears it.
  * The calibration runs on the epochs too (startCalibration / cancelCalibration); MARK, tilt
  * sets and refs are refused while it runs, and it is refused while they run.
  *
@@ -222,6 +224,7 @@ final class Survey {
     private AutoCapture.Decision autoLast;
     private long autoLastNs;
     private String autoLastLabel = "";
+    private int autoLatchN;                // the capture row auto capture is latched on, 0 for none or the calibration
 
     Survey(LoggerService svc, File dir) {
         this.svc = svc;
@@ -394,14 +397,21 @@ final class Survey {
             return new Outcome(true, null);
         }
         PointRow r = capture(mode, now, a, PointRow.SINGLE);
-        if (mode == SurveyMode.SURFACE) {   // this stop is taken: no auto capture follows here
-            double[] h = autoEnu(r.lat, r.lon, r.hAnt);
-            if (h != null) {
-                auto.taken(h[0], h[1]);
-                autoLastLabel = label(r.cls) + r.n;
-            }
-        }
+        if (mode == SurveyMode.SURFACE) autoTaken(r.lat, r.lon, r.hAnt, label(r.cls) + r.n, r.n);
         return new Outcome(true, null);
+    }
+
+    /**
+     * A capture happened at this stop (Surface MARK, auto, a Surface tilt set's tip, an
+     * accepted calibration's tip): latch auto capture there, so no auto capture follows until
+     * the pole moves away. n is its row (0 for the calibration), for UNDO. Lock held.
+     */
+    private void autoTaken(double lat, double lon, double h, String label, int n) {
+        double[] p = autoEnu(lat, lon, h);
+        if (p == null) return;
+        auto.taken(p[0], p[1]);
+        autoLastLabel = label;
+        autoLatchN = n;
     }
 
     /**
@@ -481,7 +491,9 @@ final class Survey {
             return;
         }
         PointRow r = capture(SurveyMode.SURFACE, now, a, PointRow.AUTO);
+        auto.taken(d.e, d.n);   // latched only now that the capture happened
         autoLastLabel = label(r.cls) + r.n;
+        autoLatchN = r.n;
         svc.event(String.format(Locale.US, "auto capture n=%d plumb_deg=%.1f held_s=%.1f spread_cm=%.1f epochs=%d",
                 r.n, in.plumbDeg, d.heldS, d.spreadM * 100, d.epochs));
     }
@@ -511,6 +523,8 @@ final class Survey {
                 calibration = null;
                 poleAxis = c.result();
                 auto.reset();
+                double[] tip = c.tipGeodetic();   // the calibration point is this stop's capture
+                if (tip != null) autoTaken(tip[0], tip[1], tip[2], "the calibration point", 0);
                 PoleAxis a = poleAxis;
                 // the axis is the phone's mounting on the pole (phone axes), not a position
                 svc.event(String.format(Locale.US, "pole axis calibrated set=%d residual_deg=%.2f samples=%d"
@@ -543,6 +557,7 @@ final class Survey {
         calibration = new PoleCalibration(svc.poleHeight(), Settings.tiltGates(Settings.prefs(svc)), now);
         poleAxis = null;
         auto.reset();
+        autoLatchN = 0;
         calibrations++;
         svc.event(String.format(Locale.US, "pole calibration start set=%d pole_height=%.3f", calibrations,
                 calibration.pole));
@@ -603,6 +618,9 @@ final class Survey {
                 return new AutoView(String.format(Locale.US, "AUTO: holding  %.0f / %.0f s", d.heldS, auto.holdS()),
                         AutoView.Kind.READY, false, false);
             case CAPTURED:
+                if (!auto.latched()) {   // a skipped fire, or the capture was undone: not taken
+                    return new AutoView("AUTO: ready, hold plumb and still", AutoView.Kind.READY, false, false);
+                }
                 return new AutoView("AUTO: " + autoLastLabel + " taken, move to the next point", AutoView.Kind.DONE,
                         false, false);
             default:   // the gates above, seen before this frame caught up
@@ -713,6 +731,8 @@ final class Survey {
                 r.warnings.isEmpty() ? "none" : android.text.TextUtils.join(" | ", r.warnings),
                 drops.length() > 0 ? " " + drops : ""));
         writeTiltObs(t.obsRows(set, row.n));
+        // a Surface set is this stop's capture: standing the pole up on its tip takes no auto capture
+        if (SurveyMode.SURFACE.key.equals(row.cls)) autoTaken(row.lat, row.lon, row.hAnt, label(row.cls) + row.n, row.n);
         String text = String.format(Locale.US, "%s%d tilt  %d leans  rms %.1f cm  cover %.0f°  σ %.1f cm", label(row.cls),
                 row.n, r.used.size(), s.rms * 100, s.coverageDeg, s.maxSd() * 100);
         boolean warn = !r.warnings.isEmpty() || row.fixSuspect || row.fixYoung == 1;
@@ -890,6 +910,11 @@ final class Survey {
         Notice cur = notice;
         if (cur != null && cur.at == r) notice = null;   // its capture notice no longer stands
         if (poleWarningN == n) { poleWarning = null; poleWarningN = 0; }
+        if (autoLatchN == n) {   // the latched capture is undone: this stop is no longer taken
+            auto.reset();
+            autoLatchN = 0;
+            autoLastLabel = "";
+        }
         if (PointRow.REF.equals(r.cls)) refsVoid(r);
         savePoints();
         return new Outcome(true, label(r.cls) + n + " flagged: " + why);

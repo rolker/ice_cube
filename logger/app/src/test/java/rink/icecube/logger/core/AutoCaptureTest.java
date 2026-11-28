@@ -22,10 +22,17 @@ public class AutoCaptureTest {
         return in;
     }
 
-    /** Feeds good epochs at (e, n) from t0 to t1 (1 s apart); returns the number of fires. */
+    /** Feeds one epoch and, at a fire, reports the capture as taken (what Survey does once it captured). */
+    private static AutoCapture.Decision feed(AutoCapture a, AutoCapture.Input in) {
+        AutoCapture.Decision d = a.onEpoch(in);
+        if (d.fire) a.taken(d.e, d.n);
+        return d;
+    }
+
+    /** Feeds good epochs at (e, n) from t0 to t1 (1 s apart), taking each fire; returns the number of fires. */
     private static int hold(AutoCapture a, double t0, double t1, double e, double n) {
         int fires = 0;
-        for (double t = t0; t <= t1 + 1e-9; t += 1) if (a.onEpoch(at(t, e, n)).fire) fires++;
+        for (double t = t0; t <= t1 + 1e-9; t += 1) if (feed(a, at(t, e, n)).fire) fires++;
         return fires;
     }
 
@@ -43,6 +50,34 @@ public class AutoCaptureTest {
         assertEquals(3, d.epochs);
         assertEquals(2.0, d.heldS, 1e-9);
         assertTrue(d.spreadM < 0.003);
+        assertEquals(0.001, d.e, 1e-12);   // the window's mean
+        assertEquals(0.001, d.n, 1e-12);
+        assertFalse(a.latched());   // not until the caller says it captured
+    }
+
+    /** A fire the caller could not capture (no RTK fixed average) leaves the stop untaken. */
+    @Test public void aFireIsNotLatchedUntilTaken() {
+        AutoCapture a = auto();
+        a.onEpoch(at(0, 0, 0));
+        a.onEpoch(at(1, 0, 0));
+        assertTrue(a.onEpoch(at(2, 0, 0)).fire);   // skipped: no taken()
+        assertEquals(AutoCapture.Why.HOLDING, a.onEpoch(at(3, 0, 0)).why);
+        a.onEpoch(at(4, 0, 0));
+        AutoCapture.Decision d = a.onEpoch(at(5, 0, 0));
+        assertTrue(d.fire);
+        a.taken(d.e, d.n);
+        assertTrue(a.latched());
+        assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(at(6, 0, 0)).why);
+    }
+
+    /** Undoing the latched capture (Survey calls reset) lets the same stop be shot again. */
+    @Test public void resetClearsTheLatch() {
+        AutoCapture a = auto();
+        assertEquals(1, hold(a, 0, 2, 0, 0));
+        assertTrue(a.latched());
+        a.reset();
+        assertFalse(a.latched());
+        assertEquals(1, hold(a, 3, 5, 0, 0));
     }
 
     @Test public void oneCapturePerStop() {
@@ -135,14 +170,47 @@ public class AutoCaptureTest {
         assertEquals(1, hold(a, 11, 13, 0.061, 0));  // 6.1 cm: a new stop, held again
     }
 
-    @Test public void rearmsAfterTiltingPastTheLimitAtTheSamePoint() {
+    /** Tilting (as in a tilt set or a lean about the tip) never re-arms: only moving away does. */
+    @Test public void tiltingAtTheSamePointDoesNotRearm() {
         AutoCapture a = auto();
         assertEquals(1, hold(a, 0, 2, 0, 0));
-        AutoCapture.Input tilted = at(3, 0, 0);
-        tilted.plumbDeg = 5;
-        assertEquals(AutoCapture.Why.NOT_PLUMB, a.onEpoch(tilted).why);
-        assertFalse(a.latched());
-        assertEquals(1, hold(a, 4, 6, 0, 0));
+        for (int t = 3; t <= 8; t++) {
+            AutoCapture.Input tilted = at(t, t % 2 == 0 ? 0.47 : 0.066, 0);   // leaning 15° or 2.1°
+            tilted.plumbDeg = t % 2 == 0 ? 15 : 2.1;
+            assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(tilted).why);
+            assertTrue(a.latched());
+        }
+        assertEquals(0, hold(a, 9, 20, 0, 0));   // stood plumb again on the same point
+        assertEquals(AutoCapture.Why.CAPTURED, a.last());
+    }
+
+    /** A NaN gravity reading (plumb unknown) or a NaN position never clears the latch. */
+    @Test public void nanReadingsNeverClearTheLatch() {
+        AutoCapture a = auto();
+        assertEquals(1, hold(a, 0, 2, 0, 0));
+        AutoCapture.Input noGravity = at(3, 0, 0);
+        noGravity.plumbDeg = Double.NaN;
+        assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(noGravity).why);
+        AutoCapture.Input noPosition = at(4, Double.NaN, Double.NaN);
+        assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(noPosition).why);
+        assertTrue(a.latched());
+        assertEquals(0, hold(a, 5, 10, 0, 0));
+    }
+
+    /** A capture reported at a tilt set's or a calibration's tip latches the stop like MARK. */
+    @Test public void aTipTakenLatchesThePlumbStopOnIt() {
+        AutoCapture a = auto();
+        AutoCapture.Input tilt = at(0, 0.3, 0);   // leaning: the antenna 30 cm off the tip
+        tilt.tiltRunning = true;
+        a.onEpoch(tilt);
+        a.taken(0, 0);   // the set finished: its tip
+        AutoCapture.Input leaning = at(1, 0.3, 0);   // still leaning after the set: 30 cm off the tip
+        leaning.plumbDeg = 10;
+        assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(leaning).why);
+        assertTrue(a.latched());   // a leaning antenna says nothing about the tip
+        assertEquals(0, hold(a, 2, 10, 0.005, 0));   // stood up plumb on the tip: no duplicate
+        assertEquals(AutoCapture.Why.CAPTURED, a.last());
+        assertEquals(1, hold(a, 11, 13, 1, 0));   // plumb at the next point
     }
 
     @Test public void manualMarkCountsAsThisStopsCapture() {

@@ -73,6 +73,12 @@ public final class PoleCalibration {
     /** After DONE or FAILED: the tip solve (null if none), the lean coverage and the fit residual (NaN if not reached). */
     public TiltSolver.Solution solution() { return solution; }
     public double coverageDeg() { return coverage; }
+
+    /** After DONE: the solved tip as {lat, lon, h} (auto capture latches this stop there); else null. */
+    public double[] tipGeodetic() {
+        if (phase != Phase.DONE || solution == null || frame == null) return null;
+        return frame.toGeodetic(solution.tip[0], solution.tip[1], solution.tip[2]);
+    }
     public double residualDeg() { return residual; }
 
     /** Seconds left in the current phase at nowNs (the full still time before a still spell begins); 0 when over. */

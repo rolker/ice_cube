@@ -110,6 +110,16 @@ public class PoleCalibrationTest {
         assertTrue(a.extras.isEmpty());   // #38's outputs: none yet
     }
 
+    /** The tip auto capture latches the calibration point at: the point the pole stood on. */
+    @Test public void tipIsTheCalibrationPoint() {
+        PoleCalibration c = run(routine(null, 330));
+        double[] tip = c.tipGeodetic();
+        assertNotNull(tip);
+        double[] enu = F.toEnu(tip[0], tip[1], tip[2]);
+        assertEquals(0, Math.hypot(enu[0], enu[1]), 0.001);
+        assertNull(new PoleCalibration(L, new TiltSet.Gates(), 0).tipGeodetic());   // not done
+    }
+
     /** The sign convention auto capture relies on: plumb reads 0°, a 5° lean reads 5° (not 175°). */
     @Test public void plumbAngleSign() {
         PoleAxis a = run(routine(null, 330)).result();
