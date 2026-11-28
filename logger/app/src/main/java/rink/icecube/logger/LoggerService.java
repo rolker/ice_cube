@@ -220,6 +220,8 @@ public final class LoggerService extends Service {
             stopGps("gps wait for the rover ended after " + (w.waitTimeoutMs / 1000) + " s");
         }
         if (stopIfIdle()) return;
+        Survey sv = survey;
+        if (sv != null) sv.onTick();   // a pole calibration with no epochs times out
         updateNotification();
         main.postDelayed(tick, TICK_MS);
     }
@@ -451,6 +453,12 @@ public final class LoggerService extends Service {
     double[] gravityMean(long fromNs, long toNs) {
         Session s = session;
         return s == null ? null : s.imu.gravityMean(fromNs, toNs);
+    }
+
+    /** The gyro rotation (rad, phone axes) of the samples that arrived in (fromNs, toNs], or null. */
+    double[] gyroIntegral(long fromNs, long toNs) {
+        Session s = session;
+        return s == null ? null : s.imu.gyroIntegral(fromNs, toNs);
     }
 
     /** The open session's captures, or null. */

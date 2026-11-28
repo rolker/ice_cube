@@ -73,10 +73,12 @@ final class Survey {
     /** Auto capture: the plumb angle is from the gravity of the last 0.5 s before each epoch. */
     static final long PLUMB_WINDOW_NS = 500_000_000L;
     /**
-     * Pole calibration: each sample's gravity is the mean over +-150 ms about 100 ms before
-     * the GGA arrived (the receiver's output delay; a guess the first field run should check).
+     * Pole calibration: each sample's gravity is the mean over +-100 ms about 100 ms before
+     * the GGA arrived (the receiver's output delay; a guess the first field run should check),
+     * so the 200 ms just before arrival: every sample of it is already in. The twist phase's
+     * gyro rotation is taken between the same shifted instants of consecutive epochs.
      */
-    static final long CAL_LATENCY_NS = 100_000_000L, CAL_HALF_NS = 150_000_000L;
+    static final long CAL_LATENCY_NS = 100_000_000L, CAL_HALF_NS = 100_000_000L;
     /** The auto line reads "not RTK fixed" once the last epoch is older than this. */
     static final long AUTO_STALE_NS = 3_000_000_000L;
 
@@ -220,6 +222,7 @@ final class Survey {
     private PoleCalibration calibration;
     private PoleAxis poleAxis;
     private int calibrations;
+    private long calPrevNs = Long.MIN_VALUE;   // the last epoch fed to the calibration, for the gyro rotation
     private LocalFrame autoFrame;          // horizontal positions for auto capture: any fixed local frame
     private AutoCapture.Decision autoLast;
     private long autoLastNs;
@@ -505,10 +508,23 @@ final class Survey {
         long at = e.elapsedNs - CAL_LATENCY_NS;
         double[] g = svc.gravityMean(at - CAL_HALF_NS, at + CAL_HALF_NS);
         double[] g3 = g == null ? null : new double[] {g[0], g[1], g[2]};
-        switch (c.onEpoch(e, g3)) {
+        double[] gyro = calPrevNs == Long.MIN_VALUE ? null : svc.gyroIntegral(calPrevNs - CAL_LATENCY_NS, at);
+        calPrevNs = e.elapsedNs;
+        calibrationChange(c, c.onEpoch(e, g3, gyro));
+    }
+
+    /** A service tick: a running calibration with no epochs for a while fails (lock taken). */
+    synchronized void onTick() {
+        PoleCalibration c = calibration;
+        if (c != null) calibrationChange(c, c.onTick(SystemClock.elapsedRealtimeNanos()));
+    }
+
+    /** Acts on what an epoch or a tick changed in the calibration c (lock held). */
+    private void calibrationChange(PoleCalibration c, PoleCalibration.Change change) {
+        switch (change) {
             case RESTART:
                 cue(Feedback.Cue.ERROR);
-                notice = new Notice("Calibrate: moved, hold the pole still again", false, true);
+                notice = new Notice("Calibrate: " + c.restartCause() + ", hold the pole still again", false, true);
                 break;
             case LEAN:
                 svc.event("pole calibration lean set=" + calibrations);
@@ -528,12 +544,16 @@ final class Survey {
                 PoleAxis a = poleAxis;
                 // the axis is the phone's mounting on the pole (phone axes), not a position
                 svc.event(String.format(Locale.US, "pole axis calibrated set=%d residual_deg=%.2f samples=%d"
-                                + " twist_samples=%d skipped=%d cover_deg=%.0f rms_m=%.4f axis=%.4f;%.4f;%.4f", calibrations,
-                        a.residualDeg, a.samples, a.twistSamples, c.skipped(), a.coverageDeg, a.rmsM, a.axis[0],
-                        a.axis[1], a.axis[2]));
+                                + " twist_samples=%d twist_deg=%.0f skipped=%d cover_deg=%.0f rms_m=%.4f axis=%.4f;%.4f;%.4f",
+                        calibrations, a.residualDeg, a.samples, a.twistSamples, c.twistDeg(), c.skipped(), a.coverageDeg,
+                        a.rmsM, a.axis[0], a.axis[1], a.axis[2]));
                 cue(Feedback.Cue.CAL_DONE);
-                notice = new Notice(String.format(Locale.US, "Pole calibrated: %d samples, %.1f° RMS. Auto capture on",
-                        a.samples, a.residualDeg), true);
+                SharedPreferences p = Settings.prefs(svc);
+                String then = !Settings.autoCapture(p) ? "Auto capture is off in Settings"
+                        : Settings.mode(p) != SurveyMode.SURFACE ? "Auto capture works in Surface mode"
+                        : "Auto capture on";
+                notice = new Notice(String.format(Locale.US, "Pole calibrated: %d leans, %.1f° RMS. %s",
+                        c.leans(), a.residualDeg, then), true);
                 break;
             case FAILED:
                 calibration = null;
@@ -555,6 +575,7 @@ final class Survey {
         }
         long now = SystemClock.elapsedRealtimeNanos();
         calibration = new PoleCalibration(svc.poleHeight(), Settings.tiltGates(Settings.prefs(svc)), now);
+        calPrevNs = Long.MIN_VALUE;
         poleAxis = null;
         auto.reset();
         autoLatchN = 0;
@@ -615,7 +636,7 @@ final class Survey {
             }
             case MOVING: return new AutoView("AUTO: ready, hold still", AutoView.Kind.READY, false, false);
             case HOLDING:
-                return new AutoView(String.format(Locale.US, "AUTO: holding  %.0f / %.0f s", d.heldS, auto.holdS()),
+                return new AutoView(String.format(Locale.US, "AUTO: holding  %.1f / %.1f s", d.heldS, auto.holdS()),
                         AutoView.Kind.READY, false, false);
             case CAPTURED:
                 if (!auto.latched()) {   // a skipped fire, or the capture was undone: not taken

@@ -416,23 +416,30 @@ the pole's axis in phone axes; it is kept for the session only, since the phone 
 differently next time). Tap the blue AUTO line, or MENU > Calibrate pole, with RTK fixed,
 then with the tip on one point all the way through:
 1. Hold the pole still, 3 s (`CALIBRATE 1/3`). Moving more than the lean scatter (Tilt
-   gates, 2 cm) or losing the fix starts it again with the buzz; no 3 s still within 30 s fails.
+   gates, 2 cm), losing the fix, an epoch without a height or gravity, or a gap of more than
+   2 s between epochs starts it again with the buzz and a notice naming the cause
+   (`Calibrate: moved, hold the pole still again`); no 3 s still within 30 s fails (naming a
+   missing GGA height or phone gravity reading when that was the cause).
 2. Three beeps: lean slowly all round the tip, as in a tilt set, 10 s (`CALIBRATE 2/3`).
    Every RTK fixed epoch is a sample (antenna position, gravity about it); a swing over
    0.5 m/s is skipped.
-3. Three beeps: twist the pole slowly about itself, twice, 8 s (`CALIBRATE 3/3`). These
-   samples are counted only (for a later lever-arm calibration, #38).
+3. Three beeps: twist the pole slowly about itself, twice, 8 s (`CALIBRATE 3/3`). The
+   phone's gyroscope must show the pole turned at least 90° about its axis (the range of
+   the running angle, so back and forth counts); the epochs are otherwise only counted
+   (for a later lever-arm calibration, #38).
 
 The still sample and the leans are then solved like a tilt set: the tip, each sample's tilt,
 and the axis that best explains the tilts from the gravity vectors (the tilt capture's IMU
-fit). Accepted (rising four-tone, `Pole calibrated: 10 samples, 0.4° RMS. Auto capture on`)
-with at least 4 samples, the tip RMS within the tilt RMS gate (2 cm), leans of 5° or more
-covering at least the tilt coverage gate (180°), and an RMS fit residual of 1° or less;
-otherwise it fails with the reason (the buzz and an amber notice) and auto capture stays
-off. A young or suspect fix is fine here (only the shape of one short spell is used). MARK,
+fit). Accepted (rising four-tone, `Pole calibrated: 9 leans, 0.4° RMS. Auto capture on`,
+or `Auto capture is off in Settings` / `Auto capture works in Surface mode` when it will not
+run yet) with at least 4 leans (the still sample not counted), the tip RMS within the tilt
+RMS gate (2 cm), leans of 5° or more covering at least the tilt coverage gate (180°), an
+RMS fit residual of 1° or less, and a twist of 90° or more (a phone without a gyroscope
+cannot pass); otherwise it fails with the reason (the buzz and an amber notice) and auto
+capture stays off. No GPS epoch for 5 s (the rover gone) fails it too, so it never hangs. A young or suspect fix is fine here (only the shape of one short spell is used). MARK,
 tilt capture and refs are refused while it runs; Back or MENU > Stop pole calibration stops
 it. Recalibrating drops the old axis at the start. events.csv gets `pole calibration start`,
-`... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. axis=x;y;z`
+`... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. twist_deg=.. axis=x;y;z`
 (phone axes: the mounting, not a position) or `pole calibration failed: ..`.
 
 Then, at each GGA epoch, auto capture is armed when all of these hold, else the AUTO line

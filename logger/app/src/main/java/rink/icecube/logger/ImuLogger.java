@@ -18,13 +18,17 @@ import java.util.Locale;
 /**
  * Writes phone accelerometer, gravity and gyroscope samples to CSV. Times are sensor event
  * timestamps. It also keeps the last few seconds of gravity samples in memory, stamped with
- * SystemClock.elapsedRealtimeNanos() on arrival (the GGA epochs' clock), for tilt capture.
+ * SystemClock.elapsedRealtimeNanos() on arrival (the GGA epochs' clock), for tilt capture,
+ * and of gyroscope samples, for the pole calibration's twist check.
  */
 final class ImuLogger implements SensorEventListener {
     private static final int PERIOD_US = 10000, RING = 1024;
     private final long[] gravNs = new long[RING];
     private final float[][] grav = new float[RING][3];
     private int gravCount;
+    private final long[] gyroNs = new long[RING], gyroEventNs = new long[RING];
+    private final float[][] gyro = new float[RING][3];
+    private int gyroCount;
     private final SensorManager sm;
     private final BufferedWriter w;
     private HandlerThread thread;
@@ -68,6 +72,12 @@ final class ImuLogger implements SensorEventListener {
             gravNs[i] = SystemClock.elapsedRealtimeNanos();
             grav[i][0] = e.values[0]; grav[i][1] = e.values[1]; grav[i][2] = e.values[2];
             gravCount++;
+        } else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            int i = gyroCount % RING;
+            gyroNs[i] = SystemClock.elapsedRealtimeNanos();
+            gyroEventNs[i] = e.timestamp;
+            gyro[i][0] = e.values[0]; gyro[i][1] = e.values[1]; gyro[i][2] = e.values[2];
+            gyroCount++;
         }
         try {
             w.write(String.format(Locale.US, "%s,%d,%.5f,%.5f,%.5f\n", n, e.timestamp, e.values[0], e.values[1], e.values[2]));
@@ -87,6 +97,26 @@ final class ImuLogger implements SensorEventListener {
             n++;
         }
         return n == 0 ? null : new double[] {x / n, y / n, z / n, n};
+    }
+
+    /**
+     * The gyro rotation (rad, phone axes: the angular rate integrated over the sensor's own
+     * sample intervals) of the samples that arrived in (fromNs, toNs]; null if none.
+     */
+    synchronized double[] gyroIntegral(long fromNs, long toNs) {
+        double x = 0, y = 0, z = 0;
+        int n = 0;
+        int have = Math.min(gyroCount, RING);
+        for (int k = 0; k < have - 1; k++) {   // each sample with the one before it (for dt)
+            int i = (gyroCount - 1 - k) % RING, j = (gyroCount - 2 - k) % RING;
+            if (gyroNs[i] <= fromNs) break;
+            if (gyroNs[i] > toNs) continue;
+            double dt = (gyroEventNs[i] - gyroEventNs[j]) / 1e9;
+            if (!(dt > 0 && dt < 0.1)) continue;   // a stall or a reset of the sensor clock
+            x += gyro[i][0] * dt; y += gyro[i][1] * dt; z += gyro[i][2] * dt;
+            n++;
+        }
+        return n == 0 ? null : new double[] {x, y, z};
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) { }
