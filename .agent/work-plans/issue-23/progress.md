@@ -242,3 +242,22 @@ Open owner question (not a finding): the multi-day median vs ground movement bet
 - [x] (suggestion) `matches` javadoc says rows without a session "keep their given order", but the sort still orders them by n and puts them before every sessioned row (so one can never be `last`); fix the wording or use a constant secondary key for them — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:80`
 - [x] (suggestion) README says `place_cm`/`sd_u_cm` are "on every line", but the `pole check n=…: result not shown (voided)` line carries no keys (the importer then resets that ref's `colour`/`diff_ref_m` to None, harmless as a voided ref draws grey); narrow to check and no-check lines — `logger/README.md:553`
 - [x] (suggestion) Placement cue is never computed when the new ref has no ground height (`check` returns null before positions are used), though earlier visits within 0.30 m could judge it; document or compute the offset apart from the height check — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:117`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:38 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-23 at `585baad`
+**Addressed**: Local Review (Pre-Push) at `a08f0c5` (2026-11-27 19:35 -05:00)
+**Commits**: c930103, fee6386, 461dce0, 585baad
+
+### Actions
+- [x] (must-fix) Non-finite distance admitted: radius test is now `!(d <= MATCH_RADIUS_M)` and `PointRow.hasPosition` needs finite lat/lon; test `nonFiniteCoordinatesNeverMatch` (Infinity, -Infinity, NaN) — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:94`, `logger/app/src/main/java/rink/icecube/logger/core/PointRow.java:101`
+- [x] (suggestion) `check()` javadoc now says any input order; `matches` sorts by session then n — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:117`
+- [x] (suggestion) `matches` javadoc: rows without a session sort first by n, so one is last only when no match has a session — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:80`
+- [x] (suggestion) README (and the Survey comment): `place_cm`/`sd_u_cm` on every check and no-check line; the voided line carries no keys — `logger/README.md:553`
+- [x] (suggestion) Off-centre cue computed apart from the height check: new `PoleCheck.placeOffset` and `Cues.of(now, earlier, c, …)`, used by Survey; test `placementCueWithoutAGroundHeight`; README notes it — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:117`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, 251 tests, 0 failures (PoleCheckTest 25); `app-debug.apk` built 19:37. C: had 109 GB free.
