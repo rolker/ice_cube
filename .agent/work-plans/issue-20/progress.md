@@ -381,3 +381,18 @@ Codex ran (EXIT=0) on the PR diff alone (work-plan files excluded by the script;
 ### Checks
 - `python3 -m unittest discover -s analysis/qgis/tests`: Ran 175 tests, OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 130 tests, OK
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 20:12 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #44 at `41abeaa`
+**Depth**: Deep (reason: round 2 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Narrow check of the cold read's two findings (Local Review at `bf8639c`) against the fix diff 9230941..41abeaa (`icecube/io.py`, `icecube/tests/test_logger_session.py`). Cross-model: skipped (round-2 convergence check, per handoff). Must-fix resolved: names now come from the season soundings table's anchor column by (session, n), voided rows left out; a ref the season does not hold takes its seed-rule site's majority season name; unnamed controls/snapped points take their group's single agreed season name, else `<survey>:<name>`, so no false ties; the refs-table grouping stays as the fallback when the season gpkg has no soundings table. `scratch_sites` is bound on every path that reaches the naming. Suggestion resolved: both docstrings now say grouped controls/snapped points take the group's season name. Tests: icecube 130 OK, analysis/qgis 175 OK (5 skipped). No coordinates in the diff.
+
+### Findings
+- [ ] No issues found. LGTM.
