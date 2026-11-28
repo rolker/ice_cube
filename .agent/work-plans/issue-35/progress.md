@@ -303,3 +303,13 @@ Scope: round 2's findings (Local Review at `deb885f`) and the fix diff e6066da..
 ### Findings
 - [ ] (suggestion) README says the tip must move 6 cm; the antenna spacing that actually re-arms is up to 2 x pole x sin(plumb limit) + 3x still (about 19 cm at the defaults, 68 cm at 10 deg); say so, so a close grid at a wide plumb limit is not a surprise. — `logger/README.md` (Auto capture)
 - [ ] (suggestion) A Surface MARK with no gravity reading after calibration latches with a pole-length radius (about 1.8 m), so auto capture stays latched until the antenna is about 1.9 m away; conservative (never a duplicate) and rare, but a radius of pole x sin(plumb limit) or skipping the latch would keep close stops auto. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:409`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 20:31 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push round 3 approved; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
+
+The round-3 review's two suggestions (README re-arm spacing; MARK without gravity latching at full pole height) go to the PR-mode triage.
