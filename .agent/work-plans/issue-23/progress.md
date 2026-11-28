@@ -166,3 +166,31 @@ PR A of the plan: robust reference, placement and steadiness cues. PR B not star
 - The median across days ignores real ground motion between sessions (frost heave, settling); the old last-visit rule tracked it. The two new reds may be that. Possible follow-ups: limit visits to a time window or weight recent sessions; not in this PR.
 - 72 amber would need an off-centre default of about 1.5 cm, which also makes about 6 more refs amber; default kept at 2 cm per the plan.
 - QGIS still labels refs with `diff_last_m` (`build_project.py`); showing `diff_ref_m` is a processing-side follow-up.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 19:22 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-23 at `144b0de`
+**Base**: main
+**Depth**: Standard (reason: ~450 changed code/doc lines over 12 files, behaviour change in the pole check decision)
+**Must-fix**: 1 | **Suggestions**: 7
+**Round**: 1 | **Ship**: continue — round 1: 1 must-fix; first round always re-reviews after fixes
+
+Verified: `./gradlew testDebugUnitTest --max-workers 4` passes; a 0.12.0 event line (cue text, `ok=true doubtful=true`, trailing keys) run through `logger_session.py`'s `_kv` and message split gives the expected message and keys; `COVERAGE_FIRST` is computed by `indexOf`, so the new keys do not shift the Coverage section; `Feedback` queues cues (no cut-off); test fixtures are synthetic (LAT 10, LON 20). README rule matches `PoleCheck` (median, even count, doubtful pair only for k = 2, 1e-9 boundary, voided and young skipped from both the height reference and the placement median).
+
+Reviewers: Claude adversarial subagent (no must-fix), Gemini (5 suggestions, one verified as a non-issue), Codex (1 must-fix, 1 suggestion).
+
+Open owner question (not a finding): the multi-day median can flag a ref after real ground movement between sessions (frost heave; the replay's two new 11-21 reds). Whether to window visits by time stays with the owner.
+
+### Findings
+- [ ] (must-fix) Deduplicate visits by session/n before forming the reference: `RefsStore.readAll` returns one row per refs.csv copy, and the README expects the same ref in several storage roots, so a duplicated visit now changes the median (e.g. a doubtful pair 50.00/50.07 becomes a 3-visit median of 50.00 and a 50.07 shot fails red); also keeps `last` correct. Add a test — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:69`
+- [ ] (suggestion) QGIS still labels and stores only `diff_last_m`; import `diff_ref_m`/`colour` and label with `diff_ref_m` (here or a follow-up issue), else a passing ref after a bad visit reads like a failure and amber looks green — `analysis/qgis/logger_session.py:665`, `analysis/qgis/build_project.py:204`
+- [ ] (suggestion) Add an importer test fixture with a 0.12.0 `pole check` line (cue text, `ok=true doubtful=true`, trailing keys) to pin the compatibility the Survey comment relies on — `analysis/qgis/tests/synth.py:124`
+- [ ] (suggestion) First-visit / no-height event line drops `sd_u_cm` and `colour` although the README lists them as event keys; say so in the README or write keys the importer tolerates — `logger/app/src/main/java/rink/icecube/logger/Survey.java:559`
+- [ ] (suggestion) A suspect (or young tilt) ref with an amber pole check plays SUSPECT/YOUNG then ERROR back to back; README says a suspect ref plays only the suspect cue. Skip ERROR when a fix cue played, or document it — `logger/app/src/main/java/rink/icecube/logger/Survey.java:573`
+- [ ] (suggestion) On a red failure the persistent warnings bar omits the off-centre / pole-moved cue that may explain it; append `q.describe()` to `poleWarning` — `logger/app/src/main/java/rink/icecube/logger/Survey.java:579`
+- [ ] (suggestion) An even count of 4+ visits split 2/2 by more than the tolerance gives a midpoint reference with no doubt flag (a good shot fails red); consider extending `doubtful` to the middle two, or note it in the README rule — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:55`
+- [ ] (suggestion) Test gaps: both cues at once, placement median with 3+ visits and one off in east/north, doubtful pair plus a cue stays amber — `logger/app/src/test/java/rink/icecube/logger/core/PoleCheckTest.java`
