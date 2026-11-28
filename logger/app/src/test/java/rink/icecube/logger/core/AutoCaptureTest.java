@@ -6,33 +6,44 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
-/** Synthetic 1 Hz epochs in local metres; defaults 2°, 2 s, 2 cm (#35). */
+/** Synthetic 1 Hz epochs in local metres; defaults 2°, 2 s, 2 cm, a 1.8 m pole (#35). */
 public class AutoCaptureTest {
     private static final long S = 1_000_000_000L;
+    private static final double POLE = 1.8;
+
+    /** The antenna's horizontal offset from its tip at a lean of deg on the test pole (m). */
+    private static double off(double deg) { return POLE * Math.sin(Math.toRadians(deg)); }
 
     private static AutoCapture auto() { return new AutoCapture(2, 2, 0.02); }
 
-    /** A good epoch at t seconds, plumb (0.5°), at (e, n). */
-    private static AutoCapture.Input at(double t, double e, double n) {
+    /** A good epoch at t seconds, exactly plumb, the antenna at (e, n). */
+    private static AutoCapture.Input at(double t, double e, double n) { return at(t, e, n, 0); }
+
+    /** A good epoch at t seconds, the pole deg from plumb, the antenna at (e, n). */
+    private static AutoCapture.Input at(double t, double e, double n, double deg) {
         AutoCapture.Input in = new AutoCapture.Input();
         in.tNs = Math.round(t * S);
         in.e = e;
         in.n = n;
-        in.plumbDeg = 0.5;
+        in.plumbDeg = deg;
+        in.poleM = POLE;
         return in;
     }
 
     /** Feeds one epoch and, at a fire, reports the capture as taken (what Survey does once it captured). */
     private static AutoCapture.Decision feed(AutoCapture a, AutoCapture.Input in) {
         AutoCapture.Decision d = a.onEpoch(in);
-        if (d.fire) a.taken(d.e, d.n);
+        if (d.fire) a.taken(d.e, d.n, d.tipRadiusM);
         return d;
     }
 
     /** Feeds good epochs at (e, n) from t0 to t1 (1 s apart), taking each fire; returns the number of fires. */
-    private static int hold(AutoCapture a, double t0, double t1, double e, double n) {
+    private static int hold(AutoCapture a, double t0, double t1, double e, double n) { return hold(a, t0, t1, e, n, 0); }
+
+    /** As {@link #hold(AutoCapture, double, double, double, double)}, the pole deg from plumb. */
+    private static int hold(AutoCapture a, double t0, double t1, double e, double n, double deg) {
         int fires = 0;
-        for (double t = t0; t <= t1 + 1e-9; t += 1) if (feed(a, at(t, e, n)).fire) fires++;
+        for (double t = t0; t <= t1 + 1e-9; t += 1) if (feed(a, at(t, e, n, deg)).fire) fires++;
         return fires;
     }
 
@@ -65,7 +76,7 @@ public class AutoCaptureTest {
         a.onEpoch(at(4, 0, 0));
         AutoCapture.Decision d = a.onEpoch(at(5, 0, 0));
         assertTrue(d.fire);
-        a.taken(d.e, d.n);
+        a.taken(d.e, d.n, d.tipRadiusM);
         assertTrue(a.latched());
         assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(at(6, 0, 0)).why);
     }
@@ -170,13 +181,78 @@ public class AutoCaptureTest {
         assertEquals(1, hold(a, 11, 13, 0.061, 0));  // 6.1 cm: a new stop, held again
     }
 
+    /** A fire's tip radius is the largest lean in its window on the pole. */
+    @Test public void aFireCarriesItsTipRadius() {
+        AutoCapture a = auto();
+        a.onEpoch(at(0, 0, 0, 0.5));
+        a.onEpoch(at(1, 0, 0, 1.5));
+        AutoCapture.Decision d = a.onEpoch(at(2, 0, 0, 1.0));
+        assertTrue(d.fire);
+        assertEquals(off(1.5), d.tipRadiusM, 1e-12);
+    }
+
+    /** Standing the pole up to 1.9° on a tilt set's tip (antenna 6 cm off it, plus noise) is still that stop. */
+    @Test public void standingUpAfterATiltSetDoesNotRearm() {
+        AutoCapture a = auto();
+        a.taken(0, 0);   // the set's solved tip
+        assertEquals(0, hold(a, 0, 20, off(1.9) + 0.01, 0, 1.9));   // 7 cm from the tip: the old antenna rule re-armed
+        assertEquals(AutoCapture.Why.CAPTURED, a.last());
+        assertTrue(a.latched());
+    }
+
+    /** Swaying across the 2° cone after a MARK: the antenna travels 12 cm, the tip not at all. */
+    @Test public void swayingAcrossThePlumbConeAfterAMarkDoesNotRearm() {
+        AutoCapture a = auto();
+        assertTrue(a.taken(off(1.9), 0, off(1.9)));   // MARK leaning 1.9° east
+        for (int t = 0; t <= 20; t++) {
+            double deg = t % 2 == 0 ? 1.9 : 1.0;
+            double e = (t % 4 < 2 ? -1 : 1) * off(deg);   // leaning west, then east, about the same tip
+            assertFalse(feed(a, at(t, e, 0, deg)).fire);
+        }
+        assertEquals(0, hold(a, 21, 30, -off(1.9), 0, 1.9));   // held still leaning west: 12 cm from the MARK
+        assertTrue(a.latched());
+    }
+
+    /** A real 7 cm move of the tip, stood plumb, re-arms; the same move unknown in tilt does not. */
+    @Test public void aRealSevenCentimetreTipMoveRearms() {
+        AutoCapture a = auto();
+        assertEquals(1, hold(a, 0, 2, 0, 0, 0.1));
+        AutoCapture.Input noGravity = at(3, 0.07, 0);
+        noGravity.plumbDeg = Double.NaN;
+        assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(noGravity).why);
+        AutoCapture.Input noPole = at(4, 0.07, 0, 0.1);
+        noPole.poleM = Double.NaN;
+        assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(noPole).why);
+        assertEquals(1, hold(a, 5, 7, 0.07, 0, 0.1));
+    }
+
+    /** At the widest plumb limit (10°, 31 cm off the tip) and the tightest still limit (0.2 cm: re-arm 0.6 cm). */
+    @Test public void widestPlumbAndTightestStillLimitsHold() {
+        AutoCapture a = new AutoCapture(10, 2, 0.002);
+        assertEquals(1, hold(a, 0, 2, 0, 0));
+        assertEquals(0, hold(a, 3, 10, off(9.9), 0, 9.9));      // leaning 9.9° on the same tip
+        assertEquals(0, hold(a, 11, 18, -off(9.9), 0, 9.9));    // and the other way: 62 cm of antenna travel
+        assertTrue(a.latched());
+        assertEquals(1, hold(a, 19, 21, 0.07, 0));              // the tip moved 7 cm, stood plumb
+    }
+
+    /** A capture at a stop that is still latched keeps the first latch (a MARK after an auto capture). */
+    @Test public void aSecondCaptureAtALatchedStopKeepsTheLatch() {
+        AutoCapture a = auto();
+        assertEquals(1, hold(a, 0, 2, 0, 0));
+        assertFalse(a.taken(0.01, 0, 0));   // MARK at the same stop
+        assertTrue(a.latched());
+        assertTrue(a.taken(1, 0, 0));       // a tilt set's tip at another point
+        assertEquals(0, hold(a, 3, 10, 1, 0));
+    }
+
     /** Tilting (as in a tilt set or a lean about the tip) never re-arms: only moving away does. */
     @Test public void tiltingAtTheSamePointDoesNotRearm() {
         AutoCapture a = auto();
         assertEquals(1, hold(a, 0, 2, 0, 0));
         for (int t = 3; t <= 8; t++) {
-            AutoCapture.Input tilted = at(t, t % 2 == 0 ? 0.47 : 0.066, 0);   // leaning 15° or 2.1°
-            tilted.plumbDeg = t % 2 == 0 ? 15 : 2.1;
+            double deg = t % 2 == 0 ? 15 : 2.1;
+            AutoCapture.Input tilted = at(t, off(deg), 0, deg);   // leaning 15° or 2.1° about the tip
             assertEquals(AutoCapture.Why.CAPTURED, a.onEpoch(tilted).why);
             assertTrue(a.latched());
         }

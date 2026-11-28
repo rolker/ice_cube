@@ -454,14 +454,21 @@ is the same as a Surface MARK (the last 1 s average, the same columns, the surfa
 an undoable notice `S12 auto  FIXED ...`), with `method` `auto`, and events.csv adds
 `auto capture n=.. plumb_deg=.. held_s=.. spread_cm=.. epochs=..`.
 
-One capture per stop: every capture at a stop latches it at that position: an auto capture
-(once it is really taken, after its 1 s average), a Surface MARK, a finished Surface tilt
-set (at its tip, so standing the pole up on the tip afterwards takes nothing) and an
-accepted calibration (at its tip). Nothing more is taken until the antenna, read while the
-pole is plumb, is more than 3 times the still limit (6 cm at the default) from the latched
-position; then the full hold must pass again. Tilting, losing plumb or a gap in the gravity
-readings never clears it: a leaning antenna is not over its tip. So walk to the next point.
-To re-shoot the same point, UNDO the capture (that clears the latch) or press MARK.
+One capture per stop: every capture at a stop latches it at that capture's tip: an auto
+capture (once it is really taken, after its 1 s average), a Surface MARK, a finished
+Surface tilt set (its solved tip, so standing the pole up on the tip afterwards takes
+nothing) and an accepted calibration (its solved tip). A second capture at a stop that is
+still latched leaves the latch on the first one, so undoing a MARK there leaves the stop
+taken. Tips, not antennas, are compared: a pole leaning θ puts the antenna pole height ×
+sin θ off its tip (6.3 cm at 2° on a 1.8 m pole), and without a heading the phone knows θ
+but not which way, so each tip is known within that radius of the antenna (a MARK uses the
+gravity of its 1 s average; an auto capture the largest lean of its hold; a solved tip is
+exact; no gravity reading means anywhere within the pole height). Nothing more is taken
+until the tip has certainly moved more than 3 times the still limit (6 cm at the default)
+from the latched tip; then the full hold must pass again. Standing up after a tilt set,
+swaying across the plumb cone, or an epoch with no gravity reading never clears it. So
+walk to the next point. To re-shoot the same point, UNDO the capture (that clears the
+latch) or press MARK.
 
 Cues: the capture plays the surface pip. Auto capture becoming armed or off is cued only
 when the fix caused it (lost, young, suspect; a rising or falling pair), after the change
