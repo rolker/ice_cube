@@ -225,6 +225,18 @@ class TestLoggerSessionReader(unittest.TestCase):
         quiet(io.read_survey, scfg, SITE, self.d)
         self.assertFalse(scfg["pass_rule"]["from_file"])          # a user value wins
 
+    def test_relative_base_dir_is_joined_once(self):
+        import os
+        synth.write_dir(self.d / "data" / "in", session_files())
+        here = os.getcwd()
+        os.chdir(self.d)
+        try:
+            pts, _ = quiet(io.read_survey, {"id": "s1", "reader": "logger_session", "path": "in",
+                                            "base": list(synth.BASE)}, SITE, Path("data"))
+        finally:
+            os.chdir(here)
+        self.assertEqual(len(pts), 3)
+
     def test_pass_rule_written_by_the_user_is_kept_whole(self):
         synth.write_dir(self.d / "in", session_files())
         scfg = {"id": "s1", "reader": "logger_session", "path": "in", "pass_rule": {"gap_s": 5.0}}

@@ -679,7 +679,8 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     in the `base_from_gpkg` season GeoPackage (read-only), else the first RTCM 1005 logged in
     the sessions (with a warning on stderr; refused when `base_history` is given, since that
     makes the session's own base the current one). `base_history` is the soundings
-    base-history CSV. Relative paths are taken from `base_dir`.
+    base-history CSV. Relative paths are taken from `base_dir` (default: the current
+    directory).
 
     Anchor names: with `base_from_gpkg`, a ref takes the season's site (the one the season
     stores for it, else the season site update_local's rule would put it in), so it is named
@@ -704,7 +705,8 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     if site.origin_geodetic is None:
         raise ValueError("reader logger_session needs an ENU [site] origin (origin_geodetic or "
                          "origin_from_gpkg); a UTM-only site has none")
-    ab = lambda p: Path(p) if Path(p).is_absolute() or base_dir is None else Path(base_dir) / p  # noqa: E731
+    base_dir = Path(base_dir).resolve() if base_dir is not None else Path.cwd()
+    ab = lambda p: Path(p) if Path(p).is_absolute() else base_dir / p  # noqa: E731
     path = ab(path)
     season_base, season_refs = _read_season(ab(base_from_gpkg)) if base_from_gpkg else (None, None)
     if base is None and base_from_gpkg and season_base is None:
@@ -773,8 +775,7 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
             sc = {"include_voided": bool(include_voided), "sources": [src_cfg]}
             if base_history:
                 sc["base_history"] = str(ab(base_history))
-            rows = snd.build({"soundings": sc}, Path(base_dir) if base_dir is not None else Path.cwd(),
-                             gpkg=str(gpkg), log=log, write=False)
+            rows = snd.build({"soundings": sc}, base_dir, gpkg=str(gpkg), log=log, write=False)
     finally:
         for s in found:
             s.close()
@@ -823,7 +824,8 @@ def read_survey(scfg: dict, site: Site, base_dir: Path | None = None) -> Points:
         # the rows carry their own passes (fix stretches); a pass_rule the user wrote wins whole
         if "pass_rule" not in scfg:
             scfg["pass_rule"] = {"from_file": True}
-        pts = read_logger_session(path, site, sid, frame=frame, date=date, sessions=scfg.get("sessions"),
+        # the raw path: the reader takes every relative path from base_dir itself
+        pts = read_logger_session(scfg["path"], site, sid, frame=frame, date=date, sessions=scfg.get("sessions"),
                                   kinds=tuple(scfg.get("kinds", ("capture",))),
                                   classes=tuple(scfg.get("classes", ("ground", "anchor"))),
                                   include_voided=bool(scfg.get("include_voided", False)),
