@@ -132,3 +132,14 @@ Reference material is in `howto/`, the narrative in `story/`.
   result and earlier vector is unchanged. The pass is redone for about 25 nodes per
   capture: a 5000-capture bank rebuild takes about 2x as long, and the store about 2x
   the memory.
+- 11-27: logger 0.11.0 (#15, first PR): the false-fix guard retuned on the field misses.
+  A fix right after a float spell of 20 s or more is suspect, whatever its jump (11-21: a
+  false fix jumped only 0.48 m after a long float spell). The start jump counts only from a
+  float or fixed epoch, so the first fix after single epochs (a 2.3 m step at session
+  start) is no longer flagged. Settling became a young-fix warning: captures, leans and
+  refs go ahead with an amber notice and a YOUNG cue for 120 s (11-26: a re-fix still read
+  6 to 9 cm high at 95 to 113 s), the row records `fix_young`, and a young ref is never the
+  earlier visit of a pole check. points.csv gains `fix_start`, `float_spell_s`,
+  `suspect_reason` and `fix_young`; soundings.py and the live overlay move their settle
+  window from 90 to 120 s and flag `float_spell` beside `suspect_jump`. Height test, extra
+  cues and a retune on past sessions are #39, #40 and #41.

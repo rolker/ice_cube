@@ -571,7 +571,7 @@ final class MapView extends View {
         c.drawText(t, cx0 - text.measureText(t) / 2, cy0 + 8 * dp, text);
         text.setTextSize(size);
         text.setFakeBoldText(false);
-        String sub = r.settling ? "PAUSED: fix settling" : r.paused ? "PAUSED: not fixed" : r.epochs + " fixed epochs";
+        String sub = r.paused ? "PAUSED: not fixed" : r.epochs + " fixed epochs" + (r.young ? " (fix young)" : "");
         float tw = text.measureText(sub);
         c.drawRoundRect(cx0 - tw / 2 - 4 * dp, cy0 + rad + 8 * dp, cx0 + tw / 2 + 4 * dp, cy0 + rad + 12 * dp + size,
                 4 * dp, 4 * dp, box);
@@ -622,7 +622,7 @@ final class MapView extends View {
                 : String.format(Locale.US, "cover %.0f°  rms %.1f cm", t.coverage, t.rms * 100);
         String l3 = t.sd == null ? null : String.format(Locale.US, "σ E %.1f N %.1f U %.1f cm%s", t.sd[0] * 100,
                 t.sd[1] * 100, t.sd[2] * 100, Double.isNaN(t.maxImu) ? "" : String.format(Locale.US, "  IMU %.1f°", t.maxImu));
-        String l4 = t.settleS > 0 ? "fix settling " + t.settleS + " s" : null;
+        String l4 = t.youngS >= 0 ? "fix young " + t.youngS + " s" : null;
         String[] lines = l3 == null ? (l4 == null ? new String[] {l1, l2} : new String[] {l1, l2, l4})
                 : (l4 == null ? new String[] {l1, l2, l3} : new String[] {l1, l2, l3, l4});
         float tw = 0;
@@ -631,7 +631,7 @@ final class MapView extends View {
         c.drawRoundRect(cx0 - tw / 2 - 5 * dp, top, cx0 + tw / 2 + 5 * dp, top + row * lines.length + 4 * dp, 4 * dp,
                 4 * dp, box);
         for (int i = 0; i < lines.length; i++) {
-            text.setColor(l4 != null && i == lines.length - 1 ? 0xFFC62828 : 0xFF212121);
+            text.setColor(l4 != null && i == lines.length - 1 ? 0xFFE65100 : 0xFF212121);   // young: amber text
             c.drawText(lines[i], cx0 - tw / 2, top + row * (i + 1), text);
         }
         text.setColor(0xFF212121);

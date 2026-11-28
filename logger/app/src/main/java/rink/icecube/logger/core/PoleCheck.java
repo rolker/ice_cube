@@ -26,9 +26,12 @@ public final class PoleCheck {
     }
 
     /**
-     * Earlier refs within MATCH_RADIUS_M of now that have a ground height and are not voided,
-     * in the given order. A voided ref is never a visit, so never the "last visit" either.
-     * (#23: any change to reference selection must keep skipping voided rows.)
+     * Earlier refs within MATCH_RADIUS_M of now that have a ground height, are not voided and
+     * were not taken while the fix was young, in the given order. A voided ref is never a
+     * visit, so never the "last visit" either. (#23: any change to reference selection must
+     * keep skipping voided rows.) A young ref (fix_young 1, logger 0.11.0, #15) may still be
+     * settling by centimetres, so it is never a reference either; it is itself checked
+     * against older refs. A row without the column (young unknown) stays usable.
      */
     public static List<PointRow> matches(PointRow now, List<PointRow> earlier) {
         List<PointRow> out = new ArrayList<>();
@@ -36,7 +39,7 @@ public final class PoleCheck {
         LocalFrame f = new LocalFrame(now.lat, now.lon, Double.isNaN(now.hAnt) ? 0 : now.hAnt);
         double[] enu = new double[3];
         for (PointRow r : earlier) {
-            if (r == now || r.voided || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
+            if (r == now || r.voided || r.fixYoung == 1 || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
             f.toEnu(r.lat, r.lon, f.h0, enu);
             if (Math.hypot(enu[0], enu[1]) <= MATCH_RADIUS_M) out.add(r);
         }
