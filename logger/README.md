@@ -502,7 +502,9 @@ visits to the same mark. This is the one reference rule (0.12.0, #23); other tex
 
 - **Visits**: earlier refs in `refs.csv` within 0.30 m horizontally that have a ground
   height, are not flagged (`void` 1) and were not taken from a young fix (`fix_young` 1).
-  An older row without these columns counts. A visit that itself failed its check still
+  An older row without these columns counts. A ref found in several `refs.csv` copies
+  (storage roots) is one visit (session and n), and the most recent visit is the latest
+  session, then the highest n. A visit that itself failed its check still
   counts (refs.csv does not store check results; the median handles one bad visit).
 - **Reference**: 1 visit: that visit ("vs 1 earlier visit"). 2 visits: their mean; if
   they differ from each other by more than the tolerance the reference is *doubtful*.

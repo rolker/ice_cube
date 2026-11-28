@@ -115,6 +115,38 @@ public class PoleCheckTest {
         assertFalse(agreeing.doubtful);   // exactly the tolerance apart: not doubtful
     }
 
+    static PointRow visit(String session, int n, double hGround) {
+        PointRow r = ref(0, hGround);
+        r.session = session;
+        r.n = n;
+        return r;
+    }
+
+    @Test public void aRefInSeveralRefsCopiesIsOneVisit() {
+        // refs.csv in two storage roots: 50.00 (s1/4) is read twice. Counted twice it would make
+        // a median of 50.00 and the 50.07 shot would fail red; once, the pair is doubtful (amber).
+        List<PointRow> earlier = Arrays.asList(visit("2026-11-01_10-00-00", 4, 50.00),
+                visit("2026-11-02_10-00-00", 7, 50.07), visit("2026-11-01_10-00-00", 4, 50.00));
+        PoleCheck c = PoleCheck.check(ref(0, 50.07), earlier, 0.03);
+        assertEquals(2, c.visits);
+        assertEquals(PoleCheck.RefKind.PAIR, c.refKind);
+        assertTrue(c.doubtful);
+        assertFalse(c.failed());
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(c, null));
+        assertEquals(7, c.last.n);   // the most recent visit, not the copy read last
+    }
+
+    @Test public void visitsAreOrderedBySessionThenN() {
+        // a second copy read first holds the newer ref: last is still the most recent visit
+        List<PointRow> earlier = Arrays.asList(visit("2026-11-02_10-00-00", 3, 50.01),
+                visit("2026-11-01_10-00-00", 9, 50.00), visit("2026-11-02_10-00-00", 1, 50.02));
+        PoleCheck c = PoleCheck.check(ref(0, 50.0), earlier, 0.03);
+        assertEquals(3, c.visits);
+        assertEquals("2026-11-02_10-00-00", c.last.session);
+        assertEquals(3, c.last.n);
+        assertEquals(-0.01, c.diffLast, 1e-9);
+    }
+
     @Test public void wrongPoleFails() {
         PointRow now = ref(0, 50.100);   // e.g. pole set 0.1 m too short
         PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 50.0)), 0.03);

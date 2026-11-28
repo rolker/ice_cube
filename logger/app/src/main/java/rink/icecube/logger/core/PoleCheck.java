@@ -2,8 +2,11 @@ package rink.icecube.logger.core;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Compares a new ref capture with a robust reference formed from earlier ref captures at
@@ -65,17 +68,28 @@ public final class PoleCheck {
      * 0.11.0, #15) may still be settling by centimetres, so it is never a reference either;
      * it is itself checked against older refs. A row without the column (young unknown)
      * stays usable.
+     * <p>
+     * One visit is one ref: refs.csv can sit in several storage roots, so the same row
+     * (session, n) may come once per copy; only its first copy counts. The matches are
+     * ordered by session then n (session folder names are start times), so the last one is
+     * the most recent visit whatever order the copies were read in. Rows without a session
+     * keep their given order and are not merged.
      */
     public static List<PointRow> matches(PointRow now, List<PointRow> earlier) {
         List<PointRow> out = new ArrayList<>();
         if (!now.hasPosition()) return out;
         LocalFrame f = frame(now);
         double[] enu = new double[3];
+        Set<String> seen = new HashSet<>();
         for (PointRow r : earlier) {
             if (r == now || r.voided || r.fixYoung == 1 || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
             f.toEnu(r.lat, r.lon, f.h0, enu);
-            if (Math.hypot(enu[0], enu[1]) <= MATCH_RADIUS_M) out.add(r);
+            if (Math.hypot(enu[0], enu[1]) > MATCH_RADIUS_M) continue;
+            if (r.session != null && !r.session.isEmpty() && !seen.add(r.session + "/" + r.n)) continue;
+            out.add(r);
         }
+        // stable: rows with equal keys (no session) keep their order
+        out.sort(Comparator.comparing((PointRow r) -> r.session == null ? "" : r.session).thenComparingInt(r -> r.n));
         return out;
     }
 
