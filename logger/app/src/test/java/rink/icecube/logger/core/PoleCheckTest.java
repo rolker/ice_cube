@@ -29,23 +29,138 @@ public class PoleCheckTest {
         assertEquals(2, PoleCheck.matches(now, earlier).size());
     }
 
-    @Test public void comparesWithMostRecentAndMean() {
+    static PointRow ref(double dn, double de, double hGround) {
+        PointRow r = ref(dn, hGround);
+        r.lon = LON + de / (111_320.0 * Math.cos(Math.toRadians(LAT)));
+        return r;
+    }
+
+    static PointRow held(double hGround, double sdU) {
+        PointRow r = ref(0, hGround);
+        r.method = PointRow.OCCUPATION;
+        r.sdU = sdU;
+        return r;
+    }
+
+    @Test public void threeOrMoreVisitsUseTheMedian() {
         PointRow now = ref(0, 50.000);
         List<PointRow> earlier = Arrays.asList(ref(0.05, 50.010), ref(3, 40), ref(-0.05, 49.990), ref(0.02, 50.020));
         PoleCheck c = PoleCheck.check(now, earlier, 0.03);
         assertEquals(3, c.visits);
-        assertEquals(-0.020, c.diffLast, 1e-9);
+        assertEquals(PoleCheck.RefKind.MEDIAN, c.refKind);
+        assertEquals(50.010, c.reference, 1e-9);
+        assertEquals(-0.010, c.diffRef, 1e-9);
+        assertEquals(-0.020, c.diffLast, 1e-9);       // kept as information
         assertEquals(-0.0066667, c.diffMean, 1e-6);   // mean of 50.010, 49.990, 50.020
         assertTrue(c.ok);
-        assertTrue(c.describe().startsWith("pole check OK (±2.0 cm"));
+        assertEquals("pole check OK (±1.0 cm vs median of 3 visits; -2.0 cm vs last visit)", c.describe());
+    }
+
+    @Test public void anOutlierAmongThreeDoesNotMoveTheReference() {
+        List<PointRow> earlier = Arrays.asList(ref(0, 50.0), ref(0, 50.07), ref(0, 50.001));
+        PoleCheck good = PoleCheck.check(ref(0, 50.0), earlier, 0.03);
+        assertEquals(50.001, good.reference, 1e-9);
+        assertTrue(good.ok);   // the last-visit rule would compare with 50.001 too; the mean would be +2.4 cm
+        PoleCheck afterBad = PoleCheck.check(ref(0, 50.0), Arrays.asList(ref(0, 50.0), ref(0, 50.001), ref(0, 50.07)), 0.03);
+        assertTrue(afterBad.ok);   // the 127 -> 128 pattern: the bad visit is the most recent one
+        assertEquals(-0.07, afterBad.diffLast, 1e-9);
+    }
+
+    @Test public void evenCountUsesTheMeanOfTheMiddleTwo() {
+        assertEquals(2.5, PoleCheck.median(new double[] {4, 1, 3, 2}), 0);
+        assertEquals(3, PoleCheck.median(new double[] {5, 1, 3}), 0);
+        PoleCheck c = PoleCheck.check(ref(0, 50.0), Arrays.asList(ref(0, 50.0), ref(0, 50.01), ref(0, 50.02), ref(0, 50.2)), 0.03);
+        assertEquals(50.015, c.reference, 1e-9);
+    }
+
+    @Test public void badMiddleVisitFailsAgainstAnAgreeingPair() {
+        // visits 0, 0, then +7 cm: the +7 visit fails red against the mean of an agreeing pair
+        PoleCheck bad = PoleCheck.check(ref(0, 50.07), Arrays.asList(ref(0, 50.0), ref(0, 50.002)), 0.03);
+        assertEquals(PoleCheck.RefKind.PAIR, bad.refKind);
+        assertFalse(bad.ok);
+        assertFalse(bad.doubtful);
+        assertTrue(bad.failed());
+        assertEquals(PoleCheck.Colour.RED, PoleCheck.colour(bad, null));
+        // then a good one at 0 does not fail: median of 0, 0.2 cm, +7 cm
+        PoleCheck next = PoleCheck.check(ref(0, 50.0), Arrays.asList(ref(0, 50.0), ref(0, 50.002), ref(0, 50.07)), 0.03);
+        assertTrue(next.ok);
+    }
+
+    @Test public void singleVisitIsComparedAndNamed() {
+        PoleCheck c = PoleCheck.check(ref(0, 50.008), Arrays.asList(ref(0, 50.0)), 0.03);
+        assertEquals(PoleCheck.RefKind.SINGLE, c.refKind);
+        assertTrue(c.ok);
+        assertEquals("pole check OK (±0.8 cm vs 1 earlier visit)", c.describe());
+        assertEquals(PoleCheck.Colour.GREEN, PoleCheck.colour(c, null));
+        assertTrue(Double.isNaN(c.pairSpread));
+    }
+
+    @Test public void twoDisagreeingVisitsMakeADoubtfulReference() {
+        List<PointRow> pair = Arrays.asList(ref(0, 50.0), ref(0, 50.035));
+        PoleCheck c = PoleCheck.check(ref(0, 50.0595), pair, 0.03);
+        assertEquals(PoleCheck.RefKind.PAIR, c.refKind);
+        assertEquals(50.0175, c.reference, 1e-9);
+        assertEquals(0.035, c.pairSpread, 1e-9);
+        assertFalse(c.ok);
+        assertTrue(c.doubtful);
+        assertFalse(c.failed());
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(c, null));
+        assertEquals("pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm; shoot again", c.describe());
+        PoleCheck within = PoleCheck.check(ref(0, 50.02), pair, 0.03);
+        assertTrue(within.ok);
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(within, null));   // the reference is still in doubt
+        assertEquals("pole check OK (±0.3 cm vs mean of 2 visits that differ by 3.5 cm; -1.5 cm vs last visit)",
+                within.describe());
+        PoleCheck agreeing = PoleCheck.check(ref(0, 50.02), Arrays.asList(ref(0, 50.0), ref(0, 50.03)), 0.03);
+        assertFalse(agreeing.doubtful);   // exactly the tolerance apart: not doubtful
     }
 
     @Test public void wrongPoleFails() {
         PointRow now = ref(0, 50.100);   // e.g. pole set 0.1 m too short
         PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 50.0)), 0.03);
         assertFalse(c.ok);
-        assertEquals("pole check: +10.0 cm vs last visit", c.describe());
+        assertEquals("pole check: +10.0 cm vs 1 earlier visit", c.describe());
         assertTrue(PoleCheck.check(ref(0, 50.03), Arrays.asList(ref(0, 50.0)), 0.03).ok);   // boundary
+        assertTrue(PoleCheck.check(ref(0, 49.97), Arrays.asList(ref(0, 50.0), ref(0, 50.0), ref(0, 50.0)), 0.03).ok);
+    }
+
+    @Test public void placementCue() {
+        List<PointRow> earlier = Arrays.asList(ref(0, 0, 50.0), ref(0.002, 0, 50.0), ref(-0.002, 0.001, 50.0));
+        PoleCheck off = PoleCheck.check(ref(0, 0.025, 50.0), earlier, 0.03);
+        assertEquals(0.025, off.placeOffset, 5e-4);
+        PoleCheck.Cues q = PoleCheck.Cues.of(ref(0, 0.025, 50.0), off, 0.02, 0.015);
+        assertTrue(q.offMark);
+        assertEquals("; pole may be off the mark centre (2.5 cm); re-shoot", q.describe());
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(off, q));
+        PoleCheck near = PoleCheck.check(ref(0, 0.019, 50.0), earlier, 0.03);
+        assertFalse(PoleCheck.Cues.of(ref(0, 0.019, 50.0), near, 0.02, 0.015).offMark);
+        assertFalse(PoleCheck.Cues.of(ref(0, 0.025, 50.0), off, 0, 0.015).offMark);   // 0: off
+        // one earlier visit: the offset is to that visit
+        PoleCheck one = PoleCheck.check(ref(0.025, 0, 50.0), Arrays.asList(ref(0, 0, 50.0)), 0.03);
+        assertEquals(0.025, one.placeOffset, 5e-4);
+    }
+
+    @Test public void steadinessCueForHeldRefsOnly() {
+        PointRow moved = held(50.0, 0.031);
+        PoleCheck.Cues q = PoleCheck.Cues.of(moved, null, 0.02, 0.015);   // first visit: still cued
+        assertTrue(q.unsteady);
+        assertTrue(Double.isNaN(q.placeOffset));
+        assertEquals("; pole moved during the ref (sd 3.1 cm); re-shoot", q.describe());
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(null, q));
+        assertFalse(PoleCheck.Cues.of(held(50.0, 0.009), null, 0.02, 0.015).unsteady);
+        assertFalse(PoleCheck.Cues.of(moved, null, 0.02, 0).unsteady);   // 0: off
+        PointRow tilt = held(50.0, 0.031);
+        tilt.method = PointRow.TILT;
+        assertFalse(PoleCheck.Cues.of(tilt, null, 0.02, 0.015).unsteady);
+        assertEquals(PoleCheck.Colour.GREEN, PoleCheck.colour(null, PoleCheck.Cues.of(tilt, null, 0.02, 0.015)));
+    }
+
+    @Test public void redWinsOverCues() {
+        PointRow now = held(50.1, 0.031);
+        PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 50.0)), 0.03);
+        PoleCheck.Cues q = PoleCheck.Cues.of(now, c, 0.02, 0.015);
+        assertTrue(q.unsteady);
+        assertEquals(PoleCheck.Colour.RED, PoleCheck.colour(c, q));
     }
 
     @Test public void voidedRefIsNeverAVisit() {
