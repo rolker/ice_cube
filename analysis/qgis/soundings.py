@@ -1437,7 +1437,17 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
     if not gpkg:
         raise SystemExit("no gpkg: give --gpkg or [soundings].gpkg / [season].gpkg")
     gpkg = ab(gpkg)
-    con = sqlite3.connect(f"file:{gpkg}?mode=ro", uri=True)
+    # read-only, percent-escaped ('#', '?' or '%' in the path), closed on every path
+    con = sqlite3.connect(Path(gpkg).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        rows = _build_rows(cfg, sc, con, ab, log)
+    finally:
+        con.close()
+    return _finish_build(cfg, sc, rows, gpkg, csv_out, ab, log, write)
+
+
+def _build_rows(cfg, sc, con, ab, log):
+    """The rows of every [[soundings.sources]] entry, read with the open season gpkg `con`."""
     meta = gpkg_meta(con)
     if not meta.get("origin_lat"):
         raise SystemExit("the gpkg has no local frame origin (icecube_meta origin_*): import with [site.origin]")
@@ -1464,7 +1474,13 @@ def build(cfg_all, cfg_dir, gpkg=None, csv_out=None, log=print, write=True):
         else:
             raise SystemExit(f"unknown source type {src['type']!r}")
         rows += got
-    con.close()
+    return rows, frame
+
+
+def _finish_build(cfg, sc, built, gpkg, csv_out, ab, log, write):
+    """Corrections, use, anchors, the suspect check and outliers over the built rows; then
+    write the table (and CSV) as build was asked."""
+    rows, frame = built
     if sc.get("corrections_csv"):
         p = Path(ab(sc["corrections_csv"]))
         if p.is_file():

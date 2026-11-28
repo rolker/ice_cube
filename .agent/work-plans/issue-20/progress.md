@@ -290,7 +290,7 @@ Verified: the Claude adversarial subagent ran icecube/tests (121 OK) and analysi
 - [x] (suggestion) A relative base_dir from a library caller gives a double prefix: read_survey has already joined base_dir/path and ab() joins it again. Resolve once (gemini) — `icecube/io.py:678,795`
 - [x] (suggestion) `base` is not validated, so a 2-element list fails with an IndexError. Check for 3 values and raise a ValueError that names the survey (gemini, claude) — `icecube/io.py:721`
 - [x] (suggestion) A caller that passes `log` gets no stderr echo. The RTCM 1005 warning bypasses `log`, and an empty survey id gives an empty message prefix; use `tag` (gemini, claude) — `icecube/io.py:699,732`
-- [ ] (suggestion) soundings.build, which the reader now runs on a temp scratch gpkg, opens it with an unescaped `file:` URI and closes it only on the normal path. Use try/finally and the escaped URI (claude) — `analysis/qgis/soundings.py:1440,1467`
+- [x] (suggestion) soundings.build, which the reader now runs on a temp scratch gpkg, opens it with an unescaped `file:` URI and closes it only on the normal path. Use try/finally and the escaped URI (claude) — `analysis/qgis/soundings.py:1440,1467`
 - [ ] (suggestion) Tests: the stored-site branch of _season_sites is never exercised apart from the seed rule (re-read the season-held session after the move), and the pass_rule tests assert only the dict, not the passes that segment produces (claude) — `icecube/tests/test_logger_session.py:204,314`
 
 ## Checkpoint

@@ -402,6 +402,23 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(con.execute("SELECT count(*) FROM soundings").fetchone()[0], len(rows))
         con.close()
 
+    def test_build_on_a_gpkg_path_with_uri_characters(self):
+        """build opens the gpkg with a percent-escaped URI: '#', '?' or '%' in its path."""
+        ses = make_session(self.d / "sessions")
+        gpkg = self.d / "season.gpkg"
+        with contextlib.redirect_stdout(io.StringIO()):
+            imp.main([str(ses), "--gpkg", str(gpkg), "--base", *map(str, synth.BASE),
+                      "--origin", *map(str, synth.BASE), "--no-photos"])
+        odd = self.d / "a#b?c%d.gpkg"
+        odd.write_bytes(gpkg.read_bytes())
+        cfg = {"soundings": {"sources": [{"id": "logger", "type": "logger"}]}}
+        a = snd.build(cfg, self.d, gpkg=str(gpkg), log=lambda *a: None, write=False)
+        b = snd.build(cfg, self.d, gpkg=str(odd), log=lambda *a: None, write=False)
+        self.assertEqual([r["sid"] for r in a], [r["sid"] for r in b])
+        with self.assertRaises(SystemExit):                     # the gpkg is closed on this path too
+            snd.build({"soundings": {"sources": [{"id": "x", "type": "nope"}]}}, self.d,
+                      gpkg=str(odd), log=lambda *a: None, write=False)
+
     def test_voided_capture_flagged_not_used_unless_included(self):
         """A capture flagged void in the logger (#27) stays a row, flag void, use 0, and is
         counted; include_voided uses it like any other."""
