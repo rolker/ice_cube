@@ -344,3 +344,18 @@ Reject a non-finite ground height in matches() (line 93) and in check() for the 
 
 ### Checks
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL; 252 tests, 0 failures, 0 errors (PoleCheckTest 26/26). C: had 109 GB free.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 19:44 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #43 at `59f1602`
+**Depth**: Deep (reason: convergence check per handoff, the newest Integrated Review's one finding and the fix diff c443065..59f1602)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Cross-model: skipped (convergence check, per handoff). Lead checked the fix: `matches()` and `check()` now use `!Double.isFinite(...hGround)`; no other `isNaN(hGround)` remains in PoleCheck; `Cues` needs no ground height. New test `infiniteGroundHeightIsNoHeight` covers +Inf on the new ref, -Inf on an earlier ref, and that the good ref still forms the reference. Rerun at HEAD: PoleCheckTest 26/26 pass.
+
+### Findings
+- [ ] No issues found. LGTM.
