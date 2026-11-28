@@ -302,3 +302,24 @@ Verified: the Claude adversarial subagent ran icecube/tests (121 OK) and analysi
 **Decision**: address
 
 Fix all 8 suggestions of the Local Review at 4586ad2: expose a station filter; merged-site groups map to the season's group name (or document the missed tie, prefer mapping); z0 subtracted only when the site has an ENU origin (document); base_dir joined once; base checked for 3 finite values; logging (stderr echo with a caller log, 1005 warning through log, no empty prefix); soundings.build escapes the URI and closes in finally; tests for the stored-site branch and pass_rule effects on passes.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:54 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-20 at `c844e45`
+**Addressed**: Local Review (Pre-Push) at `ff90d82` (2026-11-27 19:44 -05:00)
+**Commits**: c483edc, 1ec01a9, 1684617, 36d6f65, bb61dce, 631d361, 569507e, c844e45
+
+### Actions
+- [x] station filter exposed: `station` argument and survey key, passed to the generated logger source; example toml and howto — `icecube/io.py` (c483edc)
+- [x] merged season sites: _season_sites groups the season's refs single-link at anchor_radius_m as assign_anchors does and maps each site<k> to the group's name; unit test with a chained 0 / 0.25 / 0.45 m season — `icecube/io.py` (1ec01a9)
+- [x] read_soundings subtracts z0 only with an ENU site; docstring and howto say a UTM site leaves z as stored — `icecube/io.py` (1684617)
+- [x] base_dir resolved once; read_survey passes the raw path to the reader; test with a relative base_dir — `icecube/io.py` (36d6f65)
+- [x] base checked for three finite values, ValueError naming the survey — `icecube/io.py` (bb61dce)
+- [x] a caller's log gets every line and warnings still echo to stderr; the RTCM 1005 warning goes through the log; messages use `tag` (survey id, else "logger") — `icecube/io.py` (631d361)
+- [x] soundings.build opens the gpkg with an escaped file URI and closes it in finally (rows and finishing split into _build_rows / _finish_build); test with '#?%' in the path — `analysis/qgis/soundings.py` (569507e)
+- [x] tests: the season-held session re-read after the mark moves keeps its stored site; pass_rule tests check the passes segment produces — `icecube/tests/test_logger_session.py` (c844e45)
+
+Tests: `python3 -m unittest discover -s analysis/qgis/tests` Ran 174, OK (skipped=5); `python3 -m unittest discover icecube/tests` Ran 126, OK. No edits to logger_session.py, import_sessions.py or build_project.py (#23 overlap kept to none). Not pushed.
