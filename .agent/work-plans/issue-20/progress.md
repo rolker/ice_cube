@@ -340,3 +340,11 @@ Scope: the 8 suggestions of the round 2 review (4586ad2), the fix diff 573bfd9..
 
 ### Findings
 - [ ] (suggestion) The merge left a blank line between the #20 and #23 journal entries, which makes the bullet list loose where no other entry has one; drop it — `docs/log.md:156`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 20:00 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push round 3 approved; its one suggestion, a stray blank journal line, fixed in c9535b9; orchestrator table allows publish)
+**After**: publish
+**Decision**: publish
