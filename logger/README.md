@@ -66,7 +66,8 @@ e.g. "Ice Cube Logger 0.13.0 (build 17)".
     the screen says why. They apply to the next tilt capture.
   - Auto capture (0.13.0, see Auto capture): on or off (default on; it does nothing until
     the pole is calibrated in the session), plumb limit 0.5 to 10°, default 2; hold time
-    0.5 to 30 s, default 2; still limit 0.2 to 20 cm, default 2. They apply from the next
+    1 to 30 s, default 2 (at least the capture's 1 s average, so it never averages epochs from
+    before the hold); still limit 0.2 to 20 cm, default 2. They apply from the next
     epoch.
   - Volume keys: Mark / Mode (default on): on the map, volume down = MARK, volume up =
     MODE; during a tilt capture down = LEAN, up = finish; hold down about 1 s to start a

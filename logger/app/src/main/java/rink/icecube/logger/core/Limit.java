@@ -27,8 +27,11 @@ public final class Limit {
     public static final Limit LEAN_SCATTER_CM = new Limit("Tilt: lean scatter", "cm", 0.2, 20, 2, 1);
     /** 0.13.0 (#35): auto capture fires when the pole is this close to plumb, ... */
     public static final Limit AUTO_PLUMB_DEG = new Limit("Auto capture: plumb limit", "°", 0.5, 10, 2, 1);
-    /** ... for this long, ... */
-    public static final Limit AUTO_HOLD_S = new Limit("Auto capture: hold time", "s", 0.5, 30, 2, 1);
+    /**
+     * ... for this long (at least 1 s, so the capture's 1 s average holds only held epochs;
+     * a stored value under 1 s reads as the default), ...
+     */
+    public static final Limit AUTO_HOLD_S = new Limit("Auto capture: hold time", "s", 1, 30, 2, 1);
     /** ... with every antenna position this close to their mean (re-arm: 3 times this from the capture). */
     public static final Limit AUTO_STILL_CM = new Limit("Auto capture: still limit", "cm", 0.2, 20, 2, 1);
     public static final Limit COV_TARGET_CM = new Limit("Coverage: sigma target", "cm", 0.5, 50, 3.0, 1);

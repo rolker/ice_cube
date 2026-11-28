@@ -29,7 +29,7 @@ public class LimitTest {
         assertEquals(0.5, Limit.AUTO_PLUMB_DEG.parse("0.5"), 0);
         assertEquals(10, Limit.AUTO_PLUMB_DEG.parse("10"), 0);
         assertEquals("must be 0.5 to 10.0 °", problem(Limit.AUTO_PLUMB_DEG, "10.5"));
-        assertEquals("must be 0.5 to 30.0 s", problem(Limit.AUTO_HOLD_S, "0.4"));
+        assertEquals("must be 1.0 to 30.0 s", problem(Limit.AUTO_HOLD_S, "0.9"));
         assertEquals(0.2, Limit.AUTO_STILL_CM.parse("0,2"), 1e-12);
         assertEquals("must be 0.2 to 20.0 cm", problem(Limit.AUTO_STILL_CM, "0.1"));
         assertEquals("enter a number, up to 1 decimal", problem(Limit.AUTO_HOLD_S, "1.25"));
