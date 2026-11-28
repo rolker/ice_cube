@@ -303,3 +303,19 @@ Cross-model: codex completed (EXIT=0). 1187 changed lines, 19 files (Deep by siz
 
 ### Findings
 - [ ] (suggestion) matches() rejects only a NaN ground height; PointRow.dbl() uses Double.parseDouble, which accepts "Infinity", so a corrupt refs.csv row could enter the reference (the writer never emits one); reject non-finite hGround as hasPosition now does — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:93`
+
+## Integrated Review
+**Status**: complete
+**When**: 2026-11-27 19:42 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Reviews-read**: none
+
+**PR**: #43 at `10f661e`
+**Sources**: 2 (Local Review (Pre-Push) @ `ed41169`, round 3, approved, 0 findings; Local Review @ `b345296` (Codex cold read, covers 10f661e via bookkeeping), approved, 1 suggestion). No hosted reviews (Copilot out of quota, not requested); no CI checks configured.
+**Cross-source confirmations**: 0
+**CI**: all-pass (no checks configured on this repository)
+
+### Findings
+- [ ] (suggestion, Local Review @ `b345296`, covers `10f661e` via bookkeeping) `matches()` rejects only a NaN ground height of an earlier ref (`Double.isNaN(r.hGround)`); `PointRow.dbl()` uses `Double.parseDouble`, which accepts "Infinity", so a corrupt refs.csv row with an infinite hGround would enter the reference and make the median and diffs infinite. The writer never emits one, so only a corrupted or hand-edited file reaches it. Fix: use `!Double.isFinite(r.hGround)` at line 93, and the same guard for `now.hGround` in `check()` (line 122) for consistency with `hasPosition()` — `logger/app/src/main/java/rink/icecube/logger/core/PoleCheck.java:93`
+
+### False positives
