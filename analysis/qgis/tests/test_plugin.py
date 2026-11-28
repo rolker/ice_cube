@@ -395,10 +395,18 @@ class MapTipUrlTest(unittest.TestCase):
             self.assertEqual(self.bp.file_url(path), want)
         self.assertNotIn(" ", self.bp.file_url("C:/My Drive/x.m4a"))
 
+    def test_voice_link_text_is_html_escaped(self):
+        """The link text is the file name with & < > escaped, & first so no escape is
+        escaped twice; the expression lists the same pairs in the same order."""
+        self.assertEqual(self.bp.html_text("a&b<c>d&amp;.m4a"), "a&amp;b&lt;c&gt;d&amp;amp;.m4a")
+        self.assertEqual(self.bp.html_text_expr('"x"'),
+                         "replace(\"x\", array('&', '<', '>'), array('&amp;', '&lt;', '&gt;'))")
+
     def test_tips_use_the_encoded_url(self):
         url = self.bp.file_url_expr("@project_folder || '/' || @element")
         self.assertIn('<a href="\' || ' + url + " || '\">'", self.bp.VOICE_TIP)
         self.assertIn(self.bp.file_url_expr("@project_folder || '/' || \"photo\""), self.bp.PHOTO_TIP)
+        self.assertIn(self.bp.html_text_expr("regexp_replace(@element, '^.*/', '')"), self.bp.VOICE_TIP)
         for tip in (self.bp.VOICE_TIP, self.bp.PHOTO_TIP):   # one [% ... %] block each
             self.assertTrue(tip.startswith("[% ") and tip.endswith(" %]"))
             self.assertEqual(tip.count("%]"), 1)

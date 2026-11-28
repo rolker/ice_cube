@@ -173,16 +173,35 @@ def file_url(path):
     return "file:///" + path
 
 
+# text put into a map tip's HTML: '&' first, as with URL_ESCAPES, so an escape is never escaped again
+HTML_ESCAPES = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
+
+
+def html_text_expr(expr):
+    """A QGIS expression for expr with & < > escaped (HTML_ESCAPES), so it shows as text."""
+    before = ", ".join(_qgis_str(a) for a, _ in HTML_ESCAPES)
+    after = ", ".join(_qgis_str(b) for _, b in HTML_ESCAPES)
+    return f"replace({expr}, array({before}), array({after}))"
+
+
+def html_text(text):
+    """What html_text_expr evaluates to for text: for tests and for a reader."""
+    for a, b in HTML_ESCAPES:
+        text = text.replace(a, b)
+    return text
+
+
 PHOTO_TIP = ('[% CASE WHEN "photo" IS NOT NULL THEN \'<br><img src="\' || '
              + file_url_expr('@project_folder || \'/\' || "photo"') + ' || \'" width="320">\' ELSE \'\' END %]')
 
 
 # voice notes (logger 0.14.0): one file:/// link per path in "voice" (';' separated), for
-# the system player; a gpkg imported before schema 7 has no voice column and gets no links
+# the system player, the file name as the link text (HTML-escaped); a gpkg imported before schema 7 has no voice column and gets no links
 VOICE_TIP = ('[% CASE WHEN "voice" IS NOT NULL THEN \'<br>voice: \' || array_to_string(array_foreach('
              'string_to_array("voice", \';\'), \'<a href="\' || '
              + file_url_expr("@project_folder || '/' || @element")
-             + ' || \'">\' || regexp_replace(@element, \'^.*/\', \'\') || \'</a>\'), \' \') ELSE \'\' END %]')
+             + ' || \'">\' || ' + html_text_expr("regexp_replace(@element, '^.*/', '')")
+             + ' || \'</a>\'), \' \') ELSE \'\' END %]')
 
 
 def voice_tip(lyr):
