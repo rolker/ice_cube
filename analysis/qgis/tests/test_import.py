@@ -421,7 +421,7 @@ class ImportTest(unittest.TestCase):
 
     def test_orphan_note_without_event_never_takes_a_later_capture(self):
         """An orphan note with no events.csv line (a share zip made while it recorded) goes
-        by the n in its file name only when that capture is older than the note; a capture
+        by the n in its file name only when that capture is no later than the note; a capture
         made later that took the number (a MARK during a note planned as its own row) does
         not get it: the note is an own row with no n."""
         files = synth.with_notes(synth.session_v05())
@@ -442,12 +442,45 @@ class ImportTest(unittest.TestCase):
         src.close()
         p = {x["name"]: (x["n"], x["attached"]) for x in s.notes}
         self.assertEqual(p[synth.NOTE_2], (None, "own row"))   # row 2 is later than 10:00:12
-        self.assertEqual(p[synth.NOTE_5], (None, "own row"))   # same second as row 5: not older
+        self.assertEqual(p[synth.NOTE_5], (5, "own row"))      # same second as row 5: its own
         self.assertEqual(p[late], (None, "own row"))
         self.assertEqual(p[early], (3, "capture"))
         caps = {c["n"]: c for c in s.captures}
         self.assertEqual((caps[2]["voice_files"], caps[5]["voice_files"], caps[3]["voice_files"]),
-                         ([], [], [early]))
+                         ([], [synth.NOTE_5], [early]))
+
+    def test_orphan_photo_in_the_capture_second_takes_its_n(self):
+        """An orphan photo with no event, taken in the same second as the capture its name
+        gives (PHOTO pressed under 1 s after MARK, one 1 Hz epoch), attaches to that capture
+        as it did before 0.14.0; one taken the second before does not."""
+        files = synth.session_v05()
+        name = "2026-12-01_10-00-00"
+        same = "photo_3_20261201T100030Z.jpg"        # row 3 is 10:00:30
+        before = "photo_4_20261201T100039Z.jpg"      # row 4 (10:00:40) is later
+        files[f"{name}/photos/{same}"] = synth.JPEG
+        files[f"{name}/photos/{before}"] = synth.JPEG
+        src = find_sessions([synth.write_zip(self.d / "ps.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: (x["n"], x["attached"]) for x in s.photos}
+        self.assertEqual(p[same], (3, "capture"))
+        self.assertEqual(p[before], (None, "own row"))
+        caps = {c["n"]: c for c in s.captures}
+        self.assertEqual(caps[3]["photo_files"], [same])
+
+    def test_orphan_note_in_the_capture_second_takes_its_n(self):
+        """An orphan note with no event, pressed in the same second as the capture its name
+        gives, attaches to that capture."""
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        same = "note_3_20261201T100030Z.m4a"         # row 3 is 10:00:30
+        files[f"{name}/notes/{same}"] = synth.M4A
+        src = find_sessions([synth.write_zip(self.d / "ns.zip", files)])[0]
+        s = load_session(src)
+        src.close()
+        p = {x["name"]: (x["n"], x["attached"]) for x in s.notes}
+        self.assertEqual(p[same], (3, "capture"))
+        self.assertEqual({c["n"]: c for c in s.captures}[3]["voice_files"], [same])
 
     def test_schema7_voice(self):
         """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""
