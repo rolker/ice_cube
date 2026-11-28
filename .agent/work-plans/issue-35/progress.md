@@ -361,3 +361,21 @@ None.
 **Decision**: address
 
 Fix all four of the Integrated Review at 24c63c3. Host decisions (owner may veto): a MARK without gravity latches with radius pole × sin(plumb limit), not the full pole height; a pole-height change after calibration keeps the axis but shows a notice "pole height changed: recalibrate if the phone moved in its mount" (no forced recalibration); setLimits clears the hold window; README states the real antenna re-arm spacing (≈ 19 cm at the defaults, 68 cm at 10°).
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 20:38 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**PR**: #45 at `0680593`
+**Addressed**: Integrated Review at `3ec21cd` (2026-11-27 20:35 -05:00), as the Checkpoint of 2026-11-27 20:35 -05:00 decided
+**Commits**: bc8e9c6, 21d3442, cd9c4a1, 0680593
+
+### Actions
+- [x] README states the antenna re-arm spacing, 2 x pole x sin(plumb limit) + 3 x still (about 19 cm at the defaults, 68 cm at 10 deg), and how a MARK without gravity latches — `logger/README.md` (Auto capture section)
+- [x] A Surface MARK after calibration with no gravity reading latches at pole x sin(plumb limit), not the pole height; with no calibration it keeps the pole height. Rule in `AutoCapture.markTipRadiusM`, test `markTipRadiusFallsBackToThePlumbLimitWithoutGravity` — `logger/app/src/main/java/rink/icecube/logger/Survey.java`, `core/AutoCapture.java`
+- [x] A pole height change after calibration keeps the axis and shows the notice "Pole height changed: recalibrate if the phone moved in its mount" (`Survey.poleHeightChanged`, called from the pref listener); not unit-tested (Android service code) — `logger/app/src/main/java/rink/icecube/logger/LoggerService.java`
+- [x] `setLimits` clears the hold window; test `setLimitsClearsTheHoldWindow` — `logger/app/src/main/java/rink/icecube/logger/core/AutoCapture.java`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 305 unit tests, 0 failures (AutoCaptureTest 27/27); APK `logger/app/build/outputs/apk/debug/app-debug.apk`. C: had 108.9 GB free.
