@@ -440,7 +440,8 @@ any distance and without the slope term; they are not gridded (a mark top is not
   base-history CSV and needs `base` or `base_from_gpkg`, since the session's own 1005 would
   make its base the current one. Needs an ENU `[site]` (`origin_geodetic` or
   `origin_from_gpkg`); a UTM-only site is refused; `z0` is subtracted as for the other
-  readers (the soundings reader too). Without a `pass_rule` the survey gets
+  readers (the soundings reader too, with an ENU `[site]`; with a UTM site it leaves z as
+  the table has it). Without a `pass_rule` the survey gets
   `pass_rule.from_file = true`; a `pass_rule` you write is used as written. Anchor names:
   with `base_from_gpkg` a ref takes the season's site (stored for a session the season
   holds, else the site the session import's 0.30 m rule would give it), so it is `site<k>`

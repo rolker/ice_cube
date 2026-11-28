@@ -498,9 +498,11 @@ def _soundings_rows(path, table="soundings"):
 def read_soundings(path, survey="", frame="", date="", sources=None, classes=("ground", "anchor"),
                    kinds=None, use_only=True, table="soundings", site=None):
     """The `soundings` table written by analysis/qgis/soundings.py, from the season gpkg or
-    its CSV export. x_m, y_m, z_m are already in the gpkg's local frame; when `site` uses an
-    ENU origin and the source is a gpkg, the gpkg's origin must be the same point (1 mm);
-    `site.z0` is subtracted from z, as Site.local does for the other readers.
+    its CSV export. x_m, y_m, z_m are already in the gpkg's local frame (ENU about its
+    origin); when `site` uses an ENU origin, the gpkg's origin must be the same point (1 mm,
+    checked for a gpkg source) and `site.z0` is subtracted from z, as Site.local does for
+    the other readers. A UTM `site` (no origin_geodetic) leaves z as the table has it: its
+    z0 belongs to the UTM frame, and the reader expects the run's frame to be the gpkg's.
     Keeps rows with use = 1 (unless use_only is false), of the given sources, classes and
     kinds. sz = sigma_z, sh = sigma_xy, pass_id from the table's pass labels (pass_names),
     anchor = the anchor id of class anchor rows, group = session, remark = sid. The survey's
@@ -514,8 +516,8 @@ def read_soundings(path, survey="", frame="", date="", sources=None, classes=("g
                              f"{math.hypot(*d):.3f} m; the soundings would be in another frame")
     rows = _keep_rows(_soundings_rows(path, table), sources, classes, kinds, use_only)
     pts = _points_from_rows(rows, survey, frame, date)
-    if site is not None:
-        pts.z = pts.z - site.z0     # as Site.local does for the other readers
+    if site is not None and site.origin_geodetic is not None:
+        pts.z = pts.z - site.z0     # as Site.local does for the other readers (ENU site only)
     return pts
 
 
