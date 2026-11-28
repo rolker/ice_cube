@@ -348,3 +348,19 @@ Scope: the 8 suggestions of the round 2 review (4586ad2), the fix diff 573bfd9..
 **Decided-by**: host (pre-push round 3 approved; its one suggestion, a stray blank journal line, fixed in c9535b9; orchestrator table allows publish)
 **After**: publish
 **Decision**: publish
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 20:04 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #44 at `bf8639c`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 1 | **Suggestions**: 1
+
+Codex ran (EXIT=0) on the PR diff alone (work-plan files excluded by the script; coverage_vectors.json left in, 82 lines, not large). Both findings checked against icecube/io.py and soundings.assign_anchors. Tests: icecube 126 OK, analysis/qgis 175 OK (5 skipped).
+
+### Findings
+- [ ] (must-fix) `_season_sites` rebuilds the season's anchor names from the season gpkg's refs table alone (non-void refs, stored positions), but the season's names come from `soundings.assign_anchors` over the rows actually in its soundings table, controls included and source filters applied. A control bridging two sites in the season (season merges them, here they stay apart: missed tie), or a ref outside the season table bridging sites here (here merged, season not: this survey's ref tied to another site's anchor) makes the names disagree. Consider taking the names from the season's soundings table (its anchor column, matched by session and n) where it exists — `icecube/io.py:321`
+- [ ] (suggestion) The final rename maps any anchor named `site<k>` to the season name, so a control or snap-joined ground point grouped with a season ref also takes it; that matches what the season table itself would do (same group, same name), but the docstring says controls and snap-joined points are always `<survey>:<name>`. Align the docstring (or the code) — `icecube/io.py:398`, `icecube/io.py:512`
