@@ -313,3 +313,21 @@ Scope: round 2's findings (Local Review at `deb885f`) and the fix diff e6066da..
 **Decision**: publish
 
 The round-3 review's two suggestions (README re-arm spacing; MARK without gravity latching at full pole height) go to the PR-mode triage.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 20:32 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #45 at `049b845`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 0 | **Suggestions**: 2
+
+Codex ran (EXIT=0) on the PR title, URL and diff only. It reported 2 must-fix and 1 suggestion; checked against the code, as lead:
+- Codex must-fix "a stationary pole's RTK drift clears the latch": dropped. Clearing needs the antenna to move more than 6 cm plus both tip radii on an RTK-fixed, settled, non-suspect fix; a wander that large is the false fix FixGuard is there to catch, not normal fixed noise.
+- Codex must-fix "pole height change leaves the axis active": downgraded to suggestion. Plumb (PoleAxis.plumbDeg) uses only gravity and the axis, not the pole height, so the claimed wrong plumb does not happen; but changing the height usually means the pole was handled, which may move the phone in its mount.
+
+### Findings
+- [ ] (suggestion) Changing pole height mid-session keeps the calibrated axis; consider asking for a recalibration (or a notice) when the height changes after a calibration — `logger/app/src/main/java/rink/icecube/logger/LoggerService.java:130`
+- [ ] (suggestion) setLimits keeps the hold window, so epochs accepted under a looser plumb limit still count after the limit is tightened; clear the window in setLimits — `logger/app/src/main/java/rink/icecube/logger/core/AutoCapture.java:131`
