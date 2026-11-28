@@ -190,11 +190,17 @@ class Site:
         return x - self.origin[0], y - self.origin[1], np.asarray(h, dtype=float) - self.z0
 
 
+def _ro_uri(path):
+    """A read-only SQLite URI for `path`, percent-escaped (a '#', '?' or '%' in the path
+    would otherwise be read as part of the URI)."""
+    return Path(path).resolve().as_uri() + "?mode=ro"
+
+
 def gpkg_origin(path):
     """(lat, lon, h) of the local frame origin stored by the QGIS session import in a
     season GeoPackage (table icecube_meta, keys origin_lat/lon/h)."""
     import sqlite3
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(_ro_uri(path), uri=True)
     try:
         m = dict(con.execute("SELECT key, value FROM icecube_meta"))
     finally:
@@ -207,7 +213,7 @@ def gpkg_origin(path):
 def gpkg_local_wkt(path):
     """WKT of the local CRS the session import stored (icecube_meta local_wkt), or None."""
     import sqlite3
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(_ro_uri(path), uri=True)
     try:
         m = dict(con.execute("SELECT key, value FROM icecube_meta"))
     finally:
@@ -475,7 +481,7 @@ def _soundings_rows(path, table="soundings"):
     path = Path(path)
     if path.suffix.lower() == ".gpkg":
         import sqlite3
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        con = sqlite3.connect(_ro_uri(path), uri=True)
         try:
             cols = [r[1] for r in con.execute(f'PRAGMA table_info("{table}")')]
             if not cols:
@@ -493,7 +499,8 @@ def read_soundings(path, survey="", frame="", date="", sources=None, classes=("g
                    kinds=None, use_only=True, table="soundings", site=None):
     """The `soundings` table written by analysis/qgis/soundings.py, from the season gpkg or
     its CSV export. x_m, y_m, z_m are already in the gpkg's local frame; when `site` uses an
-    ENU origin and the source is a gpkg, the gpkg's origin must be the same point (1 mm).
+    ENU origin and the source is a gpkg, the gpkg's origin must be the same point (1 mm);
+    `site.z0` is subtracted from z, as Site.local does for the other readers.
     Keeps rows with use = 1 (unless use_only is false), of the given sources, classes and
     kinds. sz = sigma_z, sh = sigma_xy, pass_id from the table's pass labels (pass_names),
     anchor = the anchor id of class anchor rows, group = session, remark = sid. The survey's
@@ -506,7 +513,10 @@ def read_soundings(path, survey="", frame="", date="", sources=None, classes=("g
             raise ValueError(f"{path.name}: its local frame origin differs from [site] by "
                              f"{math.hypot(*d):.3f} m; the soundings would be in another frame")
     rows = _keep_rows(_soundings_rows(path, table), sources, classes, kinds, use_only)
-    return _points_from_rows(rows, survey, frame, date)
+    pts = _points_from_rows(rows, survey, frame, date)
+    if site is not None:
+        pts.z = pts.z - site.z0     # as Site.local does for the other readers
+    return pts
 
 
 def _keep_rows(rows, sources=None, classes=("ground", "anchor"), kinds=None, use_only=True):
@@ -564,18 +574,64 @@ def _qgis_modules():
     return import_sessions, soundings
 
 
-def _gpkg_base(path):
-    """(lat, lon, h) of the current base stored in a season GeoPackage (icecube_meta
-    base_lat/lon/h), read-only, or None."""
+def _read_season(path):
+    """(base, refs) of a season GeoPackage, read-only: base is the current base stored in
+    icecube_meta (base_lat/lon/h) as (lat, lon, h), or None when it holds none; refs are its
+    refs as (session, n, lat, lon, site, void) in update_local's order (utc, session, n).
+    Raises ValueError for a missing file, a file that is not a season gpkg, or a partial base."""
     import sqlite3
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"base_from_gpkg: {path.name}: no such file")
     try:
-        m = dict(con.execute("SELECT key, value FROM icecube_meta"))
-    finally:
-        con.close()
-    if not m.get("base_lat"):
-        return None
-    return float(m["base_lat"]), float(m["base_lon"]), float(m["base_h"])
+        con = sqlite3.connect(_ro_uri(path), uri=True)
+        try:
+            m = dict(con.execute("SELECT key, value FROM icecube_meta"))
+            refs = con.execute("SELECT session, n, lat, lon, site, void FROM refs "
+                               "ORDER BY utc, session, n").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        raise ValueError(f"base_from_gpkg: {path.name} is not a season GeoPackage made by "
+                         f"analysis/qgis/import_sessions.py ({e})") from None
+    keys = ("base_lat", "base_lon", "base_h")
+    have = [k for k in keys if m.get(k) not in (None, "")]
+    if have and len(have) < len(keys):
+        raise ValueError(f"base_from_gpkg: {path.name}: icecube_meta has {', '.join(have)} but not "
+                         f"{', '.join(k for k in keys if k not in have)}")
+    base = tuple(float(m[k]) for k in keys) if have else None
+    return base, refs
+
+
+def _season_sites(gp, frame, season_refs, radius):
+    """Give the scratch gpkg's refs the season's site numbers, read-only on the season: a ref
+    the season holds (same session and n) takes its stored site; any other ref that is not
+    flagged void takes the first season site (in site order) whose seed, the site's earliest
+    ref as update_local orders them, is within `radius` m horizontally, as update_local's
+    rule would place it; a ref that matches none keeps no site. Returns the season's anchor
+    names (site<k>)."""
+    stored, seeds = {}, {}
+    for ses, n, lat, lon, site, void in season_refs:
+        if site is None or (void or 0) == 1:
+            continue
+        stored[(ses, n)] = int(site)
+        if int(site) not in seeds and lat is not None:
+            seeds[int(site)] = frame.enu(lat, lon, 0.0)[:2]
+    order = sorted(seeds)
+    upd = []
+    for fid, ses, n, lat, lon, void in gp.con.execute(
+            "SELECT fid, session, n, lat, lon, void FROM refs").fetchall():
+        site = None
+        if (void or 0) == 1:
+            pass
+        elif (ses, n) in stored:
+            site = stored[(ses, n)]
+        elif lat is not None:
+            e, nn, _ = frame.enu(lat, lon, 0.0)
+            site = next((k for k in order if math.hypot(e - seeds[k][0], nn - seeds[k][1]) <= radius), None)
+        upd.append((site, fid))
+    gp.con.executemany("UPDATE refs SET site=? WHERE fid=?", upd)
+    return {f"site{k}" for k in set(stored.values())}
 
 
 def read_logger_session(path, site: Site, survey="", frame="", date="", sessions=None,
@@ -593,16 +649,26 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
     then see only these sessions, so a row can differ slightly from the season table.
 
     Needs an ENU `[site]` origin (origin_geodetic or origin_from_gpkg): the scratch gpkg's
-    frame is that origin, so the rows are in icecube's frame as they come. The current base
-    (positions taken under an older base are moved by base_history) is, in order: `base`
-    (lat, lon, h), the base stored in the `base_from_gpkg` season GeoPackage (read-only),
-    else the first RTCM 1005 logged in the sessions. `base_history` is the soundings
+    frame is that origin, so the rows are in icecube's frame as they come; `site.z0` is
+    subtracted from z, as the other readers do. The current base (positions taken under an
+    older base are moved by base_history) is, in order: `base` (lat, lon, h), the base stored
+    in the `base_from_gpkg` season GeoPackage (read-only), else the first RTCM 1005 logged in
+    the sessions (with a warning on stderr; refused when `base_history` is given, since that
+    makes the session's own base the current one). `base_history` is the soundings
     base-history CSV. Relative paths are taken from `base_dir`.
+
+    Anchor names: with `base_from_gpkg`, a ref takes the season's site (the one the season
+    stores for it, else the season site update_local's rule would put it in), so it is named
+    site<k> like the season's soundings and ties to them in the crossover; any other anchor
+    (a ref at no season site, a control, a snap-joined point) is named `<survey>:<name>` so it
+    never collides with or falsely ties to another survey's anchors. Without a season gpkg
+    every anchor is named that way.
 
     Rows with use = 1 of the given kinds (default captures only; "stop" adds pole stops) and
     classes are kept; a capture voided in the logger is left out unless include_voided.
     Returns Points as read_soundings does (pass ids from the rows' pass labels)."""
     import argparse
+    import sys
     import tempfile
     imp, snd = _qgis_modules()
     from local_frame import LocalFrame  # noqa: E402 (on sys.path via _qgis_modules)
@@ -611,69 +677,86 @@ def read_logger_session(path, site: Site, survey="", frame="", date="", sessions
                          "origin_from_gpkg); a UTM-only site has none")
     ab = lambda p: Path(p) if Path(p).is_absolute() or base_dir is None else Path(base_dir) / p  # noqa: E731
     path = ab(path)
-    found = imp.find_sessions([path])
-    if sessions is not None:
-        want = set(sessions)
-        for s in found:
-            if s.name not in want:
-                s.close()
-        found = [s for s in found if s.name in want]
-        missing = want - {s.name for s in found}
-        if missing:
-            raise ValueError(f"{path.name}: session(s) not found: {', '.join(sorted(missing))}")
-    if not found:
-        raise ValueError(f"{path.name}: no logger sessions")
-    names = [s.name for s in found]
+    season_base, season_refs = _read_season(ab(base_from_gpkg)) if base_from_gpkg else (None, None)
+    if base is None and base_from_gpkg and season_base is None:
+        raise ValueError(f"base_from_gpkg: {Path(base_from_gpkg).name}: no base_lat/lon/h in icecube_meta")
+    if base_history and base is None and not base_from_gpkg:
+        raise ValueError(f"survey {survey}: base_history needs the current base as base or "
+                         "base_from_gpkg; the first RTCM 1005 of the sessions would make the "
+                         "session's own base the current one")
+    tag = survey or "logger"
     lines = []
     log = log or lines.append
-    with tempfile.TemporaryDirectory(prefix="icecube_logger_") as tmp:
-        gpkg = Path(tmp) / "scratch.gpkg"
-        gp = imp.GeoPackage(gpkg)
-        try:
-            imp.ensure_schema(gp)
-            parsed, refs_texts = [], []
-            for src in found:
-                refs_texts += src.refs_csv_copies()
-                s = imp.load_session(src)
-                imp.import_session(gp, src, s, Path(tmp) / "photos", extract_photos=False)
-                parsed.append(s)
-                src.close()
-            imp.import_refs_csv(gp, refs_texts)
-            b = None
-            if base is not None:
-                b = tuple(float(v) for v in base)
-            elif base_from_gpkg:
-                b = _gpkg_base(ab(base_from_gpkg))
-                if b is None:
-                    raise ValueError(f"{Path(base_from_gpkg).name}: no base_lat/lon/h in icecube_meta")
-            else:
-                stub = argparse.Namespace(base=None, base_geojson=None)
-                f = imp.resolve_base(stub, {"site": {"base_from_sessions": True}}, Path(tmp), [], parsed)
-                b = (f.lat, f.lon, f.h) if f is not None else None
-            if b is None:
-                raise ValueError(f"survey {survey}: no base position (give base or base_from_gpkg; the "
-                                 "sessions logged no RTCM 1005)")
-            o = LocalFrame(*site.origin_geodetic, name="origin")
-            imp.set_meta(gp, origin_name=o.name, origin_lat=f"{o.lat:.10f}", origin_lon=f"{o.lon:.10f}",
-                         origin_h=f"{o.h:.5f}", base_lat=f"{b[0]:.10f}", base_lon=f"{b[1]:.10f}",
-                         base_h=f"{b[2]:.5f}")
-            gp.commit()
-        finally:
-            gp.close()
-        sc = {"include_voided": bool(include_voided),
-              "sources": [{"id": survey or "logger", "type": "logger", "sessions": names,
-                           "session_paths": [str(path)]}]}
-        if base_history:
-            sc["base_history"] = str(ab(base_history))
-        rows = snd.build({"soundings": sc}, Path(base_dir) if base_dir is not None else Path.cwd(),
-                         gpkg=str(gpkg), log=log, write=False)
-    if lines:
-        import sys
-        for line in lines:
-            if "warning" in line or "no raw epochs" in line:
-                print(f"{survey}: {line.strip()}", file=sys.stderr)
+    found = imp.find_sessions([path])
+    try:
+        if sessions is not None:
+            want = set(sessions)
+            found_names = {s.name for s in found}
+            missing = want - found_names
+            if missing:
+                raise ValueError(f"{path.name}: session(s) not found: {', '.join(sorted(missing))}")
+            for s in found:
+                if s.name not in want:
+                    s.close()
+            found = [s for s in found if s.name in want]
+        if not found:
+            raise ValueError(f"{path.name}: no logger sessions")
+        names = [s.name for s in found]
+        o = LocalFrame(*site.origin_geodetic, name="origin")
+        with tempfile.TemporaryDirectory(prefix="icecube_logger_") as tmp:
+            gpkg = Path(tmp) / "scratch.gpkg"
+            gp = imp.GeoPackage(gpkg)
+            try:
+                imp.ensure_schema(gp)
+                parsed, refs_texts = [], []
+                for src in found:
+                    refs_texts += src.refs_csv_copies()
+                    s = imp.load_session(src)
+                    imp.import_session(gp, src, s, Path(tmp) / "photos", extract_photos=False)
+                    parsed.append(s)
+                    src.close()
+                imp.import_refs_csv(gp, refs_texts)
+                season_names = (_season_sites(gp, o, season_refs, imp.REF_SITE_M)
+                                if season_refs is not None else set())
+                if base is not None:
+                    b = tuple(float(v) for v in base)
+                elif season_base is not None:
+                    b = season_base
+                else:
+                    stub = argparse.Namespace(base=None, base_geojson=None)
+                    f = imp.resolve_base(stub, {"site": {"base_from_sessions": True}}, Path(tmp), [], parsed)
+                    if f is None:
+                        raise ValueError(f"survey {survey}: no base position (give base or base_from_gpkg; "
+                                         "the sessions logged no RTCM 1005)")
+                    b = (f.lat, f.lon, f.h)
+                    print(f"{survey}: warning: no base or base_from_gpkg; the first RTCM 1005 logged in "
+                          "the sessions is taken as the current base", file=sys.stderr)
+                imp.set_meta(gp, origin_name=o.name, origin_lat=f"{o.lat:.10f}", origin_lon=f"{o.lon:.10f}",
+                             origin_h=f"{o.h:.5f}", base_lat=f"{b[0]:.10f}", base_lon=f"{b[1]:.10f}",
+                             base_h=f"{b[2]:.5f}")
+                gp.commit()
+            finally:
+                gp.close()
+            sc = {"include_voided": bool(include_voided),
+                  "sources": [{"id": tag, "type": "logger", "sessions": names,
+                               "session_paths": [str(path)]}]}
+            if base_history:
+                sc["base_history"] = str(ab(base_history))
+            rows = snd.build({"soundings": sc}, Path(base_dir) if base_dir is not None else Path.cwd(),
+                             gpkg=str(gpkg), log=log, write=False)
+    finally:
+        for s in found:
+            s.close()
+    for line in lines:
+        if "warning" in line or "no raw epochs" in line:
+            print(f"{survey}: {line.strip()}", file=sys.stderr)
+    for r in rows:
+        if r.get("anchor") and r["anchor"] not in season_names:
+            r["anchor"] = f"{tag}:{r['anchor']}"
     rows = _keep_rows(rows, None, classes, kinds, True)
-    return _points_from_rows(rows, survey, frame, date)
+    pts = _points_from_rows(rows, survey, frame, date)
+    pts.z = pts.z - site.z0
+    return pts
 
 READERS = {"swmaps_geojson": read_swmaps_geojson, "swmaps_csv": read_swmaps_csv, "enu_csv": read_enu_csv,
            "soundings": read_soundings, "logger_session": read_logger_session}
@@ -706,8 +789,9 @@ def read_survey(scfg: dict, site: Site, base_dir: Path | None = None) -> Points:
                              use_only=bool(scfg.get("use_only", True)), table=scfg.get("table", "soundings"),
                              site=site)
     elif reader == "logger_session":
-        # the rows carry their own passes (fix stretches); a user pass_rule still wins
-        scfg.setdefault("pass_rule", {}).setdefault("from_file", True)
+        # the rows carry their own passes (fix stretches); a pass_rule the user wrote wins whole
+        if "pass_rule" not in scfg:
+            scfg["pass_rule"] = {"from_file": True}
         pts = read_logger_session(path, site, sid, frame=frame, date=date, sessions=scfg.get("sessions"),
                                   kinds=tuple(scfg.get("kinds", ("capture",))),
                                   classes=tuple(scfg.get("classes", ("ground", "anchor"))),

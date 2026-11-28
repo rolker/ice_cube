@@ -158,11 +158,12 @@ percentile = 99.0
 # kinds = ["capture"]           # add "stop" for pole stops
 # include_voided = false        # captures flagged void in the logger stay out
 # base = [0.0, 0.0, 0.0]        # current base lat, lon, h (placeholder); or:
-# # base_from_gpkg = "data/qgis/2026-2027.gpkg"   # the base stored there (read-only)
-# # (neither: the first RTCM 1005 logged in the sessions)
-# # base_history = "data/base_history.csv"       # as [soundings].base_history
+# # base_from_gpkg = "data/qgis/2026-2027.gpkg"   # the base stored there, and the season's
+# #                                               # ref sites as anchor names (read-only)
+# # (neither: the first RTCM 1005 logged in the sessions, with a warning)
+# # base_history = "data/base_history.csv"       # as [soundings].base_history; needs base or base_from_gpkg
 # wander_prior = 0.015
-# # pass_rule.from_file is true by default: the fix stretches are the passes
+# # with no pass_rule, pass_rule.from_file = true: the fix stretches are the passes
 #
 # [[surveys]]                   # a bare-earth DEM as low-weight soundings (icecube/dem.py)
 # id = "lidar"

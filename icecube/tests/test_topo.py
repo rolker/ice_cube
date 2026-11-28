@@ -164,6 +164,8 @@ class TestSoundingsReader(unittest.TestCase):
             self.assertAlmostEqual(a.prior, 0.015)
             b = io.read_soundings(p, "b", sources=["b"])
             self.assertAlmostEqual(b.common_prior, 0.07)
+            z0 = io.read_soundings(p, "a", sources=["a"], site=io.Site(z0=0.25))   # as Site.local
+            np.testing.assert_allclose(z0.z, a.z - 0.25)
             seg, infos = passes.segment(a, {"from_file": True})
             self.assertEqual(sorted(seg.pass_id.tolist()), [0, 1])
             self.assertEqual(len(infos), 2)
