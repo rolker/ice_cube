@@ -674,6 +674,19 @@ class TestBuild(unittest.TestCase):
         self.assertNotIn("fix_young", snd.EXCLUDING)          # a trace, not excluding
         self.assertNotIn("fix_young", snd.flags_of(caps[3]))
 
+    def test_no_raw_session_is_logged_and_gets_a_pass_per_capture(self):
+        """#20: a session read without raw epochs is named in the log (the points.csv-only
+        fallback), and each capture is its own pass; with session_paths it is not named."""
+        ses = synth.write_dir(self.d / "sessions", synth.session_v06())
+        gpkg = self._import(ses)
+        caps, logged = self._build_logger(gpkg)
+        self.assertIn(f"no raw epochs for session(s) {ses.name}", logged)
+        self.assertEqual(caps[1]["pass_id"], f"{ses.name}/c1")
+        self.assertEqual(len({c["pass_id"] for c in caps.values()}), len(caps))
+        caps, logged = self._build_logger(gpkg, session_paths=[str(ses)])
+        self.assertNotIn("no raw epochs", logged)
+        self.assertTrue(caps[1]["pass_id"].startswith(f"{ses.name}/s"))
+
     def test_capture_on_a_float_epoch_uses_the_loggers_columns(self):
         """#15: with raw epochs, a capture whose nearest epoch is in no fix stretch (n=2 at
         20 s lands in the 20-25 s float spell) takes the logger's own fix_suspect,
@@ -791,7 +804,7 @@ class TestBuild(unittest.TestCase):
         logged = self._build_logger(gpkg)[1]
         self.assertEqual(logged.count("warning"), 1)
         self.assertIn("2026-12-02_10-00-00", logged)
-        self.assertNotIn("2026-12-01_10-00-00", logged.split("warning")[1])
+        self.assertNotIn("2026-12-01_10-00-00", logged.split("warning")[1].splitlines()[0])
 
     def test_anchor_sites_and_verification(self):
         r = lambda **k: snd.new_row(**{"source": "s", "kind": "capture", "use": 1, "sigma_z": 0.02, **k})  # noqa: E731

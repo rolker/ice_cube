@@ -798,6 +798,12 @@ def logger_source(cfg, src, con, frame, history, log):
     for c in caps:
         by_session.setdefault(c["session"], []).append(c)
     names = set(by_session) | (set(raws) & set(sessions) if sessions else set(raws))
+    no_raw = sorted(s for s in by_session if s not in raws
+                    and any(c["class"] in ("surface", "ref", "control", "object") for c in by_session[s]))
+    if no_raw:
+        log(f"  no raw epochs for session(s) {', '.join(no_raw)}: their captures take the "
+            "logger's own fix_age_s and suspect columns (settle sigma from fix_age_s), one pass per "
+            "capture, no pole stops; give the session folders or zips in session_paths for fix stretches")
     for ses in sorted(names):
         clist = sorted(by_session.get(ses, []), key=lambda c: c["n"])
         raw = raws.get(ses)
