@@ -372,6 +372,6 @@ Cross-model: skipped (convergence check, per handoff). Lead checked the fix: `ma
 **CI**: all-pass
 
 ### Findings
-- [ ] No open findings. The convergence Local Review @ `59f1602` approved with 0 findings and confirms the fix (`d2e0296`) for the one suggestion from Local Review @ `b345296` (non-finite ground height), which the Integrated Review @ `10f661e` ruled on.
+- [x] No open findings. The convergence Local Review @ `59f1602` approved with 0 findings and confirms the fix (`d2e0296`) for the one suggestion from Local Review @ `b345296` (non-finite ground height), which the Integrated Review @ `10f661e` ruled on.
 
 ### False positives
