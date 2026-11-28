@@ -127,9 +127,13 @@ public final class AutoCapture {
 
     public AutoCapture(double plumbDeg, double holdS, double scatterM) { setLimits(plumbDeg, holdS, scatterM); }
 
-    /** New settings, applied from the next epoch. */
+    /**
+     * New settings, applied from the next epoch. The hold window is emptied, so epochs accepted
+     * under the old limits never count toward a hold under the new ones; the latch stays.
+     */
     public void setLimits(double plumbDeg, double holdS, double scatterM) {
         this.plumbDeg = plumbDeg; this.holdS = holdS; this.scatterM = scatterM;
+        window.clear();
     }
 
     public double plumbDeg() { return plumbDeg; }

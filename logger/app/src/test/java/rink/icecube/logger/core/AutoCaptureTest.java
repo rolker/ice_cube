@@ -331,6 +331,20 @@ public class AutoCaptureTest {
         assertFalse(a.latched());
     }
 
+    /** Epochs held under a looser limit do not count toward the hold once the limit is tightened. */
+    @Test public void setLimitsClearsTheHoldWindow() {
+        AutoCapture a = new AutoCapture(5, 2, 0.02);
+        a.onEpoch(at(0, 0, 0, 4));
+        a.onEpoch(at(1, 0, 0, 4));
+        a.setLimits(2, 2, 0.02);
+        AutoCapture.Decision d = a.onEpoch(at(2, 0, 0, 1));
+        assertFalse(d.fire);   // the 4 degree epochs were dropped; this one starts a new hold
+        assertEquals(AutoCapture.Why.HOLDING, d.why);
+        assertEquals(0.0, d.heldS, 1e-9);
+        assertFalse(a.onEpoch(at(3, 0, 0, 1)).fire);
+        assertTrue(a.onEpoch(at(4, 0, 0, 1)).fire);
+    }
+
     /** Epochs that stop while armed cue OFF once; their return cues ARMED after a second. */
     @Test public void stoppedEpochsCueOffOnce() {
         AutoCapture a = auto();
