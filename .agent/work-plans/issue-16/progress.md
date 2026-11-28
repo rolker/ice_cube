@@ -134,3 +134,51 @@ The plan is complete and reuses the photo path throughout; it is ready for imple
 **Decision**: proceed
 
 Implementation is held until #15 and #35 merge (shared Survey/MainActivity/PointRow); then rebase on main. Settle during implementation the Plan Review at ab68ef9's items: .gitignore *.m4a (test audio created at run time, none committed); importer SCHEMA_VERSION bump after #15's with its history line, docs/howto/qgis.md voice column and notes/ folder; a note-only own row: decide icon, counts, photoRowFor text and the photos table, each with a test; extend test_import.py and synth.py.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 22:30 -05:00
+**By**: Claude Code Agent (claude-opus)
+**Branch**: feature/issue-16 at 3bfb5bb
+**Plan**: `.agent/work-plans/issue-16/plan.md` at `459f04c`
+
+### What was done
+
+- `1c1a376` .gitignore: `*.m4a` with a privacy comment (first, before any audio code).
+- `5f35e7a` core: `NoteRule` (delegates attachTo/targetText/add to PhotoRule; fileName, MAX_MS 60 s, MIN_MS 0.5 s, 32 kbps / 16 kHz, keep(), recordingText()); `PointRow` trailing `voice` column (COLUMNS 34, new V11_COLUMNS 33); `VoidRule.moveAttachments`/`moveEvent` (photos and notes move together, one event line) and `photoRowFor` copies `voice` and names what it holds; `soundings.py` MOVED_PHOTO_NOTE accepts the three notes.
+- `348759c` app 0.14.0 (build 18): `NoteRecorder` (MediaRecorder MPEG_4/AAC mono, setMaxDuration + info listener), `Survey` planNote/noteTaken/noteCancelled/noteTarget and moveAttachments in the flag path, NOTE button with target and `STOP 0:12/1:00` line, RECORD_AUDIO asked on first tap, onPause stops and keeps the note, three new Feedback cues, manifest permission and optional microphone feature, Sharer comments.
+- `fbea08c` importer schema 7 (SCHEMA_APP 7: 0.14): shared `_attachments` helper for photos and notes in `logger_session.py` (column decides n, event only for orphans), `file_names`/`extract_file` generalised with photo/note wrappers, captures `voice` + `voice_count`, photos and refs `voice`, sessions `n_notes`, notes copied to `notes/<session>/` (skipped by `--no-photos`), `build_project.py` map-tip link per note.
+- `3bfb5bb` docs: logger README (NOTE, Voice notes section with privacy note, column, folder, flag, zip, cues, events), `docs/howto/qgis.md` (tables, schema 7, map tips).
+
+### Re-check of merged code (adaptations to the plan)
+
+- PointRow after #15: 33 columns; `voice` is column 34 (plan said "after void_reason", COLUMNS 30). The last parse block now reads fix_young with `i++` under a new `V11_COLUMNS` and voice after it.
+- Importer schema was 6 (#23 PR A), so this is 7; `icecube/io.py` calls `import_session(..., extract_photos=False)` and is unaffected (notes follow the same flag). No icecube code reads `voice`.
+- Auto capture (#35) needs nothing: notes attach by `lastCapture` like photos; an auto capture is a normal surface row. The position latch is not touched by notes.
+- Sharer.filesIn already zips every folder one level down and ShareZip already STOREs `.m4a`: only comments and a test changed (plan step 8 was a no-op).
+- Plan said keep the pending note across recreation like `photoPath`: not done. Rotation does not recreate the screen (configChanges) and onPause always ends a recording first, so nothing is pending at a recreation.
+- The own-row position is averaged at the press (kept in NotePlan), not at the stop, since a 60 s note outlasts the 10 s epoch buffer.
+- Added beyond the plan: a 0.5 s minimum (a double tap; MediaRecorder.stop throws on a very short take), and the soundings.py note regex (found while settling finding 3).
+
+### Plan Review findings settled
+
+1. `*.m4a` gitignored; test audio is placeholder bytes made at run time (synth.M4A), none committed.
+2. Schema 7 with history line and SCHEMA_APP entry; qgis.md updated.
+3. Note-only own row: stays class `photo`; camera glyph (VoidRule.glyph PHOTO), not in liveCount/lastLive, counted in `n_photo` (own rows) and in `n_notes`, not in the photos table (one row per photo file) but in captures with `voice`; flag-made row note is `notes of voided n=` / `photos and notes of voided n=` (`photos of voided n=` unchanged for photos only). Tests: VoidRuleTest.noteOnlyOwnRow, notesMoveWithPhotos, test_voice_notes_import, test_soundings.
+4. Extended `synth.py` (`with_notes`) and `test_import.py` (3 tests).
+
+### Tests
+
+- `python3 -m unittest discover -s analysis/qgis/tests`: 178 OK (5 skipped, QGIS).
+- `python3 -m unittest discover icecube/tests`: 130 OK.
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: pass (C: had 109 GB free). New NoteRuleTest; PointRowTest, VoidRuleTest, ShareZipTest extended.
+- APK `logger/app/build/outputs/apk/debug/app-debug.apk`: versionName 0.14.0, versionCode 18, RECORD_AUDIO declared. Not installed.
+
+### Needs a phone check
+
+Record and stop; auto-stop at 60 s with its cue; the permission prompt on first tap and the denied path; NOTE onto a capture and an own row; flag a capture with a note (moved, events line); PHOTO while recording (stops and keeps the note); the five-button row in portrait (text fit of `STOP 0:12/1:00` and `→ S12 (14 s)`); a share zip with `notes/`, then import and play a note from the QGIS map tip (array_foreach expression not run in tests).
+
+### Deferred
+
+- Speech-to-text (owner question pending).
+- No map mark for a capture that has notes (only own rows show the camera).
