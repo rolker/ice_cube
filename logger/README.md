@@ -1,10 +1,10 @@
-# Ice Cube Logger 0.13.0
+# Ice Cube Logger 0.14.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
 is a local map with your own GeoJSON layers (no basemap, no network) where you capture
 surface, object and reference points with large glove-friendly buttons or the volume
-keys, and take photos. Reference points are averaged and checked against a robust
+keys, and take photos and voice notes. Reference points are averaged and checked against a robust
 reference from earlier visits (the pole check), with cues for a pole off the mark centre
 or moving during the ref. A false-fix guard warns about captures from a young RTK fix and flags
 fixes that began with a suspicious jump or right after a long float spell, and a tilt capture finds the pole tip from
@@ -27,7 +27,7 @@ folder in Android Studio and press Run.
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
 The first line of the screen (and the last line of the MENU panel) shows the app version,
-e.g. "Ice Cube Logger 0.13.0 (build 17)".
+e.g. "Ice Cube Logger 0.14.0 (build 18)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
@@ -107,7 +107,8 @@ e.g. "Ice Cube Logger 0.13.0 (build 17)".
    Either one starts a session; so does tapping REC. The caster works without the GPS;
    corrections go to the GPS whenever both are connected, and the GGA from the GPS goes
    to the caster.
-4. Pick the mode with MODE, capture with MARK, take photos with PHOTO (see Main screen).
+4. Pick the mode with MODE, capture with MARK, take photos with PHOTO and voice notes with
+   NOTE (see Main screen).
 5. Tap REC (it asks first) or MENU > Stop session when finished. If a link drops, the app
    logs it, shows "link lost" in the red bar and reconnects (Bluetooth every 3 to 30 s,
    USB on re-attach, caster every 5 to 60 s).
@@ -179,6 +180,9 @@ portrait (each at least 64 dp):
   leans, then `FINISH TILT`.
 - PHOTO: the system camera (see Photos). Its second line says where a photo would go now:
   `→ S12 (14 s)` (the latest capture not flagged, and its age, within 60 s) or `→ own row`.
+- NOTE (0.14.0): a spoken note (see Voice notes). Tap to start, tap again (it reads
+  `STOP 0:12/1:00`, red) to stop; it stops by itself at 60 s. Its second line says where
+  the note would go, as for PHOTO. The first tap asks for the microphone.
 - ☰ MENU: a panel from the right: Connect/Disconnect GPS and caster (with their state),
   Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs),
   Calibrate pole (Recalibrate pole once done, Stop pole calibration while one runs; see Auto capture),
@@ -227,8 +231,8 @@ with `void` = 1 and a `void_reason`, and readers leave it out (see below). Two w
   is still used depends on the reason, in `soundings.py`: `accidental` frees it, any other
   reason keeps it flagged.
 - On the map a flagged capture is a small grey cross with a grey `S12 ✕` label, never its
-  class symbol or camera; a photo row (also one a flag made for moved photos) keeps its
-  camera.
+  class symbol or camera; a photo row (also one a flag made for moved photos or notes, and
+  one holding only a voice note) keeps its camera.
 - Who can be flagged: surface, object and ref rows, including tilt captures (one row
   each; their leans stay in `tilt_obs.csv`. No reader of `tilt_obs.csv` exists yet; one
   written later must drop the leans of a voided `n`).
@@ -236,12 +240,14 @@ with `void` = 1 and a `void_reason`, and readers leave it out (see below). Two w
   runs (cancel those instead). UNDO only works within 8 s of the capture.
 - Reasons: `accidental`, `bad pole placement`, `moved`, `other` (commas and line breaks
   are removed from any text).
-- Unflagging clears `void` and `void_reason`. Photos that moved stay where they went.
-- Photos on a flagged row move (only the `photo` column changes; the files stay): to the
-  nearest earlier capture that is not flagged and not a photo row, however long ago,
-  because the user has said this capture was a mistake; with none, to a new `photo` row at
-  the flagged row's position. A photo taken after an undo goes to the latest capture that
-  is not flagged, within the usual 60 s.
+- Unflagging clears `void` and `void_reason`. Photos and notes that moved stay where they went.
+- Photos and voice notes (0.14.0) on a flagged row move together (only the `photo` and
+  `voice` columns change; the files stay): to the nearest earlier capture that is not
+  flagged and not a photo row, however long ago, because the user has said this capture
+  was a mistake; with none, to a new `photo` row at the flagged row's position, whose
+  `note` says `photos of voided n=<n>`, `notes of voided n=<n>` or `photos and notes of
+  voided n=<n>`. A photo or note taken after an undo goes to the latest capture that is not
+  flagged, within the usual 60 s.
 - A flagged ref: its `refs.csv` row is rewritten in place with the same columns (the one
   write to refs.csv that is not an append), in every storage root's refs.csv that holds
   it. When the copies disagree (a rewrite that reached only some of them), a reader takes
@@ -255,8 +261,9 @@ with `void` = 1 and a `void_reason`, and readers leave it out (see below). Two w
 - Coverage: a flagged capture leaves the overlay (it is rebuilt without it); unflagged, it
   comes back.
 - `events.csv` is the audit trail: `flag n=<n> reason=<reason, spaces as _> via=undo|list`,
-  `unflag n=<n>`, `photo moved n=<from> to=<to> photos=<files>` (with `own row` when a new
-  photo row took them, followed by its `capture` line), and `ref n=<n> voided|unvoided in
+  `unflag n=<n>`, `photo moved n=<from> to=<to> photos=<files>` (with ` notes=<files>`
+  when it had voice notes too, or `note moved n=<from> to=<to> notes=<files>` for notes
+  only; with `own row` when a new photo row took them, followed by its `capture` line), and `ref n=<n> voided|unvoided in
   refs.csv (<k> rows)`, or `error: ref n=<n> not voided|unvoided in refs.csv (…)` when no
   refs.csv could be rewritten (later sessions then still read the old flag). A partial
   write is an error too: `error: ref n=<n> voided|unvoided in <k> of <m> refs.csv copies
@@ -511,7 +518,9 @@ Feedback (Settings > Survey: Sound, Vibration): each has its own tone and vibrat
 pattern: mode change 1, 2 or 3 beeps (surface, object, ref); surface capture a short high
 pip; object capture a two-tone pip; ref start a long low tone; ref paused a long middle
 tone; ref resumed a short one; ref end a rising three-tone; ref cancelled a falling two;
-photo a click; pole check OK two rising beeps; pole check failed an alternating alarm;
+photo a click; voice note start one long low tone (it may be heard at the start of the
+note), note saved two short low tones, note stopped at 60 s three falling tones and a long
+buzz (0.14.0); pole check OK two rising beeps; pole check failed an alternating alarm;
 an amber pole check (a cue or a doubtful reference, 0.12.0) the low error buzz;
 a capture in a suspect fix stretch a fast warble ending low; a capture, lean or ref from a
 young fix two even middle tones with two long pulses (0.11.0; one that is both suspect and
@@ -526,7 +535,8 @@ session, mode change during a ref, a refused lean) a low buzz. Sounds use the me
 volume, so silent mode does not mute them.
 
 On the map: surface small cyan dots, object larger magenta squares, ref dark rings,
-photo rows a brown camera icon (and a small camera next to a capture that has a photo),
+photo rows (and rows holding only a voice note) a brown camera icon (and a small camera
+next to a capture that has a photo; a capture's notes have no mark on the map),
 optionally numbered S12, O13, R14. Only this session's captures are drawn; earlier refs
 from `refs.csv` as grey rings when Settings > Survey > Show earlier refs is on.
 
@@ -535,14 +545,14 @@ One header line, then one row per capture, in capture order. UTF-8, comma separa
 decimals; an empty field means not available. Text fields are quoted (RFC 4180) only when
 they contain a comma or quote; a line break in a text field is written as a space, so each
 row is one line. The app rewrites the whole file on each change
-(e.g. when a photo is attached or a capture is flagged), so it is always complete; it is
+(e.g. when a photo or note is attached or a capture is flagged), so it is always complete; it is
 not append-only. `events.csv` is the append-only record.
 
 | column | meaning |
 |---|---|
 | `n` | capture number in this session (1, 2, …), shared by all classes |
-| `class` | `surface`, `object`, `ref` or `photo` (a photo not attached to a capture) |
-| `elapsed_ns` | phone clock (`SystemClock.elapsedRealtimeNanos`, as in the other logs) when MARK or PHOTO was pressed; for a ref, the time of its last epoch |
+| `class` | `surface`, `object`, `ref` or `photo` (a photo or voice note not attached to a capture) |
+| `elapsed_ns` | phone clock (`SystemClock.elapsedRealtimeNanos`, as in the other logs) when MARK, PHOTO or NOTE was pressed; for a ref, the time of its last epoch |
 | `utc` | UTC of the last averaged GGA epoch, `yyyy-MM-ddTHH:mm:ss.ssZ`: the time of day from the GGA, the date from the phone (the day that puts it nearest the phone's clock) |
 | `lat`, `lon` | mean position, decimal degrees, 9 decimals (about 0.1 mm), in the frame of the base (see Frames) |
 | `h_ant_ellips` | mean ellipsoidal height of the antenna (GGA alt + geoid separation), m |
@@ -568,22 +578,23 @@ not append-only. `events.csv` is the append-only record.
 | `float_spell_s` | from 0.11.0: seconds of float right before the stretch; empty unless `fix_start` is `float` |
 | `suspect_reason` | from 0.11.0: `jump`, `float_spell` or `jump;float_spell`; empty when not suspect |
 | `fix_young` | from 0.11.0: 1 if taken while the fix was younger than the young limit (a ref or tilt: any of its epochs or leans), 0 if not; empty when unknown (not fixed) |
+| `voice` | from 0.14.0: voice note file name(s) in `notes/`, `;` between several, or empty (see Voice notes) |
 
-The ten 0.6 columns come after `note`, the two 0.9.0 columns after those and the four
-0.11.0 columns last, so a reader that takes the first 17 (27, 29) columns by position keeps
-working; older rows simply lack the later columns (unknown, never 0), and a row without
+The ten 0.6 columns come after `note`, the two 0.9.0 columns after those, then the four
+0.11.0 columns and the 0.14.0 `voice` last, so a reader that takes the first 17 (27, 29, 33)
+columns by position keeps working; older rows simply lack the later columns (unknown, never 0), and a row without
 `void` is not flagged. The session importer (`analysis/qgis/import_sessions.py`) carries
-the 0.6, 0.9.0 and 0.11.0 columns into the gpkg `captures` table (NULL for older sessions), and soundings.py gives a tilt capture
+the 0.6, 0.9.0, 0.11.0 and 0.14.0 columns into the gpkg `captures` table (NULL for older sessions), and soundings.py gives a tilt capture
 the tilt-capture sigma. It does not read `tilt_obs.csv` yet.
 
 Example (made-up position):
 ```
-n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,void,void_reason,fix_start,float_spell_s,suspect_reason,fix_young
-1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,,0,,float,4.5,,1
-2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,,0,,float,4.5,,0
-3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060,0,,float,4.5,,0
-4,surface,81393123456789,2026-11-11T14:06:15.10Z,10.000020500,20.000030500,31.0610,1.600,29.4610,4,5,0.0022,0.0019,0.0041,1.0,,,263.4,0.180,0,single,,,,,,,1,accidental,float,4.5,,0
-5,surface,81420123456789,2026-11-11T14:06:42.00Z,10.000021000,20.000031000,31.0702,1.600,29.4702,4,5,0.0023,0.0020,0.0043,1.0,,,12.0,0.452,1,single,,,,,,,0,,float,38.0,float_spell,1
+n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,void,void_reason,fix_start,float_spell_s,suspect_reason,fix_young,voice
+1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,,0,,float,4.5,,1,
+2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,,0,,float,4.5,,0,note_2_20261111T140450Z.m4a
+3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060,0,,float,4.5,,0,
+4,surface,81393123456789,2026-11-11T14:06:15.10Z,10.000020500,20.000030500,31.0610,1.600,29.4610,4,5,0.0022,0.0019,0.0041,1.0,,,263.4,0.180,0,single,,,,,,,1,accidental,float,4.5,,0,
+5,surface,81420123456789,2026-11-11T14:06:42.00Z,10.000021000,20.000031000,31.0702,1.600,29.4702,4,5,0.0023,0.0020,0.0043,1.0,,,12.0,0.452,1,single,,,,,,,0,,float,38.0,float_spell,1,
 ```
 
 Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix` (until
@@ -592,7 +603,9 @@ Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no 
 `ref end n=… epochs=… pauses=… young=0|1`, `ref cancelled …`, `pole check n=…: …` (see Refs
 and the pole check), `photo file=…
 attached to n=…` or `own row n=…`, `photo cancelled: …`; from 0.9.0 `flag n=…`, `unflag
-n=…` and `photo moved n=…` (see Flagged captures).
+n=…` and `photo moved n=…` (see Flagged captures); from 0.14.0 `note file=notes/… bytes=…
+duration_s=… [auto_stop] attached to n=…` or `own row n=…`, `note too short: …` or `note
+failed…: … not kept`, and `note moved n=…`.
 
 ### Refs and the pole check
 Every ref is also appended to `refs.csv` in the storage root
@@ -687,11 +700,32 @@ whose `photo` column lists the file is the link; the importer reads it so.
 Photos can carry EXIF GPS (the camera app may write the phone's location into them). They
 belong with the session data in Drive and must never go into the public repo.
 
+## Voice notes
+0.14.0 (#16). NOTE records a spoken note into the session's `notes/` folder, named
+`note_<n>_<utc>.m4a` like a photo: mono AAC in MPEG-4 at 32 kbit/s and 16 kHz, about
+0.25 MB per minute. Tap NOTE to start (a long low tone and a vibration), tap again to
+stop (two short tones); at 60 s it stops by itself with its own cue (three falling tones
+and a long buzz), and the note is kept. The note goes where a photo pressed at the same
+moment would: onto the most recent capture that is not flagged and was taken at most 60 s
+before NOTE was pressed (its `voice` column), else into a row of its own, class `photo`,
+with the averaged position at the press (empty when there is no fix), holding only the
+note. A MARK while a note records is allowed; the note still goes where it would have at
+the press. A note shorter than 0.5 s (a double tap) or one the recorder could not write is
+deleted and logged. The microphone permission is asked at the first tap and used only
+while the map screen is in front: leaving it (PHOTO's camera, another app, screen off)
+stops and keeps the note. A flagged capture's notes move with its photos (see Flagged
+captures). There is no speech-to-text: the audio is the record, and the `note` column
+stays for typing later.
+
+Voice notes may hold voices and names (and so does the shared zip). Like photos they belong
+with the session data in Drive and must never go into the public repo (`*.m4a` is
+gitignored).
+
 ## Screen orientation
 Lock the screen to the mount (Settings > Display): Landscape when the phone sits with its
 top to the left, Reverse landscape when the top is to the right, Portrait when upright.
 Every screen works in both orientations:
-- Map (main screen): in landscape the strip is one line, the MODE, MARK, PHOTO and MENU
+- Map (main screen): in landscape the strip is one line, the MODE, MARK, PHOTO, NOTE and MENU
   column runs down the right edge over the full height and the status bar is hidden
   (swipe down to show it). In portrait the strip is two rows and the buttons are a row
   along the bottom. Small Center and Fit buttons sit at the map's top right.
@@ -954,12 +988,12 @@ Either is logged as `layer base check: ...` when it changes. No base layer, no m
 
 ## Share
 MENU > Share last session, or Sessions (a list, newest first; tap one), zips the
-session folder (with `photos/`) to the app cache as `IceCubeLogger_<session>.zip` and opens
+session folder (with `photos/` and `notes/`) to the app cache as `IceCubeLogger_<session>.zip` and opens
 the Android share sheet with an `application/zip`; pick Google Drive. The share subject and
 title, and the provider's display name, are all that file name, so Drive keeps the `.zip`.
 The zip holds `<session>/...` and, at its top level next to the session folder, a copy of
 `refs.csv` from the storage root (the session's own root, else the first one found; left out
-if there is none). JPEG photos (and other already-compressed files) are stored as they are;
+if there is none). JPEG photos, voice notes (and other already-compressed files) are stored as they are;
 logs and text are deflated. From 0.9.0 every entry carries its file's modification time
 in UTC as a zip extended timestamp (extra field 0x5455) besides the DOS time, which is the
 phone's local time; the importer orders `refs.csv` copies from zips made in other time
@@ -997,6 +1031,7 @@ folder path is on Details.
 - `points.csv`: the captures (see points.csv); written from the start, header only until
   the first capture
 - `photos/`: the session's photos (may carry EXIF GPS)
+- `notes/`: the session's voice notes (0.14.0; may hold voices and names)
 
 Outside the session folders, `refs.csv` in the storage root collects every ref (see Refs
 and the pole check).
