@@ -91,7 +91,7 @@ public final class PoleCheck {
         for (PointRow r : earlier) {
             if (r == now || r.voided || r.fixYoung == 1 || !r.hasPosition() || Double.isNaN(r.hGround)) continue;
             f.toEnu(r.lat, r.lon, f.h0, enu);
-            if (Math.hypot(enu[0], enu[1]) > MATCH_RADIUS_M) continue;
+            if (!(Math.hypot(enu[0], enu[1]) <= MATCH_RADIUS_M)) continue;   // a NaN distance is no match
             if (r.session != null && !r.session.isEmpty() && !seen.add(r.session + "/" + r.n)) continue;
             out.add(r);
         }

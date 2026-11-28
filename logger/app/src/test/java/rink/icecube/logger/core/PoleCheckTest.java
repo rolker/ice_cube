@@ -29,6 +29,21 @@ public class PoleCheckTest {
         assertEquals(2, PoleCheck.matches(now, earlier).size());
     }
 
+    @Test public void nonFiniteCoordinatesNeverMatch() {
+        PointRow now = ref(0, 50);
+        PointRow infLat = ref(0, 50), infLon = ref(0, 50), nanLat = ref(0, 50);
+        infLat.lat = Double.POSITIVE_INFINITY;
+        infLon.lon = Double.NEGATIVE_INFINITY;
+        nanLat.lat = Double.NaN;
+        assertFalse(infLat.hasPosition());
+        assertFalse(infLon.hasPosition());
+        assertEquals(0, PoleCheck.matches(now, Arrays.asList(infLat, infLon, nanLat)).size());
+        assertNull(PoleCheck.check(now, Arrays.asList(infLat, infLon, nanLat), 0.03));
+        PointRow infNow = ref(0, 50);
+        infNow.lat = Double.POSITIVE_INFINITY;
+        assertEquals(0, PoleCheck.matches(infNow, Arrays.asList(ref(0, 50))).size());
+    }
+
     static PointRow ref(double dn, double de, double hGround) {
         PointRow r = ref(dn, hGround);
         r.lon = LON + de / (111_320.0 * Math.cos(Math.toRadians(LAT)));
