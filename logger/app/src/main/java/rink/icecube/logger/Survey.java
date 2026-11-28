@@ -487,6 +487,7 @@ final class Survey {
                 : poleAxis.plumbDeg(svc.gravityMean(e.elapsedNs - PLUMB_WINDOW_NS, e.elapsedNs));
         in.poleM = svc.poleHeight();
         AutoCapture.Decision d = auto.onEpoch(in);
+        if (!auto.latched()) autoLatchN = 0;   // the tip moved away: undoing that row no longer touches the latch
         autoLast = d;
         autoLastNs = e.elapsedNs;
         if (d.cue == AutoCapture.Cue.ARMED) {
