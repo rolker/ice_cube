@@ -313,3 +313,24 @@ Cold read: Codex only (EXIT=0), title/URL/diff; no earlier review entries read. 
 - [x] (suggestion) A note stopped at or past the cap keeps its file when rec.stop() throws, on elapsed time alone; Android documents the max-duration stop as asynchronous, so confirm on the phone that a 60 s note always plays (or check the file is a finished MP4) before linking it — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:88-101`
 - [x] (suggestion) An orphan note whose "note file=... n=<k>" event names a row missing from points.csv (a snapshot) keeps n=k: no capture lists it and orphan_voice skips it (n not None), so it is linked nowhere; treat an n with no capture as n None — `analysis/qgis/logger_session.py:_attachments` (the `elif name in attach` branch), `analysis/qgis/import_sessions.py:428-431`
 - [x] (suggestion) With no track lines, orphan notes get no link, but load_session's remark still says "linked on the track" — `analysis/qgis/logger_session.py:832`, `analysis/qgis/import_sessions.py:427`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 23:13 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**PR**: #46 at `04cf49e`
+**Addressed**: Local Review at `adbe9f8` (2026-11-27 23:07 -05:00)
+**Commits**: 87e2aba, 337ee14, bd5c34b, 04cf49e
+
+### Actions
+- [x] (must-fix) A session whose name fails safe_file_name (zip `../events.csv`, `./`, `a/../`; a folder likewise) is skipped by find_sessions, and import_session refuses to extract one; test `test_unsafe_session_names_are_skipped` — `analysis/qgis/logger_session.py:_sessions_in_zip, find_sessions`, `analysis/qgis/import_sessions.py:import_session`
+- [x] (suggestion) At or past the cap a failed stop keeps the note only when the file is non-empty after release (else -1: logged failed, deleted by the caller); README Voice notes gains a phone check that a 60 s note plays — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:stop`, `logger/README.md` (Voice notes)
+- [x] (suggestion) An orphan's event naming a row points.csv lacks gives n None, so orphan_voice links it; test `test_orphan_note_whose_event_names_a_missing_row_is_linked_on_the_track` — `analysis/qgis/logger_session.py:_attachments`
+- [x] (suggestion) The orphan-note remark says "not linked (no track)" when no track line exists; TRACK_GAP_S moved to logger_session; test `test_orphan_note_with_no_track_is_reported_not_linked` — `analysis/qgis/logger_session.py:load_session`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: Ran 189 tests, OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 130 tests, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: passed; APK `logger/app/build/outputs/apk/debug/app-debug.apk` (C: 109.1 GB free before)
+- Not checked here: the 60 s note playback is a phone check.
