@@ -131,3 +131,38 @@ The plan is ready for PR A once #15 merges. The reference rule, cues and setting
 **Decision**: proceed
 
 Implementation (PR A) held until #15 merges; then rebase on main and re-check #15's names and column count. Settle during implementation the Plan Review at bc9125d's items, with these host decisions (owner may veto): the steadiness cue covers held (occupation) refs only, not tilt refs; a doubtful two-visit failure plays the existing warning cue (not the alarm) and does not set the persistent warnings bar; a pass against a single earlier visit is green with "1 earlier visit" in the text; #15's young/suspect amber notice and the pole-check result appear together, the more severe colour wins; even-count median = mean of the middle two, written in the README; replay expectations 127 red, 72 amber (placement), 128 and 329 not failing; fix the mislabelled test and add a three-visit median test; Open Questions become a Decisions section.
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 19:17 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Branch**: feature/issue-23 at aa2c57d
+
+PR A of the plan: robust reference, placement and steadiness cues. PR B not started.
+
+### Commits
+- `19fb20c` plan: Open Questions become a Decisions section (host decisions from the Plan Review and Checkpoint, plus the event-line finding)
+- `4b0e5c8` `PoleCheck`: `RefKind` SINGLE/PAIR/MEDIAN, `reference`, `diffRef`, `pairSpread`, `doubtful`, `failed()`, `placeOffset`, `median()` (even count = mean of middle two), `Cues` (off-centre, pole moved for occupation refs only), `colour()`; `PoleCheckTest` rewritten (bad-middle-visit as PAIR, three-visit median, outlier, even count, single, doubtful pair, placement, steadiness incl. first visit and tilt, red over cues, boundaries)
+- `619a543` `Limit.PLACE_CM` (0-20, 2.0) and `Limit.STEADY_CM` (0-20, 1.5), in `Settings` LIMIT_KEYS/LIMITS (first in Survey), getters `placeM`/`steadyM`, Settings screen label and tolerance text; `LimitTest`
+- `6c5661d` `Survey.poleCheck`: one notice with check text, cues and young/suspect text, the more severe colour wins; red = alarm + warnings bar; amber = `ERROR` buzz, no warnings bar; green with a check = `POLE_OK`
+- `aa2c57d` README "Refs and the pole check" rewritten as the one reference rule (visits, reference, check, cues, notice colours, event line), settings list, feedback, notice line; version 0.12.0 (build 16); `docs/log.md` entry
+
+### #15 names re-checked (main 42d5955)
+`PoleCheck.matches` skips `voided` and `fixYoung == 1`, refs.csv/points.csv columns as #15's plan: no adaptation. `Feedback.Cue` has no separate warning cue, so "the existing warning cue" is `ERROR` (low buzz).
+
+### Deviation from plan
+- Event line: `analysis/qgis/logger_session.py` takes the text before `; diff_last_m=` as the message and `ok=false` as red. To keep the importer unchanged, `diff_last_m` stays the first key and `ok` now means "not a red fail" (a doubtful pair outside the tolerance logs `ok=true within_tol=false doubtful=true`); new keys `diff_ref_m ref_kind within_tol doubtful place_cm sd_u_cm colour` follow. The first-visit event carries no keys (the importer would put them in the message).
+
+### Tests
+`./gradlew testDebugUnitTest assembleDebug --max-workers 4`: all pass (34 test classes), APK built: `logger/app/build/outputs/apk/debug/app-debug.apk`, 0.12.0 (build 16). Not installed.
+
+### Replay (private refs.csv, 41 refs over 11-11, -15, -21; counts and colours only)
+- 127 red (expected red); 128 amber, off-centre (not failing, as expected); 329 green (not failing, as expected).
+- 72 green, not amber as expected: within tolerance of the median, and its off-centre offset against earlier visits only is under 2 cm. The issue's 2.5 cm was against all visits of the mark (hindsight, including later ones), which the live check cannot see.
+- Overall: 5 red (old rule 5), 7 amber, 29 green. On 11-21: red 4 -> 3, but two of the three are new reds (300 and 658, each just over 3 cm from a median that spans visits from three days; 658 by under 0.5 mm). The 11-15 reds (24, 25, single-visit) are unchanged.
+- Amber: off-centre 6 (two on 11-15 refs 1 and 2 against a median of 11-11 visits), pole moved 2 (one first visit on 11-15). The 11-11 rows have no `method` column, so the steadiness cue did not fire on them in the replay (the app always sets method).
+
+### For the host / owner
+- The median across days ignores real ground motion between sessions (frost heave, settling); the old last-visit rule tracked it. The two new reds may be that. Possible follow-ups: limit visits to a time window or weight recent sessions; not in this PR.
+- 72 amber would need an off-centre default of about 1.5 cm, which also makes about 6 more refs amber; default kept at 2 cm per the plan.
+- QGIS still labels refs with `diff_last_m` (`build_project.py`); showing `diff_ref_m` is a processing-side follow-up.
