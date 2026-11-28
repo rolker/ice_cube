@@ -547,7 +547,7 @@ final class Survey {
         refsGeneration++;
         // The importer (analysis/qgis/logger_session.py) takes the text before "; diff_last_m="
         // as the message and ok=false as a failed (red) check, so diff_last_m stays the first
-        // key and ok is "not red": a doubtful pair outside the tolerance logs ok=true doubtful=true.
+        // key and ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
         String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrNone(q.placeOffset),
                 cmOrNone(q.sdU), colour.name().toLowerCase(Locale.US));
         if (c != null) {

@@ -14,11 +14,14 @@ import java.util.Set;
  * README ("Refs and the pole check"):
  * <ul>
  * <li>1 visit: the reference is that visit ({@link RefKind#SINGLE}).</li>
- * <li>2 visits: their mean ({@link RefKind#PAIR}); if they differ from each other by more
- *     than the tolerance the reference is doubtful, and a failed check is amber, not red.</li>
+ * <li>2 visits: their mean ({@link RefKind#PAIR}).</li>
  * <li>3 or more: the median of their ground heights ({@link RefKind#MEDIAN}; with an even
  *     count the mean of the middle two), so one bad earlier visit does not fail a good one.</li>
  * </ul>
+ * The reference is doubtful when the visits that form it disagree by more than the
+ * tolerance: with an even count (a pair included) the middle two differ by more; with an
+ * odd count of 3 or more neither neighbour of the median (in height order) is within it.
+ * A failed check against a doubtful reference is amber, not red.
  * The check passes when |new - reference| is at most the tolerance. The difference to the
  * most recent visit and to the mean of all visits are kept as information.
  * <p>
@@ -40,22 +43,26 @@ public final class PoleCheck {
     public final double reference;            // ground height of the reference (m)
     public final double diffRef;              // new minus reference (m): the decision
     public final double diffLast, diffMean;   // new minus most recent, new minus mean of earlier (m): information
-    public final double pairSpread;           // |a - b| of two visits (m), NaN otherwise
+    /**
+     * How far apart the visits that form the reference are (m): even count, the middle two;
+     * odd count of 3 or more, the median to its nearer neighbour; NaN for one visit.
+     */
+    public final double spread;
     /** Horizontal distance (m) from the new ref to the median east/north of the visits. */
     public final double placeOffset;
     public final double tolerance;
     public final boolean ok;
-    /** Two visits that differ by more than the tolerance: the reference itself is in doubt. */
+    /** The spread is over the tolerance: the reference itself is in doubt. */
     public final boolean doubtful;
     public final PointRow last;
 
     private PoleCheck(int visits, RefKind refKind, double reference, double diffRef, double diffLast, double diffMean,
-            double pairSpread, double placeOffset, double tolerance, PointRow last) {
+            double spread, double placeOffset, double tolerance, PointRow last) {
         this.visits = visits; this.refKind = refKind; this.reference = reference; this.diffRef = diffRef;
-        this.diffLast = diffLast; this.diffMean = diffMean; this.pairSpread = pairSpread;
+        this.diffLast = diffLast; this.diffMean = diffMean; this.spread = spread;
         this.placeOffset = placeOffset; this.tolerance = tolerance; this.last = last;
         ok = Math.abs(diffRef) <= tolerance + 1e-9;   // float rounding at the boundary
-        doubtful = refKind == RefKind.PAIR && pairSpread > tolerance + 1e-9;
+        doubtful = spread > tolerance + 1e-9;   // NaN (one visit): false
     }
 
     /** A failed check that counts: red, the alarm and the warnings bar. A doubtful reference never fails red. */
@@ -130,11 +137,24 @@ public final class PoleCheck {
         }
         RefKind kind = k == 1 ? RefKind.SINGLE : k == 2 ? RefKind.PAIR : RefKind.MEDIAN;
         double reference = median(h);   // 1: the visit, 2: the mean
-        double spread = k == 2 ? Math.abs(h[0] - h[1]) : Double.NaN;
+        double spread = spread(h);
         double place = Math.hypot(median(east), median(north));
         PointRow last = m.get(k - 1);
         return new PoleCheck(k, kind, reference, now.hGround - reference, now.hGround - last.hGround,
                 now.hGround - sum / k, spread, place, tolerance, last);
+    }
+
+    /**
+     * The spread of the values around their median: even count, the middle two apart; odd
+     * count of 3 or more, the median to its nearer neighbour; NaN for fewer than 2.
+     */
+    public static double spread(double[] v) {
+        if (v.length < 2) return Double.NaN;
+        double[] s = v.clone();
+        Arrays.sort(s);
+        int m = s.length / 2;
+        if (s.length % 2 == 0) return s[m] - s[m - 1];
+        return Math.min(s[m] - s[m - 1], s[m + 1] - s[m]);
     }
 
     private static String cm(double m) { return String.format(Locale.US, "%+.1f cm", m * 100); }
@@ -151,11 +171,13 @@ public final class PoleCheck {
     /**
      * "pole check OK (±0.8 cm vs median of 3 visits; +2.1 cm vs last visit)", "pole check:
      * +4.2 cm vs 1 earlier visit", or for a doubtful pair "pole check: +4.2 cm vs mean of 2
-     * visits that differ by 3.5 cm; shoot again".
+     * visits that differ by 3.5 cm; shoot again" (a median: "median of 4 visits that
+     * disagree by 3.5 cm around it").
      */
     public String describe() {
         String ref = against();
-        if (doubtful) ref += String.format(Locale.US, " that differ by %.1f cm", pairSpread * 100);
+        if (doubtful) ref += String.format(Locale.US, refKind == RefKind.PAIR ? " that differ by %.1f cm"
+                : " that disagree by %.1f cm around it", spread * 100);
         String lastInfo = visits > 1 ? "; " + cm(diffLast) + " vs last visit" : "";
         if (ok) return String.format(Locale.US, "pole check OK (±%.1f cm vs %s%s)", Math.abs(diffRef) * 100, ref, lastInfo);
         return "pole check: " + cm(diffRef) + " vs " + ref + (doubtful ? "; shoot again" : lastInfo);

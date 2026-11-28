@@ -506,10 +506,14 @@ visits to the same mark. This is the one reference rule (0.12.0, #23); other tex
   (storage roots) is one visit (session and n), and the most recent visit is the latest
   session, then the highest n. A visit that itself failed its check still
   counts (refs.csv does not store check results; the median handles one bad visit).
-- **Reference**: 1 visit: that visit ("vs 1 earlier visit"). 2 visits: their mean; if
-  they differ from each other by more than the tolerance the reference is *doubtful*.
+- **Reference**: 1 visit: that visit ("vs 1 earlier visit"). 2 visits: their mean.
   3 or more: the median of their ground heights (with an even count, the mean of the
   middle two), so one bad earlier visit does not fail the next good one.
+- **Doubtful reference**: the visits that form it disagree by more than the tolerance:
+  with an even count (a pair too) the middle two differ by more; with an odd count of 3
+  or more, neither neighbour of the median (in height order) is within it (so one bad
+  visit among three is not doubt, but 0, +5, +10 cm is). A failed check against a
+  doubtful reference is amber, not red: no earlier visit can be called bad.
 - **Check**: |new - reference| at most the tolerance (Settings, default 3 cm) passes. The
   difference to the most recent visit is shown as information when there are two or more
   visits ("; -2.0 cm vs last visit").
@@ -528,7 +532,8 @@ The notice:
   pole height setting is wrong, the pole sank, or the shot was bad.
 - amber, a cue or a doubtful reference: a failed check against a doubtful pair reads
   "pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm; shoot again" (neither
-  earlier visit can be called bad); a passing one names the disagreement too. Amber plays
+  earlier visit can be called bad; a median reads "vs median of 4 visits that disagree
+  by 7.8 cm around it"); a passing one names the disagreement too. Amber plays
   the error buzz, not the alarm, and sets no warnings bar.
 - green: "pole check OK (±0.8 cm vs median of 3 visits; +0.2 cm vs last visit)", or
   "vs 1 earlier visit", with two rising beeps.
@@ -542,7 +547,7 @@ text, separated by "; ".
 The `pole check n=…` event line: the notice text, then `diff_last_m`, `diff_mean_m`,
 `visits`, `last` (session/n), `ok`, and from 0.12.0 `diff_ref_m`, `ref_kind`
 (single|pair|median), `within_tol`, `doubtful`, `place_cm`, `sd_u_cm` (`none` when not
-applicable) and `colour`. `ok` is false only for a red, failed check (a doubtful pair
+applicable) and `colour`. `ok` is false only for a red, failed check (a doubtful reference
 outside the tolerance logs `ok=true within_tol=false doubtful=true`), which is what the
 QGIS importer colours red; until 0.11 `ok` was the check against the most recent visit.
 

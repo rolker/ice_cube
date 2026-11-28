@@ -92,7 +92,7 @@ public class PoleCheckTest {
         assertTrue(c.ok);
         assertEquals("pole check OK (±0.8 cm vs 1 earlier visit)", c.describe());
         assertEquals(PoleCheck.Colour.GREEN, PoleCheck.colour(c, null));
-        assertTrue(Double.isNaN(c.pairSpread));
+        assertTrue(Double.isNaN(c.spread));
     }
 
     @Test public void twoDisagreeingVisitsMakeADoubtfulReference() {
@@ -100,7 +100,7 @@ public class PoleCheckTest {
         PoleCheck c = PoleCheck.check(ref(0, 50.0595), pair, 0.03);
         assertEquals(PoleCheck.RefKind.PAIR, c.refKind);
         assertEquals(50.0175, c.reference, 1e-9);
-        assertEquals(0.035, c.pairSpread, 1e-9);
+        assertEquals(0.035, c.spread, 1e-9);
         assertFalse(c.ok);
         assertTrue(c.doubtful);
         assertFalse(c.failed());
@@ -145,6 +145,37 @@ public class PoleCheckTest {
         assertEquals("2026-11-02_10-00-00", c.last.session);
         assertEquals(3, c.last.n);
         assertEquals(-0.01, c.diffLast, 1e-9);
+    }
+
+    @Test public void evenCountSplitInTheMiddleIsDoubtful() {
+        // 2/2 split by 8 cm: the midpoint reference is in doubt, so a good shot is amber, not red
+        List<PointRow> split = Arrays.asList(ref(0, 50.0), ref(0, 50.002), ref(0, 50.08), ref(0, 50.082));
+        PoleCheck c = PoleCheck.check(ref(0, 50.0), split, 0.03);
+        assertEquals(PoleCheck.RefKind.MEDIAN, c.refKind);
+        assertEquals(0.078, c.spread, 1e-9);
+        assertFalse(c.ok);
+        assertTrue(c.doubtful);
+        assertFalse(c.failed());
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(c, null));
+        assertEquals("pole check: -4.1 cm vs median of 4 visits that disagree by 7.8 cm around it; shoot again",
+                c.describe());
+        // middle two agree (one outlier each side): not doubtful
+        PoleCheck agree = PoleCheck.check(ref(0, 50.0), Arrays.asList(ref(0, 49.9), ref(0, 50.0), ref(0, 50.01),
+                ref(0, 50.2)), 0.03);
+        assertFalse(agree.doubtful);
+    }
+
+    @Test public void oddCountWithNoVisitNearTheMedianIsDoubtful() {
+        // 0, +5, +10 cm: no visit within 3 cm of the median
+        PoleCheck c = PoleCheck.check(ref(0, 50.0), Arrays.asList(ref(0, 50.0), ref(0, 50.05), ref(0, 50.10)), 0.03);
+        assertEquals(0.05, c.spread, 1e-9);
+        assertTrue(c.doubtful);
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(c, null));
+        // one bad visit among three is what the median is for: not doubtful
+        PoleCheck one = PoleCheck.check(ref(0, 50.0), Arrays.asList(ref(0, 50.0), ref(0, 50.07), ref(0, 50.001)), 0.03);
+        assertFalse(one.doubtful);
+        assertEquals(0.001, one.spread, 1e-9);
+        assertTrue(Double.isNaN(PoleCheck.spread(new double[] {1})));
     }
 
     @Test public void wrongPoleFails() {
