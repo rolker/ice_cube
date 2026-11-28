@@ -529,7 +529,8 @@ visits to the same mark. This is the one reference rule (0.12.0, #23); other tex
 
 The notice:
 - red, failed: "pole check: +4.2 cm vs median of 3 visits; -0.5 cm vs last visit", with
-  the alarm sound and the same text in the warnings bar (until the next ref). Usually the
+  the alarm sound and the same text, with any cue that may explain it, in the warnings
+  bar (until the next ref). Usually the
   pole height setting is wrong, the pole sank, or the shot was bad.
 - amber, a cue or a doubtful reference: a failed check against a doubtful pair reads
   "pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm; shoot again" (neither

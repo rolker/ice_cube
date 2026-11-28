@@ -576,7 +576,8 @@ final class Survey {
                     + " saved (no ground height: no pole check)" : "Ref R" + r.n + " saved: first visit to this mark";
             text += q.describe() + sus;
             if (colour == PoleCheck.Colour.RED) {
-                poleWarning = c.describe() + " (R" + r.n + "; check the pole height)";
+                // the cues (off-centre, pole moved) may explain the failure, so they stay with it
+                poleWarning = c.describe() + q.describe() + " (R" + r.n + "; check the pole height)";
                 poleWarningN = r.n;
                 notice = new Notice(text, false, false, r, true);
                 cue(Feedback.Cue.POLE_ALARM);
