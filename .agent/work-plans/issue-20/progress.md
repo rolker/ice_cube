@@ -292,3 +292,13 @@ Verified: the Claude adversarial subagent ran icecube/tests (121 OK) and analysi
 - [ ] (suggestion) A caller that passes `log` gets no stderr echo. The RTCM 1005 warning bypasses `log`, and an empty survey id gives an empty message prefix; use `tag` (gemini, claude) — `icecube/io.py:699,732`
 - [ ] (suggestion) soundings.build, which the reader now runs on a temp scratch gpkg, opens it with an unescaped `file:` URI and closes it only on the normal path. Use try/finally and the escaped URI (claude) — `analysis/qgis/soundings.py:1440,1467`
 - [ ] (suggestion) Tests: the stored-site branch of _season_sites is never exercised apart from the seed rule (re-read the season-held session after the move), and the pass_rule tests assert only the dict, not the passes that segment produces (claude) — `icecube/tests/test_logger_session.py:204,314`
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 19:45 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (pre-push approved with 8 small valid suggestions; orchestrator table allows address)
+**After**: publish
+**Decision**: address
+
+Fix all 8 suggestions of the Local Review at 4586ad2: expose a station filter; merged-site groups map to the season's group name (or document the missed tie, prefer mapping); z0 subtracted only when the site has an ENU origin (document); base_dir joined once; base checked for 3 finite values; logging (stderr echo with a caller log, 1005 warning through log, no empty prefix); soundings.build escapes the URI and closes in finally; tests for the stored-site branch and pass_rule effects on passes.
