@@ -155,6 +155,7 @@ public class ShareZipTest {
     @Test public void methodByExtension() {
         assertEquals(ZipEntry.STORED, ShareZip.method("s/photos/photo_1_20261111T140322Z.jpg"));
         assertEquals(ZipEntry.STORED, ShareZip.method("s/photos/IMG.JPEG"));
+        assertEquals(ZipEntry.STORED, ShareZip.method("s/notes/note_3_20261111T140322Z.m4a"));   // 0.14.0 voice notes
         assertEquals(ZipEntry.STORED, ShareZip.method("x.png"));
         assertEquals(ZipEntry.DEFLATED, ShareZip.method("s/points.csv"));
         assertEquals(ZipEntry.DEFLATED, ShareZip.method("refs.csv"));

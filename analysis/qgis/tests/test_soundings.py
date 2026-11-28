@@ -550,6 +550,10 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(len(snd.clist_windows([v12c, moved])), 1)
         edited = dict(moved, note="photos of voided n=1 (checked)")
         self.assertEqual(len(snd.clist_windows([voided, edited])), 1)
+        # logger 0.14.0 (#16): the row may hold the voided capture's voice notes too, or only them
+        for note in ("notes of voided n=1", "photos and notes of voided n=1"):
+            self.assertEqual(snd.clist_windows([voided, dict(moved, note=note)]), [], note)
+        self.assertEqual(len(snd.clist_windows([voided, dict(moved, note="notes of voided n=12")])), 1)
 
     def test_void_stop_windows(self):
         """Only captures voided for a reason other than 'accidental' make a void-stop window,

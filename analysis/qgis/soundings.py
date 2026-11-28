@@ -957,7 +957,7 @@ def is_accidental(c):
     return (c.get("void_reason") or "").strip().lower() == "accidental"
 
 
-MOVED_PHOTO_NOTE = re.compile(r"photos of voided n=(\d+)\Z")
+MOVED_PHOTO_NOTE = re.compile(r"(?:photos|notes|photos and notes) of voided n=(\d+)\Z")   # logger 0.14.0 adds notes
 
 
 def clist_windows(clist, include_voided=False):
@@ -966,7 +966,8 @@ def clist_windows(clist, include_voided=False):
     accidental MARK does not hide a real pole stop as dup_capture (a capture voided for any
     other reason flags its stop through void_stop_windows instead). Nor does the photo row
     the logger makes for a voided capture's photos when no earlier live capture can take
-    them (VoidRule.photoRowFor: same utc, note exactly "photos of voided n=<n>"): it is part
+    them (VoidRule.photoRowFor: same utc, note exactly "photos of voided n=<n>", or from
+    logger 0.14.0 "notes of ..." or "photos and notes of ..." when it holds voice notes): it is part
     of the voided capture, not a capture of its own. Only that exact note skips: a real
     PHOTO in the same second keeps its window, and a note the user edited just loses the
     skip (the safe side)."""

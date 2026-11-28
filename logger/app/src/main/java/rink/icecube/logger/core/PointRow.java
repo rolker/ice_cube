@@ -10,7 +10,7 @@ import java.util.Locale;
 /**
  * One row of points.csv (and, with the session name in front, of refs.csv). See the
  * README, "points.csv", for the meaning of each column. Missing numbers are written as
- * empty fields. Text fields (photo, note, session) are quoted when they hold a comma or
+ * empty fields. Text fields (photo, note, voice, session) are quoted when they hold a comma or
  * quote; line breaks become spaces, so every row is one line.
  */
 public final class PointRow {
@@ -18,15 +18,17 @@ public final class PointRow {
     public static final String HEADER = "n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,"
             + "n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,"
             + "fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,"
-            + "void,void_reason,fix_start,float_spell_s,suspect_reason,fix_young";
+            + "void,void_reason,fix_start,float_spell_s,suspect_reason,fix_young,voice";
     public static final String REFS_HEADER = "session," + HEADER;
     /**
      * Columns of HEADER. Rows written before 0.6 have only the first BASE_COLUMNS (up to
      * note), rows from 0.6 to 0.8 the first V06_COLUMNS (up to tilt_sd_u_m), rows from
      * 0.9.0 to 0.10 the first V09_COLUMNS (up to void_reason); fix_start, float_spell_s,
-     * suspect_reason and fix_young come from 0.11.0 (#15).
+     * suspect_reason and fix_young come from 0.11.0 (#15), rows from 0.11.0 to 0.13 have the
+     * first V11_COLUMNS (up to fix_young); voice comes from 0.14.0 (#16). New columns go
+     * last, so the older rows still parse by position.
      */
-    public static final int COLUMNS = 33, V09_COLUMNS = 29, V06_COLUMNS = 27, BASE_COLUMNS = 17;
+    public static final int COLUMNS = 34, V11_COLUMNS = 33, V09_COLUMNS = 29, V06_COLUMNS = 27, BASE_COLUMNS = 17;
     /**
      * method: one averaged capture (MARK), a tilt capture, a ref occupation, or (0.13.0, #35)
      * an auto capture: the same 1 s average as MARK, taken when the pole was held plumb and still.
@@ -70,6 +72,11 @@ public final class PointRow {
     public String fixStart = "", suspectReason = "";
     public double floatSpell = Double.NaN;
     public int fixYoung = -1;
+    /**
+     * 0.14.0 (#16): the voice notes on this row, file names in notes/ separated by ';'
+     * (see {@link NoteRule}); "" for none and for older rows.
+     */
+    public String voice = "";
     /** refs.csv only: the session folder name. */
     public String session = "";
 
@@ -125,7 +132,7 @@ public final class PointRow {
                 + (tiltN > 0 ? String.valueOf(tiltN) : "") + "," + num(tiltRms, 4) + "," + num(tiltCover, 0) + ","
                 + num(tiltSdE, 4) + "," + num(tiltSdN, 4) + "," + num(tiltSdU, 4) + "," + (voided ? 1 : 0) + ","
                 + text(voidReason) + "," + text(fixStart) + "," + num(floatSpell, 1) + "," + text(suspectReason) + ","
-                + (fixYoung < 0 ? "" : String.valueOf(fixYoung));
+                + (fixYoung < 0 ? "" : String.valueOf(fixYoung)) + "," + text(voice);
     }
 
     /** The fix stretch columns of a capture from stretch s (null: none), its age at ageNs, young or not. */
@@ -146,7 +153,8 @@ public final class PointRow {
      * Parses the columns of HEADER starting at offset (1 for refs.csv). Rows from before 0.6
      * (BASE_COLUMNS, ending at note) are accepted; the 0.6 columns then stay empty. Rows
      * without the 0.9.0 void columns read as not voided; rows without the 0.11.0 columns
-     * leave fix_start empty and fix_young unknown (-1).
+     * leave fix_start empty and fix_young unknown (-1); rows without the 0.14.0 voice column
+     * have no notes.
      * Throws IllegalArgumentException.
      */
     public static PointRow parse(List<String> f, int offset) {
@@ -193,13 +201,14 @@ public final class PointRow {
                 r.voidKnown = r.voided || "0".equals(v);
                 r.voidReason = f.get(i++);
             }
-            if (f.size() >= offset + COLUMNS) {
+            if (f.size() >= offset + V11_COLUMNS) {
                 r.fixStart = f.get(i++).trim();
                 r.floatSpell = dbl(f.get(i++));
                 r.suspectReason = f.get(i++).trim();
-                String y = f.get(i).trim();
+                String y = f.get(i++).trim();
                 r.fixYoung = "1".equals(y) ? 1 : "0".equals(y) ? 0 : -1;
             }
+            if (f.size() >= offset + COLUMNS) r.voice = f.get(i).trim();
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("bad number: " + e.getMessage());
         }

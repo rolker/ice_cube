@@ -18,25 +18,26 @@ public class PointRowTest {
         assertEquals(PointRow.COLUMNS, PointRow.split(PointRow.HEADER).size());
         assertEquals("session", PointRow.split(PointRow.REFS_HEADER).get(0));
         List<String> h = PointRow.split(PointRow.HEADER);
-        assertEquals(33, h.size());
+        assertEquals(34, h.size());
         // 0.6 columns appended after note, so readers of the first 17 keep working
         assertEquals("note", h.get(PointRow.BASE_COLUMNS - 1));
         assertEquals(Arrays.asList("fix_age_s", "fix_jump_m", "fix_suspect", "method", "tilt_n", "tilt_rms_m",
                 "tilt_cover_deg", "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m"), h.subList(17, 27));
         assertEquals(Arrays.asList("void", "void_reason"), h.subList(27, 29));   // 0.9.0
         assertEquals(Arrays.asList("fix_start", "float_spell_s", "suspect_reason", "fix_young"), h.subList(29, 33));   // 0.11.0
+        assertEquals("voice", h.get(33));   // 0.14.0 (#16), last so older rows parse by position
     }
 
     @Test public void voidColumnsRoundTrip() {
         PointRow r = PointRow.of(4, PointRow.SURFACE, 1, null, 1.8, MIDNIGHT);
         assertTrue(r.isLive());
-        assertTrue(r.toCsv().endsWith(",0,,,,,"));   // not void; no fix stretch: 0.11.0 columns empty
+        assertTrue(r.toCsv().endsWith(",0,,,,,,"));   // not void; no fix stretch: 0.11.0 columns empty; no voice
         r.voided = true;
         r.voidReason = "bad pole placement";
         assertFalse(r.isLive());
         assertTrue(r.isCapture());   // still a capture row: it keeps its number
         String csv = r.toCsv();
-        assertTrue(csv, csv.endsWith(",1,bad pole placement,,,,"));
+        assertTrue(csv, csv.endsWith(",1,bad pole placement,,,,,"));
         PointRow b = PointRow.parse(PointRow.split(csv), 0);
         assertTrue(b.voided);
         assertEquals("bad pole placement", b.voidReason);
@@ -76,7 +77,7 @@ public class PointRowTest {
         r.setStretch(st, t + 100 * s, true);
         String csv = r.toCsv();
         assertEquals(PointRow.COLUMNS, PointRow.split(csv).size());
-        assertTrue(csv, csv.endsWith(",100.0,0.480,1,,,,,,,,0,,float,60.0,float_spell,1"));
+        assertTrue(csv, csv.endsWith(",100.0,0.480,1,,,,,,,,0,,float,60.0,float_spell,1,"));
         PointRow b = PointRow.parse(PointRow.split(csv), 0);
         assertEquals("float", b.fixStart);
         assertEquals(60.0, b.floatSpell, 1e-9);
@@ -101,7 +102,7 @@ public class PointRowTest {
         r.tiltSdN = 0.091;
         r.tiltSdU = 0.019;
         String csv = r.toCsv();
-        assertTrue(csv, csv.endsWith(",,42.3,1.823,1,tilt,5,0.0090,145,0.0480,0.0910,0.0190,0,,,,,"));
+        assertTrue(csv, csv.endsWith(",,42.3,1.823,1,tilt,5,0.0090,145,0.0480,0.0910,0.0190,0,,,,,,"));
         assertEquals(PointRow.COLUMNS, PointRow.split(csv).size());
         PointRow b = PointRow.parse(PointRow.split(csv), 0);
         assertEquals("tilt", b.method);
@@ -113,7 +114,7 @@ public class PointRowTest {
         single.method = PointRow.SINGLE;
         single.fixAge = 3;
         single.fixJump = 0.2;
-        assertTrue(single.toCsv().endsWith(",3.0,0.200,0,single,,,,,,,0,,,,,"));
+        assertTrue(single.toCsv().endsWith(",3.0,0.200,0,single,,,,,,,0,,,,,,"));
     }
 
     /** 0.13.0 (#35): an auto capture writes method auto and reads back as auto, no new column. */
@@ -141,14 +142,38 @@ public class PointRowTest {
                 new Epoch(5, 50_000.25, 12.3456789012, -45.6789012345, 101.23456, 1.2, 4)));
         PointRow r = PointRow.of(7, PointRow.SURFACE, 123456789L, a, 1.8, MIDNIGHT + 50_000_000L);
         assertEquals("7,surface,123456789,2026-11-11T13:53:20.25Z,12.345678901,-45.678901235,101.2346,1.800,99.4346,4,1,"
-                + "0.0000,0.0000,0.0000,1.2,,,,,0,,,,,,,,0,,,,,", r.toCsv());
+                + "0.0000,0.0000,0.0000,1.2,,,,,0,,,,,,,,0,,,,,,", r.toCsv());
         assertEquals(PointRow.COLUMNS, PointRow.split(r.toCsv()).size());
     }
 
     @Test public void noFixRowLeavesPositionEmpty() {
         PointRow r = PointRow.of(3, PointRow.PHOTO, 9, null, 1.7, MIDNIGHT);
         r.photo = "photo_3_x.jpg";
-        assertEquals("3,photo,9,,,,,1.700,,0,0,,,,,photo_3_x.jpg,,,,0,,,,,,,,0,,,,,", r.toCsv());
+        assertEquals("3,photo,9,,,,,1.700,,0,0,,,,,photo_3_x.jpg,,,,0,,,,,,,,0,,,,,,", r.toCsv());
+    }
+
+    /** 0.14.0 (#16): the voice column, last; quoted like the other text fields; older rows have none. */
+    @Test public void voiceColumnRoundTrip() {
+        PointRow r = PointRow.of(6, PointRow.SURFACE, 1, null, 1.8, MIDNIGHT);
+        r.voice = NoteRule.add(NoteRule.add("", "note_6_20261111T140000Z.m4a"), "note_6_20261111T140030Z.m4a");
+        String csv = r.toCsv();
+        assertEquals(PointRow.COLUMNS, PointRow.split(csv).size());
+        assertTrue(csv, csv.endsWith(",note_6_20261111T140000Z.m4a;note_6_20261111T140030Z.m4a"));
+        assertEquals(r.voice, PointRow.parse(PointRow.split(csv), 0).voice);
+        r.session = "s";
+        assertEquals(r.voice, PointRow.parse(PointRow.split(r.toRefsCsv()), 1).voice);
+        r.voice = "odd, name.m4a";
+        assertTrue(r.toCsv().endsWith(",\"odd, name.m4a\""));
+        assertEquals("odd, name.m4a", PointRow.parse(PointRow.split(r.toCsv()), 0).voice);
+        // 0.11.0 to 0.13 rows (33 columns) keep their fix_young and have no voice
+        r.fixYoung = 1;
+        List<String> f = PointRow.split(r.toCsv());
+        PointRow v11 = PointRow.parse(f.subList(0, PointRow.V11_COLUMNS), 0);
+        assertEquals(1, v11.fixYoung);
+        assertEquals("", v11.voice);
+        for (int k : new int[] {PointRow.BASE_COLUMNS, PointRow.V06_COLUMNS, PointRow.V09_COLUMNS}) {
+            assertEquals("", PointRow.parse(f.subList(0, k), 0).voice);
+        }
     }
 
     @Test public void quotingAndRoundTrip() {
