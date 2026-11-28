@@ -375,3 +375,13 @@ Cross-model: skipped (convergence check, per handoff). Lead checked the fix: `ma
 - [x] No open findings. The convergence Local Review @ `59f1602` approved with 0 findings and confirms the fix (`d2e0296`) for the one suggestion from Local Review @ `b345296` (non-finite ground height), which the Integrated Review @ `10f661e` ruled on.
 
 ### False positives
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 19:46 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: owner
+**After**: merge
+**Decision**: merge
+
+Owner's answer to "Merge PR #43?": "Merge (Recommended)". Issue 23 stays open for PR B. Open owner question carried to PR B: whether ground refs use only recent sessions.
