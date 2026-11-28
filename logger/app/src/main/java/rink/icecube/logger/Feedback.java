@@ -29,8 +29,21 @@ final class Feedback {
         PHOTO, POLE_OK, POLE_ALARM, ERROR,
         /** A capture written in a fix stretch that began with a large jump (fix may be false). */
         SUSPECT,
+        /**
+         * 0.11.0 (#15): a capture, lean or ref written while the fix is young (may still be
+         * settling by centimetres): two long even tones and two long pulses, unlike SUSPECT's
+         * quick warble and ERROR's buzz.
+         */
+        YOUNG,
         /** Tilt capture: set started, lean taken, set written, set cancelled. */
-        TILT_START, LEAN, TILT_END
+        TILT_START, LEAN, TILT_END,
+        /**
+         * 0.13.0 (#35): auto capture armed again, or off, because of the fix (an auto capture
+         * itself plays SURFACE, the MARK tone): a rising pair and a falling pair of tones.
+         */
+        AUTO_ARMED, AUTO_OFF,
+        /** 0.13.0 (#35): pole calibration started, next phase, accepted (failed or moved: ERROR). */
+        CAL_START, CAL_PHASE, CAL_DONE
     }
 
     private static final int BEEP = ToneGenerator.TONE_DTMF_5, HIGH = ToneGenerator.TONE_DTMF_D,
@@ -59,9 +72,15 @@ final class Feedback {
             case POLE_OK: return new int[] {BEEP, 100, 60, HIGH, 100, 100};
             case POLE_ALARM: return new int[] {HIGH, 180, 70, LOW, 180, 70, HIGH, 180, 70, LOW, 180, 70, HIGH, 180, 70, LOW, 400, 150};
             case SUSPECT: return new int[] {HIGH, 70, 40, MID, 70, 40, HIGH, 70, 40, MID, 70, 40, LOW, 250, 100};
+            case YOUNG: return new int[] {MID, 250, 120, MID, 250, 120};
             case TILT_START: return new int[] {LOW, 120, 60, MID, 120, 60, BEEP, 120, 100};
             case LEAN: return new int[] {BEEP, 70, 30, BEEP, 70, 60};
             case TILT_END: return new int[] {BEEP, 120, 40, HIGH2, 120, 40, HIGH, 300, 150};
+            case AUTO_ARMED: return new int[] {MID, 150, 60, HIGH2, 200, 100};
+            case AUTO_OFF: return new int[] {HIGH2, 150, 60, MID, 300, 100};
+            case CAL_START: return new int[] {LOW, 200, 80, LOW, 200, 100};
+            case CAL_PHASE: return new int[] {MID, 100, 60, MID, 100, 60, MID, 100, 100};
+            case CAL_DONE: return new int[] {LOW, 120, 40, MID, 120, 40, HIGH2, 120, 40, HIGH, 350, 150};
             default: return new int[] {ToneGenerator.TONE_PROP_NACK, 450, 100};   // ERROR: low buzz
         }
     }
@@ -83,9 +102,15 @@ final class Feedback {
             case POLE_OK: return new long[] {0, 60, 80, 60};
             case POLE_ALARM: return new long[] {0, 300, 100, 300, 100, 300, 100, 800};
             case SUSPECT: return new long[] {0, 60, 50, 60, 50, 60, 50, 250};
+            case YOUNG: return new long[] {0, 250, 150, 250};
             case TILT_START: return new long[] {0, 80, 80, 80, 80, 80};
             case LEAN: return new long[] {0, 40, 40, 40};
             case TILT_END: return new long[] {0, 100, 60, 300};
+            case AUTO_ARMED: return new long[] {0, 80, 80, 200};
+            case AUTO_OFF: return new long[] {0, 200, 80, 80};
+            case CAL_START: return new long[] {0, 200, 80, 200};
+            case CAL_PHASE: return new long[] {0, 80, 60, 80, 60, 80};
+            case CAL_DONE: return new long[] {0, 100, 60, 100, 60, 400};
             default: return new long[] {0, 450};
         }
     }

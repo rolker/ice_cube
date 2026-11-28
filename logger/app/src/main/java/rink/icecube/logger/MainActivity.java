@@ -104,7 +104,7 @@ public final class MainActivity extends Activity {
     private static final int STRIP_BG = 0xFFECEFF1, TEXT = 0xFF212121, AMBER = 0xFFFFA000;
 
     private MapView map;
-    private TextView info, warnBar, noticeBar;
+    private TextView info, warnBar, noticeBar, autoBar;
     private TextView fixChip, gpsItem, casterItem, poleItem, recItem;
     private Button modeB, markB, photoB, menuB, centerB, fitB, undoB;
     /** The notice bar and its UNDO button, side by side. */
@@ -198,6 +198,13 @@ public final class MainActivity extends Activity {
         warnBar = bar(0xFFC62828);
         warnBar.setOnClickListener(v -> startActivity(new Intent(this, DetailsActivity.class)));
         noticeBar = bar(0xFF2E7D32);
+        // 0.13.0 (#35): the auto capture line, large for gloves; a tap starts the pole
+        // calibration when it is needed, or offers to cancel one that runs
+        autoBar = bar(0xFF1565C0);
+        autoBar.setTextSize(18);
+        autoBar.setMinHeight(Screen.dp(this, 56));
+        autoBar.setGravity(Gravity.CENTER_VERTICAL);
+        autoBar.setOnClickListener(v -> onAutoBar());
         undoB = smallButton("UNDO", v -> onUndo());
         undoB.setTextSize(16);
         undoB.setTypeface(Typeface.DEFAULT_BOLD);
@@ -308,7 +315,7 @@ public final class MainActivity extends Activity {
      */
     private void arrange() {
         boolean land = Screen.landscape(this);
-        for (View v : new View[] {mapFrame, warnBar, noticeRow, fixChip, gpsItem, casterItem, poleItem, recItem,
+        for (View v : new View[] {mapFrame, warnBar, noticeRow, autoBar, fixChip, gpsItem, casterItem, poleItem, recItem,
                 modeB, markB, photoB, menuB, drawer}) Screen.detach(v);
         showStatusBar(!land);
         int m = Screen.dp(this, 3);
@@ -329,6 +336,7 @@ public final class MainActivity extends Activity {
         left.addView(strip, new LinearLayout.LayoutParams(-1, -2));
         left.addView(warnBar, new LinearLayout.LayoutParams(-1, -2));
         left.addView(noticeRow, new LinearLayout.LayoutParams(-1, -2));
+        left.addView(autoBar, new LinearLayout.LayoutParams(-1, -2));
         left.addView(mapFrame, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout buttons = new LinearLayout(this);
@@ -651,6 +659,49 @@ public final class MainActivity extends Activity {
         handle(o);
     }
 
+    // ---- auto capture ----
+
+    /** The auto line: tap to calibrate when needed, or to cancel a running calibration. */
+    private void onAutoBar() {
+        Survey sv = survey();
+        Survey.AutoView av = sv == null ? null : sv.autoView();
+        if (av == null) return;
+        if (av.calibrating) confirmCancelCalibration();
+        else if (av.needsCalibration) calibrate(true);
+    }
+
+    private void calibrate(boolean start) {
+        LoggerService s = LoggerService.current;
+        if (s == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            toast("No session: tap REC to start one");
+            return;
+        }
+        handle(s.calibrate(start));
+    }
+
+    private void confirmCancelCalibration() {
+        confirm("Stop the pole calibration?", "Auto capture stays off until a calibration is accepted.",
+                "Stop calibration", () -> calibrate(false));
+    }
+
+    private void updateAutoBar(Survey sv) {
+        Survey.AutoView av = sv == null ? null : sv.autoView();
+        autoBar.setVisibility(av == null ? View.GONE : View.VISIBLE);
+        if (av == null) return;
+        autoBar.setText(av.text);
+        int bg, fg = Color.WHITE;
+        switch (av.kind) {
+            case CALIBRATE: bg = 0xFF1565C0; break;
+            case OFF: bg = AMBER; fg = TEXT; break;
+            case READY: bg = 0xFF00695C; break;
+            case DONE: bg = 0xFF2E7D32; break;
+            default: bg = 0xFF78909C; break;
+        }
+        autoBar.setBackgroundColor(bg);
+        autoBar.setTextColor(fg);
+    }
+
     private void confirmCancelTilt() {
         confirm("Cancel tilt capture?", "The leans are kept in tilt_obs.csv but no point is written.", "Cancel tilt",
                 () -> tiltAction("cancel"));
@@ -862,6 +913,7 @@ public final class MainActivity extends Activity {
         if (drawer.getVisibility() == View.VISIBLE) { closeDrawer(); return; }
         Survey sv = survey();
         if (sv != null && sv.tiltRunning()) { confirmCancelTilt(); return; }
+        if (sv != null && sv.calibrating()) { confirmCancelCalibration(); return; }
         super.onBackPressed();
     }
 
@@ -879,6 +931,9 @@ public final class MainActivity extends Activity {
         Survey sv = survey();
         if (sv != null && sv.tiltRunning()) item("Cancel tilt capture", this::confirmCancelTilt);
         else item("Tilt capture (" + mode().key + ")", () -> tiltAction("start"));
+        if (sv != null && sv.calibrating()) item("Stop pole calibration", this::confirmCancelCalibration);
+        else item(sv != null && sv.calibrated() ? "Recalibrate pole (auto capture)" : "Calibrate pole (auto capture)",
+                () -> calibrate(true));
         item("Recent captures…", this::recentCaptures);
         item("Layers…", this::pickLayers);
         item((coverageOn ? "☑" : "☐") + " Coverage overlay", this::toggleCoverage);
@@ -1101,11 +1156,10 @@ public final class MainActivity extends Activity {
             chipColor = MapView.qualityColor(g.quality);
             chipText = Survey.fixName(g.quality) + " " + age(g);
             Survey.FixState fs = g.quality == 4 && sv != null ? sv.fixState() : null;
-            if (fs != null && fs.settleS > 0) { chipColor = AMBER; chipText = "FIX settling " + fs.settleS + "s"; }
-            else if (fs != null && fs.suspect) {
+            if (fs != null && fs.suspect) {
                 chipColor = AMBER;
-                chipText = String.format(Locale.US, "FIXED? jump %.1fm", fs.jump);
-            }
+                chipText = !fs.byJump ? "FIXED? after float" : String.format(Locale.US, "FIXED? jump %.1fm", fs.jump);
+            } else if (fs != null && fs.youngS >= 0) { chipColor = AMBER; chipText = "FIX young " + fs.youngS + "s"; }
         }
         fixChip.setText(chipText);
         if (!chipState.equals(String.valueOf(chipColor))) {
@@ -1139,6 +1193,7 @@ public final class MainActivity extends Activity {
         noticeBar.setVisibility(nt == null ? View.GONE : View.VISIBLE);
         noticeRow.setVisibility(nt == null ? View.GONE : View.VISIBLE);
         updateUndo(nt);
+        updateAutoBar(sv);
         if (nt != null) {
             MapOrigin o = shownOrigin;
             String at = o == null || nt.at == null ? null : o.readout(nt.at.lat, nt.at.lon, nt.at.hGround);

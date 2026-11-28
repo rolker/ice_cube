@@ -18,8 +18,9 @@ Output (all private: it holds positions): `<season>.gpkg` and, next to it,
 
   captures      PointZ  one row per capture, key (session, n). Z = ground height.
                         `note` and `label` are yours: edited in QGIS, never overwritten.
-                        Logger 0.6 columns (method, fix_suspect, tilt_*, ...) are NULL
-                        for older sessions.
+                        Logger 0.6 columns (method, fix_suspect, tilt_*, ...) and 0.11.0
+                        columns (fix_start, float_spell_s, suspect_reason, fix_young) are
+                        NULL for older sessions.
   photos        PointZ  one row per photo file, key (session, name); `note` is yours.
   refs          PointZ  ref captures plus refs.csv rows, pole-check results from events,
                         `site` groups refs within 0.30 m; `note` is yours.
@@ -77,7 +78,7 @@ skipped (--force re-reads it). Each sessions row records the schema_version it w
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
 session imported in full. A session from an app older than every schema step it missed
-needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4) has nothing to fill and is marked current without
+needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4, 0.11 for 5, 0.12 for 6) has nothing to fill and is marked current without
 a re-read (one whose app version is unknown is re-read). Sessions still at an older schema
 after a run (not among the inputs, or seen only as a snapshot) are named in the log and
 re-read on a later run. Rows are matched by their keys and updated in place, so
@@ -105,11 +106,13 @@ from logger_session import APPROX_S, app_version, find_sessions, load_session, r
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 4     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+SCHEMA_VERSION = 6     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
                        # 4: captures and refs carry the logger 0.9.0 void flag (void, void_reason)
+                       # 5: captures carry the logger 0.11.0 fix columns (fix_start, fix_young, ...)
+                       # 6: refs carry the logger 0.12.0 pole check (diff_ref_m, colour)
 SCHEMA_TILT = 3        # the schema that brought the logger 0.6 columns: a session re-read at
                        # it or later holds whatever tilt values its source has
-SCHEMA_APP = {3: (0, 6), 4: (0, 9)}   # the oldest app whose sessions have data for each schema
+SCHEMA_APP = {3: (0, 6), 4: (0, 9), 5: (0, 11), 6: (0, 12)}   # the oldest app whose sessions have data for each schema
                                       # step; add an entry with every SCHEMA_VERSION change
 
 
@@ -133,19 +136,23 @@ LOGGER_06 = [("fix_age_s", R), ("fix_jump_m", R), ("fix_suspect", I), ("method",
              ("tilt_rms_m", R), ("tilt_cover_deg", R), ("tilt_sd_e_m", R), ("tilt_sd_n_m", R),
              ("tilt_sd_u_m", R)]   # points.csv 0.6 columns, NULL for older sessions
 VOID = [("void", I), ("void_reason", T)]   # logger 0.9.0: flagged as bad, kept (see below)
+LOGGER_11 = [("fix_start", T), ("float_spell_s", R), ("suspect_reason", T), ("fix_young", I)]
+# points.csv 0.11.0 columns (#15, false-fix guard), NULL for older sessions
 LEGACY_ENU = ("e_m", "n_m", "u_m")   # schema 1: E/N/U about the base, replaced by x/y/z_m
 POINT_TABLES = ("captures", "photos", "refs", "track_points")
 NO_XYZ = {"x_m": None, "y_m": None, "z_m": None}   # set on (re)import, filled by update_local
 SCHEMA = {
     "captures": [("session", T), ("n", I), ("class", T)] + MEAS +
                 [("photo", T), ("photo_count", I)] + ENU +
-                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06 + VOID,
+                [("source", T), ("elapsed_ns", I), ("note", T), ("label", T)] + LOGGER_06 + VOID
+                + LOGGER_11,
     "photos": [("session", T), ("n", I), ("name", T), ("photo", T), ("utc", T), ("attached", T),
                ("bytes", I), ("lat", R), ("lon", R), ("h_ground", R)] + ENU + [("note", T)],
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
-            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R)],
+            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R),
+             ("diff_ref_m", R), ("colour", T)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -321,6 +328,7 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
             "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
             "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground")), **NO_XYZ,
             **{k: c.get(k) for k, _ in LOGGER_06},
+            **{k: c.get(k) for k, _ in LOGGER_11},
         })
     gp.upsert("captures", caps, key=("session", "n"), preserve=USER_COLUMNS["captures"])
 
@@ -342,7 +350,8 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
                   "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
-        for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok"):
+        for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok",
+                  "diff_ref_m", "colour"):
             r[k] = s.refs.get(c["n"], {}).get(k)
         refs.append(r)
     gp.upsert("refs", refs, key=("session", "n"), preserve=USER_COLUMNS["refs"])

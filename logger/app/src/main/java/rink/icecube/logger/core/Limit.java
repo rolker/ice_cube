@@ -9,8 +9,15 @@ import java.util.Locale;
  * (Settings > Coverage).
  */
 public final class Limit {
-    public static final Limit SETTLE_S = new Limit("Fix settle time", "s", 0, 60, 10, 0);
+    /** 0.11.0 (#15): a warning, no longer a hold (was "Fix settle time", 0 to 60 s, default 10). */
+    public static final Limit SETTLE_S = new Limit("Fix young limit", "s", 0, 300, 120, 0);
     public static final Limit JUMP_M = new Limit("Fix jump warning", "m", 0.1, 10, 1.0, 2);
+    /** 0.11.0 (#15): a fix after a float spell this long is suspect (0: rule off). */
+    public static final Limit FLOAT_SPELL_S = new Limit("Fix after float spell", "s", 0, 300, 20, 0);
+    /** 0.12.0 (#23): pole check cues (0: off). Placement: offset from the earlier visits' median position. */
+    public static final Limit PLACE_CM = new Limit("Pole check: off-centre cue", "cm", 0, 20, 2, 1);
+    /** 0.12.0 (#23): a held ref whose sd_u is over this cues "pole moved during the ref". */
+    public static final Limit STEADY_CM = new Limit("Pole check: pole moved cue", "cm", 0, 20, 1.5, 1);
     public static final Limit TILT_COVER_DEG = new Limit("Tilt: minimum coverage", "°", 0, 360, 180, 0);
     public static final Limit TILT_RMS_CM = new Limit("Tilt: maximum RMS", "cm", 0.1, 20, 2, 1);
     public static final Limit TILT_MIN_DEG = new Limit("Tilt: minimum lean", "°", 0, 30, 5, 1);
@@ -18,6 +25,15 @@ public final class Limit {
     public static final Limit TILT_SIGMA_CM = new Limit("Tilt: maximum sigma", "cm", 0.1, 50, 5, 1);
     public static final Limit TILT_IMU_DEG = new Limit("Tilt: IMU disagreement", "°", 0.5, 20, 3, 1);
     public static final Limit LEAN_SCATTER_CM = new Limit("Tilt: lean scatter", "cm", 0.2, 20, 2, 1);
+    /** 0.13.0 (#35): auto capture fires when the pole is this close to plumb, ... */
+    public static final Limit AUTO_PLUMB_DEG = new Limit("Auto capture: plumb limit", "°", 0.5, 10, 2, 1);
+    /**
+     * ... for this long (at least 1 s, so the capture's 1 s average holds only held epochs;
+     * a stored value under 1 s reads as the default), ...
+     */
+    public static final Limit AUTO_HOLD_S = new Limit("Auto capture: hold time", "s", 1, 30, 2, 1);
+    /** ... with every antenna position this close to their mean (re-arm: 3 times this from the capture). */
+    public static final Limit AUTO_STILL_CM = new Limit("Auto capture: still limit", "cm", 0.2, 20, 2, 1);
     public static final Limit COV_TARGET_CM = new Limit("Coverage: sigma target", "cm", 0.5, 50, 3.0, 1);
     public static final Limit COV_CELL_M = new Limit("Coverage: grid spacing", "m", 0.1, 2, 0.5, 2);
     public static final Limit COV_RADIUS_M = new Limit("Coverage: capture radius", "m", 0.1, 5, 0.75, 2);

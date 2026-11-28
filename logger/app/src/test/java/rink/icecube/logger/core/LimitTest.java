@@ -8,7 +8,8 @@ import org.junit.Test;
 
 public class LimitTest {
     @Test public void defaults() {
-        assertEquals(10, Limit.SETTLE_S.def, 0);
+        assertEquals(120, Limit.SETTLE_S.def, 0);   // 0.11.0 (#15): was 10, now a young-fix warning
+        assertEquals(20, Limit.FLOAT_SPELL_S.def, 0);
         assertEquals(1.0, Limit.JUMP_M.def, 0);
         assertEquals(180, Limit.TILT_COVER_DEG.def, 0);
         assertEquals(2, Limit.TILT_RMS_CM.def, 0);
@@ -17,6 +18,29 @@ public class LimitTest {
         assertEquals(5, Limit.TILT_SIGMA_CM.def, 0);
         assertEquals(3, Limit.TILT_IMU_DEG.def, 0);
         assertEquals(2, Limit.LEAN_SCATTER_CM.def, 0);
+        assertEquals(2, Limit.PLACE_CM.def, 0);      // 0.12.0 (#23)
+        assertEquals(1.5, Limit.STEADY_CM.def, 0);
+        assertEquals(2, Limit.AUTO_PLUMB_DEG.def, 0);   // 0.13.0 (#35): the owner's 2°, 2 s, 2 cm
+        assertEquals(2, Limit.AUTO_HOLD_S.def, 0);
+        assertEquals(2, Limit.AUTO_STILL_CM.def, 0);
+    }
+
+    @Test public void autoCaptureLimitRanges() {
+        assertEquals(0.5, Limit.AUTO_PLUMB_DEG.parse("0.5"), 0);
+        assertEquals(10, Limit.AUTO_PLUMB_DEG.parse("10"), 0);
+        assertEquals("must be 0.5 to 10.0 °", problem(Limit.AUTO_PLUMB_DEG, "10.5"));
+        assertEquals("must be 1.0 to 30.0 s", problem(Limit.AUTO_HOLD_S, "0.9"));
+        assertEquals(0.2, Limit.AUTO_STILL_CM.parse("0,2"), 1e-12);
+        assertEquals("must be 0.2 to 20.0 cm", problem(Limit.AUTO_STILL_CM, "0.1"));
+        assertEquals("enter a number, up to 1 decimal", problem(Limit.AUTO_HOLD_S, "1.25"));
+    }
+
+    @Test public void poleCueLimitsAcceptZeroAsOff() {
+        assertEquals(0, Limit.PLACE_CM.parse("0"), 0);
+        assertEquals(0, Limit.STEADY_CM.parse("0"), 0);
+        assertEquals(1.5, Limit.STEADY_CM.parse("1.5"), 0);
+        assertEquals("must be 0.0 to 20.0 cm", problem(Limit.PLACE_CM, "21"));
+        assertEquals("enter a number, up to 1 decimal", problem(Limit.STEADY_CM, "1.25"));
     }
 
     @Test public void coverageDefaultsMatchCoverageParams() {
@@ -33,15 +57,15 @@ public class LimitTest {
 
     @Test public void parseChecksFormatAndRange() {
         assertEquals(0, Limit.SETTLE_S.parse("0"), 0);
-        assertEquals(60, Limit.SETTLE_S.parse(" 60 "), 0);
+        assertEquals(300, Limit.SETTLE_S.parse(" 300 "), 0);
         assertEquals(1.25, Limit.JUMP_M.parse("1,25"), 1e-12);
-        for (String bad : new String[] {"61", "-1", "1.5", "", "x"}) {
+        for (String bad : new String[] {"301", "-1", "1.5", "", "x"}) {
             try { Limit.SETTLE_S.parse(bad); fail(bad); } catch (IllegalArgumentException expected) { }
         }
         try { Limit.JUMP_M.parse("0.05"); fail(); } catch (IllegalArgumentException e) {
             assertEquals("must be 0.10 to 10.00 m", e.getMessage());
         }
-        assertEquals(10, Limit.SETTLE_S.orDefault("abc"), 0);
+        assertEquals(120, Limit.SETTLE_S.orDefault("abc"), 0);
         assertEquals("1.00", Limit.JUMP_M.format(1));
     }
 

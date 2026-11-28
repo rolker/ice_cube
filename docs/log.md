@@ -132,3 +132,43 @@ Reference material is in `howto/`, the narrative in `story/`.
   result and earlier vector is unchanged. The pass is redone for about 25 nodes per
   capture: a 5000-capture bank rebuild takes about 2x as long, and the store about 2x
   the memory.
+- 11-27: logger 0.11.0 (#15, first PR): the false-fix guard retuned on the field misses.
+  A fix right after a float spell of 20 s or more is suspect, whatever its jump (11-21: a
+  false fix jumped only 0.48 m after a long float spell). The start jump counts only from a
+  float or fixed epoch, so the first fix after single epochs (a 2.3 m step at session
+  start) is no longer flagged. Settling became a young-fix warning: captures, leans and
+  refs go ahead with an amber notice and a YOUNG cue for 120 s (11-26: a re-fix still read
+  6 to 9 cm high at 95 to 113 s), the row records `fix_young`, and a young ref is never the
+  earlier visit of a pole check. points.csv gains `fix_start`, `float_spell_s`,
+  `suspect_reason` and `fix_young`; soundings.py and the live overlay move their settle
+  window from 90 to 120 s and flag `float_spell` beside `suspect_jump`. Height test, extra
+  cues and a retune on past sessions are #39, #40 and #41.
+- 11-27: icecube reads logger sessions directly (#20): `reader = "logger_session"` takes a
+  session folder, zip or folder of them without the season gpkg, so a new session can be
+  checked before it joins the season. It runs soundings.py's own rules on a scratch gpkg
+  (sigma, fix stretches as passes, the #15 flags, voids), so there is no third copy of
+  them. The session import now keeps the whole RTCM 1005 position of the base event
+  (`base_from_sessions` read only its first number). Settle term re-fit on the 11-11, 11-15
+  and 11-21 captures against mature-fix neighbours: the excess scatter stays near 5 cm
+  through the first minute and 2-4 cm up to 120 s, flatter than 8 cm x (1 - t/120)^2, so it
+  is now 10 cm x (1 - t/120) in soundings.py and the logger overlay; the 120 s drop rule
+  is unchanged. Robust nodes were delivered by #24/#29.
+- 11-27: logger 0.12.0 (#23, PR A): the pole check compares a ref with a robust reference
+  from the mark's earlier visits (one: that visit; two: their mean, doubtful when they
+  differ by more than the tolerance; three or more: the median), not the most recent one,
+  so one bad visit no longer fails the next good one. Two amber re-shoot cues: the pole
+  off the mark centre (over 2 cm from the visits' median position) and the pole moving
+  during a held ref (sd_u over 1.5 cm). Replayed on the 11-11, -15 and -21 refs: on 11-21
+  the bad ref still fails red and the two false alarms after a bad or high visit pass
+  (one amber off-centre); the ref that was off the mark reads within the tolerance and
+  under the 2 cm cue against its earlier visits only (it was 2.5 cm off against all
+  visits). Two refs newly fail, each just over 3 cm from a median that spans three days.
+- 11-27: logger 0.13.0 (#35): auto capture in Surface mode. A per-session pole calibration
+  (hold still 3 s, lean all round 10 s, two slow twists) finds the pole's axis in phone
+  axes with the tilt capture's sphere solve and IMU fit; then a point is captured when the
+  pole has been within 2° of plumb and within 2 cm of still for 2 s on an RTK fix that is
+  neither young nor suspect. One capture per stop: re-armed once the pole's tip has
+  certainly moved 6 cm (the tip known within pole x sin(lean) of the antenna); a tilt or
+  standing up on the same point does not re-arm. Off during tilt sets and refs, the screen
+  says what it waits for. Rows get `method` `auto`; the coverage overlay takes them like
+  MARK. Plumb sign and calibration feel still need a phone check.

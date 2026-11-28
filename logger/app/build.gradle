@@ -6,8 +6,8 @@ android {
         applicationId 'rink.icecube.logger'
         minSdk 26
         targetSdk 34
-        versionCode 14
-        versionName '0.10.0'
+        versionCode 17
+        versionName '0.13.0'
     }
     buildFeatures { buildConfig true }
     compileOptions {

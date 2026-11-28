@@ -408,6 +408,9 @@ def read_events(src):
 POINTS_06_REAL = ("fix_age_s", "fix_jump_m", "tilt_rms_m", "tilt_cover_deg", "tilt_sd_e_m",
                   "tilt_sd_n_m", "tilt_sd_u_m")
 POINTS_06_INT = ("fix_suspect", "tilt_n")
+POINTS_11_TEXT = ("fix_start", "suspect_reason")   # logger 0.11.0 (#15); "" read as None
+POINTS_11_REAL = ("float_spell_s",)
+POINTS_11_INT = ("fix_young",)                      # 1, 0, or None (unknown)
 
 
 def read_points(text):
@@ -416,7 +419,10 @@ def read_points(text):
     The 0.6 columns keep their points.csv names: fix_age_s, fix_jump_m, fix_suspect,
     method, tilt_n, tilt_rms_m, tilt_cover_deg, tilt_sd_e_m, tilt_sd_n_m, tilt_sd_u_m.
     They are None in older files and for empty cells. From 0.9.0 `void` (True when
-    flagged) and `void_reason`; False and None in older files."""
+    flagged) and `void_reason`; False and None in older files. From 0.11.0 (#15) fix_start
+    (float, single, none, fixed-jump, gap), float_spell_s, suspect_reason (jump,
+    float_spell or jump;float_spell) and fix_young (1/0); None in older files and when
+    unknown, never 0."""
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         if not r.get("n"):
@@ -434,16 +440,21 @@ def read_points(text):
             "method": (r.get("method") or "").strip() or None,   # PointRow.java trims too
             **{k: _f(r.get(k)) for k in POINTS_06_REAL},
             **{k: _i(r.get(k)) for k in POINTS_06_INT},
+            **{k: (r.get(k) or "").strip() or None for k in POINTS_11_TEXT},
+            **{k: _f(r.get(k)) for k in POINTS_11_REAL},
+            **{k: _i(r.get(k)) for k in POINTS_11_INT},
         })
     return rows
 
 
 # refs.csv columns as the logger writes them from 0.9.0 (PointRow.REFS_HEADER): rows from
-# before 0.6 have the first 18, rows from 0.6 to 0.8 the first 28, rows from 0.9.0 all 30.
+# before 0.6 have the first 18, rows from 0.6 to 0.8 the first 28, rows from 0.9.0 the first
+# 30, rows from 0.11.0 all 34.
 REFS_COLUMNS = ["session", "n", "class", "elapsed_ns", "utc", "lat", "lon", "h_ant_ellips", "pole_m",
                 "h_ground_ellips", "fix", "n_epochs", "sd_e_m", "sd_n_m", "sd_u_m", "age_s", "photo", "note",
                 "fix_age_s", "fix_jump_m", "fix_suspect", "method", "tilt_n", "tilt_rms_m", "tilt_cover_deg",
-                "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m", "void", "void_reason"]
+                "tilt_sd_e_m", "tilt_sd_n_m", "tilt_sd_u_m", "void", "void_reason",
+                "fix_start", "float_spell_s", "suspect_reason", "fix_young"]
 
 
 def read_refs_csv(text):
@@ -619,7 +630,8 @@ def load_session(src: SessionSource) -> Session:
         elif text.startswith("base station=") and "base_station" not in info:
             kv = _kv(text)
             info["base_station"] = kv.get("station")
-            info["base_ecef"] = kv.get("ecef")
+            m = re.search(r"\becef=(\S+)", text)   # x;y;z (the logger's commas become ';')
+            info["base_ecef"] = m.group(1) if m else None
             info["base_type"] = kv.get("type")
         elif text.startswith("layer base check"):
             info["layer_base_check"] = text
@@ -648,13 +660,17 @@ def load_session(src: SessionSource) -> Session:
             if m:
                 body = m.group(2)
                 kv = _kv(body)
-                msg = body.split("; diff_last_m=")[0].replace(";", ",").strip()
+                # the message ends at the first "; key=" (diff_last_m for a check; from
+                # logger 0.12.0 place_cm on a line with no check)
+                msg = re.split(r"; \w+=", body, maxsplit=1)[0].replace(";", ",").strip()
                 ok = kv.get("ok")
                 s.refs.setdefault(int(m.group(1)), {}).update({
                     "pole_check": msg, "diff_last_m": _f(kv.get("diff_last_m")),
                     "diff_mean_m": _f(kv.get("diff_mean_m")), "visits": _i(kv.get("visits")),
                     "last_visit": kv.get("last"),
-                    "pole_ok": None if ok is None else int(ok == "true")})
+                    "pole_ok": None if ok is None else int(ok == "true"),
+                    # logger 0.12.0 (#23): the check's own difference and its notice colour
+                    "diff_ref_m": _f(kv.get("diff_ref_m")), "colour": kv.get("colour")})
     info["frame"] = " | ".join(frames) or None
     info["pole_heights"] = ", ".join(poles) or None
     info["gps_lost"] = gps_lost

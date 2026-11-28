@@ -30,8 +30,10 @@ What it sets up:
 - Styles: captures by class (surface cyan dots, object magenta squares, ref dark slate
   rings, photo brown camera, control orange triangles), labelled S12 / O13 / R14 / P15 /
   C3 plus your label; captures flagged void in the logger (kept, never deleted) as a grey
-  x under "Flagged (void)"; refs as rings, red when the pole check failed, grey dashed when
-  flagged void, labelled with the height difference to the last visit; monuments by status (measured green, predicted
+  x under "Flagged (void)"; refs as rings, red when the pole check failed, amber for a
+  logger 0.12.0 amber check (a cue or a doubtful reference), grey dashed when flagged void,
+  labelled with the check's height difference (`diff_ref_m`, to the reference of earlier
+  visits; `diff_last_m`, to the last visit, for a session from before 0.12.0); monuments by status (measured green, predicted
   orange hollow) with uncertainty in the label; tax parcels (kind=parcel polygons, from
   fetch_parcels.py) thin grey with PID labels; other map layers in their GeoJSON
   stroke/fill colours; tracks thin grey by fix quality.
@@ -196,13 +198,16 @@ def style_refs(lyr):
     sym = marker("circle", "0,0,0,0", "47,79,79,255", 4.4, 0.6)
     sym.symbolLayer(0).setDataDefinedProperty(_prop("StrokeColor"), QgsProperty.fromExpression(
         ('CASE WHEN "void" = 1 THEN \'130,130,130,255\' ' if voided else 'CASE ')
-        + 'WHEN "pole_ok" = 0 THEN \'220,0,0,255\' ELSE \'47,79,79,255\' END'))
+        + 'WHEN "pole_ok" = 0 THEN \'220,0,0,255\' '
+        + ('WHEN "colour" = \'amber\' THEN \'230,140,0,255\' ' if has(lyr, "colour") else '')
+        + 'ELSE \'47,79,79,255\' END'))
     if voided:
         sym.symbolLayer(0).setDataDefinedProperty(_prop("StrokeStyle"), QgsProperty.fromExpression(
             'CASE WHEN "void" = 1 THEN \'dash\' ELSE \'solid\' END'))
     lyr.setRenderer(QgsSingleSymbolRenderer(sym))
-    labels(lyr, '\'R\' || to_string("n") || CASE WHEN "diff_last_m" IS NOT NULL THEN \' \' || '
-                'format_number("diff_last_m" * 100, 1) || \' cm\' ELSE \'\' END', 7.5)
+    diff = 'coalesce("diff_ref_m", "diff_last_m")' if has(lyr, "diff_ref_m") else '"diff_last_m"'
+    labels(lyr, f'\'R\' || to_string("n") || CASE WHEN {diff} IS NOT NULL THEN \' \' || '
+                f'format_number({diff} * 100, 1) || \' cm\' ELSE \'\' END', 7.5)
     lyr.setMapTipTemplate('<b>R[% "n" %]</b> site [% "site" %] [% "session" %]<br>[% "utc" %], '
                           '[% "n_epochs" %] epochs, pole [% "pole_m" %] m<br>[% coalesce("pole_check", \'\') %]'
                           + (VOID_TIP if voided else ''))

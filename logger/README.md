@@ -1,13 +1,16 @@
-# Ice Cube Logger 0.10.0
+# Ice Cube Logger 0.13.0
 
 Records the RTK Express GPS over Bluetooth or USB, runs its own NTRIP client, and logs
 phone accelerometer, gravity and gyroscope data, all on one phone clock. The main screen
 is a local map with your own GeoJSON layers (no basemap, no network) where you capture
 surface, object and reference points with large glove-friendly buttons or the volume
-keys, and take photos. Reference points are averaged and checked against earlier visits
-(the pole check). A false-fix guard holds captures back while a new RTK fix settles and
-flags fixes that began with a suspicious jump, and a tilt capture finds the pole tip from
-several leans when the pole cannot stand plumb (a house corner, a fence post). A live
+keys, and take photos. Reference points are averaged and checked against a robust
+reference from earlier visits (the pole check), with cues for a pole off the mark centre
+or moving during the ref. A false-fix guard warns about captures from a young RTK fix and flags
+fixes that began with a suspicious jump or right after a long float spell, and a tilt capture finds the pole tip from
+several leans when the pole cannot stand plumb (a house corner, a fence post). Auto
+capture takes a surface point by itself when the pole is held plumb and still, after a
+quick pole calibration each session. A live
 coverage overlay shows where the surface still needs captures (red, amber, clear). It checks
 the reference frame and base position, and shares a session as a zip. It works in portrait or landscape, and the screen can be locked to how the
 phone sits on the pole.
@@ -24,7 +27,7 @@ folder in Android Studio and press Run.
 ## Settings
 MENU > Settings. Caster and GPS link changes apply at the next Connect; the rest at once.
 The first line of the screen (and the last line of the MENU panel) shows the app version,
-e.g. "Ice Cube Logger 0.8.1 (build 12)".
+e.g. "Ice Cube Logger 0.13.0 (build 17)".
 - Display: Screen orientation: Auto (follow the system, including its auto-rotate
   toggle), Portrait, Landscape or Reverse landscape. Default Auto. Every screen of the app
   uses it, whatever the system auto-rotate toggle says, so a phone mounted on a tilting
@@ -48,14 +51,24 @@ e.g. "Ice Cube Logger 0.8.1 (build 12)".
   - Ref duration: seconds of RTK fixed epochs averaged for a Ref capture, 10 to 300,
     default 30.
   - Pole check tolerance: cm, 0.5 to 20, default 3. See Refs and the pole check.
-  - False-fix guard (see False-fix guard): Fix settle time, s, 0 to 60, default 10 (0
-    turns settling off); Fix jump warning, m, 0.1 to 10, default 1.0. The settle time
-    applies at once, the jump threshold from the next fix stretch.
+  - Pole check cues (0.12.0, see Refs and the pole check): off-centre cue, cm, 0 to 20,
+    default 2.0; pole moved cue, cm, 0 to 20, default 1.5. 0 turns a cue off.
+  - False-fix guard (see False-fix guard): Fix young limit, s, 0 to 300, default 120 (0
+    turns the warning off); Fix jump warning, m, 0.1 to 10, default 1.0; Fix after float
+    spell, s, 0 to 300, default 20 (0 turns the rule off). The young limit applies at once,
+    the other two from the next fix stretch. Until 0.10 the young limit was "Fix settle
+    time" (0 to 60 s, default 10, captures held back); the first start of 0.11.0 moves a
+    stored 10 to 120 once, and keeps any other value (a 10 typed in later stays).
   - Tilt capture gates (see Tilt capture): minimum coverage 0 to 360°, default 180; maximum
     RMS 0.1 to 20 cm, default 2; minimum lean 0 to 30°, default 5; maximum lean 5 to 60°,
     default 35; maximum sigma 0.1 to 50 cm, default 5; IMU disagreement 0.5 to 20°,
     default 3; lean scatter 0.2 to 20 cm, default 2. A value out of range is not saved and
     the screen says why. They apply to the next tilt capture.
+  - Auto capture (0.13.0, see Auto capture): on or off (default on; it does nothing until
+    the pole is calibrated in the session), plumb limit 0.5 to 10°, default 2; hold time
+    1 to 30 s, default 2 (at least the capture's 1 s average, so it never averages epochs from
+    before the hold); still limit 0.2 to 20 cm, default 2. They apply from the next
+    epoch.
   - Volume keys: Mark / Mode (default on): on the map, volume down = MARK, volume up =
     MODE; during a tilt capture down = LEAN, up = finish; hold down about 1 s to start a
     tilt capture. The keys then do not change the volume while the map is in front.
@@ -115,9 +128,10 @@ The app opens on the map, full screen; USB attach opens it too. The screen stays
 Status strip along the top (one line in landscape, two rows in portrait). Every item is a
 button (at least 48 dp tall):
 - Fix chip: RTK FIXED / FLOAT / DGPS / SINGLE / NO FIX (or NO GPS) in the fix colour, with
-  the correction age, e.g. `FIXED 1.0s`. While a new fix settles it reads `FIX settling 7s`
-  in amber; in a fix stretch that began with a jump over the warning it reads
-  `FIXED? jump 2.1m` in amber until the fix drops. Tap: Details.
+  the correction age, e.g. `FIXED 1.0s`. While a fix is young it reads `FIX young 47s` (its
+  age) in amber; in a suspect fix stretch it reads `FIXED? jump 2.1m` (began with a jump
+  over the warning) or `FIXED? after float` (began right after a long float spell) in amber
+  until the fix drops. Tap: Details.
 - GPS and NTRIP dots: green connected, amber connecting or retrying after a loss, red the
   last attempt failed (still retrying), grey off. Tap to connect, or to disconnect (while
   a session records it asks first).
@@ -128,7 +142,8 @@ button (at least 48 dp tall):
 
 Under the strip, only when present: a red bar with warnings (frame mismatch, base moved,
 layers don't match base, failed pole check, GPS or caster link lost, GPS silent; tap it
-for Details), and for 10 s after a capture, ref or pole check a green (or red) notice,
+for Details), and for 10 s after a capture, ref or pole check a green (or red) notice
+(amber for a pole check cue or doubtful reference, see Refs and the pole check),
 e.g. `S12  FIXED  5 ep  ±0.4 cm`; amber with dark text when the capture is flagged, e.g.
 `S12  FIXED  5 ep  ±0.4 cm  fix may be false (jumped 2.2 m)`. A notice about a capture has
 a second line with its ground position in the map frame (see Map), e.g. `G x 12.345 y -3.210 z -0.452`.
@@ -145,6 +160,14 @@ it landed on; an accidental capture whose photo went to it (a MARK a few seconds
 another) is flagged from Recent captures. The info box says `2 flagged` when a session has
 flagged captures.
 
+Under the notice, in Surface mode while Auto capture is on (0.13.0): the AUTO line, large
+(56 dp), saying what auto capture is waiting for (see Auto capture): blue `AUTO: calibrate
+to enable (tap)` (a tap starts the pole calibration) and, during one, `CALIBRATE 2/3: lean
+slowly all round  7 s` (a tap offers to stop it); amber `AUTO: off, fix young 40 s`, `off,
+not RTK fixed`, `off, no height in the GGA` or `off, fix may be false`; grey `off during
+the tilt set` or `off during the ref`; teal `ready, hold plumb  3.4°`, `ready, hold still` or `holding  1 / 2 s`; green `S12
+taken, move to the next point`.
+
 Four large buttons, a column on the right edge in landscape, a row along the bottom in
 portrait (each at least 64 dp):
 - MODE: Surface → Object → Ref → Surface. It shows the mode name in the mode's colour
@@ -158,6 +181,7 @@ portrait (each at least 64 dp):
   `→ S12 (14 s)` (the latest capture not flagged, and its age, within 60 s) or `→ own row`.
 - ☰ MENU: a panel from the right: Connect/Disconnect GPS and caster (with their state),
   Start/Stop session, Pole height, Tilt capture (or Cancel tilt capture while one runs),
+  Calibrate pole (Recalibrate pole once done, Stop pole calibration while one runs; see Auto capture),
   Recent captures… (see Flagged captures), Layers… (a checkbox per layer file, applied at once, and Import…, see Map layers),
   Coverage overlay (☑ on / ☐ off, remembered, on by default; see Coverage),
   Share last session, Sessions, Details, Settings. Back or a tap outside closes it.
@@ -223,7 +247,7 @@ with `void` = 1 and a `void_reason`, and readers leave it out (see below). Two w
   it. When the copies disagree (a rewrite that reached only some of them), a reader takes
   a ref's flag from the newest copy by file time whose row has a void value, and flagged
   when copies of that time disagree; the QGIS importer reads the copies it is given by the
-  same rule, so the phone and the gpkg agree. A flagged ref is never a "last visit" for
+  same rule, so the phone and the gpkg agree. A flagged ref is never a visit for
   the pole check and is not drawn among the earlier refs; its pole-check notice and
   warning are cleared. The rewrite keeps the row's `photo` column as it was appended: refs.csv photo names are never updated after the
   append (not for a photo attached later, not for a move), and `points.csv` is the record
@@ -257,33 +281,56 @@ In the field data (2026-11-11) several RTK "fixed" stretches were wrong: each be
 in height (and horizontally suspect) for minutes; ordinary captures in them were bad. A
 normal float-to-fix step moves a few centimetres to a few decimetres. So the app follows
 the stretches of RTK fixed GGA epochs:
-- A stretch starts at any epoch of quality 4 after one that was not (float, single, no
-  position), and also when two consecutive fixed epochs are more than 0.5 m apart (or
-  2 m/s times their time difference, if that is more: a step a moving pole cannot make;
-  at 4 Hz that is 0.5 m) or more than 2 s apart (the GPS went quiet). The jump at stretch
-  start is the 3D distance from the previous epoch with a position to the first fixed one;
-  it is unknown (empty) if that epoch is more than 2 s older. Each start is logged in
-  `events.csv` as `fix stretch start jump=1.234 m` (with `(jump between fixed epochs)` or
-  `suspect` when they apply).
-- Settling: for the settle time after a stretch starts (Settings, default 10 s) MARK gives
-  the error buzz and a toast `fix settling: N s`, and nothing is captured
-  (`capture refused class=…: fix settling N s`). A running ref does not count fixed epochs
-  while the fix settles: its ring says PAUSED: fix settling, as for a fix drop. Tilt leans
-  are refused the same way. The fix chip says `FIX settling 7s` in amber.
-- Suspect: if the jump at stretch start was over the jump warning (Settings, default
-  1.0 m) the whole stretch is suspect. Captures are still allowed after settling, but the
-  notice is amber, `… fix may be false (jumped 2.2 m)`, the cue is a fast warble ending
-  low, and the row has `fix_suspect` 1. Re-shoot such points after the fix drops and comes
-  back cleanly, or check them against a known mark.
+- A stretch starts at an epoch of quality 4 unless it continues the last one: the last
+  fixed epoch is at most 2 s older, no float epoch came between, and the two are at most
+  0.5 m apart (or 2 m/s times their time difference, if that is more: a step a moving
+  pole cannot make; at 4 Hz that is 0.5 m). So a float epoch, a step, or more than 2 s
+  since the last fixed epoch (the GPS went quiet, or gave no position, single or DGPS)
+  starts a new stretch; from 0.11.0 a dropout of 2 s or less inside a fix (no position,
+  single or DGPS epochs) does not, and the stretch's age runs on through it. Every 2 s
+  test runs on the GGA time (the receiver's clock, as soundings.py), not on when the phone
+  read the sentence, so a whole-epoch dropout of exactly 2 s reads the same on both.
+- The jump at stretch start is the 3D distance from the last float or fixed epoch to the
+  first fixed one, only if that epoch is at most 2 s older; so it carries over a dropout
+  of 2 s or less (no position, single or DGPS) between float and fix. From 0.11.0 it is
+  unknown (empty) after longer single or DGPS spells: the first fix of a session (no
+  corrections yet) always "jumps" by metres, and that flagged good fixes (2026-11 field
+  data, a 2.3 m step). Unknown is neither suspect nor clean; `fix_start` says what came
+  before the stretch: `float`, `single` (single or DGPS), `none` (first epoch, or an epoch
+  without a position), `fixed-jump` (a step between fixed epochs) or `gap`.
+- Each start is logged in `events.csv` as `fix stretch start jump=1.234 m after float 45 s`
+  (or `jump=unknown after single`, `(jump between fixed epochs)`, ...) with
+  `suspect: jump`, `suspect: float_spell` or `suspect: jump;float_spell` when it is.
+- Suspect, for the whole stretch: the jump was over the jump warning (Settings, default
+  1.0 m), or (0.11.0) the stretch began right after a float spell at least the float
+  spell limit long (Settings, default 20 s), from its first float epoch to the fix. The
+  spell carries over a dropout of 2 s or less (no epochs, or non-float ones), so one
+  single epoch just before the fix does not hide it; a longer dropout ends it. On
+  2026-11-21 a fix after a long float spell jumped only 0.48 m and was false; a fix that
+  takes long to come is the one most likely to be wrong. Captures are allowed, but the
+  notice is amber, `… fix may be false (jumped 2.2 m)` or `… (after a long float spell)`,
+  the cue is a fast warble ending low, and the row has `fix_suspect` 1 and its
+  `suspect_reason`. Re-shoot such points after the fix drops and comes back cleanly, ideally
+  without a long float spell first, or check them against a known mark.
+- Young: for the young limit after a stretch starts (Settings, default 120 s) the fix may
+  still be settling by centimetres (2026-11-26: a re-fix read 6 to 9 cm high at 95 to
+  113 s). From 0.11.0 this is a warning, not a hold: MARK, tilt leans and refs go ahead,
+  the notice is amber (`… fix young: 95 s`; a ref `… fix young during the ref`), the cue is two even middle tones with two long
+  pulses (YOUNG), and the row has `fix_young` 1. Until 0.10 the app refused captures for
+  the (10 s) settle time instead; field data showed 10 s was far too short, and a refusal
+  that long would stall the survey. A ref counts every fixed epoch; it is young if any of them was (its ring adds
+  `(fix young)`), and a young ref is never one of the earlier visits of a pole check (it is
+  itself checked and shown). A tilt lean is kept and marked; the tilt row is young if any
+  used lean was. The fix chip says `FIX young 47s`.
 - Every capture row carries `fix_age_s` (seconds from the stretch start to the last
-  averaged epoch) and `fix_jump_m`, so later analysis can pick its own thresholds. One
-  average never mixes two stretches: fixed epochs from before the latest stretch began are
-  left out.
+  averaged epoch), `fix_jump_m`, `fix_start`, `float_spell_s`, `suspect_reason` and
+  `fix_young`, so later analysis can pick its own thresholds. One average never mixes two
+  stretches: fixed epochs from before the latest stretch began are left out.
 
-These thresholds are a starting point from one afternoon of data. A larger jump threshold
-gives fewer false alarms; a longer settle time catches false fixes that drift off soon
-after they start, but not ones that stay wrong for minutes (those need the jump flag or a
-check against a known mark).
+These thresholds are a starting point from a few afternoons of data (retuning on more
+sessions is issue #41). A larger jump threshold gives fewer false alarms; the young limit
+covers fixes that are still settling by centimetres, but not ones that stay wrong for
+minutes (those need the jump and float spell flags or a check against a known mark).
 
 ### Tilt capture
 For a point where the pole cannot stand plumb (a house corner, a fence post, a wall): keep
@@ -308,7 +355,7 @@ How to hold the pole:
    capture drops the set (its leans still go to `tilt_obs.csv`, unused).
 
 A lean is refused (error buzz and a toast) if: there is no RTK fixed average (leans must
-be fixed; float is far too noisy for this), the fix is settling, the GGA has no height, the
+be fixed; float is far too noisy for this), the GGA has no height, the
 1 s horizontal scatter sqrt(sd_e² + sd_n²) is over the lean scatter gate (default 2 cm:
 the pole moved), or, once 3 leans give a provisional tip, its tilt is outside the minimum
 and maximum lean (default 5 to 35°; a near-vertical lean adds almost nothing).
@@ -348,15 +395,97 @@ antenna height of the used leans (so here h_ant - pole is not h_ground); `pole_m
 `fix` 4; `n_epochs` the epochs of all used leans; `sd_e_m`, `sd_n_m`, `sd_u_m` the RMS of
 the leans' own 1 s scatter; `age_s` the mean correction age; `utc` from the last used
 lean; `fix_age_s` the youngest stretch age, `fix_jump_m` the largest jump and `fix_suspect`
-1 if any lean was in a suspect stretch; `method` `tilt` and the `tilt_*` columns (see
+1 if any lean was in a suspect stretch; `fix_start` and `float_spell_s` from the youngest
+lean's stretch, `suspect_reason` every reason of the used leans, `fix_young` 1 if any used
+lean was taken while the fix was young; `method` `tilt` and the `tilt_*` columns (see
 points.csv). In Ref mode the tip is also appended to `refs.csv` and the pole check runs on
 it. A pole height that is off by d moves the tip up or down by about d, as for a plumb
 shot; the antenna phase centre offset along the pole acts the same way.
 
 `events.csv`: `tilt start set=… class=… pole_height=…`, `tilt lean set=… k=… n_epochs=…
-sd_h_m=… tilt_deg=… grav=x;y;z`, `tilt lean refused set=…: …`, `tilt end set=… n=… leans=…
+sd_h_m=… tilt_deg=… grav=x;y;z young=0|1`, `tilt lean refused set=…: …`, `tilt end set=… n=… leans=…
 used=… rms_m=… cover_deg=… sd_m=e;n;u imu_max_deg=… warnings=… dropped …`, `tilt cancelled
 by user set=… leans=…`.
+
+### Auto capture
+0.13.0 (#35). In Surface mode the logger can capture by itself when the pole is held plumb
+and still, so no button press is needed with gloves on. Object and Ref captures stay on
+MARK, and MARK works as before in Surface mode too.
+
+Calibrate first, once per session (the phone is never square to the pole, so "plumb" needs
+the pole's axis in phone axes; it is kept for the session only, since the phone may sit
+differently next time). Tap the blue AUTO line, or MENU > Calibrate pole, with RTK fixed,
+then with the tip on one point all the way through:
+1. Hold the pole still, 3 s (`CALIBRATE 1/3`). Moving more than the lean scatter (Tilt
+   gates, 2 cm), losing the fix, an epoch without a height or gravity, or a gap of more than
+   2 s between epochs starts it again with the buzz and a notice naming the cause
+   (`Calibrate: moved, hold the pole still again`); no 3 s still within 30 s fails (naming a
+   missing GGA height or phone gravity reading when that was the cause).
+2. Three beeps: lean slowly all round the tip, as in a tilt set, 10 s (`CALIBRATE 2/3`).
+   Every RTK fixed epoch is a sample (antenna position, gravity about it); a swing over
+   0.5 m/s is skipped.
+3. Three beeps: twist the pole slowly about itself, twice, 8 s (`CALIBRATE 3/3`). The
+   phone's gyroscope must show the pole turned at least 90° about its axis (the range of
+   the running angle, so back and forth counts); the epochs are otherwise only counted
+   (for a later lever-arm calibration, #38).
+
+The still sample and the leans are then solved like a tilt set: the tip, each sample's tilt,
+and the axis that best explains the tilts from the gravity vectors (the tilt capture's IMU
+fit). Accepted (rising four-tone, `Pole calibrated: 9 leans, 0.4° RMS. Auto capture on`,
+or `Auto capture is off in Settings` / `Auto capture works in Surface mode` when it will not
+run yet) with at least 4 leans (the still sample not counted), the tip RMS within the tilt
+RMS gate (2 cm), leans of 5° or more covering at least the tilt coverage gate (180°), an
+RMS fit residual of 1° or less, and a twist of 90° or more (a phone without a gyroscope
+cannot pass); otherwise it fails with the reason (the buzz and an amber notice) and auto
+capture stays off. No GPS epoch for 5 s (the rover gone) fails it too, so it never hangs. A young or suspect fix is fine here (only the shape of one short spell is used). MARK,
+tilt capture and refs are refused while it runs; Back or MENU > Stop pole calibration stops
+it. Recalibrating drops the old axis at the start. Changing the pole height keeps the axis
+(it is the phone's mount, not the length) but, after a calibration, shows the notice
+`Pole height changed: recalibrate if the phone moved in its mount`. events.csv gets `pole calibration start`,
+`... lean`, `... twist` and `pole axis calibrated residual_deg=.. samples=.. twist_deg=.. axis=x;y;z
+lean_speeds_mps=..` (phone axes: the mounting, not a position) or `pole calibration failed
+lean_speeds_mps=..: ..`. `lean_speeds_mps` lists the antenna speed of every lean-phase epoch
+(those over the 0.5 m/s swing gate were skipped), so field runs can retune the gate.
+
+Then, at each GGA epoch, auto capture is armed when all of these hold, else the AUTO line
+names the first that does not: Auto capture on, Surface mode, no calibration running, the
+pole calibrated, no tilt set, no ref, RTK fixed, a height in the GGA, the fix not young and not suspect (see
+False-fix guard; MARK still captures on a young fix, with its amber warning). Armed, it
+captures once the pole has been plumb (within the plumb limit: the phone's gravity over the
+last 0.5 s against the pole axis) and still (every antenna position within the still limit
+of their mean, horizontally) at every epoch for the hold time (2 s, so 3 epochs at 1 Hz).
+A tilt, a move or a gap of more than 2 s between epochs starts the hold again. The capture
+is the same as a Surface MARK (the last 1 s average, the same columns, the surface pip,
+an undoable notice `S12 auto  FIXED ...`), with `method` `auto`, and events.csv adds
+`auto capture n=.. plumb_deg=.. held_s=.. spread_cm=.. epochs=..`.
+
+One capture per stop: every capture at a stop latches it at that capture's tip: an auto
+capture (once it is really taken, after its 1 s average), a Surface MARK, a finished
+Surface tilt set (its solved tip, so standing the pole up on the tip afterwards takes
+nothing) and an accepted calibration (its solved tip). A second capture at a stop that is
+still latched leaves the latch on the first one, so undoing a MARK there leaves the stop
+taken. Tips, not antennas, are compared: a pole leaning θ puts the antenna pole height ×
+sin θ off its tip (6.3 cm at 2° on a 1.8 m pole), and without a heading the phone knows θ
+but not which way, so each tip is known within that radius of the antenna (a MARK uses the
+gravity of its 1 s average; an auto capture the largest lean of its hold; a solved tip is
+exact; a MARK with no gravity reading is taken as leaning up to the plumb limit, and one
+with no calibration anywhere within the pole height). Nothing more is taken
+until the tip has certainly moved more than 3 times the still limit (6 cm at the default)
+from the latched tip; then the full hold must pass again. Because each tip is only known
+within its radius, the antenna spacing that is sure to re-arm is up to 2 × pole height ×
+sin(plumb limit) + 3 × the still limit: about 19 cm at the defaults (2°, 2 cm, 1.8 m), 68 cm
+at a 10° plumb limit. Points closer together than that may need MARK. Standing up after a tilt set,
+swaying across the plumb cone, or an epoch with no gravity reading never clears it. So
+walk to the next point. To re-shoot the same point, UNDO the capture (that clears the
+latch) or press MARK.
+
+Cues: the capture plays the surface pip. Auto capture becoming armed or off is cued only
+when the fix caused it (lost, no height, young, suspect; a rising or falling pair), after the change
+has lasted 1 s, so a one-epoch dropout is silent; epochs that stop altogether cue off
+once the AUTO line turns to `not RTK fixed` (3 s, `auto capture off: no_epochs`); mode changes, tilt sets, refs and the
+calibration have their own cues, and the plumb and still states never cue. events.csv:
+`auto capture armed`, `auto capture off: no_fix`, and the settings at session start
+(`auto_capture=on plumb_deg=2.0 hold_s=2.0 still_cm=2.0`).
 
 ### tilt_obs.csv
 Every lean of every tilt set in the session, so a set can be re-solved later (another pole
@@ -371,7 +500,7 @@ header first. Columns:
 | `elapsed_ns`, `utc` | phone clock when the lean was taken; UTC of its last epoch |
 | `lat`, `lon`, `h_ant_ellips` | the lean's 1 s mean antenna position |
 | `n_epochs`, `sd_e_m`, `sd_n_m`, `sd_u_m`, `age_s` | as in points.csv, for this lean |
-| `fix_age_s`, `fix_jump_m`, `fix_suspect` | the fix stretch of this lean |
+| `fix_age_s`, `fix_jump_m`, `fix_suspect` | the fix stretch of this lean (no 0.11.0 columns here: young is `fix_age_s` under the young limit) |
 | `grav_x`, `grav_y`, `grav_z`, `grav_n` | mean phone gravity vector over the same second (m/s², phone axes as in imu.csv) and the number of samples; empty and 0 without a gravity sensor |
 | `e_m`, `n_m`, `u_m` | the lean in local ENU metres about the set's first lean |
 | `tilt_deg`, `azimuth_deg`, `resid_m`, `imu_deg` | from the last solve: tilt from vertical, direction it leans toward, sphere residual, IMU disagreement |
@@ -383,9 +512,17 @@ pattern: mode change 1, 2 or 3 beeps (surface, object, ref); surface capture a s
 pip; object capture a two-tone pip; ref start a long low tone; ref paused a long middle
 tone; ref resumed a short one; ref end a rising three-tone; ref cancelled a falling two;
 photo a click; pole check OK two rising beeps; pole check failed an alternating alarm;
-a capture in a suspect fix stretch a fast warble ending low; tilt start three rising
-tones, each lean two short beeps, tilt saved a rising three-tone; errors (no fix, fix
-settling, no session, mode change during a ref, a refused lean) a low buzz. Sounds use the media
+an amber pole check (a cue or a doubtful reference, 0.12.0) the low error buzz;
+a capture in a suspect fix stretch a fast warble ending low; a capture, lean or ref from a
+young fix two even middle tones with two long pulses (0.11.0; one that is both suspect and
+young plays only the suspect cue, a ref too; a suspect or young ref with an amber pole
+check plays only its fix cue, not the error buzz as well); tilt start three rising
+tones, each lean two short beeps, tilt saved a rising three-tone; an auto capture the
+surface capture pip (0.13.0); auto capture armed again after the fix came back (or grew
+old enough) a rising pair, off because of the fix a falling pair; pole calibration start
+two low tones, each next phase three middle beeps, accepted a rising four-tone, a failed
+calibration or moving during its still phase the low buzz; errors (no fix, no
+session, mode change during a ref, a refused lean) a low buzz. Sounds use the media
 volume, so silent mode does not mute them.
 
 On the map: surface small cyan dots, object larger magenta squares, ref dark rings,
@@ -419,35 +556,41 @@ not append-only. `events.csv` is the append-only record.
 | `note` | always empty from the phone: for the laptop tool |
 | `fix_age_s` | 0.6: seconds from the start of the RTK fixed stretch to the last averaged epoch (see False-fix guard); empty when not fixed |
 | `fix_jump_m` | 0.6: the position jump at that stretch's start, m (3D); empty when not fixed or unknown |
-| `fix_suspect` | 0.6: 1 if the stretch began with a jump over the warning threshold, else 0 |
-| `method` | 0.6: `single` (one 1 s average), `ref` (a ref occupation) or `tilt` (a tilt capture); empty for photo rows |
+| `fix_suspect` | 0.6: 1 if the stretch is suspect (a jump over the warning threshold; from 0.11.0 also right after a long float spell), else 0 |
+| `method` | 0.6: `single` (one 1 s average), `ref` (a ref occupation) or `tilt` (a tilt capture); 0.13.0: `auto` (an auto capture: the same 1 s average as `single`, taken when the pole was held plumb and still); empty for photo rows |
 | `tilt_n` | 0.6, tilt only: leans used in the solution |
 | `tilt_rms_m` | 0.6, tilt only: RMS of the sphere residuals, m |
 | `tilt_cover_deg` | 0.6, tilt only: azimuth coverage of the used leans, degrees |
 | `tilt_sd_e_m`, `tilt_sd_n_m`, `tilt_sd_u_m` | 0.6, tilt only: standard deviation of the tip east, north, up, m |
 | `void` | from 0.9.0: 1 if the capture is flagged as bad (see Flagged captures), else 0 |
 | `void_reason` | from 0.9.0: why it was flagged, empty when not |
+| `fix_start` | from 0.11.0: what came before the fix stretch: `float`, `single`, `none`, `fixed-jump` or `gap` (see False-fix guard); empty when not fixed |
+| `float_spell_s` | from 0.11.0: seconds of float right before the stretch; empty unless `fix_start` is `float` |
+| `suspect_reason` | from 0.11.0: `jump`, `float_spell` or `jump;float_spell`; empty when not suspect |
+| `fix_young` | from 0.11.0: 1 if taken while the fix was younger than the young limit (a ref or tilt: any of its epochs or leans), 0 if not; empty when unknown (not fixed) |
 
-The ten 0.6 columns come after `note`, and the two 0.9.0 columns after those, so a reader
-that takes the first 17 (or 27) columns by position keeps working; older rows simply lack
-the later columns, and a row without `void` is not flagged. The session importer
-(`analysis/qgis/import_sessions.py`) carries the 0.6 columns and `void`/`void_reason` into
-the gpkg `captures` table (NULL for older sessions), and soundings.py gives a tilt capture
+The ten 0.6 columns come after `note`, the two 0.9.0 columns after those and the four
+0.11.0 columns last, so a reader that takes the first 17 (27, 29) columns by position keeps
+working; older rows simply lack the later columns (unknown, never 0), and a row without
+`void` is not flagged. The session importer (`analysis/qgis/import_sessions.py`) carries
+the 0.6, 0.9.0 and 0.11.0 columns into the gpkg `captures` table (NULL for older sessions), and soundings.py gives a tilt capture
 the tilt-capture sigma. It does not read `tilt_obs.csv` yet.
 
 Example (made-up position):
 ```
-n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,void,void_reason
-1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,,0,
-2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,,0,
-3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060,0,
-4,surface,81393123456789,2026-11-11T14:06:15.10Z,10.000020500,20.000030500,31.0610,1.600,29.4610,4,5,0.0022,0.0019,0.0041,1.0,,,263.4,0.180,0,single,,,,,,,1,accidental
+n,class,elapsed_ns,utc,lat,lon,h_ant_ellips,pole_m,h_ground_ellips,fix,n_epochs,sd_e_m,sd_n_m,sd_u_m,age_s,photo,note,fix_age_s,fix_jump_m,fix_suspect,method,tilt_n,tilt_rms_m,tilt_cover_deg,tilt_sd_e_m,tilt_sd_n_m,tilt_sd_u_m,void,void_reason,fix_start,float_spell_s,suspect_reason,fix_young
+1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,0.0021,0.0018,0.0040,1.0,,,42.5,0.180,0,single,,,,,,,0,,float,4.5,,1
+2,ref,81290123456789,2026-11-11T14:04:31.00Z,10.000010000,20.000020000,31.3011,1.800,29.5011,4,30,0.0030,0.0026,0.0061,1.1,photo_2_20261111T140440Z.jpg,,151.0,0.180,0,ref,,,,,,,0,,float,4.5,,0
+3,object,81390123456789,2026-11-11T14:06:12.25Z,10.000020000,20.000030000,31.0520,1.600,29.4791,4,24,0.0040,0.0035,0.0050,1.2,,,260.5,0.180,0,tilt,6,0.0071,250,0.0090,0.0110,0.0060,0,,float,4.5,,0
+4,surface,81393123456789,2026-11-11T14:06:15.10Z,10.000020500,20.000030500,31.0610,1.600,29.4610,4,5,0.0022,0.0019,0.0041,1.0,,,263.4,0.180,0,single,,,,,,,1,accidental,float,4.5,,0
+5,surface,81420123456789,2026-11-11T14:06:42.00Z,10.000021000,20.000031000,31.0702,1.600,29.4702,4,5,0.0023,0.0020,0.0043,1.0,,,12.0,0.452,1,single,,,,,,,0,,float,38.0,float_spell,1
 ```
 
-Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix` (or
-`: fix settling N s`), `fix stretch start jump=…`, the tilt events (see Tilt capture),
+Related events in `events.csv`: `capture <row>`, `capture refused class=<c>: no fix` (until
+0.10 also `: fix settling N s`), `fix stretch start jump=…`, the tilt events (see Tilt capture),
 `ref start n=… duration_s=… pole_height=… quality=…`, `ref paused …`, `ref resumed …`,
-`ref end n=… epochs=… pauses=…`, `ref cancelled …`, `pole check n=…: …`, `photo file=…
+`ref end n=… epochs=… pauses=… young=0|1`, `ref cancelled …`, `pole check n=…: …` (see Refs
+and the pole check), `photo file=…
 attached to n=…` or `own row n=…`, `photo cancelled: …`; from 0.9.0 `flag n=…`, `unflag
 n=…` and `photo moved n=…` (see Flagged captures).
 
@@ -455,19 +598,73 @@ n=…` and `photo moved n=…` (see Flagged captures).
 Every ref is also appended to `refs.csv` in the storage root
 (`Documents/IceCubeLogger/refs.csv`, or the app media folder's, like sessions): the
 session folder name, then the points.csv columns. It is kept across sessions. At the end
-of a ref the app looks for earlier refs within 0.30 m horizontally. If there are any, it
-shows the ground height difference to the most recent one and to the mean of all of them:
-- |difference to the most recent| over the tolerance (Settings, default 3 cm): a red
-  "pole check: +4.2 cm vs last visit" in the warnings bar (until the next ref) and an
-  alarm sound. Usually the pole height setting is wrong, or the pole sank.
-- otherwise a green "pole check OK (±0.8 cm vs last visit)".
-- first visit (or no ground height): "first visit to this mark", no check.
+of a ref the app checks its ground height against a reference formed from the earlier
+visits to the same mark. This is the one reference rule (0.12.0, #23); other text points here:
+
+- **Visits**: earlier refs in `refs.csv` within 0.30 m horizontally that have a ground
+  height, are not flagged (`void` 1) and were not taken from a young fix (`fix_young` 1).
+  An older row without these columns counts. A ref found in several `refs.csv` copies
+  (storage roots) is one visit (session and n), and the most recent visit is the latest
+  session, then the highest n. A visit that itself failed its check still
+  counts (refs.csv does not store check results; the median handles one bad visit).
+- **Reference**: 1 visit: that visit ("vs 1 earlier visit"). 2 visits: their mean.
+  3 or more: the median of their ground heights (with an even count, the mean of the
+  middle two), so one bad earlier visit does not fail the next good one.
+- **Doubtful reference**: the visits that form it disagree by more than the tolerance:
+  with an even count (a pair too) the middle two differ by more; with an odd count of 3
+  or more, neither neighbour of the median (in height order) is within it (so one bad
+  visit among three is not doubt, but 0, +5, +10 cm is). A failed check against a
+  doubtful reference is amber, not red: no earlier visit can be called bad.
+- **Check**: |new - reference| at most the tolerance (Settings, default 3 cm) passes. The
+  difference to the most recent visit is shown as information when there are two or more
+  visits ("; -2.0 cm vs last visit").
+- **Off-centre cue**: the horizontal distance from the new ref to the median east/north
+  position of the visits (to the one visit, with one) over the off-centre limit
+  (default 2 cm): "pole may be off the mark centre (2.5 cm); re-shoot". It uses earlier
+  visits only, so it can differ from an offset computed afterwards from all visits, and
+  needs no ground height on the new ref.
+- **Pole moved cue**: a held ref (Ref mode occupation) whose own `sd_u` is over the pole
+  moved limit (default 1.5 cm): "pole moved during the ref (sd 3.1 cm); re-shoot". It
+  compares with nothing, so it also shows on a first visit. Not for a tilt ref: its sd_u is
+  the RMS of the per-lean scatters, which the tilt gates judge.
+
+The notice:
+- red, failed: "pole check: +4.2 cm vs median of 3 visits; -0.5 cm vs last visit", with
+  the alarm sound and the same text, with any cue that may explain it, in the warnings
+  bar (until the next ref). Usually the
+  pole height setting is wrong, the pole sank, or the shot was bad.
+- amber, a cue or a doubtful reference: a failed check against a doubtful pair reads
+  "pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm; shoot again" (neither
+  earlier visit can be called bad; a median reads "vs median of 4 visits that disagree
+  by 7.8 cm around it"); a passing one names the disagreement too. Amber plays
+  the error buzz, not the alarm, and sets no warnings bar.
+- green: "pole check OK (±0.8 cm vs median of 3 visits; +0.2 cm vs last visit)", or
+  "vs 1 earlier visit", with two rising beeps.
+- first visit (or no ground height): "first visit to this mark", no check (the pole
+  moved cue can still make it amber; without a ground height the earlier visits within
+  0.30 m still give the off-centre cue).
+
+A young or suspect ref (see False-fix guard) shows its fix text in the same notice; the
+more severe colour wins (red over amber over green). Cues are appended after the check
+text, separated by "; ".
+
+The `pole check n=…` event line: the notice text, then `diff_last_m`, `diff_mean_m`,
+`visits`, `last` (session/n), `ok`, and from 0.12.0 `diff_ref_m`, `ref_kind`
+(single|pair|median), `within_tol`, `doubtful`, `place_cm`, `sd_u_cm` and `colour`. A
+line with no check (first visit, no ground height) has the notice text, then `place_cm`,
+`sd_u_cm` and `colour`; `place_cm` and `sd_u_cm` are on every check and no-check line,
+empty when not applicable (e.g. `place_cm= sd_u_cm=3.1 colour=amber`). A ref flagged
+while its check ran logs `pole check n=…: result not shown (voided)` with no keys. `ok` is false only for a red, failed check (a doubtful reference
+outside the tolerance logs `ok=true within_tol=false doubtful=true`), which is what the
+QGIS importer colours red; until 0.11 `ok` was the check against the most recent visit.
 
 From 0.6 its rows carry the ten new points.csv columns; the first time 0.6 appends to an
 older `refs.csv` it rewrites the header line to the new one (rows unchanged), so the older
 rows simply have empty values there. From 0.9.0 the rows also carry `void` and
 `void_reason` (same header upgrade); flagging a ref rewrites its row in place (see
-Flagged captures), and a row with `void` = 1 is never a visit.
+Flagged captures), and a row with `void` = 1 is never a visit. From 0.11.0 the rows carry
+the four fix columns too (same header upgrade), and a row with `fix_young` = 1 is never a
+visit either (an older row without the column is used as before).
 
 `refs.csv` contains positions. It stays on the phone and in Drive; never commit it to
 the public repo. An earlier install's `refs.csv` in Documents may not be readable after a
@@ -562,7 +759,7 @@ overlay and set in Settings > Coverage.
 - Grid: nodes every grid spacing (default 0.5 m) in the map frame, anchored at the map
   origin.
 - What feeds it: this session's Surface captures with RTK fixed (fix 4) and not
-  `fix_suspect`, single or tilt, not flagged (void); not float, object, ref or photo rows. Earlier sessions
+  `fix_suspect`, single, auto (0.13.0) or tilt, with a finite ground height, not flagged (void); not float, object, ref or photo rows. Earlier sessions
   are not loaded. Each capture is fed once as it arrives; the overlay is rebuilt from the
   session's captures when the map origin changes, a new session starts, or a Coverage
   setting changes.
@@ -620,8 +817,9 @@ overlay and set in Settings > Coverage.
 - Per-capture sigmas: the budget of `analysis/qgis/soundings.py` (`sigma_terms`, the same
   constants), core/SoundingSigma:
   sz² = rtk² + age² + settle² + pole² + ground², with rtk = max(1 cm, `sd_u_m`), age =
-  1 mm/s beyond 2 s of correction age, settle = 8 cm (1 - fix_age/90 s)² for a capture
-  taken within 90 s of its fix starting, pole = pole_m (1 - cos 1°) + 1 cm tip sink,
+  1 mm/s beyond 2 s of correction age, settle = 10 cm (1 - fix_age/120 s) for a capture
+  taken within 120 s of its fix starting (90 s until 0.10; 8 cm (1 - fix_age/120 s)² before
+  the #20 re-fit), pole = pole_m (1 - cos 1°) + 1 cm tip sink,
   ground the Coverage setting; sh = hypot(max(1 cm, hypot(`sd_e_m`, `sd_n_m`)/√2),
   pole_m sin 1°). A single capture takes a 1° bubble tilt, as soundings.py does. A tilt
   capture takes its own `tilt_sd_u_m` and hypot(`tilt_sd_e_m`, `tilt_sd_n_m`)/√2 with

@@ -132,12 +132,21 @@ public final class LoggerService extends Service {
             if (v != poleHeight) {
                 poleHeight = v;
                 event("pole_height=" + PoleHeight.format(v) + " changed");
+                Survey sv = survey;
+                if (sv != null) sv.poleHeightChanged();
             }
         } else if (Settings.FRAME.equals(key) || Settings.FRAME_EPOCH.equals(key)) {
             updateFrame();
-        } else if (Settings.SETTLE_S.equals(key) || Settings.JUMP_M.equals(key)) {
+        } else if (Settings.SETTLE_S.equals(key) || Settings.JUMP_M.equals(key)
+                || Settings.FLOAT_SPELL_S.equals(key)) {
             Survey sv = survey;
             if (sv != null) sv.applyGuardSettings();
+        } else if (Settings.AUTO_PLUMB_DEG.equals(key) || Settings.AUTO_HOLD_S.equals(key)
+                || Settings.AUTO_STILL_CM.equals(key)) {
+            Survey sv = survey;
+            if (sv != null) sv.applyAutoSettings();
+        } else if (Settings.AUTO_CAPTURE.equals(key)) {
+            event("auto_capture=" + (Settings.autoCapture(p) ? "on" : "off") + " changed");
         }
     };
 
@@ -213,6 +222,8 @@ public final class LoggerService extends Service {
             stopGps("gps wait for the rover ended after " + (w.waitTimeoutMs / 1000) + " s");
         }
         if (stopIfIdle()) return;
+        Survey sv = survey;
+        if (sv != null) sv.onTick();   // a pole calibration with no epochs times out; auto capture cues off
         updateNotification();
         main.postDelayed(tick, TICK_MS);
     }
@@ -384,6 +395,9 @@ public final class LoggerService extends Service {
                 session = s;
                 lastDir = s.dir;
                 s.event("pole_height=" + PoleHeight.format(poleHeight));
+                s.event(String.format(Locale.US, "auto_capture=%s plumb_deg=%.1f hold_s=%.1f still_cm=%.1f",
+                        Settings.autoCapture(prefs) ? "on" : "off", Settings.autoPlumbDeg(prefs),
+                        Settings.autoHoldS(prefs), Settings.autoStillM(prefs) * 100));
                 updateFrame();
                 PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                 wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "icecube:logger");
@@ -427,10 +441,26 @@ public final class LoggerService extends Service {
         }
     }
 
+    /** Starts (start true) or cancels the pole calibration (see Survey); refused when no session is open. */
+    Survey.Outcome calibrate(boolean start) {
+        Survey sv = survey;
+        if (sv == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            return new Survey.Outcome(false, "No session: tap REC to start one");
+        }
+        return start ? sv.startCalibration() : sv.cancelCalibration("cancelled by user");
+    }
+
     /** Mean phone gravity vector over [fromNs, toNs] plus the sample count as a 4th element, or null. */
     double[] gravityMean(long fromNs, long toNs) {
         Session s = session;
         return s == null ? null : s.imu.gravityMean(fromNs, toNs);
+    }
+
+    /** The gyro rotation (rad, phone axes) of the samples that arrived in (fromNs, toNs], or null. */
+    double[] gyroIntegral(long fromNs, long toNs) {
+        Session s = session;
+        return s == null ? null : s.imu.gyroIntegral(fromNs, toNs);
     }
 
     /** The open session's captures, or null. */

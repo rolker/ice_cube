@@ -1,5 +1,6 @@
 package rink.icecube.logger;
 
+import android.content.SharedPreferences;
 import android.os.SystemClock;
 
 import java.io.File;
@@ -16,11 +17,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import rink.icecube.logger.core.AutoCapture;
 import rink.icecube.logger.core.Epoch;
 import rink.icecube.logger.core.EpochAverage;
 import rink.icecube.logger.core.FixGuard;
+import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.PhotoRule;
 import rink.icecube.logger.core.PointRow;
+import rink.icecube.logger.core.PoleAxis;
+import rink.icecube.logger.core.PoleCalibration;
 import rink.icecube.logger.core.PoleCheck;
 import rink.icecube.logger.core.RefOccupation;
 import rink.icecube.logger.core.SurveyMode;
@@ -34,12 +39,23 @@ import rink.icecube.logger.core.VoidRule;
  * each change, which is tiny) and as "capture ..." events in events.csv. Refs are also
  * appended to refs.csv and checked against earlier visits (the pole check).
  *
- * The false-fix guard ({@link FixGuard}) follows the RTK fixed stretches: captures, ref
- * counting and tilt leans are held back while a new fix settles, and rows from a stretch
- * that began with a large jump are flagged (fix_suspect) with an amber notice.
+ * The false-fix guard ({@link FixGuard}) follows the RTK fixed stretches: captures, refs
+ * and tilt leans from a young fix go ahead with an amber notice and the YOUNG cue and are
+ * marked (fix_young; logger 0.11.0, #15: until then they were held back), and rows from a
+ * stretch that began with a large jump or right after a long float spell are flagged
+ * (fix_suspect, suspect_reason) with an amber notice.
  *
  * Tilt capture ({@link TiltSet}): startTilt, then lean() per lean, finishTilt (MARK) or
  * cancelTilt; every lean goes to tilt_obs.csv.
+ *
+ * Auto capture ({@link AutoCapture}, logger 0.13.0, #35): every epoch goes to the arming
+ * state machine with the pole's angle from plumb (phone gravity against the pole axis this
+ * session's {@link PoleCalibration} found); when it fires, the capture takes the same path as
+ * a Surface MARK ({@link #capture}), method auto. Every capture at a stop (auto, a Surface MARK,
+ * a Surface tilt set's tip, an accepted calibration's tip) latches it, until the pole's tip
+ * has certainly moved away (see AutoCapture); undoing the latched capture clears it.
+ * The calibration runs on the epochs too (startCalibration / cancelCalibration); MARK, tilt
+ * sets and refs are refused while it runs, and it is refused while they run.
  *
  * Flagging ({@link #voidCapture}, {@link #unvoidCapture}, logger 0.9.0): a capture row is
  * marked void, never removed; its photos move (see {@link VoidRule}); the flag goes to
@@ -54,6 +70,17 @@ import rink.icecube.logger.core.VoidRule;
 final class Survey {
     static final long WINDOW_NS = 1_000_000_000L, MAX_AGE_NS = 2_000_000_000L, KEEP_NS = 10_000_000_000L;
     static final long NOTICE_MS = 10_000;
+    /** Auto capture: the plumb angle is from the gravity of the last 0.5 s before each epoch. */
+    static final long PLUMB_WINDOW_NS = 500_000_000L;
+    /**
+     * Pole calibration: each sample's gravity is the mean over +-100 ms about 100 ms before
+     * the GGA arrived (the receiver's output delay; a guess the first field run should check),
+     * so the 200 ms just before arrival: every sample of it is already in. The twist phase's
+     * gyro rotation is taken between the same shifted instants of consecutive epochs.
+     */
+    static final long CAL_LATENCY_NS = 100_000_000L, CAL_HALF_NS = 100_000_000L;
+    /** The auto line reads "not RTK fixed" once the last epoch is older than this. */
+    static final long AUTO_STALE_NS = 3_000_000_000L;
 
     /**
      * A short message for the map, green (ok), amber (warn) or red, shown until untilMs
@@ -76,12 +103,17 @@ final class Survey {
         }
     }
 
-    /** The fix chip's guard state: settling seconds left (0: not settling), and a suspect stretch's jump. */
+    /**
+     * The fix chip's guard state: the young fix's age in whole seconds (-1: not young), and
+     * whether the stretch is suspect, by its jump (else after a float spell), and the jump.
+     */
     static final class FixState {
-        final int settleS;
-        final boolean suspect;
+        final int youngS;
+        final boolean suspect, byJump;
         final double jump;
-        FixState(int settleS, boolean suspect, double jump) { this.settleS = settleS; this.suspect = suspect; this.jump = jump; }
+        FixState(int youngS, boolean suspect, boolean byJump, double jump) {
+            this.youngS = youngS; this.suspect = suspect; this.byJump = byJump; this.jump = jump;
+        }
     }
 
     /** What the map's tilt overlay shows. Arrays per lean; azimuths and tilts NaN before 3 leans. */
@@ -92,8 +124,8 @@ final class Survey {
         final boolean[] imuBad;
         final double coverage, rms, maxImu, nowAzimuth, nowTilt, pole;
         final double[] sd;
-        final int settleS;
-        TiltView(TiltSet t, double nowAzimuth, double nowTilt, int settleS) {
+        final int youngS;
+        TiltView(TiltSet t, double nowAzimuth, double nowTilt, int youngS) {
             List<TiltSet.Lean> ls = t.leans();
             cls = t.cls;
             pole = t.pole;
@@ -112,7 +144,22 @@ final class Survey {
             maxImu = r == null ? Double.NaN : r.maxImuDeg;
             this.nowAzimuth = nowAzimuth;
             this.nowTilt = nowTilt;
-            this.settleS = settleS;
+            this.youngS = youngS;
+        }
+    }
+
+    /**
+     * The map's auto capture line: text, and its colour kind (CALIBRATE: a calibration runs or
+     * is needed, tap to start; OFF: off for the fix; IDLE: off for a tilt set or ref; READY:
+     * armed; DONE: captured here). Null when the line is hidden (setting off, not Surface).
+     */
+    static final class AutoView {
+        enum Kind { CALIBRATE, OFF, IDLE, READY, DONE }
+        final String text;
+        final Kind kind;
+        final boolean calibrating, needsCalibration;
+        AutoView(String text, Kind kind, boolean calibrating, boolean needsCalibration) {
+            this.text = text; this.kind = kind; this.calibrating = calibrating; this.needsCalibration = needsCalibration;
         }
     }
 
@@ -121,10 +168,11 @@ final class Survey {
         final double remainingS, progress;
         final int epochs, durationS;
         final boolean paused;
-        final boolean settling;
-        RefView(RefOccupation r, int durationS, long nowNs, boolean settling) {
+        /** The ref will be marked young: a counted epoch was young (the latch), or the fix is young now. */
+        final boolean young;
+        RefView(RefOccupation r, int durationS, long nowNs, boolean young) {
             remainingS = r.remainingSeconds(); progress = r.progress(); epochs = r.epochs();
-            this.durationS = durationS; this.settling = settling; paused = r.pausedAt(nowNs) || settling;
+            this.durationS = durationS; this.young = young; paused = r.pausedAt(nowNs);
         }
     }
 
@@ -167,21 +215,51 @@ final class Survey {
     private volatile int poleWarningN;
     private final FixGuard guard;
     private double refJump = Double.NaN;
-    private boolean refSuspect;
+    private boolean refSuspect, refYoung, refWhyJump, refWhySpell;
     private TiltSet tilt;
     private int tiltSets;
+    private final AutoCapture auto;
+    private PoleCalibration calibration;
+    private PoleAxis poleAxis;
+    private int calibrations;
+    private long calPrevNs = Long.MIN_VALUE;   // the last epoch fed to the calibration, for the gyro rotation
+    private LocalFrame autoFrame;          // horizontal positions for auto capture: any fixed local frame
+    private AutoCapture.Decision autoLast;
+    private long autoLastNs;
+    private String autoLastLabel = "";
+    private int autoLatchN;                // the capture row auto capture is latched on, 0 for none or the calibration
 
     Survey(LoggerService svc, File dir) {
         this.svc = svc;
         this.dir = dir;
         photos = new File(dir, "photos");
-        guard = new FixGuard(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)));
+        guard = new FixGuard(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),
+                Settings.floatSpellNs(Settings.prefs(svc)));
+        SharedPreferences p = Settings.prefs(svc);
+        auto = new AutoCapture(Settings.autoPlumbDeg(p), Settings.autoHoldS(p), Settings.autoStillM(p));
         writePoints(new ArrayList<String>());   // points.csv with its header from the start
     }
 
-    /** Settings changed: the settle time applies at once, the jump threshold from the next stretch. */
+    /** Settings changed: the auto capture limits apply from the next epoch. */
+    synchronized void applyAutoSettings() {
+        SharedPreferences p = Settings.prefs(svc);
+        auto.setLimits(Settings.autoPlumbDeg(p), Settings.autoHoldS(p), Settings.autoStillM(p));
+    }
+
+    /**
+     * The pole height setting changed. The calibrated axis is the phone's mount on the pole and
+     * stays, but if the phone was moved to change the height the axis is stale, so after a
+     * calibration this posts a notice saying so (no forced recalibration).
+     */
+    synchronized void poleHeightChanged() {
+        if (poleAxis == null) return;
+        notice = new Notice("Pole height changed: recalibrate if the phone moved in its mount", false, true);
+    }
+
+    /** Settings changed: the young limit applies at once, the jump and float spell thresholds from the next stretch. */
     synchronized void applyGuardSettings() {
-        guard.setLimits(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)));
+        guard.setLimits(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),
+                Settings.floatSpellNs(Settings.prefs(svc)));
     }
 
     // ---- GPS epochs ----
@@ -193,26 +271,30 @@ final class Survey {
             while (epochs.peekFirst().elapsedNs < e.elapsedNs - KEEP_NS) epochs.removeFirst();
             FixGuard.Stretch st = guard.onEpoch(e);
             if (st != null) svc.event(st.eventText());
+            calibrationEpoch(e);
+            autoEpoch(e);
             RefOccupation r = ref;
             if (r == null) return;
-            boolean settling = guard.settling(e.elapsedNs);
-            if (e.fixed() && !settling) {
+            // every fixed epoch counts (0.11.0, #15: young epochs are no longer paused); the
+            // ref is young if any counted epoch was (worst case, as for tilt rows). Latch only
+            // for an epoch RefOccupation counted (not one stamped before the ref start, #15)
+            int counted = r.epochs();
+            RefOccupation.Change change = r.onEpoch(e);
+            if (r.epochs() > counted) {
                 FixGuard.Stretch cur = guard.current();
                 if (cur != null) {
                     if (!Double.isNaN(cur.jump)) refJump = Double.isNaN(refJump) ? cur.jump : Math.max(refJump, cur.jump);
                     refSuspect |= cur.suspect;
+                    refWhyJump |= cur.reason.contains(FixGuard.REASON_JUMP);
+                    refWhySpell |= cur.reason.contains(FixGuard.REASON_FLOAT_SPELL);
+                    refYoung |= guard.young(e.elapsedNs);
                 }
             }
-            switch (r.onEpoch(e, !settling)) {
+            switch (change) {
                 case PAUSED:
-                    if (e.fixed() && settling) {
-                        svc.event(String.format(Locale.US, "ref paused: fix settling, %.0f s to go", r.remainingSeconds()));
-                        notice = new Notice("Ref paused: fix settling", false);
-                    } else {
-                        svc.event(String.format(Locale.US, "ref paused: not RTK fixed for 2 s (quality %d), %.0f s to go",
-                                e.quality, r.remainingSeconds()));
-                        notice = new Notice("Ref paused: not RTK fixed", false);
-                    }
+                    svc.event(String.format(Locale.US, "ref paused: not RTK fixed for 2 s (quality %d), %.0f s to go",
+                            e.quality, r.remainingSeconds()));
+                    notice = new Notice("Ref paused: not RTK fixed", false);
                     cue(Feedback.Cue.REF_PAUSED);
                     break;
                 case RESUMED:
@@ -225,13 +307,18 @@ final class Survey {
                     PointRow finished = PointRow.of(++counter, PointRow.REF, e.elapsedNs, r.average(), refPole,
                             System.currentTimeMillis());
                     finished.method = PointRow.OCCUPATION;
-                    FixGuard.Stretch cur = guard.current();
-                    finished.fixAge = cur == null ? Double.NaN : cur.ageSeconds(e.elapsedNs);
+                    // fix_age_s, fix_start, float_spell_s: the last epoch's stretch; jump, suspect
+                    // and young: worst over the counted epochs
+                    finished.setStretch(guard.current(), e.elapsedNs, refYoung);
                     finished.fixJump = refJump;
                     finished.fixSuspect = refSuspect;
+                    finished.suspectReason = reasons(refWhyJump, refWhySpell);
+                    finished.fixYoung = refYoung ? 1 : 0;
                     addRow(finished);
-                    svc.event(String.format(Locale.US, "ref end n=%d epochs=%d pauses=%d", finished.n, r.epochs(), r.pauses()));
-                    cue(Feedback.Cue.REF_END);
+                    svc.event(String.format(Locale.US, "ref end n=%d epochs=%d pauses=%d young=%d", finished.n, r.epochs(),
+                            r.pauses(), finished.fixYoung));
+                    // one fix cue: SUSPECT (from the pole check) wins over YOUNG, as for MARK
+                    cue(refYoung && !refSuspect ? Feedback.Cue.YOUNG : Feedback.Cue.REF_END);
                     // Queued under the lock, like finishTilt: a voidCapture right after this
                     // epoch then queues its refs.csv rewrite after the append, never before
                     // (which would find no row and log a false error). The rewrite of a row
@@ -266,16 +353,41 @@ final class Survey {
     /** The stretch an RTK fixed average belongs to (the latest one), or null if a is not fixed. */
     private FixGuard.Stretch stretchOf(EpochAverage a) { return a != null && a.quality == 4 ? guard.last() : null; }
 
-    /** Seconds of settling left for a capture from stretch s at now (0 if none). */
-    private int settleLeft(FixGuard.Stretch s, long now) {
-        if (s == null || !guard.settling(s, now)) return 0;
-        return Math.max(1, (int) Math.ceil((guard.settleNs() - (now - s.startNs)) / 1e9));
+    private static String jumpText(double j) { return Double.isNaN(j) ? "?" : String.format(Locale.US, "%.1f m", j); }
+
+    /** "jump", "float_spell", "jump;float_spell" or "". */
+    private static String reasons(boolean jump, boolean spell) {
+        return jump && spell ? FixGuard.REASON_JUMP + ";" + FixGuard.REASON_FLOAT_SPELL
+                : jump ? FixGuard.REASON_JUMP : spell ? FixGuard.REASON_FLOAT_SPELL : "";
     }
 
-    private static String jumpText(double j) { return Double.isNaN(j) ? "?" : String.format(Locale.US, "%.1f m", j); }
+    /** The amber notice text for a suspect fix: why, and the jump if that is a reason. */
+    private static String suspectText(PointRow r) {
+        if (FixGuard.REASON_FLOAT_SPELL.equals(r.suspectReason)) {
+            return "  fix may be false (after a long float spell)";
+        }
+        return "  fix may be false (jumped " + jumpText(r.fixJump) + ")";
+    }
+
+    /**
+     * "  fix young: 95 s" for a young row, else "". An occupation ref is young if any counted
+     * epoch was, while its fix_age_s is the last epoch's (often past the limit), so it reads
+     * "  fix young during the ref" without seconds; so does any row whose age is unknown or
+     * not under the young limit.
+     */
+    private String youngText(PointRow r) {
+        if (r.fixYoung != 1) return "";
+        if (PointRow.OCCUPATION.equals(r.method)) return "  fix young during the ref";
+        return Double.isNaN(r.fixAge) || r.fixAge * 1e9 >= guard.youngNs() ? "  fix young"
+                : String.format(Locale.US, "  fix young: %.0f s", Math.floor(r.fixAge));
+    }
 
     synchronized Outcome mark(SurveyMode mode) {
         long now = SystemClock.elapsedRealtimeNanos();
+        if (calibration != null) {
+            cue(Feedback.Cue.ERROR);
+            return new Outcome(false, "Calibrating the pole: MENU cancels");
+        }
         if (tilt != null) return finishTilt(false);
         if (ref != null) return cancelRef("cancelled by MARK");
         EpochAverage a = average(now);
@@ -284,18 +396,11 @@ final class Survey {
             svc.event("capture refused class=" + mode.key + ": no fix");
             return new Outcome(false, "No fix: nothing captured");
         }
-        FixGuard.Stretch s = stretchOf(a);
-        int left = settleLeft(s, now);
-        if (left > 0) {
-            cue(Feedback.Cue.ERROR);
-            svc.event("capture refused class=" + mode.key + ": fix settling " + left + " s");
-            return new Outcome(false, "fix settling: " + left + " s");
-        }
         if (mode == SurveyMode.REF) {
             refSeconds = Settings.refSeconds(Settings.prefs(svc));
             refPole = svc.poleHeight();
             refJump = Double.NaN;
-            refSuspect = false;
+            refSuspect = refYoung = refWhyJump = refWhySpell = false;
             ref = new RefOccupation(now, refSeconds * 1_000_000_000L);
             svc.event(String.format(Locale.US, "ref start n=%d duration_s=%d pole_height=%.3f quality=%d",
                     counter + 1, refSeconds, refPole, a.quality));
@@ -304,25 +409,279 @@ final class Survey {
                     : "Ref started: waiting for RTK fixed", a.quality == 4);
             return new Outcome(true, null);
         }
-        PointRow r = PointRow.of(counter + 1, mode.key, now, a, svc.poleHeight(), System.currentTimeMillis());
-        r.method = PointRow.SINGLE;
-        if (s != null) {
-            r.fixAge = s.ageSeconds(a.lastNs);
-            r.fixJump = s.jump;
-            r.fixSuspect = s.suspect;
+        PointRow r = capture(mode, now, a, PointRow.SINGLE);
+        if (mode == SurveyMode.SURFACE) {
+            // the tip is within pole·sin(θ) of the averaged antenna, θ from the same second's
+            // gravity; with no gravity, θ the plumb limit; with no axis, the pole's length
+            double pole = svc.poleHeight();
+            double plumb = poleAxis == null ? Double.NaN
+                    : poleAxis.plumbDeg(svc.gravityMean(now - WINDOW_NS, now));
+            double tipR = AutoCapture.markTipRadiusM(pole, plumb, poleAxis != null, auto.plumbDeg());
+            autoTaken(r.lat, r.lon, r.hAnt, tipR, label(r.cls) + r.n, r.n);
         }
+        return new Outcome(true, null);
+    }
+
+    /**
+     * A capture happened at this stop (Surface MARK, auto, a Surface tilt set's tip, an
+     * accepted calibration's tip), its tip within tipR (m) of (lat, lon) horizontally: latch
+     * auto capture there, so no auto capture follows until the tip moves away. n is its row
+     * (0 for the calibration), for UNDO. At a stop that is still latched the latch (and its
+     * row) stays, so undoing a MARK there leaves the stop taken by the earlier capture. Lock held.
+     */
+    private void autoTaken(double lat, double lon, double h, double tipR, String label, int n) {
+        double[] p = autoEnu(lat, lon, h);
+        if (p == null || !auto.taken(p[0], p[1], tipR)) return;
+        autoLastLabel = label;
+        autoLatchN = n;
+    }
+
+    /**
+     * A Surface or Object capture from the 1 s average a (not null): the row (with the fix
+     * guard's columns), its event, notice and cue. MARK (method single) and auto capture
+     * (method auto) share it. Called with the lock held.
+     */
+    private PointRow capture(SurveyMode mode, long now, EpochAverage a, String method) {
+        FixGuard.Stretch s = stretchOf(a);
+        PointRow r = PointRow.of(counter + 1, mode.key, now, a, svc.poleHeight(), System.currentTimeMillis());
+        r.method = method;
+        r.setStretch(s, a.lastNs, guard.young(s, a.lastNs));   // young at the time fix_age_s is taken
         counter++;
         addRow(r);
-        String text = String.format(Locale.US, "%s%d  %s  %d ep  ±%.1f cm", label(r.cls), r.n,
-                fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
+        String text = String.format(Locale.US, "%s%d%s  %s  %d ep  ±%.1f cm", label(r.cls), r.n,
+                PointRow.AUTO.equals(method) ? " auto" : "", fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
         if (r.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
-            notice = new Notice(text + "  fix may be false (jumped " + jumpText(r.fixJump) + ")", false, true, r, true);
+            notice = new Notice(text + suspectText(r) + youngText(r), false, true, r, true);
+        } else if (r.fixYoung == 1) {
+            cue(Feedback.Cue.YOUNG);
+            notice = new Notice(text + youngText(r), false, true, r, true);
         } else {
             cue(mode == SurveyMode.SURFACE ? Feedback.Cue.SURFACE : Feedback.Cue.OBJECT);
             notice = new Notice(text, r.fix == 4, false, r, true);
         }
+        return r;
+    }
+
+    // ---- auto capture and pole calibration ----
+
+    /** Horizontal position (e, n) in the auto capture frame, set at the first call; null without a position. */
+    private double[] autoEnu(double lat, double lon, double h) {
+        if (Double.isNaN(lat) || Double.isNaN(lon)) return null;
+        double hh = Double.isNaN(h) ? 0 : h;
+        if (autoFrame == null) autoFrame = new LocalFrame(lat, lon, hh);
+        return autoFrame.toEnu(lat, lon, hh);
+    }
+
+    /** Feeds the epoch to auto capture and captures when it fires (lock held). */
+    private void autoEpoch(Epoch e) {
+        SharedPreferences p = Settings.prefs(svc);
+        AutoCapture.Input in = new AutoCapture.Input();
+        in.tNs = e.elapsedNs;
+        in.enabled = Settings.autoCapture(p);
+        in.surface = Settings.mode(p) == SurveyMode.SURFACE;
+        in.calibrating = calibration != null;
+        in.calibrated = poleAxis != null;
+        in.tiltRunning = tilt != null;
+        in.refRunning = ref != null;
+        in.fixed = e.fixed();
+        in.height = !Double.isNaN(e.h);
+        FixGuard.Stretch cur = guard.current();
+        in.young = guard.young(e.elapsedNs);
+        in.suspect = cur != null && cur.suspect;
+        if (e.fixed()) {
+            double[] h = autoEnu(e.lat, e.lon, e.h);
+            in.e = h[0];
+            in.n = h[1];
+        }
+        in.plumbDeg = poleAxis == null ? Double.NaN
+                : poleAxis.plumbDeg(svc.gravityMean(e.elapsedNs - PLUMB_WINDOW_NS, e.elapsedNs));
+        in.poleM = svc.poleHeight();
+        AutoCapture.Decision d = auto.onEpoch(in);
+        if (!auto.latched()) autoLatchN = 0;   // the tip moved away: undoing that row no longer touches the latch
+        autoLast = d;
+        autoLastNs = e.elapsedNs;
+        if (d.cue == AutoCapture.Cue.ARMED) {
+            svc.event("auto capture armed");
+            cue(Feedback.Cue.AUTO_ARMED);
+        } else if (d.cue == AutoCapture.Cue.OFF) {
+            svc.event("auto capture off: " + d.why.name().toLowerCase(Locale.US));
+            cue(Feedback.Cue.AUTO_OFF);
+        }
+        if (!d.fire) return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        EpochAverage a = average(now);
+        if (a == null || a.quality != 4) {   // cannot happen after a fixed epoch; never capture a doubt
+            svc.event("auto capture skipped: no RTK fixed average");
+            return;
+        }
+        PointRow r = capture(SurveyMode.SURFACE, now, a, PointRow.AUTO);
+        if (auto.taken(d.e, d.n, d.tipRadiusM)) {   // latched only now that the capture happened
+            autoLastLabel = label(r.cls) + r.n;
+            autoLatchN = r.n;
+        }
+        svc.event(String.format(Locale.US, "auto capture n=%d plumb_deg=%.1f held_s=%.1f spread_cm=%.1f epochs=%d",
+                r.n, in.plumbDeg, d.heldS, d.spreadM * 100, d.epochs));
+    }
+
+    /** Feeds the epoch to a running pole calibration (lock held). */
+    private void calibrationEpoch(Epoch e) {
+        PoleCalibration c = calibration;
+        if (c == null) return;
+        long at = e.elapsedNs - CAL_LATENCY_NS;
+        double[] g = svc.gravityMean(at - CAL_HALF_NS, at + CAL_HALF_NS);
+        double[] g3 = g == null ? null : new double[] {g[0], g[1], g[2]};
+        double[] gyro = calPrevNs == Long.MIN_VALUE ? null : svc.gyroIntegral(calPrevNs - CAL_LATENCY_NS, at);
+        calPrevNs = e.elapsedNs;
+        calibrationChange(c, c.onEpoch(e, g3, gyro));
+    }
+
+    /**
+     * A service tick (lock taken): a running calibration with no epochs for a while fails, and
+     * once the epochs have stopped for {@link #AUTO_STALE_NS} (when the AUTO line turns to
+     * "not RTK fixed") an armed auto capture plays AUTO_OFF.
+     */
+    synchronized void onTick() {
+        long now = SystemClock.elapsedRealtimeNanos();
+        PoleCalibration c = calibration;
+        if (c != null) calibrationChange(c, c.onTick(now));
+        if (autoLast != null && now - autoLastNs > AUTO_STALE_NS && auto.onStale() == AutoCapture.Cue.OFF) {
+            svc.event("auto capture off: no_epochs");
+            cue(Feedback.Cue.AUTO_OFF);
+        }
+    }
+
+    /** Acts on what an epoch or a tick changed in the calibration c (lock held). */
+    private void calibrationChange(PoleCalibration c, PoleCalibration.Change change) {
+        switch (change) {
+            case RESTART:
+                cue(Feedback.Cue.ERROR);
+                notice = new Notice("Calibrate: " + c.restartCause() + ", hold the pole still again", false, true);
+                break;
+            case LEAN:
+                svc.event("pole calibration lean set=" + calibrations);
+                cue(Feedback.Cue.CAL_PHASE);
+                break;
+            case TWIST:
+                svc.event(String.format(Locale.US, "pole calibration twist set=%d samples=%d skipped=%d", calibrations,
+                        c.samples(), c.skipped()));
+                cue(Feedback.Cue.CAL_PHASE);
+                break;
+            case DONE:
+                calibration = null;
+                poleAxis = c.result();
+                auto.reset();
+                double[] tip = c.tipGeodetic();   // the calibration point is this stop's capture
+                if (tip != null) autoTaken(tip[0], tip[1], tip[2], 0, "the calibration point", 0);
+                PoleAxis a = poleAxis;
+                // the axis is the phone's mounting on the pole (phone axes), not a position
+                svc.event(String.format(Locale.US, "pole axis calibrated set=%d residual_deg=%.2f samples=%d"
+                                + " twist_samples=%d twist_deg=%.0f skipped=%d cover_deg=%.0f rms_m=%.4f axis=%.4f;%.4f;%.4f"
+                        + " lean_speeds_mps=%s",
+                        calibrations, a.residualDeg, a.samples, a.twistSamples, c.twistDeg(), c.skipped(), a.coverageDeg,
+                        a.rmsM, a.axis[0], a.axis[1], a.axis[2], c.leanSpeedsText()));
+                cue(Feedback.Cue.CAL_DONE);
+                SharedPreferences p = Settings.prefs(svc);
+                String then = !Settings.autoCapture(p) ? "Auto capture is off in Settings"
+                        : Settings.mode(p) != SurveyMode.SURFACE ? "Auto capture works in Surface mode"
+                        : "Auto capture on";
+                notice = new Notice(String.format(Locale.US, "Pole calibrated: %d leans, %.1f° RMS. %s",
+                        c.leans(), a.residualDeg, then), true);
+                break;
+            case FAILED:
+                calibration = null;
+                svc.event("pole calibration failed set=" + calibrations + " lean_speeds_mps=" + c.leanSpeedsText() + ": "
+                        + c.failure());
+                cue(Feedback.Cue.ERROR);
+                notice = new Notice("Calibration failed: " + c.failure(), false, true);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Starts a pole calibration; the previous axis (if any) is dropped. */
+    synchronized Outcome startCalibration() {
+        if (calibration != null) return new Outcome(false, "Calibration already running");
+        if (tilt != null || ref != null) {
+            cue(Feedback.Cue.ERROR);
+            return new Outcome(false, "Finish or cancel the " + (tilt != null ? "tilt set" : "ref") + " first");
+        }
+        long now = SystemClock.elapsedRealtimeNanos();
+        calibration = new PoleCalibration(svc.poleHeight(), Settings.tiltGates(Settings.prefs(svc)), now);
+        calPrevNs = Long.MIN_VALUE;
+        poleAxis = null;
+        auto.reset();
+        autoLatchN = 0;
+        calibrations++;
+        svc.event(String.format(Locale.US, "pole calibration start set=%d pole_height=%.3f", calibrations,
+                calibration.pole));
+        cue(Feedback.Cue.CAL_START);
+        notice = new Notice("Calibrate: tip on a point, hold still, then lean all round, then twist twice", true);
         return new Outcome(true, null);
+    }
+
+    synchronized Outcome cancelCalibration(String why) {
+        if (calibration == null) return new Outcome(false, null);
+        calibration = null;
+        svc.event("pole calibration " + why + " set=" + calibrations);
+        cue(Feedback.Cue.REF_CANCEL);
+        notice = new Notice("Calibration cancelled: auto capture stays off", false);
+        return new Outcome(true, null);
+    }
+
+    synchronized boolean calibrating() { return calibration != null; }
+    synchronized boolean calibrated() { return poleAxis != null; }
+
+    /** The auto capture line for the map (see AutoView), or null when hidden. */
+    synchronized AutoView autoView() {
+        long now = SystemClock.elapsedRealtimeNanos();
+        PoleCalibration c = calibration;
+        if (c != null) {
+            int left = (int) Math.ceil(c.remainingS(now));
+            String text;
+            switch (c.phase()) {
+                case STILL: text = "CALIBRATE 1/3: tip on a point, hold still  " + left + " s"; break;
+                case LEAN: text = "CALIBRATE 2/3: lean slowly all round  " + left + " s"; break;
+                default: text = "CALIBRATE 3/3: twist the pole slowly, twice  " + left + " s"; break;
+            }
+            return new AutoView(text, AutoView.Kind.CALIBRATE, true, false);
+        }
+        SharedPreferences p = Settings.prefs(svc);
+        if (!Settings.autoCapture(p) || Settings.mode(p) != SurveyMode.SURFACE) return null;
+        if (poleAxis == null) return new AutoView("AUTO: calibrate to enable (tap)", AutoView.Kind.CALIBRATE, false, true);
+        if (tilt != null) return new AutoView("AUTO: off during the tilt set", AutoView.Kind.IDLE, false, false);
+        if (ref != null) return new AutoView("AUTO: off during the ref", AutoView.Kind.IDLE, false, false);
+        AutoCapture.Decision d = autoLast;
+        if (d == null || now - autoLastNs > AUTO_STALE_NS) {
+            return new AutoView("AUTO: off, not RTK fixed", AutoView.Kind.OFF, false, false);
+        }
+        switch (d.why) {
+            case NO_FIX: return new AutoView("AUTO: off, not RTK fixed", AutoView.Kind.OFF, false, false);
+            case NO_HEIGHT: return new AutoView("AUTO: off, no height in the GGA", AutoView.Kind.OFF, false, false);
+            case FIX_YOUNG:
+                int y = guard.youngAgeSeconds(now);
+                return new AutoView(y >= 0 ? "AUTO: off, fix young " + y + " s" : "AUTO: off, fix young",
+                        AutoView.Kind.OFF, false, false);
+            case FIX_SUSPECT: return new AutoView("AUTO: off, fix may be false", AutoView.Kind.OFF, false, false);
+            case NOT_PLUMB: {
+                double plumb = poleAxis.plumbDeg(svc.gravityMean(now - PLUMB_WINDOW_NS, now));
+                return new AutoView(Double.isNaN(plumb) ? "AUTO: ready, hold plumb (no gravity)"
+                        : String.format(Locale.US, "AUTO: ready, hold plumb  %.1f°", plumb), AutoView.Kind.READY, false, false);
+            }
+            case MOVING: return new AutoView("AUTO: ready, hold still", AutoView.Kind.READY, false, false);
+            case HOLDING:
+                return new AutoView(String.format(Locale.US, "AUTO: holding  %.1f / %.1f s", d.heldS, auto.holdS()),
+                        AutoView.Kind.READY, false, false);
+            case CAPTURED:
+                if (!auto.latched()) {   // a skipped fire, or the capture was undone: not taken
+                    return new AutoView("AUTO: ready, hold plumb and still", AutoView.Kind.READY, false, false);
+                }
+                return new AutoView("AUTO: " + autoLastLabel + " taken, move to the next point", AutoView.Kind.DONE,
+                        false, false);
+            default:   // the gates above, seen before this frame caught up
+                return new AutoView("AUTO: off", AutoView.Kind.IDLE, false, false);
+        }
     }
 
     // ---- tilt capture ----
@@ -330,6 +689,10 @@ final class Survey {
     /** Starts a tilt set in the given mode (its class). */
     synchronized Outcome startTilt(SurveyMode mode) {
         if (tilt != null) return new Outcome(false, "Tilt capture already running");
+        if (calibration != null) {
+            cue(Feedback.Cue.ERROR);
+            return new Outcome(false, "Calibrating the pole: MENU cancels");
+        }
         if (ref != null) {
             cue(Feedback.Cue.ERROR);
             return new Outcome(false, "Ref running: MARK cancels it");
@@ -352,27 +715,28 @@ final class Survey {
         long now = SystemClock.elapsedRealtimeNanos();
         EpochAverage a = average(now);
         FixGuard.Stretch s = stretchOf(a);
-        int left = settleLeft(s, now);
-        if (left > 0) {
-            cue(Feedback.Cue.ERROR);
-            svc.event("tilt lean refused set=" + tiltSets + ": fix settling " + left + " s");
-            return new Outcome(false, "fix settling: " + left + " s");
-        }
+        boolean young = a != null && guard.young(s, a.lastNs);   // at the time the lean's fix_age_s is taken
         double[] g = svc.gravityMean(now - WINDOW_NS, now);
         double[] g3 = g == null ? null : new double[] {g[0], g[1], g[2]};
-        TiltSet.Added added = t.add(a, g3, g == null ? 0 : (int) g[3], s, now, System.currentTimeMillis());
+        TiltSet.Added added = t.add(a, g3, g == null ? 0 : (int) g[3], s, young, now, System.currentTimeMillis());
         if (!added.ok) {
             cue(Feedback.Cue.ERROR);
             svc.event("tilt lean refused set=" + tiltSets + ": " + added.text);
             return new Outcome(false, added.text);
         }
         TiltSet.Lean l = added.lean;
-        svc.event(String.format(Locale.US, "tilt lean set=%d k=%d n_epochs=%d sd_h_m=%.4f tilt_deg=%.1f grav=%s",
+        svc.event(String.format(Locale.US, "tilt lean set=%d k=%d n_epochs=%d sd_h_m=%.4f tilt_deg=%.1f grav=%s young=%d",
                 tiltSets, l.k, l.avg.n, Math.hypot(l.avg.sdE, l.avg.sdN), l.tiltDeg,
-                g3 == null ? "none" : String.format(Locale.US, "%.3f;%.3f;%.3f", g3[0], g3[1], g3[2])));
+                g3 == null ? "none" : String.format(Locale.US, "%.3f;%.3f;%.3f", g3[0], g3[1], g3[2]), l.young ? 1 : 0));
+        String youngNote = l.young ? String.format(Locale.US, "  fix young: %.0f s", Math.floor(l.fixAge)) : "";
         if (l.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
-            notice = new Notice(added.text + "  fix may be false (jumped " + jumpText(l.fixJump) + ")", false, true);
+            String why = l.stretch != null && FixGuard.REASON_FLOAT_SPELL.equals(l.stretch.reason)
+                    ? "  fix may be false (after a long float spell)" : "  fix may be false (jumped " + jumpText(l.fixJump) + ")";
+            notice = new Notice(added.text + why + youngNote, false, true);
+        } else if (l.young) {
+            cue(Feedback.Cue.YOUNG);
+            notice = new Notice(added.text + youngNote, false, true);
         } else {
             cue(Feedback.Cue.LEAN);
             notice = new Notice(added.text, true);
@@ -423,18 +787,23 @@ final class Survey {
                 r.warnings.isEmpty() ? "none" : android.text.TextUtils.join(" | ", r.warnings),
                 drops.length() > 0 ? " " + drops : ""));
         writeTiltObs(t.obsRows(set, row.n));
+        // a Surface set is this stop's capture: standing the pole up on its tip takes no auto capture
+        if (SurveyMode.SURFACE.key.equals(row.cls)) autoTaken(row.lat, row.lon, row.hAnt, 0, label(row.cls) + row.n, row.n);
         String text = String.format(Locale.US, "%s%d tilt  %d leans  rms %.1f cm  cover %.0f°  σ %.1f cm", label(row.cls),
                 row.n, r.used.size(), s.rms * 100, s.coverageDeg, s.maxSd() * 100);
-        boolean warn = !r.warnings.isEmpty() || row.fixSuspect;
-        if (row.fixSuspect) text += "  fix may be false (jumped " + jumpText(row.fixJump) + ")";
+        boolean warn = !r.warnings.isEmpty() || row.fixSuspect || row.fixYoung == 1;
+        if (row.fixSuspect) text += suspectText(row);
         else if (!r.warnings.isEmpty()) text += "  (accepted with warnings)";
+        text += youngText(row);
         notice = new Notice(text, !warn, warn, row, true);
         if (PointRow.REF.equals(row.cls)) {
             PointRow f = row;
             run(() -> poleCheck(f));
         }
-        // a suspect ref gets its SUSPECT cue from the pole check
-        cue(row.fixSuspect && !PointRow.REF.equals(row.cls) ? Feedback.Cue.SUSPECT : Feedback.Cue.TILT_END);
+        // a suspect or young ref gets its SUSPECT or YOUNG cue from the pole check
+        boolean isRef = PointRow.REF.equals(row.cls);
+        cue(row.fixSuspect && !isRef ? Feedback.Cue.SUSPECT : row.fixYoung == 1 && !isRef ? Feedback.Cue.YOUNG
+                : Feedback.Cue.TILT_END);
         return new Outcome(true, drops.length() > 0 ? "Tilt: " + drops + ", re-solved with " + r.used.size() : null);
     }
 
@@ -464,14 +833,15 @@ final class Survey {
             az = TiltSolver.azimuth(v[0], v[1]);
             tl = TiltSolver.angleDeg(v, new double[] {0, 0, 1});
         }
-        return new TiltView(t, az, tl, guard.settleRemainingSeconds(now));
+        return new TiltView(t, az, tl, guard.youngAgeSeconds(now));
     }
 
     /** The guard's state for the fix chip, at now. */
     synchronized FixState fixState() {
         long now = SystemClock.elapsedRealtimeNanos();
         FixGuard.Stretch c = guard.current();
-        return new FixState(guard.settleRemainingSeconds(now), c != null && c.suspect, c == null ? Double.NaN : c.jump);
+        return new FixState(guard.youngAgeSeconds(now), c != null && c.suspect,
+                c != null && c.reason.contains(FixGuard.REASON_JUMP), c == null ? Double.NaN : c.jump);
     }
 
     private Outcome cancelRef(String why) {
@@ -497,7 +867,10 @@ final class Survey {
     private void poleCheck(PointRow r) {
         r.session = dir.getName();
         List<PointRow> earlier = RefsStore.readAll(svc);
-        PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(Settings.prefs(svc)));
+        SharedPreferences p = Settings.prefs(svc);
+        PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(p));
+        PoleCheck.Cues q = PoleCheck.Cues.of(r, earlier, c, Settings.placeM(p), Settings.steadyM(p));
+        PoleCheck.Colour colour = PoleCheck.colour(c, q);
         try {
             File f = RefsStore.append(svc, r);
             svc.event("ref n=" + r.n + " appended to " + f);
@@ -505,11 +878,21 @@ final class Survey {
             svc.event("ref n=" + r.n + " not appended to refs.csv: " + e.getMessage());
         }
         refsGeneration++;
+        // The importer (analysis/qgis/logger_session.py) takes the text before the first
+        // "; key=" as the message (importers before 0.12.0: before "; diff_last_m=", so
+        // diff_last_m stays the first key of a check) and ok=false as a failed (red) check,
+        // so ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
+        // place_cm, sd_u_cm and colour are on every check and no-check line (not the voided one), a value left empty when not applicable.
+        String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrEmpty(q.placeOffset),
+                cmOrEmpty(q.sdU), colour.name().toLowerCase(Locale.US));
         if (c != null) {
-            svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
-                    r.n, c.describe(), c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
+            svc.event(String.format(Locale.US, "pole check n=%d: %s%s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d"
+                            + " ok=%b diff_ref_m=%.4f ref_kind=%s within_tol=%b doubtful=%b %s", r.n, c.describe(), q.describe(),
+                    c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, !c.failed(), c.diffRef,
+                    c.refKind.name().toLowerCase(Locale.US), c.ok, c.doubtful, cues));
         } else {
-            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
+            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m")
+                    + q.describe() + "; " + cues);
         }
         // Check and set under the lock: a voidCapture between the check and the update
         // would otherwise leave a notice, warning or alarm on a flagged ref.
@@ -518,28 +901,37 @@ final class Survey {
                 svc.event("pole check n=" + r.n + ": result not shown (voided)");
                 return;
             }
-            String sus = r.fixSuspect ? "  fix may be false (jumped " + jumpText(r.fixJump) + ")" : "";
+            // a young ref is checked and shown, but never a reference for later checks (PoleCheck).
+            // One notice lists every reason; the more severe colour wins (red over amber over green).
+            boolean young = r.fixYoung == 1, fixAmber = r.fixSuspect || young;
+            String sus = (r.fixSuspect ? suspectText(r) : "") + youngText(r);
             if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
-            if (c == null) {
-                String text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
-                        : "Ref R" + r.n + " saved: first visit to this mark";
-                notice = new Notice(text + sus, !r.fixSuspect, r.fixSuspect, r, true);
-                poleWarning = null;
-                poleWarningN = 0;
-            } else if (c.ok) {
-                poleWarning = null;
-                poleWarningN = 0;
-                notice = new Notice(c.describe() + sus, !r.fixSuspect, r.fixSuspect, r, true);
-                if (!r.fixSuspect) cue(Feedback.Cue.POLE_OK);
-            } else {
-                String text = c.describe();
-                poleWarning = text + " (R" + r.n + "; check the pole height)";
+            else if (young && PointRow.TILT.equals(r.method)) cue(Feedback.Cue.YOUNG);   // occupation: at ref end
+            String text = c != null ? c.describe() : Double.isNaN(r.hGround) ? "Ref R" + r.n
+                    + " saved (no ground height: no pole check)" : "Ref R" + r.n + " saved: first visit to this mark";
+            text += q.describe() + sus;
+            if (colour == PoleCheck.Colour.RED) {
+                // the cues (off-centre, pole moved) may explain the failure, so they stay with it
+                poleWarning = c.describe() + q.describe() + " (R" + r.n + "; check the pole height)";
                 poleWarningN = r.n;
-                notice = new Notice(text + sus, false, false, r, true);
+                notice = new Notice(text, false, false, r, true);
                 cue(Feedback.Cue.POLE_ALARM);
+            } else {
+                // amber (doubtful reference, off-centre, pole moved) is a re-shoot hint: the
+                // error buzz, no alarm and no warnings bar
+                poleWarning = null;
+                poleWarningN = 0;
+                boolean amber = fixAmber || colour == PoleCheck.Colour.AMBER;
+                notice = new Notice(text, !amber, amber, r, true);
+                // one cue: a suspect or young ref already has its fix cue, which says more
+                if (colour == PoleCheck.Colour.AMBER && !fixAmber) cue(Feedback.Cue.ERROR);
+                else if (!amber && c != null) cue(Feedback.Cue.POLE_OK);
             }
         }
     }
+
+    /** "2.5" (cm, one decimal) or "" for NaN, for the pole check event line. */
+    private static String cmOrEmpty(double m) { return Double.isNaN(m) ? "" : String.format(Locale.US, "%.1f", m * 100); }
 
     // ---- flag (void) ----
 
@@ -574,6 +966,11 @@ final class Survey {
         Notice cur = notice;
         if (cur != null && cur.at == r) notice = null;   // its capture notice no longer stands
         if (poleWarningN == n) { poleWarning = null; poleWarningN = 0; }
+        if (autoLatchN == n) {   // the latched capture is undone: this stop is no longer taken
+            auto.reset();
+            autoLatchN = 0;
+            autoLastLabel = "";
+        }
         if (PointRow.REF.equals(r.cls)) refsVoid(r);
         savePoints();
         return new Outcome(true, label(r.cls) + n + " flagged: " + why);
@@ -684,7 +1081,8 @@ final class Survey {
     synchronized String photoTarget() { return PhotoRule.targetText(lastCapture, SystemClock.elapsedRealtimeNanos()); }
     synchronized RefView refView() {
         long now = SystemClock.elapsedRealtimeNanos();
-        return ref == null ? null : new RefView(ref, refSeconds, now, guard.settling(now));
+        // the refYoung latch keeps "(fix young)" on the ring once the saved ref will be young
+        return ref == null ? null : new RefView(ref, refSeconds, now, refYoung || guard.young(now));
     }
     synchronized boolean refRunning() { return ref != null; }
     Notice notice() { Notice n = notice; return n != null && SystemClock.uptimeMillis() < n.untilMs ? n : null; }
@@ -752,6 +1150,7 @@ final class Survey {
         synchronized (this) {
             if (ref != null) cancelRef("cancelled (session stop)");
             if (tilt != null) cancelTilt("cancelled (session stop)");
+            if (calibration != null) cancelCalibration("cancelled (session stop)");
         }
         io.shutdown();
         try { io.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
