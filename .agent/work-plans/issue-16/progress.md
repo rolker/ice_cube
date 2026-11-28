@@ -226,3 +226,24 @@ Verified: importer unittest 178 OK (5 skipped); Gradle testDebugUnitTest 37 suit
 - `python3 -m unittest discover -s analysis/qgis/tests`: 181 tests OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: 130 tests OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: OK, app-debug.apk built (C: 109 GB free)
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 22:52 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-16 at `27ed34b`
+**Base**: main
+**Depth**: Standard (reason: 27 files, +1365 -171, app and importer together; round 2 classified on the whole diff)
+**Must-fix**: 1 | **Suggestions**: 4
+**Round**: 2 | **Ship**: recommended — round 2: 1 mechanical must-fix (prev 1), not rising; fix and ship rather than another full round
+
+Verified: round 1's six items are in the code (fix diff bb751a0..43cb8a0 read in full); importer unittest 181 OK (5 skipped). Gradle not re-run (HEAD past 43cb8a0 is progress only; the implementation entry ran it). No audio tracked. No existing photo test changes outcome under the new orphan rule (no test exercises the photo name fallback). QGIS replace(string, array, array) applies pairs in order and needs QGIS 3.12; the project's floor is 3.34 LTR, so it is acceptable, no nested replace() needed. No Python or Java linter installed. Outside reviewers: gemini and codex completed; a fresh Claude adversarial agent also ran. Dropped: Windows zip/HTML items rated must-fix by gemini/codex are hardening for the owner's own data (kept as suggestions); four-slash file URL on POSIX, delayed button repaint, photo _k suffix chaining are pre-existing or below threshold.
+
+### Findings
+- [ ] (must-fix) The orphan rule is shared with photos: strict `<` on the second drops the name's n for a file taken in the same second as its capture (PHOTO or NOTE pressed under 1 s after MARK, same 1 Hz epoch), which before this branch attached by name. Use `<=`; the opposite tie (a MARK in the same second as a NOTE press planned as own row) is rarer. Add a photo same-second test. (codex, Claude adversarial, lead) — `analysis/qgis/logger_session.py:641`
+- [ ] (suggestion) Cap timing: `startMs` is set after `r.start()` returns, so `elapsedMs()` reads short and a STOP in that gap (before MAX_DURATION arrives) can still delete a full note; take the start time before `r.start()` or allow a margin. Also give the info listener the same `stopped` guard as the error listener. (Claude adversarial, gemini) — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:53`
+- [ ] (suggestion) An orphan note that resolves to n None is extracted and counted but no table row or map tip links to it; name it in the import remarks or give it a row. (Claude adversarial) — `analysis/qgis/import_sessions.py:384`
+- [ ] (suggestion) Zip entry names are checked for `/` only; on Windows a `\\` or `..` in a photos/ or notes/ entry name could extract outside the target folder. Accept only a single safe component (or a PHOTO_RE/NOTE_RE match). (codex, gemini) — `analysis/qgis/logger_session.py:98`
+- [ ] (suggestion) VOICE_TIP puts the file name into the link text unescaped; escape `&`, `<`, `>` (the href is already encoded). (codex, gemini) — `analysis/qgis/build_project.py:184`
