@@ -1,5 +1,6 @@
 package rink.icecube.logger;
 
+import android.content.SharedPreferences;
 import android.os.SystemClock;
 
 import java.io.File;
@@ -533,7 +534,10 @@ final class Survey {
     private void poleCheck(PointRow r) {
         r.session = dir.getName();
         List<PointRow> earlier = RefsStore.readAll(svc);
-        PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(Settings.prefs(svc)));
+        SharedPreferences p = Settings.prefs(svc);
+        PoleCheck c = PoleCheck.check(r, earlier, Settings.poleTolerance(p));
+        PoleCheck.Cues q = PoleCheck.Cues.of(r, earlier, c, Settings.placeM(p), Settings.steadyM(p));
+        PoleCheck.Colour colour = PoleCheck.colour(c, q);
         try {
             File f = RefsStore.append(svc, r);
             svc.event("ref n=" + r.n + " appended to " + f);
@@ -541,11 +545,21 @@ final class Survey {
             svc.event("ref n=" + r.n + " not appended to refs.csv: " + e.getMessage());
         }
         refsGeneration++;
+        // The importer (analysis/qgis/logger_session.py) takes the text before the first
+        // "; key=" as the message (importers before 0.12.0: before "; diff_last_m=", so
+        // diff_last_m stays the first key of a check) and ok=false as a failed (red) check,
+        // so ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
+        // place_cm, sd_u_cm and colour are on every check and no-check line (not the voided one), a value left empty when not applicable.
+        String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrEmpty(q.placeOffset),
+                cmOrEmpty(q.sdU), colour.name().toLowerCase(Locale.US));
         if (c != null) {
-            svc.event(String.format(Locale.US, "pole check n=%d: %s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d ok=%b",
-                    r.n, c.describe(), c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, c.ok));
+            svc.event(String.format(Locale.US, "pole check n=%d: %s%s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d"
+                            + " ok=%b diff_ref_m=%.4f ref_kind=%s within_tol=%b doubtful=%b %s", r.n, c.describe(), q.describe(),
+                    c.diffLast, c.diffMean, c.visits, c.last.session, c.last.n, !c.failed(), c.diffRef,
+                    c.refKind.name().toLowerCase(Locale.US), c.ok, c.doubtful, cues));
         } else {
-            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m"));
+            svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m")
+                    + q.describe() + "; " + cues);
         }
         // Check and set under the lock: a voidCapture between the check and the update
         // would otherwise leave a notice, warning or alarm on a flagged ref.
@@ -554,31 +568,37 @@ final class Survey {
                 svc.event("pole check n=" + r.n + ": result not shown (voided)");
                 return;
             }
-            // a young ref is checked and shown, but never a reference for later checks (PoleCheck)
-            boolean young = r.fixYoung == 1, amber = r.fixSuspect || young;
+            // a young ref is checked and shown, but never a reference for later checks (PoleCheck).
+            // One notice lists every reason; the more severe colour wins (red over amber over green).
+            boolean young = r.fixYoung == 1, fixAmber = r.fixSuspect || young;
             String sus = (r.fixSuspect ? suspectText(r) : "") + youngText(r);
             if (r.fixSuspect) cue(Feedback.Cue.SUSPECT);
             else if (young && PointRow.TILT.equals(r.method)) cue(Feedback.Cue.YOUNG);   // occupation: at ref end
-            if (c == null) {
-                String text = Double.isNaN(r.hGround) ? "Ref R" + r.n + " saved (no ground height: no pole check)"
-                        : "Ref R" + r.n + " saved: first visit to this mark";
-                notice = new Notice(text + sus, !amber, amber, r, true);
-                poleWarning = null;
-                poleWarningN = 0;
-            } else if (c.ok) {
-                poleWarning = null;
-                poleWarningN = 0;
-                notice = new Notice(c.describe() + sus, !amber, amber, r, true);
-                if (!amber) cue(Feedback.Cue.POLE_OK);
-            } else {
-                String text = c.describe();
-                poleWarning = text + " (R" + r.n + "; check the pole height)";
+            String text = c != null ? c.describe() : Double.isNaN(r.hGround) ? "Ref R" + r.n
+                    + " saved (no ground height: no pole check)" : "Ref R" + r.n + " saved: first visit to this mark";
+            text += q.describe() + sus;
+            if (colour == PoleCheck.Colour.RED) {
+                // the cues (off-centre, pole moved) may explain the failure, so they stay with it
+                poleWarning = c.describe() + q.describe() + " (R" + r.n + "; check the pole height)";
                 poleWarningN = r.n;
-                notice = new Notice(text + sus, false, false, r, true);
+                notice = new Notice(text, false, false, r, true);
                 cue(Feedback.Cue.POLE_ALARM);
+            } else {
+                // amber (doubtful reference, off-centre, pole moved) is a re-shoot hint: the
+                // error buzz, no alarm and no warnings bar
+                poleWarning = null;
+                poleWarningN = 0;
+                boolean amber = fixAmber || colour == PoleCheck.Colour.AMBER;
+                notice = new Notice(text, !amber, amber, r, true);
+                // one cue: a suspect or young ref already has its fix cue, which says more
+                if (colour == PoleCheck.Colour.AMBER && !fixAmber) cue(Feedback.Cue.ERROR);
+                else if (!amber && c != null) cue(Feedback.Cue.POLE_OK);
             }
         }
     }
+
+    /** "2.5" (cm, one decimal) or "" for NaN, for the pole check event line. */
+    private static String cmOrEmpty(double m) { return Double.isNaN(m) ? "" : String.format(Locale.US, "%.1f", m * 100); }
 
     // ---- flag (void) ----
 

@@ -93,6 +93,7 @@ class ImportTest(unittest.TestCase):
                      "FROM refs WHERE session='2026-12-01_10-00-00' AND n=3")[0]
         self.assertEqual(ref, (1, "pole check OK (±0.4 cm vs last visit, -1.0 cm vs mean of 2 visits)",
                                -0.004, 2, "2026-11-30_09-00-00/5", 1, "points.csv"))
+        self.assertEqual(self.q("SELECT diff_ref_m, colour FROM refs WHERE n=3"), [(None, None)])   # before 0.12.0
         sites = self.q("SELECT site FROM refs ORDER BY session")
         self.assertEqual(sites[0], sites[1])       # 10 cm apart: same mark
         s = self.q("SELECT format, app, link, caster_mount, base_station, pole_heights, caster_lost, "
@@ -492,6 +493,29 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT count(*) FROM captures WHERE session='2026-12-02_10-00-00' AND "
                                 "(fix_start IS NOT NULL OR fix_young IS NOT NULL OR suspect_reason IS NOT NULL)"),
                          [(0,)])
+
+    def test_v12_pole_check(self):
+        """A logger 0.12.0 pole check line (#23): the message ends at the first key, the
+        check's own difference and colour are stored, and a doubtful reference outside the
+        tolerance (ok=true) is not red. A line with no check keeps its cue text and colour."""
+        line = ("pole check n=3: pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm; shoot again"
+                "; pole moved during the ref (sd 3.1 cm); re-shoot; diff_last_m=0.0245 diff_mean_m=0.0420 visits=2 "
+                "last=2026-11-30_09-00-00/5 ok=true diff_ref_m=0.0420 ref_kind=pair within_tol=false doubtful=true "
+                "place_cm=0.4 sd_u_cm=3.1 colour=amber")
+        z = synth.write_zip(self.d / "s.zip", synth.session_v05(pole_check=line, app="0.12.0"))
+        run(z, "--gpkg", self.gpkg, "--base", *self.base)
+        ref = self.q("SELECT pole_check, diff_last_m, diff_ref_m, visits, pole_ok, colour FROM refs WHERE n=3")[0]
+        self.assertEqual(ref, ("pole check: +4.2 cm vs mean of 2 visits that differ by 3.5 cm, shoot again, "
+                               "pole moved during the ref (sd 3.1 cm), re-shoot", 0.0245, 0.042, 2, 1, "amber"))
+        first = ("pole check n=3: no earlier ref within 0.30 m; pole moved during the ref (sd 3.1 cm); re-shoot"
+                 "; place_cm= sd_u_cm=3.1 colour=amber")
+        z2 = synth.write_zip(self.d / "s2.zip", synth.session_v05("2026-12-02_10-00-00", pole_check=first,
+                                                                  app="0.12.0"))
+        run(z2, "--gpkg", self.gpkg, "--base", *self.base)
+        ref = self.q("SELECT pole_check, diff_last_m, diff_ref_m, pole_ok, colour FROM refs "
+                     "WHERE session='2026-12-02_10-00-00' AND n=3")[0]
+        self.assertEqual(ref, ("no earlier ref within 0.30 m, pole moved during the ref (sd 3.1 cm), re-shoot",
+                               None, None, None, "amber"))
 
     def _as_schema2(self):
         """Make the gpkg look like one written before schema 3: no 0.6 columns."""

@@ -78,7 +78,7 @@ skipped (--force re-reads it). Each sessions row records the schema_version it w
 imported with; a session imported by an older schema is re-read the next time its source
 is among the inputs, to fill the new columns, except that a snapshot never replaces a
 session imported in full. A session from an app older than every schema step it missed
-needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4, 0.11 for 5) has nothing to fill and is marked current without
+needs (SCHEMA_APP: 0.6 for 3, 0.9 for 4, 0.11 for 5, 0.12 for 6) has nothing to fill and is marked current without
 a re-read (one whose app version is unknown is re-read). Sessions still at an older schema
 after a run (not among the inputs, or seen only as a snapshot) are named in the log and
 re-read on a later run. Rows are matched by their keys and updated in place, so
@@ -106,12 +106,13 @@ from logger_session import APPROX_S, app_version, find_sessions, load_session, r
 
 REPO = Path(__file__).resolve().parents[2]
 LOCAL_SRS_ID = 100001
-SCHEMA_VERSION = 5     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
+SCHEMA_VERSION = 6     # 3: captures carry the logger 0.6 columns (method, fix_suspect, tilt_*)
                        # 4: captures and refs carry the logger 0.9.0 void flag (void, void_reason)
                        # 5: captures carry the logger 0.11.0 fix columns (fix_start, fix_young, ...)
+                       # 6: refs carry the logger 0.12.0 pole check (diff_ref_m, colour)
 SCHEMA_TILT = 3        # the schema that brought the logger 0.6 columns: a session re-read at
                        # it or later holds whatever tilt values its source has
-SCHEMA_APP = {3: (0, 6), 4: (0, 9), 5: (0, 11)}   # the oldest app whose sessions have data for each schema
+SCHEMA_APP = {3: (0, 6), 4: (0, 9), 5: (0, 11), 6: (0, 12)}   # the oldest app whose sessions have data for each schema
                                       # step; add an entry with every SCHEMA_VERSION change
 
 
@@ -150,7 +151,8 @@ SCHEMA = {
     "refs": [("session", T), ("n", I)] + MEAS +
             [("pauses", I), ("pole_check", T), ("diff_last_m", R), ("diff_mean_m", R),
              ("visits", I), ("last_visit", T), ("pole_ok", I), ("site", I)] + ENU +
-            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R)],
+            [("source", T), ("note", T)] + VOID + [("void_copy_mtime", R), ("void_copy_unc", R),
+             ("diff_ref_m", R), ("colour", T)],
     "tracks": [("session", T), ("seg", I), ("fix", I), ("start_utc", T), ("end_utc", T),
                ("n_vertices", I), ("duration_s", R)],
     "track_points": [("session", T), ("utc", T), ("fix", I), ("nsat", I), ("hdop", R),
@@ -348,7 +350,8 @@ def import_session(gp, src, s, photos_dir, extract_photos=True):
         r.update({"session": s.name, "n": c["n"], "source": "points.csv", **NO_XYZ,
                   "void": int(bool(c.get("void"))), "void_reason": c.get("void_reason") if c.get("void") else None,
                   "geom": _geom(c.get("lat"), c.get("lon"), c.get("h_ground"))})
-        for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok"):
+        for k in ("pauses", "pole_check", "diff_last_m", "diff_mean_m", "visits", "last_visit", "pole_ok",
+                  "diff_ref_m", "colour"):
             r[k] = s.refs.get(c["n"], {}).get(k)
         refs.append(r)
     gp.upsert("refs", refs, key=("session", "n"), preserve=USER_COLUMNS["refs"])
