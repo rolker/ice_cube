@@ -159,7 +159,7 @@ PR A of the plan: robust reference, placement and steadiness cues. PR B not star
 ### Replay (private refs.csv, 41 refs over 11-11, -15, -21; counts and colours only)
 - 127 red (expected red); 128 amber, off-centre (not failing, as expected); 329 green (not failing, as expected).
 - 72 green, not amber as expected: within tolerance of the median, and its off-centre offset against earlier visits only is under 2 cm. The issue's 2.5 cm was against all visits of the mark (hindsight, including later ones), which the live check cannot see.
-- Overall: 5 red (old rule 5), 7 amber, 29 green. On 11-21: red 4 -> 3, but two of the three are new reds (300 and 658, each just over 3 cm from a median that spans visits from three days; 658 by under 0.5 mm). The 11-15 reds (24, 25, single-visit) are unchanged.
+- Overall: 5 red (old rule 6), 7 amber, 29 green. On 11-21: red 4 -> 3, but two of the three are new reds (300 and 658, each just over 3 cm from a median that spans visits from three days; 658 by under 0.5 mm). The 11-15 reds (24, 25, single-visit) are unchanged.
 - Amber: off-centre 6 (two on 11-15 refs 1 and 2 against a median of 11-11 visits), pole moved 2 (one first visit on 11-15). The 11-11 rows have no `method` column, so the steadiness cue did not fire on them in the replay (the app always sets method).
 
 ### For the host / owner
