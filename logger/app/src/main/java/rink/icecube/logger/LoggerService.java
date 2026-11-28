@@ -139,6 +139,12 @@ public final class LoggerService extends Service {
                 || Settings.FLOAT_SPELL_S.equals(key)) {
             Survey sv = survey;
             if (sv != null) sv.applyGuardSettings();
+        } else if (Settings.AUTO_PLUMB_DEG.equals(key) || Settings.AUTO_HOLD_S.equals(key)
+                || Settings.AUTO_STILL_CM.equals(key)) {
+            Survey sv = survey;
+            if (sv != null) sv.applyAutoSettings();
+        } else if (Settings.AUTO_CAPTURE.equals(key)) {
+            event("auto_capture=" + (Settings.autoCapture(p) ? "on" : "off") + " changed");
         }
     };
 
@@ -385,6 +391,9 @@ public final class LoggerService extends Service {
                 session = s;
                 lastDir = s.dir;
                 s.event("pole_height=" + PoleHeight.format(poleHeight));
+                s.event(String.format(Locale.US, "auto_capture=%s plumb_deg=%.1f hold_s=%.1f still_cm=%.1f",
+                        Settings.autoCapture(prefs) ? "on" : "off", Settings.autoPlumbDeg(prefs),
+                        Settings.autoHoldS(prefs), Settings.autoStillM(prefs) * 100));
                 updateFrame();
                 PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                 wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "icecube:logger");
@@ -426,6 +435,16 @@ public final class LoggerService extends Service {
             case "finish_confirmed": return sv.finishTilt(true);
             default: return sv.cancelTilt("cancelled by user");
         }
+    }
+
+    /** Starts (start true) or cancels the pole calibration (see Survey); refused when no session is open. */
+    Survey.Outcome calibrate(boolean start) {
+        Survey sv = survey;
+        if (sv == null) {
+            Feedback.play(this, Feedback.Cue.ERROR);
+            return new Survey.Outcome(false, "No session: tap REC to start one");
+        }
+        return start ? sv.startCalibration() : sv.cancelCalibration("cancelled by user");
     }
 
     /** Mean phone gravity vector over [fromNs, toNs] plus the sample count as a 4th element, or null. */
