@@ -351,3 +351,13 @@ Codex ran (EXIT=0) on the PR title, URL and diff only. It reported 2 must-fix an
 
 ### False positives
 None.
+
+## Checkpoint
+**Status**: complete
+**When**: 2026-11-27 20:35 -05:00
+**By**: Claude Code (claude-opus-5-5)
+**Decided-by**: host (4 small valid suggestions; orchestrator table allows address)
+**After**: findings
+**Decision**: address
+
+Fix all four of the Integrated Review at 24c63c3. Host decisions (owner may veto): a MARK without gravity latches with radius pole × sin(plumb limit), not the full pole height; a pole-height change after calibration keeps the axis but shows a notice "pole height changed: recalibrate if the phone moved in its mount" (no forced recalibration); setLimits clears the hold window; README states the real antenna re-arm spacing (≈ 19 cm at the defaults, 68 cm at 10°).
