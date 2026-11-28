@@ -226,6 +226,18 @@ public class PoleCalibrationTest {
         assertTrue(c.failure(), c.failure().contains("no height"));
     }
 
+    /** A missing height early on, then good epochs that never make a still spell: the timeout is not "no height". */
+    @Test public void aGoodEpochClearsTheOldCause() {
+        PoleCalibration c = new PoleCalibration(L, new TiltSet.Gates(), 0);
+        Epoch e = still(0).epoch;
+        c.onEpoch(new Epoch(e.elapsedNs, e.tod, e.lat, e.lon, Double.NaN, e.age, e.quality), still(0).gravity);
+        for (double t = 1; t <= 40 && c.phase() == PoleCalibration.Phase.STILL; t += 2.5) {
+            c.onEpoch(still(t).epoch, still(t).gravity);   // 2.5 s gaps: every epoch starts the spell again
+        }
+        assertEquals(PoleCalibration.Phase.FAILED, c.phase());
+        assertTrue(c.failure(), c.failure().contains("could not hold the pole still"));
+    }
+
     @Test public void noGravityIsNamed() {
         PoleCalibration c = new PoleCalibration(L, new TiltSet.Gates(), 0);
         for (int t = 0; t <= 31 && c.phase() == PoleCalibration.Phase.STILL; t++) c.onEpoch(still(t).epoch, null);

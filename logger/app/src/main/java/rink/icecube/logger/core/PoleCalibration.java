@@ -207,6 +207,7 @@ public final class PoleCalibration {
             restartCause = bad;
             return Change.RESTART;
         }
+        stillBadCause = "";   // a good epoch: a later timeout is not the old missing height, gravity or fix
         if (gap && !stillP.isEmpty()) {   // two fixed epochs either side of a stall are not a still spell
             restartStill();
             restartCause = GAP;
@@ -221,7 +222,6 @@ public final class PoleCalibration {
         double dev = 0;
         for (double[] x : stillP) dev = Math.max(dev, Math.hypot(x[0] - m[0], x[1] - m[1]));
         if (!(dev <= gates.maxLeanScatter)) {
-            stillBadCause = "";
             restartStill();
             restartCause = MOVED;
             stillP.add(enu);
