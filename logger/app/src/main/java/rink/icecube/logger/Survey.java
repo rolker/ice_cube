@@ -474,6 +474,7 @@ final class Survey {
         in.tiltRunning = tilt != null;
         in.refRunning = ref != null;
         in.fixed = e.fixed();
+        in.height = !Double.isNaN(e.h);
         FixGuard.Stretch cur = guard.current();
         in.young = guard.young(e.elapsedNs);
         in.suspect = cur != null && cur.suspect;
@@ -636,6 +637,7 @@ final class Survey {
         }
         switch (d.why) {
             case NO_FIX: return new AutoView("AUTO: off, not RTK fixed", AutoView.Kind.OFF, false, false);
+            case NO_HEIGHT: return new AutoView("AUTO: off, no height in the GGA", AutoView.Kind.OFF, false, false);
             case FIX_YOUNG:
                 int y = guard.youngAgeSeconds(now);
                 return new AutoView(y >= 0 ? "AUTO: off, fix young " + y + " s" : "AUTO: off, fix young",

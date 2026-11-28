@@ -164,8 +164,8 @@ Under the notice, in Surface mode while Auto capture is on (0.13.0): the AUTO li
 (56 dp), saying what auto capture is waiting for (see Auto capture): blue `AUTO: calibrate
 to enable (tap)` (a tap starts the pole calibration) and, during one, `CALIBRATE 2/3: lean
 slowly all round  7 s` (a tap offers to stop it); amber `AUTO: off, fix young 40 s`, `off,
-not RTK fixed` or `off, fix may be false`; grey `off during the tilt set` or `off during the
-ref`; teal `ready, hold plumb  3.4°`, `ready, hold still` or `holding  1 / 2 s`; green `S12
+not RTK fixed`, `off, no height in the GGA` or `off, fix may be false`; grey `off during
+the tilt set` or `off during the ref`; teal `ready, hold plumb  3.4°`, `ready, hold still` or `holding  1 / 2 s`; green `S12
 taken, move to the next point`.
 
 Four large buttons, a column on the right edge in landscape, a row along the bottom in
@@ -447,7 +447,7 @@ lean_speeds_mps=..: ..`. `lean_speeds_mps` lists the antenna speed of every lean
 
 Then, at each GGA epoch, auto capture is armed when all of these hold, else the AUTO line
 names the first that does not: Auto capture on, Surface mode, no calibration running, the
-pole calibrated, no tilt set, no ref, RTK fixed, the fix not young and not suspect (see
+pole calibrated, no tilt set, no ref, RTK fixed, a height in the GGA, the fix not young and not suspect (see
 False-fix guard; MARK still captures on a young fix, with its amber warning). Armed, it
 captures once the pole has been plumb (within the plumb limit: the phone's gravity over the
 last 0.5 s against the pole axis) and still (every antenna position within the still limit
@@ -474,7 +474,7 @@ walk to the next point. To re-shoot the same point, UNDO the capture (that clear
 latch) or press MARK.
 
 Cues: the capture plays the surface pip. Auto capture becoming armed or off is cued only
-when the fix caused it (lost, young, suspect; a rising or falling pair), after the change
+when the fix caused it (lost, no height, young, suspect; a rising or falling pair), after the change
 has lasted 1 s, so a one-epoch dropout is silent; mode changes, tilt sets, refs and the
 calibration have their own cues, and the plumb and still states never cue. events.csv:
 `auto capture armed`, `auto capture off: no_fix`, and the settings at session start

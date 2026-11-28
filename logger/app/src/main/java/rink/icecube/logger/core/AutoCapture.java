@@ -10,7 +10,7 @@ import java.util.List;
  *
  * Gates, in order (the first unmet one is the {@link Why} shown): the setting is on, Surface
  * mode, no pole calibration running, a pole axis calibrated this session, no tilt set, no ref
- * occupation; then the fix: RTK fixed, not young and not suspect (the false-fix guard,
+ * occupation; then the fix: RTK fixed, with a height in the GGA, not young and not suspect (the false-fix guard,
  * {@link FixGuard}). Any unmet gate empties the hold window.
  *
  * Hold: with every gate met, each epoch must be plumb (the angle between the phone's gravity
@@ -57,7 +57,7 @@ public final class AutoCapture {
     /** Why there is no capture now (or HOLDING / CAPTURED). */
     public enum Why {
         OFF_SETTING, NOT_SURFACE, CALIBRATING, NO_CALIBRATION, TILT_SET, REF_RUNNING,
-        NO_FIX, FIX_YOUNG, FIX_SUSPECT,
+        NO_FIX, NO_HEIGHT, FIX_YOUNG, FIX_SUSPECT,
         /** Armed: waiting for the pole to be plumb. */
         NOT_PLUMB,
         /** Armed: waiting for the pole to be still. */
@@ -71,7 +71,9 @@ public final class AutoCapture {
         public boolean armed() { return ordinal() >= NOT_PLUMB.ordinal(); }
 
         /** An off state the fix caused. */
-        public boolean byFix() { return this == NO_FIX || this == FIX_YOUNG || this == FIX_SUSPECT; }
+        public boolean byFix() {
+            return this == NO_FIX || this == NO_HEIGHT || this == FIX_YOUNG || this == FIX_SUSPECT;
+        }
     }
 
     /** A cue to play: none, armed (again), off. */
@@ -82,6 +84,8 @@ public final class AutoCapture {
         public long tNs;
         public boolean enabled = true, surface = true, calibrating, calibrated = true, tiltRunning, refRunning;
         public boolean fixed = true, young, suspect;
+        /** The GGA has a height (a capture row without one is no Surface point). */
+        public boolean height = true;
         public double e = Double.NaN, n = Double.NaN;
         /** Angle (deg) of the pole from plumb; NaN if unknown (no gravity, no axis). */
         public double plumbDeg = Double.NaN;
@@ -237,6 +241,7 @@ public final class AutoCapture {
         if (in.tiltRunning) return Why.TILT_SET;
         if (in.refRunning) return Why.REF_RUNNING;
         if (!in.fixed) return Why.NO_FIX;
+        if (!in.height) return Why.NO_HEIGHT;
         if (in.young) return Why.FIX_YOUNG;
         if (in.suspect) return Why.FIX_SUSPECT;
         return null;

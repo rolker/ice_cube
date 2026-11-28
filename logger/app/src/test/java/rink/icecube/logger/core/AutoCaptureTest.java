@@ -133,10 +133,10 @@ public class AutoCaptureTest {
     }
 
     @Test public void eachUnmetGateReportsItsWhyAndNeverFires() {
-        String[] gates = {"enabled", "surface", "calibrating", "calibrated", "tilt", "ref", "fixed", "young", "suspect"};
+        String[] gates = {"enabled", "surface", "calibrating", "calibrated", "tilt", "ref", "fixed", "height", "young", "suspect"};
         AutoCapture.Why[] whys = {AutoCapture.Why.OFF_SETTING, AutoCapture.Why.NOT_SURFACE,
                 AutoCapture.Why.CALIBRATING, AutoCapture.Why.NO_CALIBRATION, AutoCapture.Why.TILT_SET,
-                AutoCapture.Why.REF_RUNNING, AutoCapture.Why.NO_FIX, AutoCapture.Why.FIX_YOUNG,
+                AutoCapture.Why.REF_RUNNING, AutoCapture.Why.NO_FIX, AutoCapture.Why.NO_HEIGHT, AutoCapture.Why.FIX_YOUNG,
                 AutoCapture.Why.FIX_SUSPECT};
         for (int k = 0; k < gates.length; k++) {
             AutoCapture a = auto();
@@ -150,6 +150,7 @@ public class AutoCaptureTest {
                     case "tilt": in.tiltRunning = true; break;
                     case "ref": in.refRunning = true; break;
                     case "fixed": in.fixed = false; break;
+                    case "height": in.height = false; break;
                     case "young": in.young = true; break;
                     default: in.suspect = true; break;
                 }
@@ -358,6 +359,7 @@ public class AutoCaptureTest {
         assertTrue(AutoCapture.Why.CAPTURED.armed());
         assertFalse(AutoCapture.Why.FIX_SUSPECT.armed());
         assertTrue(AutoCapture.Why.FIX_YOUNG.byFix());
+        assertTrue(AutoCapture.Why.NO_HEIGHT.byFix());
         assertFalse(AutoCapture.Why.TILT_SET.byFix());
     }
 }
