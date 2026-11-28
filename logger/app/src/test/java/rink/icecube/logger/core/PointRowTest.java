@@ -116,6 +116,16 @@ public class PointRowTest {
         assertTrue(single.toCsv().endsWith(",3.0,0.200,0,single,,,,,,,0,,,,,"));
     }
 
+    /** 0.13.0 (#35): an auto capture writes method auto and reads back as auto, no new column. */
+    @Test public void autoMethodWritesAndParses() {
+        EpochAverage a = EpochAverage.of(Arrays.asList(new Epoch(5, 50_000.25, 12.3, -45.6, 101.2, 1.2, 4)));
+        PointRow r = PointRow.of(3, PointRow.SURFACE, 1, a, 1.6, MIDNIGHT);
+        r.method = PointRow.AUTO;
+        String csv = r.toCsv();
+        assertEquals(PointRow.COLUMNS, PointRow.split(csv).size());
+        assertEquals("auto", PointRow.parse(PointRow.split(csv), 0).method);
+    }
+
     @Test public void parsesRowsFromBefore06() {
         String old = "1,surface,81234567890123,2026-11-11T14:03:22.40Z,10.000000123,20.000000456,31.2345,1.800,29.4345,4,5,"
                 + "0.0021,0.0018,0.0040,1.0,,";

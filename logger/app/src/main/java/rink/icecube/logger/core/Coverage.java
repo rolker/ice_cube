@@ -578,13 +578,14 @@ public final class Coverage {
     }
 
     /**
-     * Surface captures, RTK fixed, not suspect, not voided, single or tilt, with a position
-     * and a ground height.
+     * Surface captures, RTK fixed, not suspect, not voided, single, auto (0.13.0, #35) or
+     * tilt, with a position and a finite ground height.
      */
     public static boolean feeds(PointRow r) {
         return PointRow.SURFACE.equals(r.cls) && r.fix == 4 && !r.fixSuspect && !r.voided
-                && (PointRow.SINGLE.equals(r.method) || PointRow.TILT.equals(r.method))
-                && r.hasPosition() && !Double.isNaN(r.hGround);
+                && (PointRow.SINGLE.equals(r.method) || PointRow.AUTO.equals(r.method)
+                    || PointRow.TILT.equals(r.method))
+                && r.hasPosition() && Double.isFinite(r.hGround);
     }
 
     /**
