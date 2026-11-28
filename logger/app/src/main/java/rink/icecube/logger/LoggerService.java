@@ -221,7 +221,7 @@ public final class LoggerService extends Service {
         }
         if (stopIfIdle()) return;
         Survey sv = survey;
-        if (sv != null) sv.onTick();   // a pole calibration with no epochs times out
+        if (sv != null) sv.onTick();   // a pole calibration with no epochs times out; auto capture cues off
         updateNotification();
         main.postDelayed(tick, TICK_MS);
     }

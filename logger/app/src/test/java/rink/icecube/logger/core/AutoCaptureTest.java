@@ -319,6 +319,23 @@ public class AutoCaptureTest {
         assertEquals(0.15, a.rearmM(), 1e-12);
     }
 
+    /** Epochs that stop while armed cue OFF once; their return cues ARMED after a second. */
+    @Test public void stoppedEpochsCueOffOnce() {
+        AutoCapture a = auto();
+        assertEquals(AutoCapture.Cue.NONE, a.onStale());   // nothing yet
+        a.onEpoch(at(0, 0, 0));
+        assertEquals(AutoCapture.Cue.OFF, a.onStale());
+        assertEquals(AutoCapture.Cue.NONE, a.onStale());   // once
+        assertEquals(AutoCapture.Why.NO_FIX, a.last());
+        assertEquals(AutoCapture.Cue.NONE, a.onEpoch(at(10, 0, 0)).cue);
+        assertEquals(AutoCapture.Cue.ARMED, a.onEpoch(at(11, 0, 0)).cue);
+        AutoCapture off = auto();
+        AutoCapture.Input tilt = at(0, 0, 0);
+        tilt.tiltRunning = true;
+        off.onEpoch(tilt);
+        assertEquals(AutoCapture.Cue.NONE, off.onStale());   // not armed: silent
+    }
+
     @Test public void cuesOnlyFixChangesThatLastOneSecond() {
         AutoCapture a = auto();
         assertEquals(AutoCapture.Cue.NONE, a.onEpoch(at(0, 0, 0)).cue);   // first epoch: no cue

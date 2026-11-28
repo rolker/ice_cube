@@ -525,10 +525,19 @@ final class Survey {
         calibrationChange(c, c.onEpoch(e, g3, gyro));
     }
 
-    /** A service tick: a running calibration with no epochs for a while fails (lock taken). */
+    /**
+     * A service tick (lock taken): a running calibration with no epochs for a while fails, and
+     * once the epochs have stopped for {@link #AUTO_STALE_NS} (when the AUTO line turns to
+     * "not RTK fixed") an armed auto capture plays AUTO_OFF.
+     */
     synchronized void onTick() {
+        long now = SystemClock.elapsedRealtimeNanos();
         PoleCalibration c = calibration;
-        if (c != null) calibrationChange(c, c.onTick(SystemClock.elapsedRealtimeNanos()));
+        if (c != null) calibrationChange(c, c.onTick(now));
+        if (autoLast != null && now - autoLastNs > AUTO_STALE_NS && auto.onStale() == AutoCapture.Cue.OFF) {
+            svc.event("auto capture off: no_epochs");
+            cue(Feedback.Cue.AUTO_OFF);
+        }
     }
 
     /** Acts on what an epoch or a tick changed in the calibration c (lock held). */

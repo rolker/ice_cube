@@ -475,7 +475,8 @@ latch) or press MARK.
 
 Cues: the capture plays the surface pip. Auto capture becoming armed or off is cued only
 when the fix caused it (lost, no height, young, suspect; a rising or falling pair), after the change
-has lasted 1 s, so a one-epoch dropout is silent; mode changes, tilt sets, refs and the
+has lasted 1 s, so a one-epoch dropout is silent; epochs that stop altogether cue off
+once the AUTO line turns to `not RTK fixed` (3 s, `auto capture off: no_epochs`); mode changes, tilt sets, refs and the
 calibration have their own cues, and the plumb and still states never cue. events.csv:
 `auto capture armed`, `auto capture off: no_fix`, and the settings at session start
 (`auto_capture=on plumb_deg=2.0 hold_s=2.0 still_cm=2.0`).

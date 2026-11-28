@@ -189,6 +189,21 @@ public final class AutoCapture {
         latched = false;
     }
 
+    /**
+     * The epochs stopped (the caller's stale limit passed with none): if auto capture stood
+     * armed it is now off as by a lost fix, so this returns {@link Cue#OFF} once, and ARMED
+     * plays when epochs bring it back. Else NONE. Empties the hold window.
+     */
+    public Cue onStale() {
+        window.clear();
+        pendingSinceNs = Long.MIN_VALUE;
+        if (stableWhy == null || !armedStable) return Cue.NONE;
+        armedStable = false;
+        stableWhy = Why.NO_FIX;
+        last = Why.NO_FIX;
+        return Cue.OFF;
+    }
+
     public Decision onEpoch(Input in) {
         boolean gap = lastNs != Long.MIN_VALUE && (in.tNs - lastNs) / 1e9 > GAP_S + TOL_S;
         lastNs = in.tNs;
