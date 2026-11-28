@@ -66,4 +66,10 @@ public class NoteRuleTest {
             assertTrue(importer.matcher(NoteRule.fileName(7, "20261111T140322Z", k)).matches());
         }
     }
+
+    @Test public void capIsReachedAtTheMaximum() {
+        assertFalse(NoteRule.reachedCap(NoteRule.MAX_MS - 1));
+        assertTrue(NoteRule.reachedCap(NoteRule.MAX_MS));
+        assertTrue(NoteRule.reachedCap(NoteRule.MAX_MS + 250));
+    }
 }

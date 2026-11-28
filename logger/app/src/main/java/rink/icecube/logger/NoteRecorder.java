@@ -70,13 +70,16 @@ final class NoteRecorder {
     /**
      * Stops and releases the recorder; returns the note's length in ms (capped at the
      * maximum), or -1 when the recorder had nothing to write (stop failed, as for a very
-     * short note; after the cap a failed stop is the recorder having stopped itself, and the
-     * length stands). The caller decides whether the file is kept (NoteRule.keep). Once only.
+     * short note; at or past the cap a failed stop is the recorder having stopped itself,
+     * and the length stands, even before the cap's info event has arrived). The caller
+     * decides whether the file is kept (NoteRule.keep). Once only.
      */
     long stop() {
         if (stopped) return -1;
         stopped = true;
-        long ms = Math.min(elapsedMs(), NoteRule.MAX_MS);
+        long elapsed = elapsedMs();
+        long ms = Math.min(elapsed, NoteRule.MAX_MS);
+        boolean full = capped || NoteRule.reachedCap(elapsed);
         boolean ok = true;
         try {
             rec.stop();
@@ -85,6 +88,6 @@ final class NoteRecorder {
         } finally {
             rec.release();
         }
-        return ok || capped ? ms : -1;
+        return ok || full ? ms : -1;
     }
 }

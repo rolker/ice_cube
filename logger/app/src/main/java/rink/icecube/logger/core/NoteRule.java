@@ -40,6 +40,12 @@ public final class NoteRule {
         return "note_" + n + "_" + utcCompact + "_" + k + ".m4a";
     }
 
+    /**
+     * Whether a recording stopped at or past the cap: the recorder stops itself there, so a
+     * failed stop() then is that, not a lost note (the cap's info event may not have arrived yet).
+     */
+    public static boolean reachedCap(long elapsedMs) { return elapsedMs >= MAX_MS; }
+
     /** The voice column after adding a file name. */
     public static String add(String voice, String name) { return PhotoRule.add(voice, name); }
 
