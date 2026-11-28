@@ -32,12 +32,13 @@ final class NoteRecorder {
 
     /**
      * Starts recording into f (an empty file). atMax runs once on this thread when the
-     * 60 s cap is reached; the caller then calls {@link #stop}. Throws IOException (or a
-     * RuntimeException from the recorder, e.g. the microphone is busy) when it cannot start;
-     * the recorder is released then.
+     * 60 s cap is reached; onError runs once on this thread when the recorder fails midway
+     * (the microphone taken, the media server died); the caller then calls {@link #stop}
+     * either way. Throws IOException (or a RuntimeException from the recorder, e.g. the
+     * microphone is busy) when it cannot start; the recorder is released then.
      */
     @SuppressWarnings("deprecation")
-    static NoteRecorder start(Context c, File f, Runnable atMax) throws IOException {
+    static NoteRecorder start(Context c, File f, Runnable atMax, Runnable onError) throws IOException {
         MediaRecorder r = Build.VERSION.SDK_INT >= 31 ? new MediaRecorder(c) : new MediaRecorder();
         NoteRecorder[] self = new NoteRecorder[1];
         try {
@@ -53,6 +54,10 @@ final class NoteRecorder {
                 if (what != MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED || self[0] == null) return;
                 self[0].capped = true;
                 atMax.run();
+            });
+            r.setOnErrorListener((mr, what, extra) -> {
+                if (self[0] == null || self[0].stopped) return;
+                onError.run();
             });
             r.prepare();
             r.start();

@@ -782,7 +782,8 @@ public final class MainActivity extends Activity {
         try {
             if (p == null || !p.file.createNewFile()) throw new IOException("cannot create the note file");
             Feedback.play(this, Feedback.Cue.NOTE_START);
-            noteRec = NoteRecorder.start(this, p.file, () -> finishNote(true));
+            noteRec = NoteRecorder.start(this, p.file, () -> finishNote(true),
+                    () -> finishNote(false, "recording failed"));
             notePlan = p;
         } catch (IOException | RuntimeException e) {
             if (p != null) sv.noteCancelled(p, "failed to start (" + e.getClass().getSimpleName() + ")");
@@ -796,7 +797,13 @@ public final class MainActivity extends Activity {
      * of its own) or deletes a failed or too short file. A note whose session ended while it
      * recorded stays in that session's notes/ folder, not in points.csv.
      */
-    private void finishNote(boolean auto) {
+    private void finishNote(boolean auto) { finishNote(auto, null); }
+
+    /**
+     * As {@link #finishNote(boolean)}; error (not null) is the recorder failing midway: an
+     * error cue and a notice, and what was recorded before it is kept if it is valid.
+     */
+    private void finishNote(boolean auto, String error) {
         NoteRecorder r = noteRec;
         Survey.NotePlan p = notePlan;
         noteRec = null;
@@ -813,10 +820,9 @@ public final class MainActivity extends Activity {
             return;
         }
         if (keep) sv.noteTaken(p, ms, auto);
-        else {
-            sv.noteCancelled(p, ms < 0 ? "failed" : "too short");
-            Feedback.play(this, Feedback.Cue.ERROR);
-        }
+        else sv.noteCancelled(p, error != null ? error : ms < 0 ? "failed" : "too short");
+        if (!keep || error != null) Feedback.play(this, Feedback.Cue.ERROR);
+        if (error != null) toast("Note: " + error + (keep ? ", the part before it is kept" : ", not kept"));
     }
 
     @Override protected void onActivityResult(int code, int result, Intent data) {
