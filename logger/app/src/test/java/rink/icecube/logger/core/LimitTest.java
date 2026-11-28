@@ -20,6 +20,19 @@ public class LimitTest {
         assertEquals(2, Limit.LEAN_SCATTER_CM.def, 0);
         assertEquals(2, Limit.PLACE_CM.def, 0);      // 0.12.0 (#23)
         assertEquals(1.5, Limit.STEADY_CM.def, 0);
+        assertEquals(2, Limit.AUTO_PLUMB_DEG.def, 0);   // 0.13.0 (#35): the owner's 2°, 2 s, 2 cm
+        assertEquals(2, Limit.AUTO_HOLD_S.def, 0);
+        assertEquals(2, Limit.AUTO_STILL_CM.def, 0);
+    }
+
+    @Test public void autoCaptureLimitRanges() {
+        assertEquals(0.5, Limit.AUTO_PLUMB_DEG.parse("0.5"), 0);
+        assertEquals(10, Limit.AUTO_PLUMB_DEG.parse("10"), 0);
+        assertEquals("must be 0.5 to 10.0 °", problem(Limit.AUTO_PLUMB_DEG, "10.5"));
+        assertEquals("must be 0.5 to 30.0 s", problem(Limit.AUTO_HOLD_S, "0.4"));
+        assertEquals(0.2, Limit.AUTO_STILL_CM.parse("0,2"), 1e-12);
+        assertEquals("must be 0.2 to 20.0 cm", problem(Limit.AUTO_STILL_CM, "0.1"));
+        assertEquals("enter a number, up to 1 decimal", problem(Limit.AUTO_HOLD_S, "1.25"));
     }
 
     @Test public void poleCueLimitsAcceptZeroAsOff() {
