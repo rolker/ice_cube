@@ -268,3 +268,22 @@ Verified: round 1's six items are in the code (fix diff bb751a0..43cb8a0 read in
 - `python3 -m unittest discover -s analysis/qgis/tests`: OK (skipped=5)
 - `python3 -m unittest discover icecube/tests`: Ran 130, OK
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, app-debug.apk 370565 bytes (C: 109.3 GB free before)
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 23:06 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-16 at `3102747`
+**Base**: main
+**Depth**: Standard (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+**Round**: 3 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Scope: round 2's five findings (Local Review at `27ed34b`, entry commit fc0b1ba) and the fix diff fc0b1ba..3102747, read in full. Cross-model: skipped (round-3 convergence check, per handoff).
+
+Verified: all five round-2 items are in the code. Orphan rule is `<=` on the second (`not_later`), with photo and note same-second tests and the NOTE_5 expectation updated. NoteRecorder takes startMs before `r.start()` (definitely assigned: the catch rethrows) and the info listener checks `stopped`. Orphan notes with n None go to `tracks.voice` (line holding the note's time, else the nearest), the tracks map tip links them via `voice_tip` (empty for an older gpkg with no column), and remarks name them; the new column comes in through the schema-7 re-read of 0.14 sessions. `safe_file_name` filters both zip and folder listings and `extract_file` refuses other names; the bad-zip test checks nothing lands outside. VOICE_TIP link text is escaped with `&` first. `python3 -m unittest discover -s analysis/qgis/tests`: 186 OK (5 skipped). Gradle not re-run; the implementation entry ran it on this code. Below threshold, not listed: the session remark says "linked on the track" even for a session with no track lines, and the SCHEMA_VERSION 7 comment leaves out tracks.voice.
+
+### Findings
+None.
