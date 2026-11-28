@@ -27,8 +27,11 @@ public final class PointRow {
      * suspect_reason and fix_young come from 0.11.0 (#15).
      */
     public static final int COLUMNS = 33, V09_COLUMNS = 29, V06_COLUMNS = 27, BASE_COLUMNS = 17;
-    /** method: one averaged capture, a tilt capture, or a ref occupation. */
-    public static final String SINGLE = "single", TILT = "tilt", OCCUPATION = "ref";
+    /**
+     * method: one averaged capture (MARK), a tilt capture, a ref occupation, or (0.13.0, #35)
+     * an auto capture: the same 1 s average as MARK, taken when the pole was held plumb and still.
+     */
+    public static final String SINGLE = "single", TILT = "tilt", OCCUPATION = "ref", AUTO = "auto";
 
     public int n;
     public String cls = "";
@@ -41,7 +44,7 @@ public final class PointRow {
     /** 0.6: seconds since the RTK fixed stretch began, its start jump (m), and whether it is suspect. */
     public double fixAge = Double.NaN, fixJump = Double.NaN;
     public boolean fixSuspect;
-    /** 0.6: single, tilt or ref (empty for photo rows), and the tilt solution (tiltN 0 when not tilt). */
+    /** 0.6: single, tilt, ref or (0.13.0) auto (empty for photo rows), and the tilt solution (tiltN 0 when not tilt). */
     public String method = "";
     public int tiltN;
     public double tiltRms = Double.NaN, tiltCover = Double.NaN, tiltSdE = Double.NaN, tiltSdN = Double.NaN,

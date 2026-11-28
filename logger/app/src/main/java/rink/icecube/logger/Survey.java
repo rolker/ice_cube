@@ -17,11 +17,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import rink.icecube.logger.core.AutoCapture;
 import rink.icecube.logger.core.Epoch;
 import rink.icecube.logger.core.EpochAverage;
 import rink.icecube.logger.core.FixGuard;
+import rink.icecube.logger.core.LocalFrame;
 import rink.icecube.logger.core.PhotoRule;
 import rink.icecube.logger.core.PointRow;
+import rink.icecube.logger.core.PoleAxis;
+import rink.icecube.logger.core.PoleCalibration;
 import rink.icecube.logger.core.PoleCheck;
 import rink.icecube.logger.core.RefOccupation;
 import rink.icecube.logger.core.SurveyMode;
@@ -44,6 +48,15 @@ import rink.icecube.logger.core.VoidRule;
  * Tilt capture ({@link TiltSet}): startTilt, then lean() per lean, finishTilt (MARK) or
  * cancelTilt; every lean goes to tilt_obs.csv.
  *
+ * Auto capture ({@link AutoCapture}, logger 0.13.0, #35): every epoch goes to the arming
+ * state machine with the pole's angle from plumb (phone gravity against the pole axis this
+ * session's {@link PoleCalibration} found); when it fires, the capture takes the same path as
+ * a Surface MARK ({@link #capture}), method auto. Every capture at a stop (auto, a Surface MARK,
+ * a Surface tilt set's tip, an accepted calibration's tip) latches it, until the pole's tip
+ * has certainly moved away (see AutoCapture); undoing the latched capture clears it.
+ * The calibration runs on the epochs too (startCalibration / cancelCalibration); MARK, tilt
+ * sets and refs are refused while it runs, and it is refused while they run.
+ *
  * Flagging ({@link #voidCapture}, {@link #unvoidCapture}, logger 0.9.0): a capture row is
  * marked void, never removed; its photos move (see {@link VoidRule}); the flag goes to
  * points.csv (rewritten), to events.csv (flag / unflag / photo moved, the audit trail) and,
@@ -57,6 +70,17 @@ import rink.icecube.logger.core.VoidRule;
 final class Survey {
     static final long WINDOW_NS = 1_000_000_000L, MAX_AGE_NS = 2_000_000_000L, KEEP_NS = 10_000_000_000L;
     static final long NOTICE_MS = 10_000;
+    /** Auto capture: the plumb angle is from the gravity of the last 0.5 s before each epoch. */
+    static final long PLUMB_WINDOW_NS = 500_000_000L;
+    /**
+     * Pole calibration: each sample's gravity is the mean over +-100 ms about 100 ms before
+     * the GGA arrived (the receiver's output delay; a guess the first field run should check),
+     * so the 200 ms just before arrival: every sample of it is already in. The twist phase's
+     * gyro rotation is taken between the same shifted instants of consecutive epochs.
+     */
+    static final long CAL_LATENCY_NS = 100_000_000L, CAL_HALF_NS = 100_000_000L;
+    /** The auto line reads "not RTK fixed" once the last epoch is older than this. */
+    static final long AUTO_STALE_NS = 3_000_000_000L;
 
     /**
      * A short message for the map, green (ok), amber (warn) or red, shown until untilMs
@@ -124,6 +148,21 @@ final class Survey {
         }
     }
 
+    /**
+     * The map's auto capture line: text, and its colour kind (CALIBRATE: a calibration runs or
+     * is needed, tap to start; OFF: off for the fix; IDLE: off for a tilt set or ref; READY:
+     * armed; DONE: captured here). Null when the line is hidden (setting off, not Surface).
+     */
+    static final class AutoView {
+        enum Kind { CALIBRATE, OFF, IDLE, READY, DONE }
+        final String text;
+        final Kind kind;
+        final boolean calibrating, needsCalibration;
+        AutoView(String text, Kind kind, boolean calibrating, boolean needsCalibration) {
+            this.text = text; this.kind = kind; this.calibrating = calibrating; this.needsCalibration = needsCalibration;
+        }
+    }
+
     /** What the map shows while a ref occupation runs. */
     static final class RefView {
         final double remainingS, progress;
@@ -179,6 +218,16 @@ final class Survey {
     private boolean refSuspect, refYoung, refWhyJump, refWhySpell;
     private TiltSet tilt;
     private int tiltSets;
+    private final AutoCapture auto;
+    private PoleCalibration calibration;
+    private PoleAxis poleAxis;
+    private int calibrations;
+    private long calPrevNs = Long.MIN_VALUE;   // the last epoch fed to the calibration, for the gyro rotation
+    private LocalFrame autoFrame;          // horizontal positions for auto capture: any fixed local frame
+    private AutoCapture.Decision autoLast;
+    private long autoLastNs;
+    private String autoLastLabel = "";
+    private int autoLatchN;                // the capture row auto capture is latched on, 0 for none or the calibration
 
     Survey(LoggerService svc, File dir) {
         this.svc = svc;
@@ -186,7 +235,25 @@ final class Survey {
         photos = new File(dir, "photos");
         guard = new FixGuard(Settings.settleNs(Settings.prefs(svc)), Settings.jumpM(Settings.prefs(svc)),
                 Settings.floatSpellNs(Settings.prefs(svc)));
+        SharedPreferences p = Settings.prefs(svc);
+        auto = new AutoCapture(Settings.autoPlumbDeg(p), Settings.autoHoldS(p), Settings.autoStillM(p));
         writePoints(new ArrayList<String>());   // points.csv with its header from the start
+    }
+
+    /** Settings changed: the auto capture limits apply from the next epoch. */
+    synchronized void applyAutoSettings() {
+        SharedPreferences p = Settings.prefs(svc);
+        auto.setLimits(Settings.autoPlumbDeg(p), Settings.autoHoldS(p), Settings.autoStillM(p));
+    }
+
+    /**
+     * The pole height setting changed. The calibrated axis is the phone's mount on the pole and
+     * stays, but if the phone was moved to change the height the axis is stale, so after a
+     * calibration this posts a notice saying so (no forced recalibration).
+     */
+    synchronized void poleHeightChanged() {
+        if (poleAxis == null) return;
+        notice = new Notice("Pole height changed: recalibrate if the phone moved in its mount", false, true);
     }
 
     /** Settings changed: the young limit applies at once, the jump and float spell thresholds from the next stretch. */
@@ -204,6 +271,8 @@ final class Survey {
             while (epochs.peekFirst().elapsedNs < e.elapsedNs - KEEP_NS) epochs.removeFirst();
             FixGuard.Stretch st = guard.onEpoch(e);
             if (st != null) svc.event(st.eventText());
+            calibrationEpoch(e);
+            autoEpoch(e);
             RefOccupation r = ref;
             if (r == null) return;
             // every fixed epoch counts (0.11.0, #15: young epochs are no longer paused); the
@@ -315,6 +384,10 @@ final class Survey {
 
     synchronized Outcome mark(SurveyMode mode) {
         long now = SystemClock.elapsedRealtimeNanos();
+        if (calibration != null) {
+            cue(Feedback.Cue.ERROR);
+            return new Outcome(false, "Calibrating the pole: MENU cancels");
+        }
         if (tilt != null) return finishTilt(false);
         if (ref != null) return cancelRef("cancelled by MARK");
         EpochAverage a = average(now);
@@ -323,7 +396,6 @@ final class Survey {
             svc.event("capture refused class=" + mode.key + ": no fix");
             return new Outcome(false, "No fix: nothing captured");
         }
-        FixGuard.Stretch s = stretchOf(a);
         if (mode == SurveyMode.REF) {
             refSeconds = Settings.refSeconds(Settings.prefs(svc));
             refPole = svc.poleHeight();
@@ -337,13 +409,47 @@ final class Survey {
                     : "Ref started: waiting for RTK fixed", a.quality == 4);
             return new Outcome(true, null);
         }
+        PointRow r = capture(mode, now, a, PointRow.SINGLE);
+        if (mode == SurveyMode.SURFACE) {
+            // the tip is within pole·sin(θ) of the averaged antenna, θ from the same second's
+            // gravity; with no gravity, θ the plumb limit; with no axis, the pole's length
+            double pole = svc.poleHeight();
+            double plumb = poleAxis == null ? Double.NaN
+                    : poleAxis.plumbDeg(svc.gravityMean(now - WINDOW_NS, now));
+            double tipR = AutoCapture.markTipRadiusM(pole, plumb, poleAxis != null, auto.plumbDeg());
+            autoTaken(r.lat, r.lon, r.hAnt, tipR, label(r.cls) + r.n, r.n);
+        }
+        return new Outcome(true, null);
+    }
+
+    /**
+     * A capture happened at this stop (Surface MARK, auto, a Surface tilt set's tip, an
+     * accepted calibration's tip), its tip within tipR (m) of (lat, lon) horizontally: latch
+     * auto capture there, so no auto capture follows until the tip moves away. n is its row
+     * (0 for the calibration), for UNDO. At a stop that is still latched the latch (and its
+     * row) stays, so undoing a MARK there leaves the stop taken by the earlier capture. Lock held.
+     */
+    private void autoTaken(double lat, double lon, double h, double tipR, String label, int n) {
+        double[] p = autoEnu(lat, lon, h);
+        if (p == null || !auto.taken(p[0], p[1], tipR)) return;
+        autoLastLabel = label;
+        autoLatchN = n;
+    }
+
+    /**
+     * A Surface or Object capture from the 1 s average a (not null): the row (with the fix
+     * guard's columns), its event, notice and cue. MARK (method single) and auto capture
+     * (method auto) share it. Called with the lock held.
+     */
+    private PointRow capture(SurveyMode mode, long now, EpochAverage a, String method) {
+        FixGuard.Stretch s = stretchOf(a);
         PointRow r = PointRow.of(counter + 1, mode.key, now, a, svc.poleHeight(), System.currentTimeMillis());
-        r.method = PointRow.SINGLE;
+        r.method = method;
         r.setStretch(s, a.lastNs, guard.young(s, a.lastNs));   // young at the time fix_age_s is taken
         counter++;
         addRow(r);
-        String text = String.format(Locale.US, "%s%d  %s  %d ep  ±%.1f cm", label(r.cls), r.n,
-                fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
+        String text = String.format(Locale.US, "%s%d%s  %s  %d ep  ±%.1f cm", label(r.cls), r.n,
+                PointRow.AUTO.equals(method) ? " auto" : "", fixName(r.fix), r.nEpochs, 100 * Math.max(r.sdE, r.sdN));
         if (r.fixSuspect) {
             cue(Feedback.Cue.SUSPECT);
             notice = new Notice(text + suspectText(r) + youngText(r), false, true, r, true);
@@ -354,7 +460,228 @@ final class Survey {
             cue(mode == SurveyMode.SURFACE ? Feedback.Cue.SURFACE : Feedback.Cue.OBJECT);
             notice = new Notice(text, r.fix == 4, false, r, true);
         }
+        return r;
+    }
+
+    // ---- auto capture and pole calibration ----
+
+    /** Horizontal position (e, n) in the auto capture frame, set at the first call; null without a position. */
+    private double[] autoEnu(double lat, double lon, double h) {
+        if (Double.isNaN(lat) || Double.isNaN(lon)) return null;
+        double hh = Double.isNaN(h) ? 0 : h;
+        if (autoFrame == null) autoFrame = new LocalFrame(lat, lon, hh);
+        return autoFrame.toEnu(lat, lon, hh);
+    }
+
+    /** Feeds the epoch to auto capture and captures when it fires (lock held). */
+    private void autoEpoch(Epoch e) {
+        SharedPreferences p = Settings.prefs(svc);
+        AutoCapture.Input in = new AutoCapture.Input();
+        in.tNs = e.elapsedNs;
+        in.enabled = Settings.autoCapture(p);
+        in.surface = Settings.mode(p) == SurveyMode.SURFACE;
+        in.calibrating = calibration != null;
+        in.calibrated = poleAxis != null;
+        in.tiltRunning = tilt != null;
+        in.refRunning = ref != null;
+        in.fixed = e.fixed();
+        in.height = !Double.isNaN(e.h);
+        FixGuard.Stretch cur = guard.current();
+        in.young = guard.young(e.elapsedNs);
+        in.suspect = cur != null && cur.suspect;
+        if (e.fixed()) {
+            double[] h = autoEnu(e.lat, e.lon, e.h);
+            in.e = h[0];
+            in.n = h[1];
+        }
+        in.plumbDeg = poleAxis == null ? Double.NaN
+                : poleAxis.plumbDeg(svc.gravityMean(e.elapsedNs - PLUMB_WINDOW_NS, e.elapsedNs));
+        in.poleM = svc.poleHeight();
+        AutoCapture.Decision d = auto.onEpoch(in);
+        if (!auto.latched()) autoLatchN = 0;   // the tip moved away: undoing that row no longer touches the latch
+        autoLast = d;
+        autoLastNs = e.elapsedNs;
+        if (d.cue == AutoCapture.Cue.ARMED) {
+            svc.event("auto capture armed");
+            cue(Feedback.Cue.AUTO_ARMED);
+        } else if (d.cue == AutoCapture.Cue.OFF) {
+            svc.event("auto capture off: " + d.why.name().toLowerCase(Locale.US));
+            cue(Feedback.Cue.AUTO_OFF);
+        }
+        if (!d.fire) return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        EpochAverage a = average(now);
+        if (a == null || a.quality != 4) {   // cannot happen after a fixed epoch; never capture a doubt
+            svc.event("auto capture skipped: no RTK fixed average");
+            return;
+        }
+        PointRow r = capture(SurveyMode.SURFACE, now, a, PointRow.AUTO);
+        if (auto.taken(d.e, d.n, d.tipRadiusM)) {   // latched only now that the capture happened
+            autoLastLabel = label(r.cls) + r.n;
+            autoLatchN = r.n;
+        }
+        svc.event(String.format(Locale.US, "auto capture n=%d plumb_deg=%.1f held_s=%.1f spread_cm=%.1f epochs=%d",
+                r.n, in.plumbDeg, d.heldS, d.spreadM * 100, d.epochs));
+    }
+
+    /** Feeds the epoch to a running pole calibration (lock held). */
+    private void calibrationEpoch(Epoch e) {
+        PoleCalibration c = calibration;
+        if (c == null) return;
+        long at = e.elapsedNs - CAL_LATENCY_NS;
+        double[] g = svc.gravityMean(at - CAL_HALF_NS, at + CAL_HALF_NS);
+        double[] g3 = g == null ? null : new double[] {g[0], g[1], g[2]};
+        double[] gyro = calPrevNs == Long.MIN_VALUE ? null : svc.gyroIntegral(calPrevNs - CAL_LATENCY_NS, at);
+        calPrevNs = e.elapsedNs;
+        calibrationChange(c, c.onEpoch(e, g3, gyro));
+    }
+
+    /**
+     * A service tick (lock taken): a running calibration with no epochs for a while fails, and
+     * once the epochs have stopped for {@link #AUTO_STALE_NS} (when the AUTO line turns to
+     * "not RTK fixed") an armed auto capture plays AUTO_OFF.
+     */
+    synchronized void onTick() {
+        long now = SystemClock.elapsedRealtimeNanos();
+        PoleCalibration c = calibration;
+        if (c != null) calibrationChange(c, c.onTick(now));
+        if (autoLast != null && now - autoLastNs > AUTO_STALE_NS && auto.onStale() == AutoCapture.Cue.OFF) {
+            svc.event("auto capture off: no_epochs");
+            cue(Feedback.Cue.AUTO_OFF);
+        }
+    }
+
+    /** Acts on what an epoch or a tick changed in the calibration c (lock held). */
+    private void calibrationChange(PoleCalibration c, PoleCalibration.Change change) {
+        switch (change) {
+            case RESTART:
+                cue(Feedback.Cue.ERROR);
+                notice = new Notice("Calibrate: " + c.restartCause() + ", hold the pole still again", false, true);
+                break;
+            case LEAN:
+                svc.event("pole calibration lean set=" + calibrations);
+                cue(Feedback.Cue.CAL_PHASE);
+                break;
+            case TWIST:
+                svc.event(String.format(Locale.US, "pole calibration twist set=%d samples=%d skipped=%d", calibrations,
+                        c.samples(), c.skipped()));
+                cue(Feedback.Cue.CAL_PHASE);
+                break;
+            case DONE:
+                calibration = null;
+                poleAxis = c.result();
+                auto.reset();
+                double[] tip = c.tipGeodetic();   // the calibration point is this stop's capture
+                if (tip != null) autoTaken(tip[0], tip[1], tip[2], 0, "the calibration point", 0);
+                PoleAxis a = poleAxis;
+                // the axis is the phone's mounting on the pole (phone axes), not a position
+                svc.event(String.format(Locale.US, "pole axis calibrated set=%d residual_deg=%.2f samples=%d"
+                                + " twist_samples=%d twist_deg=%.0f skipped=%d cover_deg=%.0f rms_m=%.4f axis=%.4f;%.4f;%.4f"
+                        + " lean_speeds_mps=%s",
+                        calibrations, a.residualDeg, a.samples, a.twistSamples, c.twistDeg(), c.skipped(), a.coverageDeg,
+                        a.rmsM, a.axis[0], a.axis[1], a.axis[2], c.leanSpeedsText()));
+                cue(Feedback.Cue.CAL_DONE);
+                SharedPreferences p = Settings.prefs(svc);
+                String then = !Settings.autoCapture(p) ? "Auto capture is off in Settings"
+                        : Settings.mode(p) != SurveyMode.SURFACE ? "Auto capture works in Surface mode"
+                        : "Auto capture on";
+                notice = new Notice(String.format(Locale.US, "Pole calibrated: %d leans, %.1f° RMS. %s",
+                        c.leans(), a.residualDeg, then), true);
+                break;
+            case FAILED:
+                calibration = null;
+                svc.event("pole calibration failed set=" + calibrations + " lean_speeds_mps=" + c.leanSpeedsText() + ": "
+                        + c.failure());
+                cue(Feedback.Cue.ERROR);
+                notice = new Notice("Calibration failed: " + c.failure(), false, true);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Starts a pole calibration; the previous axis (if any) is dropped. */
+    synchronized Outcome startCalibration() {
+        if (calibration != null) return new Outcome(false, "Calibration already running");
+        if (tilt != null || ref != null) {
+            cue(Feedback.Cue.ERROR);
+            return new Outcome(false, "Finish or cancel the " + (tilt != null ? "tilt set" : "ref") + " first");
+        }
+        long now = SystemClock.elapsedRealtimeNanos();
+        calibration = new PoleCalibration(svc.poleHeight(), Settings.tiltGates(Settings.prefs(svc)), now);
+        calPrevNs = Long.MIN_VALUE;
+        poleAxis = null;
+        auto.reset();
+        autoLatchN = 0;
+        calibrations++;
+        svc.event(String.format(Locale.US, "pole calibration start set=%d pole_height=%.3f", calibrations,
+                calibration.pole));
+        cue(Feedback.Cue.CAL_START);
+        notice = new Notice("Calibrate: tip on a point, hold still, then lean all round, then twist twice", true);
         return new Outcome(true, null);
+    }
+
+    synchronized Outcome cancelCalibration(String why) {
+        if (calibration == null) return new Outcome(false, null);
+        calibration = null;
+        svc.event("pole calibration " + why + " set=" + calibrations);
+        cue(Feedback.Cue.REF_CANCEL);
+        notice = new Notice("Calibration cancelled: auto capture stays off", false);
+        return new Outcome(true, null);
+    }
+
+    synchronized boolean calibrating() { return calibration != null; }
+    synchronized boolean calibrated() { return poleAxis != null; }
+
+    /** The auto capture line for the map (see AutoView), or null when hidden. */
+    synchronized AutoView autoView() {
+        long now = SystemClock.elapsedRealtimeNanos();
+        PoleCalibration c = calibration;
+        if (c != null) {
+            int left = (int) Math.ceil(c.remainingS(now));
+            String text;
+            switch (c.phase()) {
+                case STILL: text = "CALIBRATE 1/3: tip on a point, hold still  " + left + " s"; break;
+                case LEAN: text = "CALIBRATE 2/3: lean slowly all round  " + left + " s"; break;
+                default: text = "CALIBRATE 3/3: twist the pole slowly, twice  " + left + " s"; break;
+            }
+            return new AutoView(text, AutoView.Kind.CALIBRATE, true, false);
+        }
+        SharedPreferences p = Settings.prefs(svc);
+        if (!Settings.autoCapture(p) || Settings.mode(p) != SurveyMode.SURFACE) return null;
+        if (poleAxis == null) return new AutoView("AUTO: calibrate to enable (tap)", AutoView.Kind.CALIBRATE, false, true);
+        if (tilt != null) return new AutoView("AUTO: off during the tilt set", AutoView.Kind.IDLE, false, false);
+        if (ref != null) return new AutoView("AUTO: off during the ref", AutoView.Kind.IDLE, false, false);
+        AutoCapture.Decision d = autoLast;
+        if (d == null || now - autoLastNs > AUTO_STALE_NS) {
+            return new AutoView("AUTO: off, not RTK fixed", AutoView.Kind.OFF, false, false);
+        }
+        switch (d.why) {
+            case NO_FIX: return new AutoView("AUTO: off, not RTK fixed", AutoView.Kind.OFF, false, false);
+            case NO_HEIGHT: return new AutoView("AUTO: off, no height in the GGA", AutoView.Kind.OFF, false, false);
+            case FIX_YOUNG:
+                int y = guard.youngAgeSeconds(now);
+                return new AutoView(y >= 0 ? "AUTO: off, fix young " + y + " s" : "AUTO: off, fix young",
+                        AutoView.Kind.OFF, false, false);
+            case FIX_SUSPECT: return new AutoView("AUTO: off, fix may be false", AutoView.Kind.OFF, false, false);
+            case NOT_PLUMB: {
+                double plumb = poleAxis.plumbDeg(svc.gravityMean(now - PLUMB_WINDOW_NS, now));
+                return new AutoView(Double.isNaN(plumb) ? "AUTO: ready, hold plumb (no gravity)"
+                        : String.format(Locale.US, "AUTO: ready, hold plumb  %.1f°", plumb), AutoView.Kind.READY, false, false);
+            }
+            case MOVING: return new AutoView("AUTO: ready, hold still", AutoView.Kind.READY, false, false);
+            case HOLDING:
+                return new AutoView(String.format(Locale.US, "AUTO: holding  %.1f / %.1f s", d.heldS, auto.holdS()),
+                        AutoView.Kind.READY, false, false);
+            case CAPTURED:
+                if (!auto.latched()) {   // a skipped fire, or the capture was undone: not taken
+                    return new AutoView("AUTO: ready, hold plumb and still", AutoView.Kind.READY, false, false);
+                }
+                return new AutoView("AUTO: " + autoLastLabel + " taken, move to the next point", AutoView.Kind.DONE,
+                        false, false);
+            default:   // the gates above, seen before this frame caught up
+                return new AutoView("AUTO: off", AutoView.Kind.IDLE, false, false);
+        }
     }
 
     // ---- tilt capture ----
@@ -362,6 +689,10 @@ final class Survey {
     /** Starts a tilt set in the given mode (its class). */
     synchronized Outcome startTilt(SurveyMode mode) {
         if (tilt != null) return new Outcome(false, "Tilt capture already running");
+        if (calibration != null) {
+            cue(Feedback.Cue.ERROR);
+            return new Outcome(false, "Calibrating the pole: MENU cancels");
+        }
         if (ref != null) {
             cue(Feedback.Cue.ERROR);
             return new Outcome(false, "Ref running: MARK cancels it");
@@ -456,6 +787,8 @@ final class Survey {
                 r.warnings.isEmpty() ? "none" : android.text.TextUtils.join(" | ", r.warnings),
                 drops.length() > 0 ? " " + drops : ""));
         writeTiltObs(t.obsRows(set, row.n));
+        // a Surface set is this stop's capture: standing the pole up on its tip takes no auto capture
+        if (SurveyMode.SURFACE.key.equals(row.cls)) autoTaken(row.lat, row.lon, row.hAnt, 0, label(row.cls) + row.n, row.n);
         String text = String.format(Locale.US, "%s%d tilt  %d leans  rms %.1f cm  cover %.0f°  σ %.1f cm", label(row.cls),
                 row.n, r.used.size(), s.rms * 100, s.coverageDeg, s.maxSd() * 100);
         boolean warn = !r.warnings.isEmpty() || row.fixSuspect || row.fixYoung == 1;
@@ -633,6 +966,11 @@ final class Survey {
         Notice cur = notice;
         if (cur != null && cur.at == r) notice = null;   // its capture notice no longer stands
         if (poleWarningN == n) { poleWarning = null; poleWarningN = 0; }
+        if (autoLatchN == n) {   // the latched capture is undone: this stop is no longer taken
+            auto.reset();
+            autoLatchN = 0;
+            autoLastLabel = "";
+        }
         if (PointRow.REF.equals(r.cls)) refsVoid(r);
         savePoints();
         return new Outcome(true, label(r.cls) + n + " flagged: " + why);
@@ -812,6 +1150,7 @@ final class Survey {
         synchronized (this) {
             if (ref != null) cancelRef("cancelled (session stop)");
             if (tilt != null) cancelTilt("cancelled (session stop)");
+            if (calibration != null) cancelCalibration("cancelled (session stop)");
         }
         io.shutdown();
         try { io.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) { }

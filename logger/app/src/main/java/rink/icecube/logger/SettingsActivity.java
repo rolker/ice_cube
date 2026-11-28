@@ -67,7 +67,7 @@ public final class SettingsActivity extends Activity {
     private TextView refError, toleranceError, gpsWaitError;
     private final EditText[] limitFields = new EditText[Settings.LIMITS.length];
     private final TextView[] limitErrors = new TextView[Settings.LIMITS.length];
-    private CheckBox volumeKeys, sound, vibration, earlierRefs, labelCaptures;
+    private CheckBox volumeKeys, sound, vibration, earlierRefs, labelCaptures, autoCapture;
     private static final int IMPORT_LAYERS = 7;
 
     @Override protected void onCreate(Bundle b) {
@@ -189,6 +189,15 @@ public final class SettingsActivity extends Activity {
                     + " (amber, fix_suspect).");
             if (Settings.LIMIT_KEYS[i].equals(Settings.TILT_COVER_DEG)) label(c, "Tilt capture gates (see README, Tilt capture): leans outside the tilt range are refused;"
                     + " the others warn before saving.");
+            if (Settings.LIMIT_KEYS[i].equals(Settings.AUTO_PLUMB_DEG)) {
+                autoCapture = check(c, "Auto capture (Surface): capture when the pole is held plumb and still",
+                        Settings.autoCapture(p));
+                label(c, "Auto capture needs the pole calibrated once per session (MENU > Calibrate pole) and an RTK"
+                        + " fix that is neither young nor suspect; it is off during tilt sets and refs. One capture per"
+                        + " stop: it waits until the pole's tip has moved 3 times the still limit from the last"
+                        + " capture's tip; tilting or standing the pole up on the same point does not count"
+                        + " (see README, Auto capture).");
+            }
             limitField(c, p, i);
         }
         volumeKeys = check(c, "Volume keys: Mark / Mode (down = MARK, up = MODE on the map)", Settings.volumeKeys(p));
@@ -508,7 +517,8 @@ public final class SettingsActivity extends Activity {
         e.putBoolean(Settings.VOLUME_KEYS, volumeKeys.isChecked()).putBoolean(Settings.SOUND, sound.isChecked())
                 .putBoolean(Settings.VIBRATION, vibration.isChecked())
                 .putBoolean(Settings.SHOW_EARLIER_REFS, earlierRefs.isChecked())
-                .putBoolean(Settings.LABEL_CAPTURES, labelCaptures.isChecked());
+                .putBoolean(Settings.LABEL_CAPTURES, labelCaptures.isChecked())
+                .putBoolean(Settings.AUTO_CAPTURE, autoCapture.isChecked());
         if (gpsWaitProblem().isEmpty()) {
             e.putString(Settings.GPS_WAIT_MIN, Limit.GPS_WAIT_MIN.format(Limit.GPS_WAIT_MIN.parse(text(gpsWait))));
         } else {

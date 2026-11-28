@@ -244,6 +244,27 @@ public class CoverageTest {
         assertEquals(Math.hypot(t.sigmaZ, slopeTerm), nd.sigma(), 1e-6);
     }
 
+    /** 0.13.0 (#35): an auto capture is the same 1 s average as MARK and feeds like it. */
+    @Test public void autoCaptureFeeds() {
+        LocalFrame f = new LocalFrame(0, 0, 0);   // made-up origin at the equator
+        PointRow r = surface(f, 1, 1, 0.2);
+        r.method = PointRow.AUTO;
+        assertTrue(Coverage.feeds(r));
+        Coverage cov = new Coverage(Coverage.Params.defaults());
+        assertTrue(cov.add(r, f));
+        assertEquals(1, cov.fed());
+    }
+
+    /** A ground height that is not finite (NaN, or an infinity from a bad row) never feeds. */
+    @Test public void nonFiniteGroundHeightDoesNotFeed() {
+        LocalFrame f = new LocalFrame(0, 0, 0);
+        for (double h : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            PointRow r = surface(f, 1, 1, 0.2);
+            r.hGround = h;
+            assertFalse(String.valueOf(h), Coverage.feeds(r));
+        }
+    }
+
     @Test public void voidedRowDoesNotFeed() {
         LocalFrame f = new LocalFrame(0, 0, 0);   // made-up origin at the equator
         PointRow r = surface(f, 1, 1, 0.2);

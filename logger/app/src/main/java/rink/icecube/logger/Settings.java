@@ -45,6 +45,10 @@ final class Settings {
     static final String TILT_COVER_DEG = "tilt_cover_deg", TILT_RMS_CM = "tilt_rms_cm", TILT_MIN_DEG = "tilt_min_deg",
             TILT_MAX_DEG = "tilt_max_deg", TILT_SIGMA_CM = "tilt_sigma_cm", TILT_IMU_DEG = "tilt_imu_deg",
             LEAN_SCATTER_CM = "lean_scatter_cm";
+    // 0.13.0 (#35): auto capture on or off (default on: it stays off until the pole is
+    // calibrated), and its limits, text checked by Limit.AUTO_PLUMB_DEG, AUTO_HOLD_S, AUTO_STILL_CM
+    static final String AUTO_CAPTURE = "auto_capture";
+    static final String AUTO_PLUMB_DEG = "auto_plumb_deg", AUTO_HOLD_S = "auto_hold_s", AUTO_STILL_CM = "auto_still_cm";
     // 0.7, coverage overlay: shown or not (MENU > Coverage), and its Settings > Coverage values
     static final String COVERAGE_ON = "coverage_on";   // default on
     static final String LAST_LAYER_IMPORT_URI = "last_layer_import_uri";   // last picked layer file, picker hint
@@ -53,10 +57,11 @@ final class Settings {
             COV_GROUND_CM = "coverage_ground_cm", COV_WANDER_CM = "coverage_wander_cm";
     /** The numeric settings: key and its limit, in Settings screen order (Survey, then Coverage from COVERAGE_FIRST). */
     static final String[] LIMIT_KEYS = {PLACE_CM, STEADY_CM, SETTLE_S, JUMP_M, FLOAT_SPELL_S, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
-            TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM,
+            TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM, AUTO_PLUMB_DEG, AUTO_HOLD_S, AUTO_STILL_CM,
             COV_TARGET_CM, COV_CELL_M, COV_RADIUS_M, COV_REACH_M, COV_GROUND_CM, COV_WANDER_CM};
     static final Limit[] LIMITS = {Limit.PLACE_CM, Limit.STEADY_CM, Limit.SETTLE_S, Limit.JUMP_M, Limit.FLOAT_SPELL_S, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
             Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM,
+            Limit.AUTO_PLUMB_DEG, Limit.AUTO_HOLD_S, Limit.AUTO_STILL_CM,
             Limit.COV_TARGET_CM, Limit.COV_CELL_M, Limit.COV_RADIUS_M, Limit.COV_REACH_M, Limit.COV_GROUND_CM,
             Limit.COV_WANDER_CM};
     /** Index of the first Coverage setting in LIMIT_KEYS and LIMITS. */
@@ -108,7 +113,7 @@ final class Settings {
     /** Connect caster when the GPS connects (key caster_at_launch, the 0.8.0 "Connect caster at app launch"). */
     static boolean casterWithGps(SharedPreferences p) { return p.getBoolean(CASTER_AT_LAUNCH, false); }
 
-    /** "Ice Cube Logger 0.11.0 (build 15)" */
+    /** "Ice Cube Logger 0.13.0 (build 17)" */
     static String versionLine() {
         return "Ice Cube Logger " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")";
     }
@@ -166,6 +171,11 @@ final class Settings {
     static long settleNs(SharedPreferences p) { return Math.round(limit(p, SETTLE_S, Limit.SETTLE_S) * 1e9); }
     static double jumpM(SharedPreferences p) { return limit(p, JUMP_M, Limit.JUMP_M); }
     static long floatSpellNs(SharedPreferences p) { return Math.round(limit(p, FLOAT_SPELL_S, Limit.FLOAT_SPELL_S) * 1e9); }
+
+    static boolean autoCapture(SharedPreferences p) { return p.getBoolean(AUTO_CAPTURE, true); }
+    static double autoPlumbDeg(SharedPreferences p) { return limit(p, AUTO_PLUMB_DEG, Limit.AUTO_PLUMB_DEG); }
+    static double autoHoldS(SharedPreferences p) { return limit(p, AUTO_HOLD_S, Limit.AUTO_HOLD_S); }
+    static double autoStillM(SharedPreferences p) { return limit(p, AUTO_STILL_CM, Limit.AUTO_STILL_CM) / 100; }
 
     static boolean coverageOn(SharedPreferences p) { return p.getBoolean(COVERAGE_ON, true); }
 
