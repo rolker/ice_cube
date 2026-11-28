@@ -247,3 +247,24 @@ Verified: round 1's six items are in the code (fix diff bb751a0..43cb8a0 read in
 - [x] (suggestion) An orphan note that resolves to n None is extracted and counted but no table row or map tip links to it; name it in the import remarks or give it a row. (Claude adversarial) — `analysis/qgis/import_sessions.py:384`
 - [x] (suggestion) Zip entry names are checked for `/` only; on Windows a `\\` or `..` in a photos/ or notes/ entry name could extract outside the target folder. Accept only a single safe component (or a PHOTO_RE/NOTE_RE match). (codex, gemini) — `analysis/qgis/logger_session.py:98`
 - [x] (suggestion) VOICE_TIP puts the file name into the link text unescaped; escape `&`, `<`, `>` (the href is already encoded). (codex, gemini) — `analysis/qgis/build_project.py:184`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 23:02 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-16 at `76c5cdb`
+**Addressed**: Local Review (Pre-Push) at `27ed34b` (2026-11-27 22:52 -05:00)
+**Commits**: 1662003, f0dad30, 5f6bb82, f948c1a, 76c5cdb
+
+### Actions
+- [x] (must-fix) Orphan rule uses `<=` on the second: a photo or note in its capture's second takes the name's n; photo and note same-second tests; the existing orphan test now expects NOTE_5 (same second as its own row 5) to take n=5 — `analysis/qgis/logger_session.py:_attachments`
+- [x] (suggestion) startMs taken just before `r.start()`; the info listener ignores a stopped note like the error listener — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java`
+- [x] (suggestion) Orphan note with no capture: chose the track. `tracks` gains `voice` (the note on the line recorded at its time, else the nearest), the tracks map tip links it, and the session's `remarks` name it; test; docs/howto/qgis.md — `analysis/qgis/import_sessions.py:orphan_voice`, `analysis/qgis/build_project.py:style_tracks`
+- [x] (suggestion) `safe_file_name`: photos/ and notes/ keep only one plain path part (no `/`, `\`, `:`, `.`/`..`, control chars); `extract_file` refuses others; test with a zip of bad names — `analysis/qgis/logger_session.py`
+- [x] (suggestion) VOICE_TIP link text HTML-escaped via `html_text_expr`; test — `analysis/qgis/build_project.py`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: Ran 130, OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, app-debug.apk 370565 bytes (C: 109.3 GB free before)
