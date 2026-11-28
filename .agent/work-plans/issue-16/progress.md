@@ -204,3 +204,25 @@ Verified: importer unittest 178 OK (5 skipped); Gradle testDebugUnitTest 37 suit
 - [x] (suggestion) There is no `OnErrorListener`. If recording fails midway (mic taken, media server died), STOP keeps counting until it is tapped. Finish the note (as failed) on error. — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:52`
 - [x] (suggestion) VOICE_TIP puts `@project_folder` and the path into a `file:///` href without encoding. A Drive path with a space ("My Drive") should be checked by hand: does the link open in the Windows QGIS map tip? — `analysis/qgis/build_project.py:154`
 - [x] (suggestion) The docstring says the `voice` column lists `notes/<file>.m4a`, but points.csv holds bare file names. — `analysis/qgis/logger_session.py:7`
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 22:45 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+
+**Branch**: feature/issue-16 at `43cb8a0`
+**Addressed**: Local Review (Pre-Push) at `979b59c` (2026-11-27 22:36 -05:00)
+**Commits**: 7519016, 1d8929b, 27f5dc8, bfc3fab, a8d2e02, 43cb8a0
+
+### Actions
+- [x] (must-fix) Finish the recording note before REC's stop and before Share last session (row and events.csv line kept, no partial .m4a); other share/stop paths are in other activities, where MainActivity.onPause already finishes it. Importer: an orphan with no event takes its file-name n only when that capture is in an earlier second than the note, else own row with no n; test added — `MainActivity.java`, `logger_session.py:_attachments`, `test_import.py`
+- [x] (suggestion) Duplicate names from the base name via `NoteRule.fileName(n, utc, k)`; test checks them against the importer's NOTE_RE — `Survey.java:1110`, `NoteRule.java`
+- [x] (suggestion) Cap race: `NoteRule.reachedCap(elapsed)` counts as capped in `stop()`; test — `NoteRecorder.java:88`
+- [x] (suggestion) OnErrorListener: finishes the note at once with an error cue and toast, keeping it if valid — `NoteRecorder.java:52`, `MainActivity.java` (not unit-testable: platform MediaRecorder)
+- [x] (suggestion) Map-tip file links percent-encoded (`file_url_expr`, QGIS replace() with arrays, '%' first), photo and voice; tests read the expression and compare with urllib quote — `build_project.py:154`, `test_plugin.py:MapTipUrlTest`
+- [x] (suggestion) Docstring: voice column holds bare file names — `logger_session.py:7`
+
+### Checks
+- `python3 -m unittest discover -s analysis/qgis/tests`: 181 tests OK (skipped=5)
+- `python3 -m unittest discover icecube/tests`: 130 tests OK
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: OK, app-debug.apk built (C: 109 GB free)
