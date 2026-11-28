@@ -262,3 +262,26 @@ Specialists: static analysis (no Java linter profile; `./gradlew testDebugUnitTe
 - [x] (suggestion) `autoLatchN` stays set after the latch clears by moving, so a later undo of that row resets a hold at the next stop; and a MARK at an auto-taken stop moves `autoLatchN`, so undoing the MARK unlatches although the auto row stands (adversarial, lead). — `logger/app/src/main/java/rink/icecube/logger/Survey.java:934`
 - [x] (suggestion) `stillBadCause` is not cleared by a good epoch, so a later timeout can name an old no-gravity/not-fixed cause (gemini). — `logger/app/src/main/java/rink/icecube/logger/core/PoleCalibration.java:188`
 - [x] (suggestion) A silent GPS stall shows "not RTK fixed" after 3 s but plays no AUTO_OFF cue, since only epochs drive AutoCapture (gemini). — `logger/app/src/main/java/rink/icecube/logger/Survey.java` (autoView / onTick)
+
+## Implementation
+**Status**: complete
+**When**: 2026-11-27 20:29 -05:00
+**By**: Claude Code Agent (claude-opus)
+
+**Branch**: feature/issue-35 at `5e6fedb`
+**Addressed**: Local Review (Pre-Push) at `deb885f` (2026-11-27 20:19 -05:00)
+**Commits**: bd01255 (merge origin/main, #20), d8f2c25, 048756f, 1f19c8f, 5a80e52, c256734, c14664d, a0101eb, 5e6fedb
+
+### Actions
+- [x] (must-fix) Re-arm compares tips, not antennas (host decision): the latch stores the capture's tip and clears only when the epoch's tip is certainly more than 3x the still limit from it; an epoch with NaN gravity, axis, pole height or position never clears it. The lean's azimuth needs a heading the logger lacks (gravity gives only the tilt angle), so each tip is a disk: centre the antenna, radius pole x sin(theta) (0 for a solved tilt-set or calibration tip; a MARK uses its 1 s gravity, the pole height if unknown; a fire the largest lean of its hold). Tests: standing up at 1.9 deg after a tilt set, swaying across the 2 deg cone after a MARK, a real 7 cm tip move, plumb 10 deg with still 0.2 cm. — `logger/app/src/main/java/rink/icecube/logger/core/AutoCapture.java`, `Survey.java`, `logger/README.md`
+- [x] (must-fix) Settings help text and journal reworded: the tip must move 3x the still limit; a tilt does not re-arm. — `SettingsActivity.java`, `docs/log.md`
+- [x] (suggestion) Each lean-phase epoch's speed goes to the calibrated and failed events (`lean_speeds_mps=`); the 0.5 m/s gate is unchanged. — `PoleCalibration.java`, `Survey.java`
+- [x] (suggestion) Chose the minimum: hold time is now 1 to 30 s (a stored 0.5 reads as the 2 s default), so the 1 s capture average never reaches before the hold. — `core/Limit.java`
+- [x] (suggestion) New NO_HEIGHT gate: a fixed epoch with no GGA height never arms or fires (fix-caused, so it cues). — `AutoCapture.java`, `Survey.java`
+- [x] (suggestion) autoLatchN clears when the latch clears; a capture at a still-latched stop keeps the first latch and its row (AutoCapture.taken returns false), so undoing that MARK leaves the stop latched by the auto row. — `Survey.java`, `AutoCapture.java`
+- [x] (suggestion) A good still-phase epoch clears stillBadCause. — `PoleCalibration.java`
+- [x] (suggestion) AUTO_OFF plays once when epochs stop for 3 s (the "not RTK fixed" condition) via AutoCapture.onStale on the service tick; ARMED plays when they return. — `AutoCapture.java`, `Survey.java`
+
+### Checks
+- `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 303 unit tests, 0 failures; APK `logger/app/build/outputs/apk/debug/app-debug.apk`. C: had 108.9 GB free.
+- After the merge: `python3 -m unittest discover icecube/tests` 130 OK; `analysis/qgis/tests` 175 OK (5 skipped).
