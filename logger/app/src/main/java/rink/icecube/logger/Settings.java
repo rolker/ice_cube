@@ -39,6 +39,8 @@ final class Settings {
     // 0.11.0 (#15): fix_settle_s is the young-fix warning limit (key kept); fix_settle_migrated
     // marks the one-time move of a stored 10 to 120 (core.SettleMigration); a float spell limit
     static final String SETTLE_S = "fix_settle_s", JUMP_M = "fix_jump_m", FLOAT_SPELL_S = "fix_float_spell_s";
+    // 0.12.0 (#23): pole check cues, text checked by Limit.PLACE_CM and Limit.STEADY_CM
+    static final String PLACE_CM = "pole_place_cm", STEADY_CM = "pole_steady_cm";
     static final String SETTLE_MIGRATED = "fix_settle_migrated";
     static final String TILT_COVER_DEG = "tilt_cover_deg", TILT_RMS_CM = "tilt_rms_cm", TILT_MIN_DEG = "tilt_min_deg",
             TILT_MAX_DEG = "tilt_max_deg", TILT_SIGMA_CM = "tilt_sigma_cm", TILT_IMU_DEG = "tilt_imu_deg",
@@ -50,10 +52,10 @@ final class Settings {
             COV_RADIUS_M = "coverage_radius_m", COV_REACH_M = "coverage_reach_m",
             COV_GROUND_CM = "coverage_ground_cm", COV_WANDER_CM = "coverage_wander_cm";
     /** The numeric settings: key and its limit, in Settings screen order (Survey, then Coverage from COVERAGE_FIRST). */
-    static final String[] LIMIT_KEYS = {SETTLE_S, JUMP_M, FLOAT_SPELL_S, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
+    static final String[] LIMIT_KEYS = {PLACE_CM, STEADY_CM, SETTLE_S, JUMP_M, FLOAT_SPELL_S, TILT_COVER_DEG, TILT_RMS_CM, TILT_MIN_DEG, TILT_MAX_DEG,
             TILT_SIGMA_CM, TILT_IMU_DEG, LEAN_SCATTER_CM,
             COV_TARGET_CM, COV_CELL_M, COV_RADIUS_M, COV_REACH_M, COV_GROUND_CM, COV_WANDER_CM};
-    static final Limit[] LIMITS = {Limit.SETTLE_S, Limit.JUMP_M, Limit.FLOAT_SPELL_S, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
+    static final Limit[] LIMITS = {Limit.PLACE_CM, Limit.STEADY_CM, Limit.SETTLE_S, Limit.JUMP_M, Limit.FLOAT_SPELL_S, Limit.TILT_COVER_DEG, Limit.TILT_RMS_CM,
             Limit.TILT_MIN_DEG, Limit.TILT_MAX_DEG, Limit.TILT_SIGMA_CM, Limit.TILT_IMU_DEG, Limit.LEAN_SCATTER_CM,
             Limit.COV_TARGET_CM, Limit.COV_CELL_M, Limit.COV_RADIUS_M, Limit.COV_REACH_M, Limit.COV_GROUND_CM,
             Limit.COV_WANDER_CM};
@@ -156,6 +158,10 @@ final class Settings {
     static boolean labelCaptures(SharedPreferences p) { return p.getBoolean(LABEL_CAPTURES, true); }
 
     static double limit(SharedPreferences p, String key, Limit l) { return l.orDefault(p.getString(key, l.format(l.def))); }
+
+    /** Pole check placement and steadiness cue limits in metres (0: cue off). */
+    static double placeM(SharedPreferences p) { return limit(p, PLACE_CM, Limit.PLACE_CM) / 100; }
+    static double steadyM(SharedPreferences p) { return limit(p, STEADY_CM, Limit.STEADY_CM) / 100; }
 
     static long settleNs(SharedPreferences p) { return Math.round(limit(p, SETTLE_S, Limit.SETTLE_S) * 1e9); }
     static double jumpM(SharedPreferences p) { return limit(p, JUMP_M, Limit.JUMP_M); }
