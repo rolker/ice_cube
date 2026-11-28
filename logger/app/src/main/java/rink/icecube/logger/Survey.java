@@ -545,11 +545,13 @@ final class Survey {
             svc.event("ref n=" + r.n + " not appended to refs.csv: " + e.getMessage());
         }
         refsGeneration++;
-        // The importer (analysis/qgis/logger_session.py) takes the text before "; diff_last_m="
-        // as the message and ok=false as a failed (red) check, so diff_last_m stays the first
-        // key and ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
-        String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrNone(q.placeOffset),
-                cmOrNone(q.sdU), colour.name().toLowerCase(Locale.US));
+        // The importer (analysis/qgis/logger_session.py) takes the text before the first
+        // "; key=" as the message (importers before 0.12.0: before "; diff_last_m=", so
+        // diff_last_m stays the first key of a check) and ok=false as a failed (red) check,
+        // so ok is "not red": a doubtful reference outside the tolerance logs ok=true doubtful=true.
+        // place_cm, sd_u_cm and colour are on every line, a value left empty when not applicable.
+        String cues = String.format(Locale.US, "place_cm=%s sd_u_cm=%s colour=%s", cmOrEmpty(q.placeOffset),
+                cmOrEmpty(q.sdU), colour.name().toLowerCase(Locale.US));
         if (c != null) {
             svc.event(String.format(Locale.US, "pole check n=%d: %s%s; diff_last_m=%.4f diff_mean_m=%.4f visits=%d last=%s/%d"
                             + " ok=%b diff_ref_m=%.4f ref_kind=%s within_tol=%b doubtful=%b %s", r.n, c.describe(), q.describe(),
@@ -557,7 +559,7 @@ final class Survey {
                     c.refKind.name().toLowerCase(Locale.US), c.ok, c.doubtful, cues));
         } else {
             svc.event("pole check n=" + r.n + ": " + (Double.isNaN(r.hGround) ? "no ground height" : "no earlier ref within 0.30 m")
-                    + q.describe());   // no "; key=" part: the importer keeps the whole text as the message
+                    + q.describe() + "; " + cues);
         }
         // Check and set under the lock: a voidCapture between the check and the update
         // would otherwise leave a notice, warning or alarm on a flagged ref.
@@ -595,8 +597,8 @@ final class Survey {
         }
     }
 
-    /** "2.5" (cm, one decimal) or "none" for NaN, for the pole check event line. */
-    private static String cmOrNone(double m) { return Double.isNaN(m) ? "none" : String.format(Locale.US, "%.1f", m * 100); }
+    /** "2.5" (cm, one decimal) or "" for NaN, for the pole check event line. */
+    private static String cmOrEmpty(double m) { return Double.isNaN(m) ? "" : String.format(Locale.US, "%.1f", m * 100); }
 
     // ---- flag (void) ----
 

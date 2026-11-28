@@ -659,7 +659,9 @@ def load_session(src: SessionSource) -> Session:
             if m:
                 body = m.group(2)
                 kv = _kv(body)
-                msg = body.split("; diff_last_m=")[0].replace(";", ",").strip()
+                # the message ends at the first "; key=" (diff_last_m for a check; from
+                # logger 0.12.0 place_cm on a line with no check)
+                msg = re.split(r"; \w+=", body, maxsplit=1)[0].replace(";", ",").strip()
                 ok = kv.get("ok")
                 s.refs.setdefault(int(m.group(1)), {}).update({
                     "pole_check": msg, "diff_last_m": _f(kv.get("diff_last_m")),

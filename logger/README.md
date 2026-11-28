@@ -548,8 +548,10 @@ text, separated by "; ".
 
 The `pole check n=…` event line: the notice text, then `diff_last_m`, `diff_mean_m`,
 `visits`, `last` (session/n), `ok`, and from 0.12.0 `diff_ref_m`, `ref_kind`
-(single|pair|median), `within_tol`, `doubtful`, `place_cm`, `sd_u_cm` (`none` when not
-applicable) and `colour`. `ok` is false only for a red, failed check (a doubtful reference
+(single|pair|median), `within_tol`, `doubtful`, `place_cm`, `sd_u_cm` and `colour`. A
+line with no check (first visit, no ground height) has the notice text, then `place_cm`,
+`sd_u_cm` and `colour`; `place_cm` and `sd_u_cm` are on every line, empty when not
+applicable (e.g. `place_cm= sd_u_cm=3.1 colour=amber`). `ok` is false only for a red, failed check (a doubtful reference
 outside the tolerance logs `ok=true within_tol=false doubtful=true`), which is what the
 QGIS importer colours red; until 0.11 `ok` was the check against the most recent visit.
 
