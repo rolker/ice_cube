@@ -295,3 +295,21 @@ None.
 **Decided-by**: host (pre-push round 3 approved; orchestrator table allows publish)
 **After**: publish
 **Decision**: publish
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 23:07 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**PR**: #46 at `adbe9f8`
+**Depth**: Deep (reason: cold read, cross-model only: codex, per handoff)
+**Must-fix**: 1 | **Suggestions**: 3
+
+Cold read: Codex only (EXIT=0), title/URL/diff; no earlier review entries read. Findings checked against the code by the lead.
+
+### Findings
+- [ ] (must-fix) A zip session's name is not validated: an entry `../events.csv` (or `./events.csv`, `a/../events.csv`) gives session name `..`, and the note and photo targets `photos_dir.parent/notes/<session>/<name>` and `photos_dir/<session>/<name>` then land outside their folders (e.g. beside the gpkg); safe_file_name checks only the file part. Refuse or skip a session whose name fails safe_file_name — `analysis/qgis/logger_session.py:354`, `analysis/qgis/import_sessions.py:385-389`
+- [ ] (suggestion) A note stopped at or past the cap keeps its file when rec.stop() throws, on elapsed time alone; Android documents the max-duration stop as asynchronous, so confirm on the phone that a 60 s note always plays (or check the file is a finished MP4) before linking it — `logger/app/src/main/java/rink/icecube/logger/NoteRecorder.java:88-101`
+- [ ] (suggestion) An orphan note whose "note file=... n=<k>" event names a row missing from points.csv (a snapshot) keeps n=k: no capture lists it and orphan_voice skips it (n not None), so it is linked nowhere; treat an n with no capture as n None — `analysis/qgis/logger_session.py:_attachments` (the `elif name in attach` branch), `analysis/qgis/import_sessions.py:428-431`
+- [ ] (suggestion) With no track lines, orphan notes get no link, but load_session's remark still says "linked on the track" — `analysis/qgis/logger_session.py:832`, `analysis/qgis/import_sessions.py:427`
