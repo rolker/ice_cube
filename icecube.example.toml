@@ -147,6 +147,23 @@ percentile = 99.0
 # [surveys.pass_rule]
 # from_file = true              # the table's passes
 #
+# [[surveys]]                   # logger sessions read directly, no season gpkg (#20)
+# id = "check"
+# surface = "ground"
+# frame = "local"
+# date = "2026-11-27"
+# reader = "logger_session"     # needs an ENU [site] (origin_geodetic or origin_from_gpkg)
+# path = "data/sessions"        # a session folder, a zip, or a folder of them
+# sessions = ["2026-11-27_10-00-00"]   # only these (default: every session under path)
+# kinds = ["capture"]           # add "stop" for pole stops
+# include_voided = false        # captures flagged void in the logger stay out
+# base = [0.0, 0.0, 0.0]        # current base lat, lon, h (placeholder); or:
+# # base_from_gpkg = "data/qgis/2026-2027.gpkg"   # the base stored there (read-only)
+# # (neither: the first RTCM 1005 logged in the sessions)
+# # base_history = "data/base_history.csv"       # as [soundings].base_history
+# wander_prior = 0.015
+# # pass_rule.from_file is true by default: the fix stretches are the passes
+#
 # [[surveys]]                   # a bare-earth DEM as low-weight soundings (icecube/dem.py)
 # id = "lidar"
 # surface = "ground"
