@@ -261,3 +261,22 @@ Open owner question (not a finding): the multi-day median vs ground movement bet
 
 ### Checks
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD OK, 251 tests, 0 failures (PoleCheckTest 25); `app-debug.apk` built 19:37. C: had 109 GB free.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 19:39 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-23 at `ed41169`
+**Base**: main
+**Depth**: Standard (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+**Round**: 3 | **Ship**: recommended — no must-fix findings
+
+Scope: round 2's findings (Local Review at `a08f0c5`, recorded in c826130) and the fix diff c826130..ed41169 (6 files, +116 -30). Cross-model: skipped (round-3 convergence check, per handoff).
+
+Verified: all five round-2 items addressed as stated. Radius test is `!(d <= MATCH_RADIUS_M)`; `PointRow.hasPosition` now needs finite lat/lon (its other callers, FixGuard, EpochAverage, MapView, Coverage and Survey, only gain the stricter rejection of an infinite position, which is garbage for all of them). `placeOffset` guards a non-positioned `now`, and `matches` returns empty for it. `Cues.of(now, earlier, c, ...)` reuses the check's offset when there is one, and otherwise falls back to `matches` + `placeOffset`. Survey's no-ground-height notice and event line carry the new cue; `place_cm` was already parsed on no-check lines. The javadocs and README now match the sort and the voided line. `ANDROID_HOME=~/Android/Sdk ./gradlew testDebugUnitTest --max-workers 4`: OK, 0 failures (up to date with ed41169; PoleCheckTest 25 tests). C: 110 GB free.
+
+### Findings
+- [ ] No issues found. LGTM.
