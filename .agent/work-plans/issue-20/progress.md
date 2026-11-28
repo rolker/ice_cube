@@ -268,3 +268,27 @@ Logger version: leaving versionName at 0.11.0 is acceptable. SoundingSigma feeds
 - python3 -m unittest discover -s analysis/qgis/tests: Ran 173 tests, OK (skipped=5)
 - python3 -m unittest discover icecube/tests: Ran 121 tests, OK
 - Docs: docs/howto/ice-cube.md and icecube.example.toml updated for the above.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 19:44 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-20 at `ff90d82`
+**Base**: main
+**Depth**: Deep (reason: whole-diff classification kept for round 2; cross-layer Python + Java logger port, ~1150 lines over 15 files)
+**Must-fix**: 0 | **Suggestions**: 8
+**Round**: 2 | **Ship**: recommended — no must-fix findings; the round-1 must-fix (anchor names) is resolved; remaining suggestions can be applied or tracked
+
+Verified: the Claude adversarial subagent ran icecube/tests (121 OK) and analysis/qgis/tests (173 OK, 5 skipped); py_compile clean; no Python linter installed (ruff, flake8, pyflakes absent), so static analysis was not run. The added lines leak nothing private (only synthetic coordinates near 0 N 0 E). No double subtraction of z0. Outside reviewers: gemini and codex completed (EXIT=0). Codex's must-fix (no station filter) and gemini's must-fix (relative base_dir) are downgraded to suggestions: by default the season source has no station filter either, and the CLI always passes an absolute base_dir. Merge check against origin/feature/issue-23: only docs/log.md conflicts (journal text). The schema 6 bump adds refs columns only; _read_season's SELECT still works on a v6 season gpkg.
+
+### Findings
+- [ ] (suggestion) The logger_session reader cannot pass a `station` filter to fix_stretches the way a season logger source can, so with a station-filtered season config its rows can differ. Expose `station` (codex) — `icecube/io.py:740`
+- [ ] (suggestion) season_names is the set of stored refs.site values. When assign_anchors has merged two season sites into one group, it names the group names[0], so a ref given the other site name ties to nothing (a missed tie, never a false one). Take the names from the season's anchors, or map each site to its group (claude) — `icecube/io.py:617`
+- [ ] (suggestion) read_soundings now subtracts z0 with a UTM site too, which moves the soundings vertically for a UTM config with z0 set. Subtract only when the site has an ENU origin, or document that the reader expects ENU (claude) — `icecube/io.py:517`
+- [ ] (suggestion) A relative base_dir from a library caller gives a double prefix: read_survey has already joined base_dir/path and ab() joins it again. Resolve once (gemini) — `icecube/io.py:678,795`
+- [ ] (suggestion) `base` is not validated, so a 2-element list fails with an IndexError. Check for 3 values and raise a ValueError that names the survey (gemini, claude) — `icecube/io.py:721`
+- [ ] (suggestion) A caller that passes `log` gets no stderr echo. The RTCM 1005 warning bypasses `log`, and an empty survey id gives an empty message prefix; use `tag` (gemini, claude) — `icecube/io.py:699,732`
+- [ ] (suggestion) soundings.build, which the reader now runs on a temp scratch gpkg, opens it with an unescaped `file:` URI and closes it only on the normal path. Use try/finally and the escaped URI (claude) — `analysis/qgis/soundings.py:1440,1467`
+- [ ] (suggestion) Tests: the stored-site branch of _season_sites is never exercised apart from the seed rule (re-read the season-held session after the move), and the pass_rule tests assert only the dict, not the passes that segment produces (claude) — `icecube/tests/test_logger_session.py:204,314`
