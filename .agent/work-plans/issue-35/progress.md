@@ -285,3 +285,21 @@ Specialists: static analysis (no Java linter profile; `./gradlew testDebugUnitTe
 ### Checks
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 303 unit tests, 0 failures; APK `logger/app/build/outputs/apk/debug/app-debug.apk`. C: had 108.9 GB free.
 - After the merge: `python3 -m unittest discover icecube/tests` 130 OK; `analysis/qgis/tests` 175 OK (5 skipped).
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 20:31 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**Branch**: feature/issue-35 at `10bcdf2`
+**Base**: main
+**Depth**: Standard (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 2
+**Round**: 3 | **Ship**: recommended — no must-fix findings; remaining suggestions can be applied or tracked
+
+Scope: round 2's findings (Local Review at `deb885f`) and the fix diff e6066da..10bcdf2; the merge of main (#20, bd01255) was clean and not re-reviewed. Cross-model: skipped (round-3 convergence check, per handoff). Static analysis: no Java linter profile; `./gradlew testDebugUnitTest --max-workers 4`: 303 tests, 0 failures. All 8 round-2 items verified fixed in code and tests. The tip-disk deviation (radius pole x sin(theta), no heading sensor) meets the intent: at one stop the disks overlap (standing up after a tilt set, swaying across the 2 deg cone, plumb 10 deg with still 0.2 cm, all tested), and a real move re-arms once the antenna centres are more than R_latch + r + 3x still apart (at most about 19 cm at the defaults, 68 cm at the 10 deg plumb limit), well under a sounding spacing. Pole height always parses to a finite default, so the fire radius is never NaN in practice.
+
+### Findings
+- [ ] (suggestion) README says the tip must move 6 cm; the antenna spacing that actually re-arms is up to 2 x pole x sin(plumb limit) + 3x still (about 19 cm at the defaults, 68 cm at 10 deg); say so, so a close grid at a wide plumb limit is not a surprise. — `logger/README.md` (Auto capture)
+- [ ] (suggestion) A Surface MARK with no gravity reading after calibration latches with a pole-length radius (about 1.8 m), so auto capture stays latched until the antenna is about 1.9 m away; conservative (never a duplicate) and rare, but a radius of pole x sin(plumb limit) or skipping the latch would keep close stops auto. — `logger/app/src/main/java/rink/icecube/logger/Survey.java:409`
