@@ -243,7 +243,11 @@ growth. Readers:
   Horizontal/Vertical Accuracy, Remarks).
 - `enu_csv`: a 4 Hz E/N/U table already in local metres with GST sigmas (columns
   `utc, quality, E_m, N_m, U_m, gst_sig_lat, gst_sig_lon, gst_sig_alt`; a private
-  rover-test script writes one). The logger app's format will be added when it exists.
+  rover-test script writes one).
+- `logger_session`: Ice Cube Logger sessions read straight from their folders or zips
+  (`path`: a session, a zip, or a folder of them; `sessions = ["<folder name>", ...]` keeps
+  only those), without the season gpkg: check a new session before it joins the season.
+  See "In icecube" below.
 
 Outputs per run: `summary.md`, `run.json`, `surface_<name>.npz` (z, sigma, n, n_out,
 n_alt, z_alt, strength, n_eeg, maxnr, last update, passes per node, planar, gradient,
@@ -379,7 +383,7 @@ point taken while an older base coordinate was broadcast is moved by the differe
 |---|---|---|
 | RTK | max(1 cm, 1 s scatter, GST height sigma) | the receiver |
 | correction age | 1 mm per second over 2 s | Nov 4: 3 cm low at 35 s |
-| fix settling | 8 cm x (1 - t/120 s)^2 for logger captures; SW Maps points and stops within 120 s are dropped (`settle_s`, 90 s until logger 0.11.0) | Nov 3/4: 10-30 cm for 25-75 s after a re-fix; Nov 26: +6 to +9 cm at 95-113 s |
+| fix settling | 10 cm x (1 - t/120 s) for logger captures (8 cm x (1 - t/120 s)^2 before #20); SW Maps points and stops within 120 s are dropped (`settle_s`, 90 s until logger 0.11.0) | Nov 3/4: 10-30 cm for 25-75 s after a re-fix; Nov 26: +6 to +9 cm at 95-113 s; #20 re-fit on the Nov 11, 15 and 21 captures against mature-fix neighbours (fix age >= 150 s, plane within 1 m): excess robust scatter about 5 cm in the first minute and 2-4 cm up to 120 s, best fit about 10 cm x (1 - t/120)^0.75, the linear taper as good |
 | pole | pole x (1 - cos tilt) + 1 cm tip sink (none on a mark); horizontally pole x sin tilt | tilt 1 deg with the bubble, 2 deg IMU-checked, 5 deg unknown |
 | ground | 1.5 cm (none on a mark) | grass and pole placement |
 
@@ -423,6 +427,33 @@ any distance and without the slope term; they are not gridded (a mark top is not
 - `reader = "soundings"` (gpkg or CSV; `sources`, `classes`, `use_only`) with
   `pass_rule.from_file = true`; the gpkg's origin must be the run's (`[site]
   origin_from_gpkg` reads it).
+- `reader = "logger_session"` (issue #20): the same rows as the soundings table, made by
+  soundings.py itself. The sessions are imported into a scratch GeoPackage in a temporary
+  directory (no photos; removed afterwards) and `soundings.build` runs on it with one logger
+  source whose `session_paths` are the sessions, so sigma (settle term included), fix
+  stretches as passes, the #15 flags (`suspect_jump`, `float_spell`) and void handling are
+  the season table's rules. Keys: `sessions`, `kinds` (default `["capture"]`; add `"stop"`
+  for pole stops), `classes`, `include_voided`, `station` (the logger source's reference
+  station filter, as in the soundings config; default none), and the base: `base = [lat, lon, h]`, else
+  `base_from_gpkg` (the base stored in the season gpkg, read-only), else the first RTCM 1005
+  logged in the sessions (the run warns on stderr); `base_history` is the soundings
+  base-history CSV and needs `base` or `base_from_gpkg`, since the session's own 1005 would
+  make its base the current one. Needs an ENU `[site]` (`origin_geodetic` or
+  `origin_from_gpkg`); a UTM-only site is refused; `z0` is subtracted as for the other
+  readers (the soundings reader too, with an ENU `[site]`; with a UTM site it leaves z as
+  the table has it). Without a `pass_rule` the survey gets
+  `pass_rule.from_file = true`; a `pass_rule` you write is used as written. Anchor names:
+  with `base_from_gpkg` a ref takes the season's site (stored for a session the season
+  holds, else the site the session import's 0.30 m rule would give it), so it is `site<k>`
+  (or, where the season's anchor joining links several sites into one anchor, that anchor's
+  name) and ties to the season's soundings in the crossover; every other anchor is named
+  `<survey id>:<name>` so it never ties to another survey's anchors by accident.
+  Differences from the season table: anchor joining and the suspect check see only these
+  sessions, so a suspect pass that season data would verify stays out, and a ref joins
+  only refs of these sessions. A session without raw epochs (only `points.csv`, or a
+  `gps.ubx` with no GGA) takes the capture's own `fix_age_s` and suspect columns, one pass
+  per capture and no pole stops, and the run says so on stderr; soundings.py's season
+  build applies the same fallback and names such sessions in its log.
 - Per-survey `wander_prior`, and `common_prior`: one more bias shared by all passes of a
   survey (a day on a distant network), so a pass with no overlap of its own takes the
   survey's bias instead of zero.
