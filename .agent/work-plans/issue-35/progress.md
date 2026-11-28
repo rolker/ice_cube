@@ -379,3 +379,18 @@ Fix all four of the Integrated Review at 24c63c3. Host decisions (owner may veto
 
 ### Checks
 - `./gradlew testDebugUnitTest assembleDebug --max-workers 4`: BUILD SUCCESSFUL, 305 unit tests, 0 failures (AutoCaptureTest 27/27); APK `logger/app/build/outputs/apk/debug/app-debug.apk`. C: had 108.9 GB free.
+
+## Local Review
+**Status**: complete
+**When**: 2026-11-27 20:41 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: approved
+
+**PR**: #45 at `838bab5`
+**Depth**: Deep (reason: round 3 convergence check per handoff)
+**Must-fix**: 0 | **Suggestions**: 0
+
+Scope: the four findings of the Integrated Review at `3ec21cd` and the fix diff 526325e..838bab5. Cross-model: skipped (round-3 convergence check, per handoff). Static analysis: no Java linter profile; `./gradlew testDebugUnitTest --max-workers 4`: 305 tests, 0 failures. All four verified in code and tests: README states the re-arm antenna spacing (2 x pole x sin(plumb limit) + 3 x still, about 19 cm / 68 cm) and the notice; a calibrated MARK with no gravity latches at pole x sin(plumb limit) via `AutoCapture.markTipRadiusM` (uncalibrated keeps the pole length), tested; a pole height change after a calibration posts the recalibrate notice and is a no-op with no axis; `setLimits` clears the hold window (field initialised before the constructor's call, Survey methods synchronized), tested. No new issues in the fix diff.
+
+### Findings
+None.
