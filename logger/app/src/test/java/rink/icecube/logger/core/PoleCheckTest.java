@@ -70,4 +70,31 @@ public class PoleCheckTest {
         earlierNoH.hGround = Double.NaN;
         assertNull(PoleCheck.check(ref(0, 50), Arrays.asList(earlierNoH), 0.03));
     }
+
+    @Test public void youngEarlierRefIsNeverAReference() {
+        PointRow now = ref(0, 50.000);
+        PointRow good = ref(0.02, 50.001), young = ref(0.01, 50.080);   // young: still settling, last in file order
+        young.fixYoung = 1;
+        PoleCheck c = PoleCheck.check(now, Arrays.asList(good, young), 0.03);
+        assertEquals(1, c.visits);
+        assertEquals(good, c.last);
+        assertTrue(c.ok);
+        assertNull(PoleCheck.check(now, Arrays.asList(young), 0.03));
+    }
+
+    @Test public void youngNewRefIsStillChecked() {
+        PointRow now = ref(0, 50.080);
+        now.fixYoung = 1;
+        PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 50.0)), 0.03);
+        assertEquals(1, c.visits);
+        assertFalse(c.ok);   // shown: the surveyor sees the young ref disagree
+    }
+
+    @Test public void olderRowWithoutTheYoungColumnStaysUsable() {
+        PointRow now = ref(0, 50.000);
+        PointRow old = PointRow.parse(PointRow.split(
+                "s1,3,ref,0,,10.0,20.0,51.8,1.8,50.0,4,30,0.001,0.001,0.002,1.0,,,12.0,0.200,0,ref,,,,,,,0,"), 1);
+        assertEquals(-1, old.fixYoung);
+        assertEquals(1, PoleCheck.check(now, Arrays.asList(old), 0.03).visits);
+    }
 }

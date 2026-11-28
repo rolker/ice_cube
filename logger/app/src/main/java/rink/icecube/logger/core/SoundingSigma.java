@@ -33,7 +33,7 @@ package rink.icecube.logger.core;
  */
 public final class SoundingSigma {
     public static final double FLOOR = 0.01, FLOOR_H = 0.01, AGE_FREE_S = 2.0, AGE_RATE = 0.001,
-            SETTLE_EXTRA = 0.08, TIP_SINK = 0.01, TILT_BUBBLE_DEG = 1.0, SETTLE_S = 90.0;
+            SETTLE_EXTRA = 0.08, TIP_SINK = 0.01, TILT_BUBBLE_DEG = 1.0, SETTLE_S = 120.0;
 
     /** The terms of one budget, metres. */
     public static final class Terms {

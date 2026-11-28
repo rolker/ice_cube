@@ -40,16 +40,23 @@ public final class TiltSet {
         public final int gravityN;
         public final double fixAge, fixJump;
         public final boolean fixSuspect;
+        /** 0.11.0 (#15): taken while the fix was young; the stretch it came from (null if unknown). */
+        public final boolean young;
+        public final FixGuard.Stretch stretch;
         // from the last solution
         public double tiltDeg = Double.NaN, azimuthDeg = Double.NaN, resid = Double.NaN, imuDeg = Double.NaN;
         public boolean used = true;
         public String whyDropped = "";
 
         Lean(int k, long elapsedNs, long phoneMs, EpochAverage avg, double[] enu, double[] gravity, int gravityN,
-             double fixAge, double fixJump, boolean fixSuspect) {
+             FixGuard.Stretch s, boolean young) {
             this.k = k; this.elapsedNs = elapsedNs; this.phoneMs = phoneMs; this.avg = avg; this.enu = enu;
-            this.gravity = gravity; this.gravityN = gravityN; this.fixAge = fixAge; this.fixJump = fixJump;
-            this.fixSuspect = fixSuspect;
+            this.gravity = gravity; this.gravityN = gravityN;
+            this.fixAge = s == null ? Double.NaN : s.ageSeconds(avg.lastNs);
+            this.fixJump = s == null ? Double.NaN : s.jump;
+            this.fixSuspect = s != null && s.suspect;
+            this.stretch = s;
+            this.young = young;
         }
     }
 
@@ -97,6 +104,12 @@ public final class TiltSet {
      * and the fix stretch the epochs belong to (s; null if unknown).
      */
     public Added add(EpochAverage a, double[] gravity, int gravityN, FixGuard.Stretch s, long nowNs, long phoneMs) {
+        return add(a, gravity, gravityN, s, false, nowNs, phoneMs);
+    }
+
+    /** {@link #add}, with young: the lean is taken while the fix is young (kept, and marked). */
+    public Added add(EpochAverage a, double[] gravity, int gravityN, FixGuard.Stretch s, boolean young, long nowNs,
+            long phoneMs) {
         int k = leans.size() + 1;
         if (a == null) return new Added(false, "Lean refused: no fix", null);
         if (a.quality != 4) return new Added(false, "Lean refused: not RTK fixed", null);
@@ -108,8 +121,7 @@ public final class TiltSet {
         }
         if (frame == null) frame = new LocalFrame(a.lat, a.lon, Double.isNaN(a.h) ? 0 : a.h);
         double[] enu = frame.toEnu(a.lat, a.lon, a.h);
-        Lean l = new Lean(k, nowNs, phoneMs, a, enu, gravity, gravityN,
-                s == null ? Double.NaN : s.ageSeconds(a.lastNs), s == null ? Double.NaN : s.jump, s != null && s.suspect);
+        Lean l = new Lean(k, nowNs, phoneMs, a, enu, gravity, gravityN, s, young);
         leans.add(l);
         Result r = solveAll();
         if (r.solution != null) {
@@ -221,9 +233,14 @@ public final class TiltSet {
         if (!Double.isNaN(r.maxImuDeg) && r.maxImuDeg > gates.imuDeg) {
             w.add(String.format(Locale.US, "IMU disagrees %.1f° > %.1f° (tip slipped or bad fix?)", r.maxImuDeg, gates.imuDeg));
         }
-        boolean suspect = false;
-        for (Lean l : r.used) suspect |= l.fixSuspect;
-        if (suspect) w.add("fix may be false (jumped " + jumpText(r) + ")");
+        boolean byJump = false, bySpell = false;
+        for (Lean l : r.used) {
+            if (l.stretch == null) continue;
+            byJump |= l.stretch.reason.contains(FixGuard.REASON_JUMP);
+            bySpell |= l.stretch.reason.contains(FixGuard.REASON_FLOAT_SPELL);
+        }
+        if (byJump) w.add("fix may be false (jumped " + jumpText(r) + ")");
+        else if (bySpell) w.add("fix may be false (after a long float spell)");
     }
 
     private static String jumpText(Result r) {
@@ -242,7 +259,10 @@ public final class TiltSet {
      * antenna height as h_ant_ellips, pole_m = L, fix 4, n_epochs summed over the used leans,
      * sd_* the RMS of the leans' own scatter, age the mean correction age, utc from the last
      * used lean; fix_age_s the smallest (youngest stretch), fix_jump_m the largest jump,
-     * fix_suspect if any lean was in a suspect stretch; method tilt and the tilt_* columns.
+     * fix_suspect if any lean was in a suspect stretch; fix_start and float_spell_s from the
+     * youngest lean's stretch, suspect_reason every reason of the used leans, fix_young 1 if
+     * any used lean was young (0 if none was and every one had a stretch, else unknown);
+     * method tilt and the tilt_* columns.
      */
     public PointRow toRow(int n, long elapsedNs, Result r, long phoneMs) {
         PointRow row = new PointRow();
@@ -258,7 +278,8 @@ public final class TiltSet {
         row.hGround = r.tipGeodetic[2];
         double sh = 0, se = 0, sn = 0, su = 0, sa = 0, age = Double.POSITIVE_INFINITY;
         int nh = 0, na = 0, ne = 0, nu = 0;
-        boolean suspect = false;
+        boolean suspect = false, anyYoung = false, allKnown = true, jumpWhy = false, spellWhy = false;
+        Lean youngest = null;
         for (Lean l : r.used) {
             EpochAverage a = l.avg;
             if (!Double.isNaN(a.h)) { sh += a.h; nh++; }
@@ -267,8 +288,14 @@ public final class TiltSet {
             sn += a.sdN * a.sdN;
             if (!Double.isNaN(a.sdU)) { su += a.sdU * a.sdU; nu++; }
             ne += a.n;
-            if (!Double.isNaN(l.fixAge)) age = Math.min(age, l.fixAge);
+            if (!Double.isNaN(l.fixAge) && l.fixAge < age) { age = l.fixAge; youngest = l; }
             suspect |= l.fixSuspect;
+            anyYoung |= l.young;
+            allKnown &= l.stretch != null;
+            if (l.stretch != null) {
+                jumpWhy |= l.stretch.reason.contains(FixGuard.REASON_JUMP);
+                spellWhy |= l.stretch.reason.contains(FixGuard.REASON_FLOAT_SPELL);
+            }
         }
         int k = r.used.size();
         row.hAnt = nh > 0 ? sh / nh : Double.NaN;
@@ -281,6 +308,13 @@ public final class TiltSet {
         row.fixAge = Double.isInfinite(age) ? Double.NaN : age;
         row.fixJump = maxJump(r.used);
         row.fixSuspect = suspect;
+        row.fixYoung = anyYoung ? 1 : allKnown ? 0 : -1;
+        if (youngest != null) {
+            row.fixStart = youngest.stretch.prior;
+            row.floatSpell = youngest.stretch.floatSpellS;
+        }
+        row.suspectReason = jumpWhy && spellWhy ? FixGuard.REASON_JUMP + ";" + FixGuard.REASON_FLOAT_SPELL
+                : jumpWhy ? FixGuard.REASON_JUMP : spellWhy ? FixGuard.REASON_FLOAT_SPELL : "";
         TiltSolver.Solution s = r.solution;
         row.tiltN = k;
         row.tiltRms = s.rms;

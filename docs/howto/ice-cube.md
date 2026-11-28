@@ -232,7 +232,8 @@ mode, so growth results do not depend on the choice.
 Each `[[surveys]]` entry has an `id`, a `date`, a `frame`, a `reader`, filters
 (`keep_quality`, `exclude_remarks`, `drop_seq`, `z_min`/`z_max`, `offset`,
 `pole_height`) and a `pass_rule` (`gap_s`, `jump_m`, `markers`, `fixed_only`, `max_s`,
-`settle_s`, `min_points`). `surface` groups several surveys into one surface (two
+`settle_s`, `min_points`; this `settle_s` is the survey's own setting, separate from
+soundings.py's and the logger's 120 s young limit). `surface` groups several surveys into one surface (two
 ground-survey days); `role = "validation"` runs passes and crossover without masks or
 growth. Readers:
 
@@ -378,7 +379,7 @@ point taken while an older base coordinate was broadcast is moved by the differe
 |---|---|---|
 | RTK | max(1 cm, 1 s scatter, GST height sigma) | the receiver |
 | correction age | 1 mm per second over 2 s | Nov 4: 3 cm low at 35 s |
-| fix settling | 8 cm x (1 - t/90 s)^2 for logger captures; SW Maps points and stops within 90 s are dropped | Nov 3/4: 10-30 cm for 25-75 s after a re-fix |
+| fix settling | 8 cm x (1 - t/120 s)^2 for logger captures; SW Maps points and stops within 120 s are dropped (`settle_s`, 90 s until logger 0.11.0) | Nov 3/4: 10-30 cm for 25-75 s after a re-fix; Nov 26: +6 to +9 cm at 95-113 s |
 | pole | pole x (1 - cos tilt) + 1 cm tip sink (none on a mark); horizontally pole x sin tilt | tilt 1 deg with the bubble, 2 deg IMU-checked, 5 deg unknown |
 | ground | 1.5 cm (none on a mark) | grass and pole placement |
 
@@ -388,8 +389,13 @@ issue #9); a change here means regenerating `python3 -m icecube.logger_vectors`.
 
 The slowly varying RTK wander is not in this sigma: it is the pass bias the crossover
 solves. Rows are left out (flags) when float, on another reference station, in a fix that
-began with a float-to-fix jump over 1 m (a false fix) unless other data agree with that
-pass (`suspect_verified`), listed as known bad, flagged as bad in the logger (`void`, kept
+began with a float-to-fix jump over 1 m (`suspect_jump`, a false fix) or right after a
+float spell of at least `float_spell_s` (default 20 s; `float_spell`, logger 0.11.0, #15;
+without the raw session, from the capture's own `fix_suspect` and `suspect_reason`, and
+`fix_suspect` for a reason it does not know; its `fix_age_s` then gives the settle sigma)
+unless other data agree with that pass (`suspect_verified`), a SW Maps point or pole stop
+within `settle_s` (default 120 s, 90 s until logger 0.11.0) of its fix start (`settle`; a
+logger capture there keeps its larger settle sigma instead), listed as known bad, flagged as bad in the logger (`void`, kept
 with flag `void:<reason>` unless `include_voided`, which uses them and marks them
 `voided_included`; a flagged ref makes no anchor site and is not compared in the suspect
 check; the importer keeps such captures with `void` = 1, it never deletes them, and the
