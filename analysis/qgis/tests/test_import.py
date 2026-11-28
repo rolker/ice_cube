@@ -24,8 +24,8 @@ import export_labels  # noqa: E402
 import gpkg_writer as gw  # noqa: E402
 import import_sessions as imp  # noqa: E402
 import synth  # noqa: E402
-from logger_session import (_i, find_sessions, load_session, zip_entry_mtime, zip_entry_stamp,  # noqa: E402
-                            zip_zone_offset)
+from logger_session import (_i, find_sessions, load_session, safe_file_name, zip_entry_mtime,  # noqa: E402
+                            zip_entry_stamp, zip_zone_offset)
 
 
 def run(*argv):
@@ -496,6 +496,32 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.q("SELECT seg, fix, voice FROM tracks ORDER BY seg"), [
             (1, 4, None), (2, 5, f"notes/{name}/{mid}"), (3, 4, f"notes/{name}/{after}")])
         self.assertTrue((self.gpkg.parent / "notes" / name / mid).is_file())
+
+    def test_unsafe_zip_entry_names_are_never_extracted(self):
+        """A photos/ or notes/ entry whose name is not one plain path part (a backslash, a
+        .. part, a drive letter, an absolute path) is left out, so extraction stays under
+        photos/<session>/ and notes/<session>/ on Windows too."""
+        for ok in ("photo_2_20261201T100010Z.jpg", "a..b.m4a"):
+            self.assertTrue(safe_file_name(ok), ok)
+        for bad in ("", ".", "..", "..\\x.jpg", "sub\\x.jpg", "C:x.jpg", "\\x.jpg", "a/b", "x\x00.jpg"):
+            self.assertFalse(safe_file_name(bad), repr(bad))
+        files = synth.with_notes(synth.session_v05())
+        name = "2026-12-01_10-00-00"
+        bad = ["..\\..\\evil_2_20261201T100010Z.jpg", "C:evil.jpg", "..", "\\abs.jpg"]
+        for b in bad:
+            files[f"{name}/photos/{b}"] = synth.JPEG
+            files[f"{name}/notes/{b.replace('.jpg', '.m4a')}"] = synth.M4A
+        root = self.gpkg.parent
+        out = run(synth.write_zip(self.d / "bad.zip", files), "--gpkg", self.gpkg, "--base", *self.base)
+        self.assertIn("2 voice notes (2 extracted)", out)
+        self.assertEqual(sorted(p.name for p in (root / "photos" / name).iterdir()),
+                         ["photo_2_20261201T100010Z.jpg", "photo_4_20261201T100030Z.jpg"])
+        self.assertEqual(sorted(p.name for p in (root / "notes" / name).iterdir()), [synth.NOTE_2, synth.NOTE_5])
+        self.assertEqual([p for p in self.d.rglob("*") if "evil" in p.name or "abs" in p.name], [])
+        src = find_sessions([self.d / "bad.zip"])[0]
+        with self.assertRaises(ValueError):
+            src.extract_note("..\\x.m4a", root / "x.m4a")
+        src.close()
 
     def test_schema7_voice(self):
         """Schema 7 brings the 0.14.0 voice column: only sessions from 0.14 on are re-read for it."""

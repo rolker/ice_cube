@@ -92,13 +92,15 @@ class SessionSource:
         return p.stat().st_size if p.is_file() else None
 
     def file_names(self, folder):
-        """Names of the files in the session's `folder` (photos, notes), sorted."""
+        """Names of the files in the session's `folder` (photos, notes), sorted; only names
+        that are one safe path part (safe_file_name), so extracting one never leaves the
+        target folder."""
         if self.is_zip:
             pre = self.zip_prefix + folder + "/"
             return sorted(n[len(pre):] for n in self._z().namelist()
-                          if n.startswith(pre) and len(n) > len(pre) and "/" not in n[len(pre):])
+                          if n.startswith(pre) and safe_file_name(n[len(pre):]))
         d = self.path / folder
-        return sorted(p.name for p in d.iterdir() if p.is_file()) if d.is_dir() else []
+        return sorted(p.name for p in d.iterdir() if p.is_file() and safe_file_name(p.name)) if d.is_dir() else []
 
     def photo_names(self):
         return self.file_names("photos")
@@ -108,7 +110,10 @@ class SessionSource:
         return self.file_names("notes")
 
     def extract_file(self, folder, name, dest: Path):
-        """Copy <folder>/<name> to dest unless a file of the same size is already there."""
+        """Copy <folder>/<name> to dest unless a file of the same size is already there.
+        Refuses (ValueError) a name that is not one safe path part (safe_file_name)."""
+        if not safe_file_name(name):
+            raise ValueError(f"unsafe file name in {folder}/: {name!r}")
         size = self.size(folder + "/" + name)
         if dest.is_file() and dest.stat().st_size == size:
             return False
@@ -597,6 +602,14 @@ def read_chunks(src):
 
 
 # ----------------------------------------------------------------------------- session
+
+def safe_file_name(name):
+    """Whether name is a single plain path part on any system: not empty, not . or .., no
+    / or \\, no drive letter or other ':' and no control characters, so <dir>/<name> stays
+    inside <dir> on Windows as well as Linux (a zip entry name is untrusted)."""
+    return (bool(name) and name not in (".", "..") and not any(ch in name for ch in "/\\:")
+            and all(ord(ch) >= 32 for ch in name))
+
 
 @dataclass
 class Session:
