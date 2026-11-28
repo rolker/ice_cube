@@ -218,6 +218,39 @@ public class PoleCheckTest {
         assertEquals(PoleCheck.Colour.GREEN, PoleCheck.colour(null, PoleCheck.Cues.of(tilt, null, 0.02, 0.015)));
     }
 
+    @Test public void bothCuesAtOnce() {
+        PointRow now = held(50.0, 0.031);
+        now.lon = LON + 0.025 / (111_320.0 * Math.cos(Math.toRadians(LAT)));   // 2.5 cm east of the mark
+        PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 0, 50.0)), 0.03);
+        PoleCheck.Cues q = PoleCheck.Cues.of(now, c, 0.02, 0.015);
+        assertTrue(q.offMark);
+        assertTrue(q.unsteady);
+        assertEquals("; pole may be off the mark centre (2.5 cm); re-shoot; pole moved during the ref (sd 3.1 cm); re-shoot",
+                q.describe());
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(c, q));
+    }
+
+    @Test public void placementUsesTheMedianPositionOfTheVisits() {
+        // three visits on the mark and one 20 cm off east and north (still within 0.30 m):
+        // the median position stays on the mark, a mean would move about 7 cm
+        List<PointRow> earlier = Arrays.asList(ref(0, 0, 50.0), ref(0.002, -0.001, 50.0), ref(-0.001, 0.002, 50.0),
+                ref(0.20, 0.20, 50.0));
+        PoleCheck c = PoleCheck.check(ref(0, 0, 50.0), earlier, 0.03);
+        assertEquals(4, c.visits);
+        assertTrue(c.placeOffset < 0.003);
+        assertFalse(PoleCheck.Cues.of(ref(0, 0, 50.0), c, 0.02, 0.015).offMark);
+    }
+
+    @Test public void doubtfulPairPlusACueStaysAmber() {
+        PointRow now = held(50.0595, 0.031);
+        PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 50.0), ref(0, 50.035)), 0.03);
+        assertFalse(c.ok);
+        assertTrue(c.doubtful);
+        PoleCheck.Cues q = PoleCheck.Cues.of(now, c, 0.02, 0.015);
+        assertTrue(q.unsteady);
+        assertEquals(PoleCheck.Colour.AMBER, PoleCheck.colour(c, q));
+    }
+
     @Test public void redWinsOverCues() {
         PointRow now = held(50.1, 0.031);
         PoleCheck c = PoleCheck.check(now, Arrays.asList(ref(0, 50.0)), 0.03);
