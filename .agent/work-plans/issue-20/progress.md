@@ -220,3 +220,28 @@ All plan names hold: points.csv `fix_start`, `float_spell_s`, `suspect_reason`, 
 
 - Logger app version not bumped for the SoundingSigma change (the #23 agent is in logger/ in parallel); bump at merge time if wanted.
 - A direct `logger_source` on parsed sessions (no scratch sqlite) stays for later, as planned.
+
+## Local Review (Pre-Push)
+**Status**: complete
+**When**: 2026-11-27 19:28 -05:00
+**By**: Claude Code Agent (claude-opus-5-5)
+**Verdict**: changes-requested
+
+**Branch**: feature/issue-20 at `74a0894`
+**Base**: main
+**Depth**: Deep (reason: cross-layer Python + Java logger port, ~860 lines over 14 files)
+**Must-fix**: 1 | **Suggestions**: 6
+**Round**: 1 | **Ship**: continue — round 1: 1 must-fix; first round always re-reviews after fixes
+
+Verified: icecube/tests 112 OK; analysis/qgis/tests 173 OK (5 skipped); regenerated coverage_vectors.json is identical to the committed file; Gradle SoundingSigmaTest (3) and CoverageTest pass (C: 109 GB free); grep of added lines finds no real coordinates, names or hosts (only synthetic 0N 0E). Outside reviewers: gemini and codex completed; Claude adversarial subagent completed.
+
+Logger version: leaving versionName at 0.11.0 is acceptable. SoundingSigma feeds only the live coverage overlay (Coverage.java), and its output is not written to points.csv, so no data provenance depends on the version. The docs key the change to #20. The 0.12.0 bump in #23 should list the settle change when it ships.
+
+### Findings
+- [ ] (must-fix) logger_session anchors are named site_N because the scratch gpkg never runs import_sessions.update_local, so refs.site is NULL. Crossover pairs anchors across surveys by name, so these never tie to the season's siteN refs and can collide with a season site_N group (controls or snap-joined) on a different mark. Namespace the names per survey, or match them to the season sites when a season gpkg is given, and test this with a ref capture (codex, confirmed) — `icecube/io.py:378-418`, `analysis/qgis/soundings.py:891-893,1190`
+- [ ] (suggestion) Session sources from find_sessions are not closed when the sessions filter raises "not found" or an import step raises; wrap them in a try/finally. Pre-existing: logger_source's raws from session_paths are never closed — `icecube/io.py:363-389`, `analysis/qgis/soundings.py:796-798`
+- [ ] (suggestion) base_from_gpkg is resolved only after every session is imported. A missing file, a non-gpkg file or a partial base_* gives a raw sqlite3/KeyError. The file:{path} URI is not escaped (#, ?, %), and there is no test — `icecube/io.py:316-327,394-397`
+- [ ] (suggestion) setdefault("from_file", True) also adds from_file to a pass_rule the user wrote without it (e.g. only gap_s), so the user's rule is silently overridden; the comment says the user's rule wins — `icecube/io.py:709`
+- [ ] (suggestion) The fallback to the first RTCM 1005 makes that session's own base the "current" base, so base_history shifts toward it. That is wrong for a session logged under an older base. Warn, or require base/base_from_gpkg, when base_history is set — `icecube/io.py:398-401`
+- [ ] (suggestion) site.z0 is not subtracted (other readers do it via Site.local; read_soundings has the same gap). Apply it or document it — `icecube/io.py:424-425`
+- [ ] (suggestion) Untested: a gps.ubx with no GGA (the no_raw append branch), base_from_gpkg, base_history, kinds with "stop" — `icecube/tests/test_logger_session.py`, `analysis/qgis/tests/test_soundings.py:677`
